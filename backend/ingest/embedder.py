@@ -1,0 +1,123 @@
+"""Generate embeddings for songs and sync to ChromaDB."""
+
+import json
+import os
+
+import chromadb
+
+import config
+from llm import llm_embed
+from db import database
+
+_chroma_client = None
+
+
+def _get_chroma_client():
+    global _chroma_client
+    if _chroma_client is None:
+        os.environ["CHROMA_NO_ANALYTICS"] = "1"
+        os.environ["CHROMA_TELEMETRY_OFF"] = "1"
+        os.makedirs(config.CHROMA_PATH, exist_ok=True)
+        _chroma_client = chromadb.PersistentClient(path=config.CHROMA_PATH)
+    return _chroma_client
+
+
+def _build_embedding_text(song: dict) -> str:
+    """Build a text representation of a song for embedding."""
+    parts = []
+    if song.get("artist"):
+        parts.append(f"artist: {song['artist']}")
+    if song.get("title"):
+        parts.append(f"title: {song['title']}")
+    if song.get("genre_tags"):
+        try:
+            parts.append(f"genres: {', '.join(json.loads(song['genre_tags']))}")
+        except (json.JSONDecodeError, TypeError):
+            pass
+    if song.get("emotional_tags"):
+        try:
+            parts.append(f"mood: {', '.join(json.loads(song['emotional_tags']))}")
+        except (json.JSONDecodeError, TypeError):
+            pass
+    if song.get("instrument_tags"):
+        try:
+            parts.append(f"instruments: {', '.join(json.loads(song['instrument_tags']))}")
+        except (json.JSONDecodeError, TypeError):
+            pass
+    if song.get("ai_description"):
+        parts.append(f"description: {song['ai_description'][:config.AI_DESCRIPTION_MAX_CHARS]}")
+    if song.get("lyrics"):
+        words = song["lyrics"].split()[:config.LYRICS_EMBED_WORDS]
+        parts.append(f"lyrics: {' '.join(words)}")
+    if song.get("energy") is not None:
+        parts.append(f"energy: {song['energy']}")
+    if song.get("valence") is not None:
+        parts.append(f"valence: {song['valence']}")
+    if song.get("bpm"):
+        parts.append(f"bpm: {song['bpm']}")
+
+    return " | ".join(parts) if parts else "unknown song"
+
+
+def embed_song(song_id: int, song: dict) -> bool:
+    """Embed a single song and upsert to ChromaDB."""
+    try:
+        embedding_text = _build_embedding_text(song)
+        result = llm_embed().embed(
+            model=None,
+            input=embedding_text,
+        )
+        embedding = result["embeddings"][0]
+
+        chroma_client = _get_chroma_client()
+        collection = chroma_client.get_or_create_collection(
+            "songs",
+            metadata={"hnsw:space": "cosine"},
+        )
+
+        collection.upsert(
+            ids=[str(song_id)],
+            embeddings=[embedding],
+            metadatas=[{
+                "song_id": song_id,
+                "artist": song.get("artist") or "",
+                "title": song.get("title") or "",
+                "energy": song.get("energy") or 0.5,
+                "valence": song.get("valence") or 0.5,
+                "cluster_id": song.get("cluster_id") if song.get("cluster_id") is not None else -1,
+            }],
+        )
+        return True
+    except Exception as e:
+        print(f"  Failed to embed song {song_id}: {e}")
+        return False
+
+
+def embed_described_songs(song_ids: list) -> list:
+    """Embed all described songs that aren't yet embedded. Returns list of embedded IDs."""
+    chroma_client = _get_chroma_client()
+    collection = chroma_client.get_or_create_collection(
+        "songs",
+        metadata={"hnsw:space": "cosine"},
+    )
+
+    # Check which songs are already in ChromaDB
+    embedded_in_chroma = set()
+    try:
+        existing = collection.get(ids=[str(sid) for sid in song_ids])
+        embedded_in_chroma = set(existing["ids"]) if existing else set()
+    except Exception:
+        pass
+
+    to_embed = [sid for sid in song_ids if str(sid) not in embedded_in_chroma]
+    embedded_ids = []
+
+    for i, song_id in enumerate(to_embed):
+        song = database.get_song(song_id)
+        if song and embed_song(song_id, song):
+            database.set_ingest_phase(song_id, "embedded")
+            embedded_ids.append(song_id)
+        else:
+            print(f"  Failed to embed song {song_id}, will retry on next run")
+
+    return embedded_ids

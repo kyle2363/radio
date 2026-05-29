@@ -1,3 +1,41 @@
-docs/
-audio_files/
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Project data
+data/
+
+# Node
+node_modules/
+frontend/dist/
+
+# Environment
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+#more
 AGENTS.md
+backend/announcer/voices
+docs
+
+#audio files
+audio_files
+
+

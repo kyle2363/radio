@@ -7,7 +7,9 @@ import logging
 import os
 import sys
 import time
+import threading
 import requests
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 logging.basicConfig(
@@ -21,6 +23,71 @@ AUDIO_EXTS = {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac"}
 DEFAULT_DELAY = 1.0
 DEFAULT_RETRIES = 3
 POLL_INTERVAL = 0.5
+
+
+def normalize_filename(name: str) -> str:
+    """Normalize a filename stem for matching purposes (mirrors metadata.py)."""
+    import re
+    suffixes = [
+        r"\(Official Lyric Video\)",
+        r"\[Official Lyric Video\]",
+        r"\(Official Audio\)",
+        r"\[Official Audio\]",
+        r"\(Lyrics\)",
+        r"\[Lyrics\]",
+        r"\(Lyrics \u2044 AMV\)",
+        r"\[Lyrics x AMV\]",
+        r"\(Visualizer \u2044 Lyric Video\)",
+        r"\(Audio\)",
+        r"\[AMV Edit\]",
+        r"\(Music Video\)",
+        r"\(Official Music Video\)",
+        r"\(Official Video\)",
+        r"\[CC\]",
+        r" \[CC\]",
+        r" \u2014 Slowed To Perfection",
+        r" \u2014 Slowed",
+        r"\(ft\.",
+        r"\(feat\.",
+        r" \u2013 ",
+        r" - ",
+    ]
+    normalized = name
+    for suffix in suffixes:
+        normalized = re.sub(suffix, "", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"[❰❱⟨⟩<>]", "", normalized)
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    normalized = normalized.strip("-_. ")
+    return normalized.lower()
+
+
+def build_json_caption_index(json_dir: str) -> dict:
+    """Build a lookup from normalized stem to caption for all JSONs in a dir.
+    
+    Skips entries with empty or 'TODO' captions. Returns {normalized_stem: caption}.
+    """
+    index = {}
+    json_path = Path(json_dir)
+    if not json_path.exists():
+        return index
+
+    for f in sorted(json_path.glob("*.json")):
+        if f.name == "batch_manifest.json":
+            continue
+        try:
+            with open(f, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            if not data or not isinstance(data, list) or len(data) == 0:
+                continue
+            caption = (data[0].get("caption") or "").strip()
+            if not caption or caption == "TODO":
+                continue
+            stem = f.stem
+            normalized = normalize_filename(stem)
+            index[normalized] = caption
+        except (json.JSONDecodeError, KeyError, IndexError, OSError):
+            continue
+    return index
 
 
 def find_audio_files(folder: str) -> list[str]:
@@ -141,13 +208,15 @@ def process_file(
 def main():
     parser = argparse.ArgumentParser(description="Batch process audio files through acestep /understand")
     parser.add_argument("folder", help="Folder to scan for audio files (recursive)")
-    parser.add_argument("--server-url", default="http://localhost:8080", help="Server URL (default: http://localhost:8080)")
-    parser.add_argument("--output-dir", default="docs/understand", help="Output directory for results (default: docs/understand)")
+    parser.add_argument("--server-url", default="http://localhost:8085,http://localhost:8086", help="Comma-separated server URLs, workers round-robin across them (default: http://localhost:8085,http://localhost:8086)")
+    parser.add_argument("--output-dir", default="docs/understand_new", help="Staging output directory (default: docs/understand_new)")
+    parser.add_argument("--main-dir", default="docs/understand", help="Main JSON dir to check for existing results (default: docs/understand)")
     parser.add_argument("--delay", type=float, default=DEFAULT_DELAY, help=f"Delay between files in seconds (default: {DEFAULT_DELAY})")
     parser.add_argument("--retries", type=int, default=DEFAULT_RETRIES, help=f"Max retries per file (default: {DEFAULT_RETRIES})")
-    parser.add_argument("--resume", action="store_true", help="Skip files with existing results")
+    parser.add_argument("--concurrency", "-j", type=int, default=2, help="Concurrent files to process (default: 2)")
+    parser.add_argument("--resume", action="store_true", help="Skip files already in main-dir or output-dir with a filled caption")
     parser.add_argument("--request-json", default=None, help="Path to optional request JSON to include with each file")
-    parser.add_argument("--lm-model", default=None, help="LM model name (e.g. acestep-5Hz-lm-4B-Q8_0)")
+    parser.add_argument("--lm-model", default="acestep-5Hz-lm-4B-Q8_0", help="LM model name (e.g. acestep-5Hz-lm-4B-Q8_0)")
     args = parser.parse_args()
 
     if not os.path.isdir(args.folder):
@@ -175,21 +244,41 @@ def main():
         log.warning("No audio files found in %s", args.folder)
         return
 
+    # Parse server URLs and set up round-robin
+    server_urls = [s.strip() for s in args.server_url.split(",")]
+    server_index = 0
+    server_lock = threading.Lock()
+
+    def get_next_server() -> str:
+        nonlocal server_index
+        with server_lock:
+            url = server_urls[server_index % len(server_urls)]
+            server_index += 1
+            return url
+
     log.info("Found %d audio file(s) in %s", len(audio_files), args.folder)
-    log.info("Server: %s", args.server_url)
-    log.info("Output: %s", args.output_dir)
+    log.info("Servers (%d): %s", len(server_urls), ", ".join(server_urls))
+    log.info("Output (staging): %s", args.output_dir)
+    log.info("Main dir (skip check): %s", args.main_dir)
 
     # Create output directory
     os.makedirs(args.output_dir, exist_ok=True)
 
     # Filter already-processed if --resume
     if args.resume:
+        # Build caption indexes from both dirs
+        main_index = build_json_caption_index(args.main_dir)
+        staging_index = build_json_caption_index(args.output_dir)
+        combined = {}
+        combined.update(main_index)
+        combined.update(staging_index)
+
         remaining = []
         for f in audio_files:
             stem = Path(f).stem
-            out_json = os.path.join(args.output_dir, f"{stem}.json")
-            if os.path.exists(out_json):
-                log.info("  Skipping (exists): %s", f)
+            normalized = normalize_filename(stem)
+            if normalized in combined:
+                log.info("  Skipping (already processed): %s", f)
                 continue
             remaining.append(f)
         audio_files = remaining
@@ -198,18 +287,18 @@ def main():
         log.info("Nothing to process.")
         return
 
-    # Process files
+    # Process files concurrently
+    total = len(audio_files)
     results = []
-    for i, file_path in enumerate(audio_files):
-        log.info("[%d/%d] %s", i + 1, len(audio_files), file_path)
-        path, result, status = process_file(
-            args.server_url, file_path, request_json, args.retries
-        )
-        results.append({"file": path, "status": status, "result": result})
+    results_lock = threading.Lock()
+
+    def process_one(file_path: str) -> dict:
+        """Worker: pick next server, process a single file and save result."""
+        server_url = get_next_server()
+        path, result, status = process_file(server_url, file_path, request_json, args.retries)
 
         # Save result
         if status == "ok" and result:
-            # Clean up result: remove audio_codes, set lyrics to TODO, force language to en
             for item in result:
                 item.pop("audio_codes", None)
                 item["lyrics"] = "TODO"
@@ -224,10 +313,15 @@ def main():
         else:
             log.error("  FAILED: %s", file_path)
 
-        # Delay between files
-        if i < len(audio_files) - 1:
-            log.info("  Waiting %.1fs before next file...", args.delay)
-            time.sleep(args.delay)
+        return {"file": path, "status": status, "result": result}
+
+    with ThreadPoolExecutor(max_workers=args.concurrency) as executor:
+        futures = [executor.submit(process_one, fp) for fp in audio_files]
+        for i, future in enumerate(as_completed(futures), 1):
+            r = future.result()
+            with results_lock:
+                results.append(r)
+            log.info("[%d/%d] %s — %s", i, total, r["status"], Path(r["file"]).name)
 
     # Write manifest
     manifest = {
