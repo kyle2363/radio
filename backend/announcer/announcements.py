@@ -9,6 +9,7 @@ from datetime import datetime
 import config
 from llm import llm_chat
 from .tts import tts_say
+from .personas import get_persona
 
 logger = logging.getLogger(__name__)
 
@@ -408,7 +409,8 @@ def play_announcement(text: str, next_song_filepath: str, trigger_type: str | No
         logger.debug("play_announcement: TTS disabled")
         return None
     logger.debug("play_announcement: calling tts_say()...")
-    result = tts_say(text, song_id=None, trigger_type=trigger_type)
+    dj = get_persona("dj")
+    result = tts_say(text, song_id=None, trigger_type=trigger_type, speed=dj.speed_base if dj else 0.90)
     logger.debug(f"play_announcement: tts_say returned {'path' if result else 'None'}")
     return result
 

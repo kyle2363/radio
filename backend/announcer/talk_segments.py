@@ -491,6 +491,11 @@ def generate_guest_takeover_intro(guest_persona_id: str) -> TalkSegment | None:
         text = text.encode('ascii', 'ignore').decode('ascii')
 
         wav = tts_say(text, voice_id=guest.voice_id, speed=guest.speed_base)
+        if not wav:
+            return None
+
+        return TalkSegment(
+            type=TalkSegmentType.GUEST_TAKEOVER_INTRO,
             wav_paths=[wav],
             duration_secs=max(8.0, len(text) * 0.08),
             text=text,
@@ -526,7 +531,7 @@ def generate_guest_takeover_outro(guest_persona_id: str) -> TalkSegment | None:
         text = text.strip('"\'').strip()
         text = text.encode('ascii', 'ignore').decode('ascii')
 
-        wav = tts_say(text, voice_id=guest.voice_id)
+        wav = tts_say(text, voice_id=guest.voice_id, speed=guest.speed_base)
         if not wav:
             return None
 
