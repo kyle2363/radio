@@ -2,6 +2,18 @@
 
 import json
 import os
+import logging
+
+# Suppress ChromaDB telemetry noise
+os.environ["CHROMA_NO_ANALYTICS"] = "1"
+os.environ["CHROMA_TELEMETRY_OFF"] = "1"
+logging.getLogger("chromadb").setLevel(logging.ERROR)
+try:
+    import posthog
+    posthog.disabled = True
+    posthog.capture = lambda *a, **k: None
+except ImportError:
+    pass
 
 import chromadb
 
@@ -67,13 +79,22 @@ def embed_song(song_id: int, song: dict) -> bool:
             model=None,
             input=embedding_text,
         )
-        embedding = result["embeddings"][0]
+        embeddings = result.get("embeddings", [])
+        if not embeddings:
+            raise ValueError("No embeddings returned from LLM")
+        embedding = embeddings[0]
 
         chroma_client = _get_chroma_client()
         collection = chroma_client.get_or_create_collection(
             "songs",
             metadata={"hnsw:space": "cosine"},
         )
+
+        # Delete any existing entry first to prevent ChromaDB duplicate ID issues
+        try:
+            collection.delete(ids=[str(song_id)])
+        except Exception:
+            pass
 
         collection.upsert(
             ids=[str(song_id)],
@@ -82,9 +103,10 @@ def embed_song(song_id: int, song: dict) -> bool:
                 "song_id": song_id,
                 "artist": song.get("artist") or "",
                 "title": song.get("title") or "",
-                "energy": song.get("energy") or 0.5,
-                "valence": song.get("valence") or 0.5,
+                "energy": song.get("energy") if song.get("energy") is not None else 0.5,
+                "valence": song.get("valence") if song.get("valence") is not None else 0.5,
                 "cluster_id": song.get("cluster_id") if song.get("cluster_id") is not None else -1,
+                "subfolder": song.get("subfolder") or "",
             }],
         )
         return True
@@ -105,9 +127,14 @@ def embed_described_songs(song_ids: list) -> list:
     embedded_in_chroma = set()
     try:
         existing = collection.get(ids=[str(sid) for sid in song_ids])
-        embedded_in_chroma = set(existing["ids"]) if existing else set()
-    except Exception:
-        pass
+        if existing:
+            seen = set()
+            for eid in existing["ids"]:
+                if eid not in seen:
+                    seen.add(eid)
+                    embedded_in_chroma.add(eid)
+    except Exception as e:
+        print(f"  Warning: Could not check ChromaDB for existing songs: {e}")
 
     to_embed = [sid for sid in song_ids if str(sid) not in embedded_in_chroma]
     embedded_ids = []

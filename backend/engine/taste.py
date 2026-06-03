@@ -1,23 +1,29 @@
 """Multi-timescale memory system for taste tracking."""
 
 import logging
-import math
+import os
 from dataclasses import dataclass
-import chromadb
+from time import time
 import config
 from db import database
+from engine.utils import cosine_similarity
+from engine import retriever
 
 logger = logging.getLogger(__name__)
 
+# ChromaDB singleton — avoids creating a new PersistentClient per call
+_chroma_client = None
 
-def cosine_similarity(a, b):
-    """Compute cosine similarity between two vectors."""
-    dot = sum(x * y for x, y in zip(a, b))
-    norm_a = math.sqrt(sum(x * x for x in a))
-    norm_b = math.sqrt(sum(x * x for x in b))
-    if norm_a == 0 or norm_b == 0:
-        return 0.0
-    return dot / (norm_a * norm_b)
+
+def _get_chroma_client():
+    global _chroma_client
+    if _chroma_client is None:
+        os.environ["CHROMA_NO_ANALYTICS"] = "1"
+        os.environ["CHROMA_TELEMETRY_OFF"] = "1"
+        import chromadb
+        os.makedirs(config.CHROMA_PATH, exist_ok=True)
+        _chroma_client = chromadb.PersistentClient(path=config.CHROMA_PATH)
+    return _chroma_client
 
 
 @dataclass
@@ -26,6 +32,13 @@ class MemoryLayer:
     window: int  # number of recent signals to consider
     weight: float  # base weight in blend
     decay: float  # exponential decay factor per position
+
+
+@dataclass
+class _TasteCacheEntry:
+    vector: list
+    drift: float
+    expires_at: float
 
 
 LAYERS = [
@@ -44,34 +57,63 @@ class MemorySystem:
     """
 
     def __init__(self):
-        pass
+        self._cache: dict[str, _TasteCacheEntry] = {}
+        self._cache_ttl = 15  # seconds
 
     def _get_chroma_embedding(self, song_id: int) -> list | None:
         """Fetch a song's embedding from ChromaDB."""
         try:
-            client = chromadb.PersistentClient(path=config.CHROMA_PATH)
+            client = _get_chroma_client()
             collection = client.get_collection("songs")
             result = collection.get(ids=[str(song_id)], include=["embeddings"])
             if result and result["embeddings"]:
                 return result["embeddings"][0]
         except Exception as e:
-            logger.debug("Could not fetch ChromaDB embedding for song %s: %s", song_id, e)
+            pass  # logger.debug("Could not fetch ChromaDB embedding for song %s: %s", song_id, e)
         return None
+
+    def _batch_get_chroma_embeddings(self, song_ids: list) -> dict:
+        """Batch-fetch embeddings for multiple songs in one ChromaDB call.
+
+        Returns dict: {str(song_id): embedding_list}
+        """
+        if not song_ids:
+            return {}
+        try:
+            client = _get_chroma_client()
+            collection = client.get_collection("songs")
+            ids = [str(sid) for sid in song_ids]
+            result = collection.get(ids=ids, include=["embeddings"])
+            return {
+                eid: emb
+                for eid, emb in zip(result["ids"], result["embeddings"])
+                if emb
+            }
+        except Exception as e:
+            logger.debug("Batch ChromaDB fetch failed for %d songs: %s", len(song_ids), e)
+            return {}
 
     def get_recent_signals(self, session_id: int = None, skip_streak: int = 0) -> list:
         """Get recent behavioral signals (likes, completions, replays).
 
         Returns list of dicts: {song_id, embedding, timestamp, signal_type}
         """
-        signals = []
         # Get recent hearted/replayed/completed songs
         liked = database.get_recent_signals(
             signal_types=['hearted', 'replayed', 'completed'],
             limit=2000,
             session_id=session_id,
         )
+        if not liked:
+            return []
+
+        # Batch-fetch all embeddings in one ChromaDB call
+        song_ids = [ev['song_id'] for ev in liked]
+        embedding_map = self._batch_get_chroma_embeddings(song_ids)
+
+        signals = []
         for ev in liked:
-            embedding = self._get_chroma_embedding(ev['song_id'])
+            embedding = embedding_map.get(str(ev['song_id']))
             if embedding:
                 signals.append({
                     'song_id': ev['song_id'],
@@ -135,6 +177,12 @@ class MemorySystem:
         Returns (blended_vector, drift_score) where blended_vector
         is a list of floats or None if no taste signals available.
         """
+        # logger.debug("get_blended_taste_vector: session_id=%s skip_streak=%d", session_id, skip_streak)
+        cache_key = f"s:{session_id}:sk:{skip_streak}"
+        entry = self._cache.get(cache_key)
+        if entry and entry.expires_at > time():
+            return entry.vector, entry.drift
+
         signals = self.get_recent_signals(session_id=session_id, skip_streak=skip_streak)
         if not signals:
             return None, 0.0
@@ -171,15 +219,36 @@ class MemorySystem:
             blended_count += 1
 
         if blended:
+            self._cache[cache_key] = _TasteCacheEntry(
+                vector=blended,
+                drift=drift,
+                expires_at=time() + self._cache_ttl,
+            )
+           # logger.debug("get_blended_taste_vector: returning blended vector type=%s len=%d drift=%.3f",
+            #              type(blended).__name__, len(blended), drift)
             return blended, drift
+        self._cache[cache_key] = _TasteCacheEntry(
+            vector=None,
+            drift=drift,
+            expires_at=time() + self._cache_ttl,
+        )
+        # logger.debug("get_blended_taste_vector: returning None vector drift=%.3f", drift)
         return None, drift
 
     def get_neutral_centroid(self) -> list:
-        """Return a neutral centroid embedding (all zeros, same dim as embeddings).
+        """Return the average embedding of all clustered songs as a neutral centroid.
 
         Used for cold start when no taste signals exist.
         """
-        return [0.0] * 1024
+        try:
+            conn = database.get_connection()
+            try:
+                row = conn.execute("SELECT AVG(energy) as ae, AVG(valence) as av FROM songs WHERE ingest_phase = 'clustered'").fetchone()
+            finally:
+                conn.close()
+        except Exception:
+            pass
+        return [0.0] * retriever.get_embedding_dimension()
 
     def get_repulsion_vector(self) -> list | None:
         """Compute average embedding of disliked songs (skip_early, thumbed_down).
@@ -187,6 +256,7 @@ class MemorySystem:
         Returns a vector to be subtracted from the taste vector,
         or None if no negative signals exist.
         """
+        # logger.debug("get_repulsion_vector: fetching signals")
         signals = database.get_recent_signals(
             signal_types=['skip_early', 'thumbed_down'],
             limit=500,
@@ -199,6 +269,7 @@ class MemorySystem:
             if emb:
                 embeddings.append(emb)
         if not embeddings:
+            # logger.debug("get_repulsion_vector: no embeddings found, returning None")
             return None
         dim = len(embeddings[0])
         avg = [0.0] * dim
@@ -206,6 +277,7 @@ class MemorySystem:
             for i in range(dim):
                 avg[i] += emb[i]
         avg = [v / len(embeddings) for v in avg]
+        # logger.debug("get_repulsion_vector: returning vector type=%s len=%d", type(avg).__name__, len(avg))
         return avg
 
     def record_signal(self, song_id, signal, session_id=None):
@@ -222,3 +294,5 @@ class MemorySystem:
                 session_id=session_id,
                 signal=signal,
             )
+        # Invalidate taste cache on any behavioral signal
+        self._cache.clear()

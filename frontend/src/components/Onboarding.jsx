@@ -47,7 +47,7 @@ function SongCard({ song, selected, onSelect }) {
         </div>
         <div className="flex items-center gap-1">
           <button onClick={handlePreview} className="w-6 h-6 flex items-center justify-center rounded-full bg-gray-700 hover:bg-gray-600 text-xs transition" title="Preview">
-            {previewing ? "\u25A0" : "\u25B6"}
+            {previewing ? "⏸" : "▶"}
           </button>
           <WaveformBars energy={song.energy} isPlaying={previewing} isPlayingBar={previewing} />
         </div>
@@ -66,12 +66,50 @@ export default function Onboarding({ onComplete, onSkip, addToast }) {
   const [selected, setSelected] = useState([]);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [remaining, setRemaining] = useState(0);
+  const [shownIds, setShownIds] = useState([]);
 
-  useEffect(() => {
+  const loadInitialSongs = useCallback(() => {
     api.fetchOnboardingSongs()
-      .then((data) => { setSongs(data.songs || []); setLoading(false); })
+      .then((data) => {
+        const s = data.songs || [];
+        setSongs(s);
+        setShownIds(s.map((song) => song.id));
+        setRemaining(data.songs?.length || 0);
+        setLoading(false);
+      })
       .catch(() => { setLoading(false); });
   }, []);
+
+  useEffect(() => {
+    loadInitialSongs();
+  }, [loadInitialSongs]);
+
+  const handleRefresh = useCallback(async () => {
+    if (refreshing || remaining <= 0) return;
+    setRefreshing(true);
+    try {
+      const data = await api.refreshOnboardingSongs(shownIds);
+      const newSongs = (data.songs || []).filter((s) => !shownIds.includes(s.id));
+      if (newSongs.length > 0) {
+        setSongs((prev) => {
+          const existingIds = new Set(prev.map((s) => s.id));
+          const merged = [...prev];
+          for (const s of newSongs) {
+            if (!existingIds.has(s.id)) merged.push(s);
+          }
+          return merged;
+        });
+        setShownIds((prev) => [...prev, ...newSongs.map((s) => s.id)]);
+      }
+      setRemaining(data.remaining || 0);
+    } catch (e) {
+      addToast?.("Failed to refresh suggestions", "error");
+    } finally {
+      setRefreshing(false);
+    }
+  }, [refreshing, remaining, shownIds, addToast]);
 
   const toggleSong = useCallback((songId) => {
     setSelected((prev) => {
@@ -130,15 +168,27 @@ export default function Onboarding({ onComplete, onSkip, addToast }) {
         </div>
         <div className="flex items-center justify-between">
           <button onClick={handleSkip} className="text-gray-500 text-sm hover:text-gray-300 transition">Skip for now</button>
-          <button onClick={handleSubmit} disabled={selected.length === 0 || submitting} className="px-6 py-2.5 rounded-lg font-medium text-sm transition-all"
-            style={{
-              background: selected.length > 0 && !submitting ? "var(--accent)" : "var(--bg-elevated)",
-              color: selected.length > 0 && !submitting ? "var(--text-inverse)" : "var(--text-muted)",
-              opacity: selected.length > 0 && !submitting ? 1 : 0.5,
-              cursor: selected.length > 0 && !submitting ? "pointer" : "not-allowed",
-            }}>
-            {submitting ? "Setting up..." : `Done (${selected.length}/5)`}
-          </button>
+          <div className="flex items-center gap-3">
+            <button onClick={handleRefresh} disabled={remaining <= 0 || refreshing}
+              className="text-sm font-medium transition-all flex items-center gap-1.5"
+              style={{
+                color: remaining > 0 && !refreshing ? "var(--accent)" : "var(--text-muted)",
+                opacity: remaining > 0 && !refreshing ? 1 : 0.4,
+                cursor: remaining > 0 && !refreshing ? "pointer" : "not-allowed",
+              }}>
+              <svg className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
+              {refreshing ? "Shuffling..." : remaining > 0 ? "Shuffle" : "No more songs"}
+            </button>
+            <button onClick={handleSubmit} disabled={selected.length === 0 || submitting} className="px-6 py-2.5 rounded-lg font-medium text-sm transition-all"
+              style={{
+                background: selected.length > 0 && !submitting ? "var(--accent)" : "var(--bg-elevated)",
+                color: selected.length > 0 && !submitting ? "var(--text-inverse)" : "var(--text-muted)",
+                opacity: selected.length > 0 && !submitting ? 1 : 0.5,
+                cursor: selected.length > 0 && !submitting ? "pointer" : "not-allowed",
+              }}>
+              {submitting ? "Setting up..." : `Done (${selected.length}/5)`}
+            </button>
+          </div>
         </div>
       </div>
     </div>

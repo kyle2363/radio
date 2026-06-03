@@ -3,7 +3,7 @@
 Resolution order:
   1. Read chat_provider / embed_provider from DB settings (runtime override).
   2. Fall back to config.py defaults (CHAT_PROVIDER / EMBED_PROVIDER).
-  3. If 'auto', try providers in order (ollama first, then openai).
+  3. If 'auto', try providers in order (openai first, then ollama fallback).
   4. Cache the first working provider on first successful call.
 
 Callers use llm_chat() and llm_embed() - no direct ollama imports needed.
@@ -48,10 +48,11 @@ def _resolve_chat_order() -> list[type[ChatClient]]:
         return []
     if provider == "ollama":
         return [OllamaChatClient]
-    # auto (default): ollama first, then openai
-    order = [OllamaChatClient]
+    # auto (default): openai first, then ollama fallback
+    order = []
     if config.OPENAI_BASE_URL_CHAT:
         order.append(OpenAIChatClient)
+    order.append(OllamaChatClient)
     return order
 
 
@@ -63,10 +64,11 @@ def _resolve_embed_order() -> list[type[EmbedClient]]:
         return []
     if provider == "ollama":
         return [OllamaEmbedClient]
-    # auto (default): ollama first, then openai
-    order = [OllamaEmbedClient]
+    # auto (default): openai first, then ollama fallback
+    order = []
     if config.OPENAI_BASE_URL_EMBED:
         order.append(OpenAIEmbedClient)
+    order.append(OllamaEmbedClient)
     return order
 
 
@@ -78,7 +80,8 @@ def llm_chat() -> ChatClient:
     for cls in _resolve_chat_order():
         try:
             client = cls()
-            client.chat(None, [{"role": "user", "content": "hi"}])
+            # Short probe timeout (3s) — don't block 45s if provider is down
+            client.chat(None, [{"role": "user", "content": "hi"}], timeout=3)
             _chat_instance = client
             return client
         except Exception as e:
@@ -94,7 +97,7 @@ def llm_embed() -> EmbedClient:
     for cls in _resolve_embed_order():
         try:
             client = cls()
-            client.embed(None, "test")
+            client.embed(None, "test", timeout=3)
             _embed_instance = client
             return client
         except Exception as e:

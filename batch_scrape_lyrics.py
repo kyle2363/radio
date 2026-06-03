@@ -29,7 +29,7 @@ HEADERS = {
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
     'Accept-Language': 'en-US,en;q=0.9',
 }
-DEFAULT_DELAY = 2.0
+DEFAULT_DELAY = 1.0
 
 
 def clean_filename(fname):

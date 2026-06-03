@@ -2,15 +2,16 @@ const API_HOST = window.location.hostname === "localhost" || window.location.hos
   ? `${window.location.protocol}//${window.location.host}`
   : "http://localhost:8765";
 const BASE = API_HOST;
-export const WS_URL = API_HOST.replace(/^http/, "ws") + "/ws/events";
+// Always use backend port directly for WebSocket (Vite proxy doesn't work reliably)
+export const WS_URL = "ws://localhost:8765/ws/events";
 
-async function request(method, path, body, timeout = 5000) {
+async function request(method, path, body, timeout = 5000, externalSignal) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeout);
   const opts = {
     method,
     headers: { "Content-Type": "application/json" },
-    signal: controller.signal,
+    signal: externalSignal || controller.signal,
   };
   if (body !== undefined) {
     opts.body = JSON.stringify(body);
@@ -32,9 +33,10 @@ async function request(method, path, body, timeout = 5000) {
   }
 }
 
-const get = (path) => request("GET", path);
-const post = (path, body) => request("POST", path, body);
-const put = (path, body) => request("PUT", path, body);
+const get = (path, signal) => request("GET", path, undefined, undefined, signal);
+const post = (path, body, timeout, signal) => request("POST", path, body, timeout, signal);
+const put = (path, body, signal) => request("PUT", path, body, undefined, signal);
+const del = (path, signal) => request("DELETE", path, undefined, undefined, signal);
 
 // ── Playback ──────────────────────────────────────────────
 export const fetchPlayStatus = () => get("/api/play/status");
@@ -47,7 +49,30 @@ export const seekTo = (ms) => post("/api/play/seek", { ms: Math.round(ms) });
 export const setVolume = (volume) => post("/api/play/volume", { volume });
 
 // ── Queue ─────────────────────────────────────────────────
+export const fetchQueue = () => get("/api/queue");
 export const fetchQueueStatus = () => get("/api/queue/status");
+
+export async function waitForQueue(timeoutMs = 60000, pollMs = 1000, currentIds = null) {
+  const start = Date.now();
+  const currentSet = currentIds ? new Set(currentIds) : null;
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const status = await fetchQueueStatus();
+      if (status?.queue_size > 0) {
+        if (!currentSet) return status.queue;
+        const newIds = (status.queue || []).map(s => s.song_id);
+        if (newIds.length === 0) continue;
+        const hasDifferent = newIds.some(id => !currentSet.has(id));
+        if (hasDifferent) return status.queue;
+      }
+    } catch {
+      // Server may not be ready, keep polling
+    }
+    await new Promise(r => setTimeout(r, pollMs));
+  }
+  return false;
+}
+
 export const skipSong = () => post("/api/queue/skip");
 export const clearQueue = () => post("/api/queue/clear");
 export const replaySong = () => post("/api/queue/replay");
@@ -72,6 +97,7 @@ export const toggleMode = (mode) => post("/api/mode/toggle", { mode });
 export const fetchSettings = () => get("/api/settings");
 export const updateSetting = (key, value) => put(`/api/settings/${key}`, { value });
 export const resetRecommendations = () => post("/api/settings/reset-recommendations");
+export const wipeDatabase = () => post("/api/settings/wipe-db");
 
 // ── Songs ─────────────────────────────────────────────────
 export const fetchSongs = (params) => {
@@ -80,8 +106,11 @@ export const fetchSongs = (params) => {
 };
 export const fetchSong = (id) => get(`/api/songs/${id}`);
 export const fetchRecentlyPlayed = (limit = 30) => get(`/api/songs/recently-played?limit=${limit}`);
+export const fetchPriorSongs = () => get("/api/songs/prior");
 export const fetchSimilarSongs = (id, limit = 5) => get(`/api/songs/${id}/similar?limit=${limit}`);
-export const blacklistSong = (id, reason = "user") => post(`/api/songs/${id}/blacklist`, { reason });
+export const blacklistSong = (id, level = "never_play", extra = {}) => post(`/api/songs/${id}/blacklist`, { level, ...extra });
+export const unblacklistSong = (id) => del(`/api/songs/${id}/blacklist`);
+export const fetchBlacklist = () => get("/api/blacklist");
 export const updateSongTags = (id, user_tags, user_notes) => put(`/api/songs/${id}/tags`, { user_tags, user_notes });
 export const reprocessSong = (id) => post(`/api/ingest/reprocess-single/${id}`);
 export const fetchSongArt = (id) => `${BASE}/api/songs/${id}/art.jpg`;
@@ -93,11 +122,14 @@ export const scanLibrary = () => post("/api/ingest/scan");
 export const runIngest = () => post("/api/ingest/run");
 export const fetchIngestFailures = () => get("/api/ingest/failures");
 export const retryIngestFailures = () => post("/api/ingest/retry-failures");
+export const runIngestPhase = (phase) => post("/api/ingest/run-phase/" + phase);
+export const fetchIngestPhaseStatus = () => get("/api/ingest/phase-status");
 
 // ── Onboarding ────────────────────────────────────────────
 export const fetchOnboardingSongs = () => get("/api/onboarding/songs");
 export const completeOnboarding = (song_ids) => post("/api/onboarding/complete", { song_ids });
 export const skipOnboarding = () => post("/api/onboarding/skip");
+export const refreshOnboardingSongs = (exclude_ids) => post("/api/onboarding/refresh", { exclude_ids });
 
 // ── Stats ─────────────────────────────────────────────────
 export const fetchDailyReport = () => get("/api/stats/daily-report");
@@ -125,5 +157,48 @@ export const downloadVoices = () => post("/api/talk/download-voices");
 export const dismissGuest = () => post("/api/talk/guest-dismiss");
 export const fetchPersonas = () => get("/api/talk/personas");
 
+// ── Skip Feedback ─────────────────────────────────────────
+export const submitSkipFeedback = (reason) => post("/api/queue/skip-feedback", { reason });
+
+// ── Undo ───────────────────────────────────────────────────
+export const undoSkip = () => post("/api/queue/undo-skip");
+export const undoThumbsDown = () => post("/api/queue/undo-thumbs-down");
+export const fetchUndoState = () => get("/api/queue/undo-state");
+
+// ── Sleep Timer ────────────────────────────────────────────
+export const setSleepTimer = (minutes, fadeSeconds = 30, switchToChill = true) =>
+  post("/api/sleep/timer", { minutes, fade_seconds: fadeSeconds, switch_to_chill: switchToChill });
+export const cancelSleepTimer = () => del("/api/sleep/timer");
+export const fetchSleepTimer = () => get("/api/sleep/timer");
+
+// ── Collections ────────────────────────────────────────────
+export const fetchCollections = () => get("/api/collections");
+export const createCollection = (name, description) => post("/api/collections", { name, description });
+export const updateCollection = (id, name, description) => put(`/api/collections/${id}`, { name, description });
+export const deleteCollection = (id) => del(`/api/collections/${id}`);
+export const fetchCollectionSongs = (id) => get(`/api/collections/${id}/songs`);
+export const addToCollection = (id, song_id, position) => post(`/api/collections/${id}/songs`, { song_id, position });
+export const removeFromCollection = (id, song_id) => del(`/api/collections/${id}/songs/${song_id}`);
+export const reorderCollection = (id, song_ids) => put(`/api/collections/${id}/reorder`, { song_ids });
+
+// ── Taste Reseed ─────────────────────────────────────────
+export const reseedTaste = () => post("/api/taste/reseed");
+
+// ── Clusters & Tags ───────────────────────────────────────
+export const fetchClusters = () => get("/api/clusters");
+export const fetchTags = () => get("/api/tags");
+
+// ── Folder Filter ─────────────────────────────────────────
+export const fetchSubfolders = () => get("/api/songs/subfolders");
+export const fetchFolderFilter = () => get("/api/filter/folder");
+export const setFolderFilter = (folders) => post("/api/filter/folder", { folders });
+export const clearFolderFilter = () => post("/api/filter/folder/clear");
+
 // ── Commands ──────────────────────────────────────────────
-export const sendCommand = (text) => post("/api/command", { text });
+export const sendCommand = (text) => post("/api/command", { text }, 30000);
+
+// ── DJ Effects ────────────────────────────────────────────
+export const updateDjEffectEligible = (id, eligible) => put(`/api/songs/${id}/dj-effect-eligible`, { eligible });
+export const fetchDjEffectPresets = () => get("/api/dj-effects/presets");
+export const fetchDjEffectCacheInfo = () => get("/api/dj-effects/cache-info");
+export const generateDjEffect = (id, preset) => post(`/api/dj-effects/generate/${id}`, { preset });

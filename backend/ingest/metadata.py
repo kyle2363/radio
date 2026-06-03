@@ -18,9 +18,9 @@ def normalize_filename(name: str) -> str:
         r"\[Official Audio\]",
         r"\(Lyrics\)",
         r"\[Lyrics\]",
-        r"\(Lyrics \u2044 AMV\)",
+        "\\(Lyrics \u2044 AMV\\)",
         r"\[Lyrics x AMV\]",
-        r"\(Visualizer \u2044 Lyric Video\)",
+        "\\(Visualizer \u2044 Lyric Video\\)",
         r"\(Audio\)",
         r"\[AMV Edit\]",
         r"\(Music Video\)",
@@ -28,11 +28,11 @@ def normalize_filename(name: str) -> str:
         r"\(Official Video\)",
         r"\[CC\]",
         r" \[CC\]",
-        r" \u2014 Slowed To Perfection",
-        r" \u2014 Slowed",
+        " \u2014 Slowed To Perfection",
+        " \u2014 Slowed",
         r"\(ft\.",
         r"\(feat\.",
-        r" \u2013 ",
+        " \u2013 ",
         r" - ",
     ]
     normalized = name
@@ -79,27 +79,67 @@ def load_acestep_json(json_file: str) -> dict | None:
             "keyscale": entry.get("keyscale"),
             "timesignature": entry.get("timesignature"),
             "vocal_language": entry.get("vocal_language"),
+            "dj_effect_eligible": entry.get("dj_effect_eligible"),
         }
     except (json.JSONDecodeError, KeyError, IndexError):
         return None
 
 
-def find_matching_json(mp3_filepath: str, json_index: dict) -> str | None:
-    """Find the matching acestep JSON for an MP3 file."""
-    stem = Path(mp3_filepath).stem
-    # Remove .mp3 extension artifacts
-    normalized = normalize_filename(stem)
+def _token_overlap(a: str, b: str) -> float:
+    """Return Jaccard similarity of word tokens between two strings."""
+    tokens_a = set(a.split())
+    tokens_b = set(b.split())
+    if not tokens_a or not tokens_b:
+        return 0.0
+    intersection = tokens_a & tokens_b
+    union = tokens_a | tokens_b
+    return len(intersection) / len(union)
 
+
+def _find_best_match(normalized: str, items: dict) -> tuple[str | None, float]:
+    """Find the best matching value for *normalized* among dict keys.
+
+    Returns ``(value, score)``.  The dict maps *key → value* where *key*
+    has already been normalised.  Matching strategy (in priority order):
+
+    1. Exact key match
+    2. Substring match (longest match wins)
+    3. Token overlap (Jaccard ≥ 0.6)
+    """
     # Direct match
-    if normalized in json_index:
-        return json_index[normalized]
+    if normalized in items:
+        return items[normalized], 1.0
 
-    # Try partial matching
-    for key, value in json_index.items():
-        if normalized in key or key in normalized:
-            return value
+    best_value = None
+    best_score = 0.0
+    for key, value in items.items():
+        # Require minimum substring length to avoid false positives
+        if len(normalized) >= 5 and normalized in key:
+            score = len(normalized) / len(key)
+            if score > best_score:
+                best_score = score
+                best_value = value
+        if len(key) >= 5 and key in normalized:
+            score = len(key) / len(normalized)
+            if score > best_score:
+                best_score = score
+                best_value = value
+        # Token overlap as a tiebreaker for ambiguous cases
+        if best_score < 0.5:
+            overlap = _token_overlap(normalized, key)
+            if overlap >= 0.6 and overlap > best_score:
+                best_score = overlap
+                best_value = value
 
-    return None
+    return best_value, best_score
+
+
+def find_matching_json(mp3_filepath: str, json_index: dict) -> str | None:
+    """Find the matching acestep JSON file path for an MP3 file."""
+    stem = Path(mp3_filepath).stem
+    normalized = normalize_filename(stem)
+    value, _ = _find_best_match(normalized, json_index)
+    return value
 
 
 def load_all_metadata() -> dict:
@@ -117,14 +157,5 @@ def get_metadata_for_mp3(mp3_filepath: str, metadata: dict) -> dict | None:
     """Get acestep metadata for a specific MP3 file."""
     stem = Path(mp3_filepath).stem
     normalized = normalize_filename(stem)
-
-    # Direct match
-    if normalized in metadata:
-        return metadata[normalized]
-
-    # Partial match
-    for key, data in metadata.items():
-        if normalized in key or key in normalized:
-            return data
-
-    return None
+    value, _ = _find_best_match(normalized, metadata)
+    return value

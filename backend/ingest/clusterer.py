@@ -37,7 +37,7 @@ def _get_chroma_collection():
     import chromadb
     os.makedirs(config.CHROMA_PATH, exist_ok=True)
     client = chromadb.PersistentClient(path=config.CHROMA_PATH)
-    return client.get_collection("songs")
+    return client.get_or_create_collection("songs", metadata={"hnsw:space": "cosine"})
 
 
 def _build_feature_matrix(songs: list) -> tuple:
@@ -127,15 +127,20 @@ def cluster_songs() -> list:
     print("  Saving cluster assignments...")
     conn = database.get_connection()
     try:
-        for song_id, cluster_id in zip(song_ids, cluster_labels):
-            conn.execute(
-                "UPDATE songs SET cluster_id = ? WHERE id = ?",
-                (int(cluster_id), song_id),
-            )
-            conn.execute(
-                "UPDATE songs SET ingest_phase = 'clustered' WHERE id = ?",
-                (song_id,),
-            )
+        conn.execute("BEGIN")
+        cluster_updates = [
+            (int(cluster_id), song_id)
+            for song_id, cluster_id in zip(song_ids, cluster_labels)
+        ]
+        conn.executemany(
+            "UPDATE songs SET cluster_id = ? WHERE id = ?",
+            cluster_updates,
+        )
+        phase_updates = [(song_id,) for song_id in song_ids]
+        conn.executemany(
+            "UPDATE songs SET ingest_phase = 'clustered' WHERE id = ?",
+            phase_updates,
+        )
         conn.commit()
     finally:
         conn.close()
@@ -151,7 +156,10 @@ def cluster_songs() -> list:
             "cluster_centroids",
             metadata={"hnsw:space": "cosine"},
         )
-        centroids_collection.delete(where={})
+        # Clear old centroids - ChromaDB requires ids or a valid where clause
+        old = centroids_collection.get(include=[])
+        if old and old["ids"]:
+            centroids_collection.delete(ids=old["ids"])
         centroids_collection.upsert(
             ids=[f"centroid_{i}" for i in range(n_clusters)],
             embeddings=kmeans.cluster_centers_.tolist(),

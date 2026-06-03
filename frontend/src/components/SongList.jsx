@@ -1,9 +1,23 @@
-import React, { useState, useEffect, useCallback } from "react";
-import { Plus, XCircle, RotateCcw, Pencil } from "lucide-react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
+import { Plus, Heart, MoreHorizontal, Music, Play, Bolt, ChevronUp, ChevronDown, XCircle, RotateCcw, Pencil } from "lucide-react";
 import * as api from "../api";
 import { SkeletonRow } from "./Skeleton";
+import StatsDashboard from "./StatsDashboard";
+import SessionHistory from "./SessionHistory";
+import MoodTimeline from "./MoodTimeline";
 
-function SongList({ onSongSelect, currentSongId, addToast }) {
+const COLUMNS = [
+  { key: null, label: "", sortable: false },
+  { key: "title", label: "Title", sortable: true },
+  { key: "bpm", label: "BPM", sortable: true },
+  { key: "energy", label: "E", sortable: true },
+  { key: "valence", label: "V", sortable: true },
+  { key: "play_count", label: "", sortable: true },
+  { key: "avg_completion", label: "Cmp", sortable: true },
+];
+
+function SongList({ addToast, currentSongId, onPlay }) {
+  const [tab, setTab] = useState("library");
   const [songs, setSongs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
@@ -11,11 +25,39 @@ function SongList({ onSongSelect, currentSongId, addToast }) {
   const [totalPages, setTotalPages] = useState(1);
   const [sortBy, setSortBy] = useState("title");
   const [sortDir, setSortDir] = useState("asc");
+  const [stats, setStats] = useState(null);
+  const [recentlyPlayed, setRecentlyPlayed] = useState([]);
   const [editingSong, setEditingSong] = useState(null);
   const [editTags, setEditTags] = useState("");
   const [editNotes, setEditNotes] = useState("");
-  const [tab, setTab] = useState("library");
-  const [recentlyPlayed, setRecentlyPlayed] = useState([]);
+  const [openMenuId, setOpenMenuId] = useState(null);
+  const menuRef = useRef(null);
+
+  useEffect(() => {
+    fetchStats();
+  }, []);
+
+  useEffect(() => {
+    if (tab === "library") fetchSongs();
+    else if (tab === "recent") fetchRecentlyPlayed();
+  }, [tab, page, search, sortBy, sortDir]);
+
+  useEffect(() => {
+    const handleClick = (e) => {
+      if (menuRef.current && !menuRef.current.contains(e.target)) {
+        setOpenMenuId(null);
+      }
+    };
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, []);
+
+  const fetchStats = async () => {
+    try {
+      const data = await api.fetchStatsOverview();
+      setStats(data);
+    } catch (e) {}
+  };
 
   const fetchSongs = useCallback(async () => {
     setLoading(true);
@@ -36,22 +78,28 @@ function SongList({ onSongSelect, currentSongId, addToast }) {
     setLoading(false);
   }, []);
 
-  useEffect(() => {
-    if (tab === "library") fetchSongs();
-    else if (tab === "recent") fetchRecentlyPlayed();
-  }, [tab, fetchSongs, fetchRecentlyPlayed]);
+  const handleColumnClick = (colKey) => {
+    if (!colKey) return;
+    if (sortBy === colKey) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortBy(colKey);
+      setSortDir("asc");
+    }
+    setPage(1);
+  };
 
-  const handlePlay = async (song) => {
+  const handlePlay = useCallback(async (song) => {
     try {
       await api.playSong(song.id);
-      onSongSelect?.(song);
+      onPlay?.(song);
       addToast?.(`Now playing: ${song.title}`, "success");
     } catch (err) {
       addToast?.("Failed to play song", "error");
     }
-  };
+  }, [onPlay, addToast]);
 
-  const handleAddToQueue = async (e, song) => {
+  const handleAddToQueue = useCallback(async (e, song) => {
     e.stopPropagation();
     try {
       await api.addToQueue(song.id);
@@ -59,9 +107,9 @@ function SongList({ onSongSelect, currentSongId, addToast }) {
     } catch (err) {
       addToast?.("Failed to add to queue", "error");
     }
-  };
+  }, [addToast]);
 
-  const handleBlacklist = async (e, song) => {
+  const handleBlacklist = useCallback(async (e, song) => {
     e.stopPropagation();
     try {
       const res = await api.blacklistSong(song.id);
@@ -72,9 +120,9 @@ function SongList({ onSongSelect, currentSongId, addToast }) {
     } catch (err) {
       addToast?.("Failed to blacklist song", "error");
     }
-  };
+  }, [addToast, fetchSongs]);
 
-  const handleReprocess = async (e, song) => {
+  const handleReprocess = useCallback(async (e, song) => {
     e.stopPropagation();
     try {
       const data = await api.reprocessSong(song.id);
@@ -86,111 +134,240 @@ function SongList({ onSongSelect, currentSongId, addToast }) {
     } catch (err) {
       addToast?.("Failed to reprocess song", "error");
     }
-  };
+  }, [addToast, fetchSongs]);
 
-  const handleEditTags = (e, song) => {
+  const handleEditTags = useCallback((e, song) => {
     e.stopPropagation();
+    setOpenMenuId(null);
     setEditingSong(song);
     try { setEditTags(JSON.parse(song.user_tags || "[]").join(", ")); } catch { setEditTags(""); }
     setEditNotes(song.user_notes || "");
-  };
+  }, []);
 
-  const handleSaveTags = async () => {
+  const handleSaveTags = useCallback(async () => {
     if (!editingSong) return;
     const tags = editTags.split(",").map((t) => t.trim()).filter(Boolean);
+    const notes = editNotes.trim();
+    if (tags.length === 0 && !notes) {
+      addToast?.("Enter at least a tag or note", "error");
+      return;
+    }
     try {
-      await api.updateSongTags(editingSong.id, tags, editNotes);
+      await api.updateSongTags(editingSong.id, tags, notes);
       addToast?.("Tags saved", "success");
       setEditingSong(null);
       fetchSongs();
     } catch (err) {
       addToast?.("Failed to save tags", "error");
     }
-  };
+  }, [editingSong, editTags, editNotes, addToast, fetchSongs]);
 
-  const renderSongItem = (song) => (
-    <div key={song.id} className={`flex items-center gap-3 px-5 py-3.5 cursor-pointer transition group ${currentSongId === song.id ? "bg-green-900/15" : "hover:bg-gray-800/50"}`} onClick={() => handlePlay(song)}>
-      <span className="text-gray-600 flex-shrink-0">{currentSongId === song.id ? "\u25B6" : "\u{1F3B5}"}</span>
-      <div className="flex-1 min-w-0">
-        <div className="text-sm text-gray-200 truncate">{song.title || "Unknown Title"}</div>
-        <div className="text-xs text-gray-500 truncate">{song.artist || "Unknown Artist"}</div>
-      </div>
-      <div className="flex items-center gap-2 flex-shrink-0">
-        {song.bpm && <span className="text-xs text-gray-600 tabular-nums">{song.bpm}</span>}
-        {song.energy != null && <span className="text-xs text-gray-600 tabular-nums">{Math.round(song.energy * 100)}%</span>}
-      </div>
-      <div className="flex items-center gap-1 flex-shrink-0 opacity-0 group-hover:opacity-100 transition">
-        <button onClick={(e) => handleAddToQueue(e, song)} className="p-2 rounded text-cyan-400 hover:bg-cyan-900/30 transition" title="Add to queue"><Plus size={14} /></button>
-        <button onClick={(e) => handleBlacklist(e, song)} className="p-2 rounded text-red-400 hover:bg-red-900/30 transition" title="Blacklist"><XCircle size={14} /></button>
-        <button onClick={(e) => handleReprocess(e, song)} className="p-2 rounded text-yellow-400 hover:bg-yellow-900/30 transition" title="Reprocess"><RotateCcw size={14} /></button>
-        <button onClick={(e) => handleEditTags(e, song)} className="p-2 rounded text-gray-400 hover:bg-gray-700/50 transition" title="Edit tags"><Pencil size={14} /></button>
-      </div>
-    </div>
-  );
+  const handleHeart = useCallback(async (e, song) => {
+    e.stopPropagation();
+    try {
+      await api.playSong(song.id);
+      await api.heartSong();
+      addToast?.(`Hearted: ${song.title}`, "success");
+    } catch (err) {
+      addToast?.("Failed to heart song", "error");
+    }
+  }, [addToast]);
+
+  const handleTabChange = (newTab) => {
+    setTab(newTab);
+    if (newTab === "library") { setPage(1); setSearch(""); }
+  };
 
   const displaySongs = tab === "recent" ? recentlyPlayed : songs;
 
   return (
-    <div className="space-y-3">
-      <div className="flex gap-2">
-        <button onClick={() => { setTab("library"); setPage(1); }} className={`px-4 py-2 rounded-lg text-xs font-medium transition ${tab === "library" ? "bg-green-600 text-white" : "bg-gray-800 text-gray-400 hover:text-gray-300"}`}>Library</button>
-        <button onClick={() => setTab("recent")} className={`px-4 py-2 rounded-lg text-xs font-medium transition ${tab === "recent" ? "bg-green-600 text-white" : "bg-gray-800 text-gray-400 hover:text-gray-300"}`}>Recently Played</button>
+    <div>
+      {/* Subtabs */}
+      <div className="subtab-row">
+        <div className={`subtab ${tab === "library" ? "on" : ""}`} onClick={() => handleTabChange("library")}>Library</div>
+        <div className={`subtab ${tab === "recent" ? "on" : ""}`} onClick={() => handleTabChange("recent")}>Recently Played</div>
       </div>
+
+      {/* Library tab */}
       {tab === "library" && (
-        <div className="flex items-center gap-3">
-          <input type="text" placeholder="Search songs..." value={search} onChange={(e) => { setSearch(e.target.value); setPage(1); }} className="flex-1 px-4 py-2.5 rounded-xl bg-gray-800 text-gray-200 text-sm focus:outline-none" />
-          <select value={sortBy} onChange={(e) => setSortBy(e.target.value)} className="px-4 py-2.5 rounded-xl bg-gray-800 text-gray-200 text-sm focus:outline-none">
-            <option value="title">Title</option>
-            <option value="artist">Artist</option>
-            <option value="energy">Energy</option>
-            <option value="valence">Mood</option>
-            <option value="bpm">BPM</option>
-          </select>
-          <button onClick={() => setSortDir(sortDir === "asc" ? "desc" : "asc")} className="px-4 py-2.5 rounded-xl bg-gray-800 text-gray-400 text-sm transition" title={sortDir === "asc" ? "Ascending" : "Descending"}>
-            {sortDir === "asc" ? "\u2191" : "\u2193"}
-          </button>
-        </div>
-      )}
-          <div className="rounded-xl bg-gray-900/50 overflow-hidden">
-        {loading ? (
-          <SkeletonRow count={8} />
-        ) : displaySongs.length === 0 ? (
-          <div className="px-4 py-8 text-center">
-            <div className="text-gray-700 text-3xl mb-2">
-              {tab === "recent" ? "\u{1F3B5}" : search ? "\u{1F50D}" : "\u{1F4E6}"}
+        <>
+          {/* Stat cards */}
+          {stats && (
+            <div className="stat-cards">
+              <div className="stat-card">
+                <div className="stat-num">{stats.total_songs_in_library || 0}</div>
+                <div className="stat-desc">total songs</div>
+              </div>
+              <div className="stat-card">
+                <div className="stat-num accent">{stats.avg_completion_rate || 0}%</div>
+                <div className="stat-desc">avg completion</div>
+              </div>
+              <div className="stat-card">
+                <div className="stat-num" style={{ fontSize: "15px", paddingTop: "4px", color: "var(--text-primary)" }}>
+                  {stats.most_completed?.title || "—"}
+                </div>
+                <div className="stat-desc">most completed</div>
+              </div>
             </div>
-            <p className="text-sm text-gray-500">
-              {tab === "recent" ? "No songs played yet" : search ? `No songs match "${search}"` : "No songs found"}
-            </p>
-            {search && <button onClick={() => setSearch("")} className="mt-2 text-xs text-green-500 hover:text-green-400 transition">Clear search</button>}
+          )}
+
+          {/* Search bar */}
+          <div className="search-bar">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+              <circle cx="11" cy="11" r="8" /><path d="m21 21-4.35-4.35" />
+            </svg>
+            <input className="search-input" placeholder="Search songs, artists…" value={search}
+              onChange={(e) => { setSearch(e.target.value); setPage(1); }} />
+            <select className="sort-sel" value={`${sortBy}-${sortDir}`}
+              onChange={(e) => { const [k, d] = e.target.value.split("-"); setSortBy(k); setSortDir(d); setPage(1); }}>
+              <option value="title-asc">Title</option>
+              <option value="artist-asc">Artist</option>
+              <option value="bpm-asc">BPM</option>
+              <option value="energy-desc">Energy</option>
+              <option value="avg_completion-desc">Completion</option>
+            </select>
           </div>
-        ) : (
-          <div className="divide-y divide-gray-800">{displaySongs.map((song) => renderSongItem(song))}</div>
-        )}
-      </div>
-      {tab === "library" && totalPages > 1 && (
-        <div className="flex justify-center gap-2">
-          <button onClick={() => setPage(Math.max(1, page - 1))} disabled={page === 1} className="px-3 py-1.5 rounded-lg bg-gray-800 text-gray-400 text-xs transition disabled:opacity-30">Prev</button>
-          <span className="px-3 py-1.5 text-xs text-gray-500">{page} / {totalPages}</span>
-          <button onClick={() => setPage(Math.min(totalPages, page + 1))} disabled={page === totalPages} className="px-3 py-1.5 rounded-lg bg-gray-800 text-gray-400 text-xs transition disabled:opacity-30">Next</button>
+
+          {/* Column headers */}
+          <div className="col-hdr">
+            <div></div>
+            <div className={`col-hdr-cell ${sortBy === "title" ? "sorted" : ""}`} onClick={() => handleColumnClick("title")}>
+              Title
+              {sortBy === "title" ? (
+                sortDir === "asc" ? <ChevronUp size={10} style={{ color: "var(--accent)" }} /> : <ChevronDown size={10} style={{ color: "var(--accent)" }} />
+              ) : null}
+            </div>
+            <div className={`col-hdr-cell ${sortBy === "bpm" ? "sorted" : ""}`} onClick={() => handleColumnClick("bpm")}>BPM</div>
+            <div className={`col-hdr-cell ${sortBy === "energy" ? "sorted" : ""}`} onClick={() => handleColumnClick("energy")} title="Energy">
+              E <Bolt size={9} style={{ color: "var(--accent)" }} />
+            </div>
+            <div className={`col-hdr-cell ${sortBy === "valence" ? "sorted" : ""}`} onClick={() => handleColumnClick("valence")} title="Valence">
+              V <Heart size={9} style={{ color: "#5eadf5" }} />
+            </div>
+            <div className={`col-hdr-cell ${sortBy === "play_count" ? "sorted" : ""}`} onClick={() => handleColumnClick("play_count")} title="Plays">
+              <Play size={10} />
+            </div>
+            <div className={`col-hdr-cell ${sortBy === "avg_completion" ? "sorted" : ""}`} onClick={() => handleColumnClick("avg_completion")}>Cmp</div>
+          </div>
+
+          {/* Song rows */}
+          <div>
+            {loading ? (
+              <SkeletonRow count={8} />
+            ) : displaySongs.length === 0 ? (
+              <div style={{ padding: "24px 14px", textAlign: "center" }}>
+                <div style={{ fontSize: "24px", color: "var(--text-muted)", marginBottom: "8px" }}>
+                  {search ? "\u{1F50D}" : "\u{1F4E6}"}
+                </div>
+                <p style={{ fontSize: "12px", color: "var(--text-muted)" }}>
+                  {search ? `No songs match "${search}"` : "No songs found"}
+                </p>
+                {search && (
+                  <button onClick={() => setSearch("")}
+                    style={{ marginTop: "8px", fontSize: "11px", color: "var(--accent)", background: "var(--accent-muted)", padding: "4px 10px", borderRadius: "5px", border: "none", cursor: "pointer" }}>
+                    Clear search
+                  </button>
+                )}
+              </div>
+            ) : (
+              displaySongs.map((song) => (
+                <SongRow key={song.id} song={song} isPlaying={currentSongId === song.id}
+                  onPlay={handlePlay} onAddToQueue={handleAddToQueue}
+                  onBlacklist={handleBlacklist} onReprocess={handleReprocess}
+                  onEditTags={handleEditTags} onHeart={handleHeart}
+                  openMenuId={openMenuId} setOpenMenuId={setOpenMenuId} menuRef={menuRef} />
+              ))
+            )}
+          </div>
+
+          {/* Pagination */}
+          {totalPages > 1 && (
+            <div style={{ display: "flex", justifyContent: "center", gap: "8px", padding: "12px 14px", borderTop: "1px solid var(--border-subtle)" }}>
+              <button onClick={() => setPage(Math.max(1, page - 1))} disabled={page === 1}
+                style={{ padding: "4px 10px", borderRadius: "5px", fontSize: "11px", background: "var(--bg-elevated)", border: "1px solid var(--border)", color: page === 1 ? "var(--text-muted)" : "var(--text-secondary)", cursor: page === 1 ? "default" : "pointer", opacity: page === 1 ? 0.4 : 1 }}>
+                Prev
+              </button>
+              <span style={{ padding: "4px 10px", fontSize: "11px", color: "var(--text-muted)" }}>{page} / {totalPages}</span>
+              <button onClick={() => setPage(Math.min(totalPages, page + 1))} disabled={page === totalPages}
+                style={{ padding: "4px 10px", borderRadius: "5px", fontSize: "11px", background: "var(--bg-elevated)", border: "1px solid var(--border)", color: page === totalPages ? "var(--text-muted)" : "var(--text-secondary)", cursor: page === totalPages ? "default" : "pointer", opacity: page === totalPages ? 0.4 : 1 }}>
+                Next
+              </button>
+            </div>
+          )}
+        </>
+      )}
+
+      {/* Recently played tab */}
+      {tab === "recent" && (
+        <div>
+          <div className="col-hdr">
+            <div></div>
+            <div className="col-hdr-cell">Title</div>
+            <div className="col-hdr-cell">BPM</div>
+            <div className="col-hdr-cell" title="Energy">E</div>
+            <div className="col-hdr-cell" title="Valence">V</div>
+            <div className="col-hdr-cell"><Play size={10} /></div>
+            <div className="col-hdr-cell">Cmp</div>
+          </div>
+          <div>
+            {loading ? (
+              <SkeletonRow count={5} />
+            ) : displaySongs.length === 0 ? (
+              <div style={{ padding: "24px 14px", textAlign: "center" }}>
+                <div style={{ fontSize: "24px", color: "var(--text-muted)", marginBottom: "8px" }}>{"\u{1F3B5}"}</div>
+                <p style={{ fontSize: "12px", color: "var(--text-muted)" }}>No songs played yet</p>
+              </div>
+            ) : (
+              displaySongs.map((song) => (
+                <SongRow key={song.id} song={song} isPlaying={currentSongId === song.id}
+                  onPlay={handlePlay} onAddToQueue={handleAddToQueue}
+                  onBlacklist={handleBlacklist} onReprocess={handleReprocess}
+                  onEditTags={handleEditTags} onHeart={handleHeart}
+                  openMenuId={openMenuId} setOpenMenuId={setOpenMenuId} menuRef={menuRef} />
+              ))
+            )}
+          </div>
         </div>
       )}
+
+      {/* Stats tab */}
+      {tab === "stats" && <StatsDashboard />}
+
+      {/* History tab */}
+      {tab === "history" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+          <MoodTimeline />
+          <SessionHistory />
+        </div>
+      )}
+
+      {/* Edit tags modal */}
       {editingSong && (
-        <div className="fixed inset-0 bg-gray-950/90 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-gray-900 rounded-xl p-7 w-full max-w-md space-y-4">
-            <h3 className="text-lg font-bold text-white">{editingSong.title || "Unknown Title"}</h3>
-            <p className="text-sm text-gray-500">{editingSong.artist || "Unknown Artist"}</p>
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "var(--bg-overlay)" }}>
+          <div style={{ background: "var(--bg-surface)", borderRadius: "12px", padding: "24px", width: "100%", maxWidth: "420px", display: "flex", flexDirection: "column", gap: "16px" }}>
+            <h3 style={{ fontSize: "16px", fontWeight: 700, color: "var(--text-primary)" }}>{editingSong.title || "Unknown Title"}</h3>
+            <p style={{ fontSize: "12px", color: "var(--text-muted)" }}>{editingSong.artist || "Unknown Artist"}</p>
             <div>
-              <label className="block text-xs text-gray-400 mb-1">User Tags (comma-separated)</label>
-              <input type="text" value={editTags} onChange={(e) => setEditTags(e.target.value)} placeholder="e.g. favorite, workout, relaxing" className="w-full px-4 py-2.5 rounded-xl bg-gray-800 text-gray-200 text-sm focus:outline-none" />
+              <label style={{ display: "block", fontSize: "11px", color: "var(--text-muted)", marginBottom: "4px" }}>User Tags (comma-separated)</label>
+              <input type="text" value={editTags} onChange={(e) => setEditTags(e.target.value)}
+                placeholder="e.g. favorite, workout, relaxing"
+                style={{ width: "100%", padding: "8px 12px", borderRadius: "8px", background: "var(--bg-elevated)", border: "1px solid var(--border)", color: "var(--text-primary)", fontSize: "12px", outline: "none" }} />
             </div>
             <div>
-              <label className="block text-xs text-gray-400 mb-1">Notes</label>
-              <textarea value={editNotes} onChange={(e) => setEditNotes(e.target.value)} placeholder="Personal notes about this song..." rows={3} className="w-full px-4 py-2.5 rounded-xl bg-gray-800 text-gray-200 text-sm focus:outline-none resize-none" />
+              <label style={{ display: "block", fontSize: "11px", color: "var(--text-muted)", marginBottom: "4px" }}>Notes</label>
+              <textarea value={editNotes} onChange={(e) => setEditNotes(e.target.value)}
+                placeholder="Personal notes about this song…" rows={3}
+                style={{ width: "100%", padding: "8px 12px", borderRadius: "8px", background: "var(--bg-elevated)", border: "1px solid var(--border)", color: "var(--text-primary)", fontSize: "12px", outline: "none", resize: "none" }} />
             </div>
-            <div className="flex justify-end gap-2">
-              <button onClick={() => setEditingSong(null)} className="px-5 py-2.5 rounded-xl bg-gray-800 text-gray-400 text-sm transition">Cancel</button>
-              <button onClick={handleSaveTags} className="px-5 py-2.5 rounded-lg bg-green-600 text-white text-sm hover:bg-green-500 transition">Save</button>
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: "8px" }}>
+              <button onClick={() => setEditingSong(null)}
+                style={{ padding: "8px 16px", borderRadius: "8px", background: "var(--bg-elevated)", border: "1px solid var(--border)", color: "var(--text-muted)", fontSize: "12px", cursor: "pointer" }}>
+                Cancel
+              </button>
+              <button onClick={handleSaveTags}
+                style={{ padding: "8px 16px", borderRadius: "8px", background: "var(--accent-muted)", border: "1px solid var(--border)", color: "var(--accent)", fontSize: "12px", fontWeight: 500, cursor: "pointer" }}>
+                Save
+              </button>
             </div>
           </div>
         </div>
@@ -198,5 +375,74 @@ function SongList({ onSongSelect, currentSongId, addToast }) {
     </div>
   );
 }
+
+const SongRow = React.memo(({ song, isPlaying, onPlay, onAddToQueue, onBlacklist, onReprocess, onEditTags, onHeart, openMenuId, setOpenMenuId, menuRef }) => {
+  const energyPct = Math.round((song.energy ?? 0.5) * 100);
+  const valencePct = Math.round((song.valence ?? 0.5) * 100);
+  const completionPct = Math.round(song.avg_completion ?? 0);
+  const pctClass = completionPct >= 50 ? "pct-hi" : completionPct >= 40 ? "pct-mid" : "pct-lo";
+  const isOpen = openMenuId === song.id;
+
+  return (
+    <div className={`song-row ${isPlaying ? "playing" : ""}`} onClick={() => onPlay(song)}>
+      <Music size={13} style={{ color: "var(--text-muted)" }} />
+      <div style={{ minWidth: 0 }}>
+        <div style={{ color: "var(--text-primary)", fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: "12px" }}>
+          {song.title || "Unknown Title"}
+        </div>
+        <div style={{ color: "var(--text-muted)", fontSize: "10px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginTop: "1px" }}>
+          {song.artist || "Unknown Artist"}
+        </div>
+      </div>
+      <div style={{ fontSize: "11px", textAlign: "center", color: "var(--text-secondary)" }}>{song.bpm || "—"}</div>
+      <div style={{ display: "flex", flexDirection: "column", gap: "3px", alignItems: "center" }}>
+        <div className="energy-bar"><div className="energy-fill" style={{ width: `${energyPct}%` }} /></div>
+        <div style={{ fontSize: "9px", color: "var(--text-muted)" }}>{energyPct}%</div>
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: "3px", alignItems: "center" }}>
+        <div className="energy-bar"><div className="energy-fill valence" style={{ width: `${valencePct}%` }} /></div>
+        <div style={{ fontSize: "9px", color: "var(--text-muted)" }}>{valencePct}%</div>
+      </div>
+      <div style={{ fontSize: "11px", textAlign: "center", color: "var(--text-muted)" }}>{song.play_count || 0}</div>
+      <div style={{ display: "flex", alignItems: "center", gap: "5px" }}>
+        <span className={`pct-badge ${pctClass}`}>{completionPct}%</span>
+        <div className="row-actions">
+          <div className="act-btn" title="Add to queue" onClick={(e) => onAddToQueue(e, song)}>
+            <Plus size={11} />
+          </div>
+          <div className="act-btn" title="Heart" onClick={(e) => onHeart(e, song)}>
+            <Heart size={11} />
+          </div>
+          <div className="act-btn" title="More" onClick={(e) => { e.stopPropagation(); setOpenMenuId(isOpen ? null : song.id); }}
+            style={{ position: "relative" }}>
+            <MoreHorizontal size={11} />
+            {isOpen && (
+              <div ref={menuRef}
+                style={{ position: "absolute", top: "100%", right: 0, marginTop: "4px", zIndex: 20,
+                  background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: "6px",
+                  padding: "4px", minWidth: "120px", boxShadow: "0 4px 12px rgba(0,0,0,0.3)" }}>
+                <div onClick={(e) => onEditTags(e, song)}
+                  style={{ display: "flex", alignItems: "center", gap: "6px", padding: "6px 8px", borderRadius: "4px", fontSize: "11px", color: "var(--text-secondary)", cursor: "pointer" }}>
+                  <Pencil size={11} /> Edit tags
+                </div>
+                <div onClick={(e) => onReprocess(e, song)}
+                  style={{ display: "flex", alignItems: "center", gap: "6px", padding: "6px 8px", borderRadius: "4px", fontSize: "11px", color: "var(--text-secondary)", cursor: "pointer" }}>
+                  <RotateCcw size={11} /> Reprocess
+                </div>
+                <div style={{ borderTop: "1px solid var(--border-subtle)", margin: "2px 0" }} />
+                <div onClick={(e) => onBlacklist(e, song)}
+                  style={{ display: "flex", alignItems: "center", gap: "6px", padding: "6px 8px", borderRadius: "4px", fontSize: "11px", color: "var(--danger)", cursor: "pointer" }}>
+                  <XCircle size={11} /> Blacklist
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+});
+
+SongRow.displayName = "SongRow";
 
 export default SongList;

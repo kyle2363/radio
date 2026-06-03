@@ -26,7 +26,7 @@ def parse_filename(filepath: str) -> dict:
     if " - " in fname:
         idx = fname.rindex(" - ")
         result["artist"] = fname[:idx].strip()
-        result["title"] = fname[idx + 2:].strip()
+        result["title"] = fname[idx + 3:].strip()
 
     if not result["title"]:
         result["title"] = fname

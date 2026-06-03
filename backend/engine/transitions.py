@@ -101,3 +101,32 @@ def get_transition_candidates(from_song_id, n=15):
         return [{"song_id": r["song_id"], "score": r["score"]} for r in rows]
     finally:
         conn.close()
+
+
+def get_transition_boosts(from_song_id, song_ids):
+    """Batch-fetch transition boosts for multiple candidate songs.
+
+    Returns dict: {song_id: boost_value} where boost_value is 0.0-0.05.
+    Songs not in the transitions table get boost 0.0.
+    """
+    if not song_ids:
+        return {}
+    conn = database.get_connection()
+    try:
+        placeholders = ",".join("?" * len(song_ids))
+        rows = conn.execute(
+            f"SELECT to_song_id, score FROM transitions WHERE from_song_id = ? AND to_song_id IN ({placeholders})",
+            [from_song_id] + song_ids,
+        ).fetchall()
+        result = {}
+        for r in rows:
+            score = r["score"]
+            if score > 0.7:
+                result[r["to_song_id"]] = 0.05
+            elif score > 0.6:
+                result[r["to_song_id"]] = 0.02
+            else:
+                result[r["to_song_id"]] = 0.0
+        return result
+    finally:
+        conn.close()

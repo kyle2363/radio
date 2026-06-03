@@ -5,6 +5,7 @@ Archetypes: explorer, comfort_listener, deep_listener, mood_listener
 """
 
 from db import database
+import config
 
 ARCHETYPE_RULES = {
     "explorer": {
@@ -60,7 +61,7 @@ def detect_archetype():
     wildcard_acceptance = hearted / max(1, hearted + skip_early)
 
     # Cluster diversity (unique clusters / total clusters)
-    total_clusters = 18  # N_CLUSTERS
+    total_clusters = config.N_CLUSTERS
     unique_clusters = min(metrics["unique_songs"], total_clusters)
     cluster_diversity = unique_clusters / total_clusters
 

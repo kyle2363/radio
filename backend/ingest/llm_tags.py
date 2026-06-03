@@ -1,6 +1,7 @@
 """Generate emotional, genre, and instrument tags via LLM."""
 
 import json
+import re
 
 from llm import llm_chat
 
@@ -48,14 +49,16 @@ def generate_tags(caption: str, lyrics: str = "", retries: int = 3, options: dic
                 options=opts,
                 think=False,
             )
-            content = response["message"]["content"].strip()
+            content = response.content.strip()
 
             # Extract JSON from possible markdown code block
             if content.startswith("```"):
-                content = content.split("```")[1]
-                if content.startswith("json"):
-                    content = content[4:]
-                content = content.strip()
+                match = re.match(r"```(?:json)?\s*(.*?)```", content, re.DOTALL)
+                if match:
+                    content = match.group(1).strip()
+                else:
+                    # Malformed code block — fall through to json.loads on raw content
+                    pass
 
             result = json.loads(content)
             return {

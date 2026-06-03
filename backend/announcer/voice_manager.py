@@ -8,9 +8,12 @@ import hashlib
 import logging
 import os
 import random
+import struct
 import threading
 import wave
-from announcer.tts_engine import TTSEngine, AVAILABLE_ENGINES, PiperTTSEngine
+
+import config
+from announcer.tts_engine import TTSEngine, AVAILABLE_ENGINES, PiperTTSEngine, run_with_timeout
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +22,7 @@ VOICE_MODE_USER_SELECT = "user_select"  # Use the user's chosen voice for all an
 VOICE_MODE_RANDOM = "random"            # Pick a random voice per synthesis call
 VOICE_MODE_CONTEXT = "context"          # Map trigger context to voice
 
-TTS_CACHE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "tts_cache")
+TTS_CACHE_DIR = config.TTS_CACHE_DIR
 TTS_SILENCE_PADDING_SECS = 0.25
 
 
@@ -53,12 +56,90 @@ def _append_silence(path: str, seconds: float = TTS_SILENCE_PADDING_SECS) -> boo
         return False
 
 
+def _prepend_silence(path: str, seconds: float = TTS_SILENCE_PADDING_SECS) -> bool:
+    """Prepend silence to the start of a WAV file.
+
+    Re-opens the WAV, reads its params, prepends zero-filled frames, rewrites.
+    Returns True on success, False on failure.
+    """
+    try:
+        with wave.open(path, "rb") as wf:
+            channels = wf.getnchannels()
+            sampwidth = wf.getsampwidth()
+            framerate = wf.getframerate()
+            nframes = wf.getnframes()
+            orig_data = wf.readframes(nframes)
+
+        silence_frames = int(framerate * seconds)
+        silence_bytes = b'\x00' * (channels * sampwidth * silence_frames)
+
+        with wave.open(path, "wb") as wf:
+            wf.setnchannels(channels)
+            wf.setsampwidth(sampwidth)
+            wf.setframerate(framerate)
+            wf.writeframes(silence_bytes)
+            wf.writeframes(orig_data)
+
+        return True
+    except Exception as e:
+        logger.warning(f"Failed to prepend silence to {path}: {e}")
+        return False
+
+
+def _fade_in_first_second(path: str) -> bool:
+    """Apply a 1-second linear fade-in at the start of a WAV file.
+
+    Ramps volume from 0 to 100% over the first second for a smooth entrance.
+    Used on the first WAV of a talk show segment.
+
+    Returns True on success, False on failure.
+    """
+    try:
+        with wave.open(path, "rb") as wf:
+            channels = wf.getnchannels()
+            sampwidth = wf.getsampwidth()
+            framerate = wf.getframerate()
+            nframes = wf.getnframes()
+            raw = bytearray(wf.readframes(nframes))
+
+        fade_frames = min(framerate, nframes)
+        fade_bytes = channels * sampwidth * fade_frames
+
+        for i in range(fade_frames):
+            gain = i / fade_frames
+            offset = i * channels * sampwidth
+            for ch in range(channels):
+                sample_offset = offset + ch * sampwidth
+                if sampwidth == 1:
+                    sample = raw[sample_offset] - 128
+                    sample = int(sample * gain)
+                    raw[sample_offset] = max(0, min(255, sample + 128))
+                elif sampwidth == 2:
+                    sample = struct.unpack_from('<h', raw, sample_offset)[0]
+                    sample = int(sample * gain)
+                    struct.pack_into('<h', raw, sample_offset, max(-32768, min(32767, sample)))
+
+        with wave.open(path, "wb") as wf:
+            wf.setnchannels(channels)
+            wf.setsampwidth(sampwidth)
+            wf.setframerate(framerate)
+            wf.writeframes(bytes(raw))
+
+        logger.info(f"_fade_in_first_second: faded 1s on {path}")
+        return True
+    except Exception as e:
+        logger.warning(f"Failed to fade in {path}: {e}")
+        return False
+
+
 class VoiceManager:
     """Manages TTS engines and voices with runtime switching.
 
     Supports multiple engines (OmniVoice, Piper) with automatic fallback.
     Voice selection modes: user_select (default), random, context.
     """
+
+    _MAX_SYNTH_LOCKS = 128  # prevent unbounded growth of _synth_locks
 
     def __init__(self):
         self._lock = threading.RLock()
@@ -67,6 +148,19 @@ class VoiceManager:
         self._active_voice: str | None = None
         self._settings_db = None  # lazy reference to database for persisted engine choice
         self._voice_mode: str = VOICE_MODE_USER_SELECT
+        self._synth_locks: dict[str, threading.Lock] = {}
+        self._synth_locks_lock = threading.Lock()
+
+    def _get_synth_lock(self, output_path):
+        """Get or create a per-path lock with LRU eviction to prevent unbounded growth."""
+        with self._synth_locks_lock:
+            if output_path not in self._synth_locks:
+                if len(self._synth_locks) >= self._MAX_SYNTH_LOCKS:
+                    # Evict the first (oldest) entry
+                    oldest = next(iter(self._synth_locks))
+                    del self._synth_locks[oldest]
+                self._synth_locks[output_path] = threading.Lock()
+            return self._synth_locks[output_path]
 
     def set_database(self, db):
         """Inject database reference for persisting engine/voice choices."""
@@ -211,39 +305,36 @@ class VoiceManager:
     def _resolve_voice(self, voice_id: str | None, trigger_type: str | None = None) -> str | None:
         """Resolve which voice to use based on mode and context.
 
-        Args:
-            voice_id: Explicit voice override (bypasses mode)
-            trigger_type: Announcement trigger type for context mode
+        Note: callers must NOT hold self._lock — all sub-methods acquire it themselves.
         """
-        with self._lock:
-            # Explicit voice_id always wins
-            if voice_id:
-                return voice_id
+        # Explicit voice_id always wins (no lock needed)
+        if voice_id:
+            return voice_id
 
-            mode = self._voice_mode
+        mode = self._voice_mode
 
-            if mode == VOICE_MODE_RANDOM:
-                # Pick a random voice from the active engine
-                _, eng = self.get_active_engine()
-                voices = eng.get_available_voices()
-                if voices:
-                    return random.choice(voices)
-                return self._active_voice
-
-            elif mode == VOICE_MODE_CONTEXT:
-                return self._context_voice(trigger_type)
-
-            # VOICE_MODE_USER_SELECT — use stored voice
-            if self._active_voice:
-                return self._active_voice
-            # Fallback: pick first available voice from active engine
+        if mode == VOICE_MODE_RANDOM:
+            # Pick a random voice from the active engine
             _, eng = self.get_active_engine()
             voices = eng.get_available_voices()
             if voices:
-                with self._lock:
-                    self._active_voice = voices[0]
-                return self._active_voice
-            return None
+                return random.choice(voices)
+            return self._active_voice
+
+        elif mode == VOICE_MODE_CONTEXT:
+            return self._context_voice(trigger_type)
+
+        # VOICE_MODE_USER_SELECT — use stored voice
+        if self._active_voice:
+            return self._active_voice
+        # Fallback: pick first available voice from active engine
+        _, eng = self.get_active_engine()
+        voices = eng.get_available_voices()
+        if voices:
+            with self._lock:
+                self._active_voice = voices[0]
+            return self._active_voice
+        return None
 
     def _context_voice(self, trigger_type: str | None) -> str | None:
         """Map trigger context to a voice for context mode."""
@@ -365,57 +456,65 @@ class VoiceManager:
         if speed is None:
             speed = 0.90
 
-        # Cache key includes engine + voice + speed + text hash + optional song_id
-        # Strip non-verbal tags for Piper (it would read them as literal text)
-        if engine_id == "piper":
+        # Prepend pause marker at start of text for natural-sounding TTS
+        # OmniVoice understands ".,." as a prosody pause; Piper doesn't, so
+        # we strip ".,." markers and prepend actual silence to the WAV instead.
+        if engine_id == "omnivoice":
+            text = ".,. " + text
+        else:
             from announcer.nonverbal import strip_nonverbal_tags
             text = strip_nonverbal_tags(text)
+            text = ".,. " + text
+
+        # Cache key includes engine + voice + speed + text hash + optional song id
         text_hash = hashlib.md5(text.encode()).hexdigest()[:12]
         if song_id is not None:
             output_path = os.path.join(output_dir, f"{engine_id}_{voice_id}_{speed:.2f}_{text_hash}_song{song_id}.wav")
         else:
             output_path = os.path.join(output_dir, f"{engine_id}_{voice_id}_{speed:.2f}_{text_hash}.wav")
 
-        if os.path.exists(output_path):
-            logger.info(f"TTS cache hit: {os.path.basename(output_path)}")
-            return output_path
+        # Per-path lock to prevent duplicate concurrent synthesis (same text,
+        # same voice, same speed → multiple threads racing before any finishes).
+        # The first thread to acquire writes the file; subsequent threads wait
+        # and then return the cache hit.
+        path_lock = self._get_synth_lock(output_path)
+        try:
+            with path_lock:
+                if os.path.exists(output_path):
+                    logger.info(f"TTS cache hit: {os.path.basename(output_path)}")
+                    return output_path
 
-        logger.info(f"TTS synthesize: engine={engine_id}, voice={voice_id}, text_len={len(text)}, path={output_path}")
-        # Wrap entire synthesis in thread with timeout as safety net
-        result_val = [None]
-        err_val = [None]
+                logger.info(f"TTS synthesize: engine={engine_id}, voice={voice_id}, text_len={len(text)}, path={output_path}")
 
-        def _do_synthesize():
-            try:
-                if engine_id == "omnivoice":
-                    result_val[0] = eng.synthesize(text, voice_id, output_path, speed=speed)
-                else:
-                    result_val[0] = eng.synthesize(text, voice_id, output_path)
-            except Exception as e:
-                err_val[0] = e
+                def _do_synthesize():
+                    if engine_id == "omnivoice":
+                        return eng.synthesize(text, voice_id, output_path, speed=speed)
+                    # Strip ".,." markers for Piper (would be spoken literally)
+                    piper_text = text.replace(".,.", "")
+                    return eng.synthesize(piper_text, voice_id, output_path)
 
-        t = threading.Thread(target=_do_synthesize, daemon=True)
-        t.start()
-        t.join(timeout=30)
-        if t.is_alive():
-            logger.warning(f"VoiceManager: synthesize timed out after 30s")
-            # Auto-fallback to Piper on timeout
-            if engine_id != "piper":
-                logger.info("VoiceManager: attempting Piper fallback after timeout")
-                return self._fallback_synthesize(text, voice_id, output_dir, song_id)
-            return None
-        if err_val[0]:
-            logger.error(f"VoiceManager: synthesize failed: {err_val[0]}")
-            # Auto-fallback to Piper on error
-            if engine_id != "piper":
-                logger.info("VoiceManager: attempting Piper fallback after error")
-                return self._fallback_synthesize(text, voice_id, output_dir, song_id)
-            return None
-        # Append silence padding to prevent truncation in chained playback
-        if result_val[0] and os.path.exists(result_val[0]):
-            _append_silence(result_val[0])
-        logger.info(f"TTS synthesize done: {'found' if result_val[0] and os.path.exists(result_val[0]) else 'FAILED'}")
-        return result_val[0]
+                ok, result_or_err = run_with_timeout(_do_synthesize, timeout=30)
+                if not ok:
+                    if isinstance(result_or_err, TimeoutError):
+                        logger.warning("VoiceManager: synthesize timed out after 30s")
+                    else:
+                        logger.error(f"VoiceManager: synthesize failed: {result_or_err}")
+                    if engine_id != "piper":
+                        logger.info("VoiceManager: attempting Piper fallback")
+                        return self._fallback_synthesize(text, voice_id, output_dir, song_id)
+                    return None
+
+                # Prepend silence for Piper (it doesn't understand ".?." markers)
+                # and append silence for all engines to prevent truncation
+                if result_or_err and os.path.exists(result_or_err):
+                    if engine_id == "piper":
+                        _prepend_silence(result_or_err)
+                    _append_silence(result_or_err)
+                logger.info(f"TTS synthesize done: {'found' if result_or_err and os.path.exists(result_or_err) else 'FAILED'}")
+                return result_or_err
+        finally:
+            with self._synth_locks_lock:
+                self._synth_locks.pop(output_path, None)
 
     def _fallback_synthesize(self, text: str, original_voice_id: str | None, output_dir: str, song_id: int | None = None) -> str | None:
         """Fallback to Piper TTS when primary engine fails."""
@@ -424,6 +523,7 @@ class VoiceManager:
             piper_eng = self.get_engine("piper")
             fallback_voice = "amy"  # Piper default voice
             text = strip_nonverbal_tags(text)
+            text = text.replace(".,.", "")
             text_hash = hashlib.md5(text.encode()).hexdigest()[:12]
             if song_id is not None:
                 output_path = os.path.join(output_dir, f"piper_{fallback_voice}_{text_hash}_song{song_id}.wav")
@@ -434,6 +534,7 @@ class VoiceManager:
             logger.info(f"VoiceManager: Piper fallback synthesizing with voice={fallback_voice}")
             result = piper_eng.synthesize(text, fallback_voice, output_path)
             if result and os.path.exists(result):
+                _prepend_silence(result)
                 _append_silence(result)
             return result
         except Exception as e:

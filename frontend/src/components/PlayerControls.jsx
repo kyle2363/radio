@@ -10,15 +10,36 @@ function formatTime(ms) {
   return `${min}:${sec.toString().padStart(2, "0")}`;
 }
 
-function PlayerControls({ isPlaying, onPlay, onPause, onNext, onHeart, onThumbsDown, onReplay, onClearQueue, positionMs, durationMs, onSeek, vibeLock, onVibeLockToggle }) {
+function PlayerControls({ isPlaying, onPlay, onPause, onNext, onHeart, onThumbsDown, onReplay, onClearQueue, positionMs, durationMs, onSeek, vibeLock, onVibeLockToggle, audioRms = 0.5, compact = false }) {
   const [isDragging, setIsDragging] = useState(false);
   const [dragProgress, setDragProgress] = useState(0);
   const [heartAnim, setHeartAnim] = useState(false);
   const [dislikeAnim, setDislikeAnim] = useState(false);
   const barRef = useRef(null);
+  const ghostRef = useRef(null);
 
   const progress = durationMs > 0 ? (isDragging ? dragProgress : positionMs) / durationMs : 0;
   const displayProgress = isDragging ? dragProgress : positionMs;
+
+  // Ghost waveform under progress bar
+  useEffect(() => {
+    const canvas = ghostRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    const w = canvas.clientWidth * window.devicePixelRatio;
+    const h = canvas.clientHeight * window.devicePixelRatio;
+    canvas.width = w;
+    canvas.height = h;
+    ctx.clearRect(0, 0, w, h);
+    const bars = 48;
+    const gap = 1 * window.devicePixelRatio;
+    const barW = (w - gap * (bars - 1)) / bars;
+    for (let i = 0; i < bars; i++) {
+      const barH = (0.15 + Math.sin(i * 0.6 + audioRms * 4) * 0.85) * 0.5 + 0.15;
+      ctx.fillStyle = "rgba(78, 204, 196, 0.08)";
+      ctx.fillRect(i * (barW + gap), h * (1 - barH), barW, h * barH);
+    }
+  }, [audioRms]);
 
   const seekFromEvent = useCallback((e) => {
     if (!barRef.current || durationMs <= 0) return;
@@ -62,60 +83,72 @@ function PlayerControls({ isPlaying, onPlay, onPause, onNext, onHeart, onThumbsD
   const handleHeart = () => { setHeartAnim(true); onHeart?.(); };
   const handleDislike = () => { setDislikeAnim(true); onThumbsDown?.(); };
 
-  return (
-    <div className="space-y-3">
-      {/* Progress bar */}
-      <div className="flex items-center gap-3">
-        <span className="text-xs tabular-nums w-10 text-right" style={{ color: "var(--text-muted)" }}>{formatTime(displayProgress)}</span>
-        <div ref={barRef} tabIndex={0} className="flex-1 h-[3px] rounded-full cursor-pointer group relative focus:outline-none focus:ring-2 focus:ring-[var(--accent)]/50"
-          style={{ background: "var(--border)" }}
+  const seekBar = (
+    <div className="flex items-center gap-3 relative">
+      <span className="text-xs tabular-nums w-10 text-right" style={{ color: "var(--text-muted)" }}>{formatTime(displayProgress)}</span>
+      <div className="flex-1 relative" style={{ height: "16px" }}>
+        {!compact && (
+          <canvas ref={ghostRef}
+            className="absolute inset-0 w-full pointer-events-none"
+            style={{ height: "8px", top: "50%", transform: "translateY(-50%)", opacity: 0.6 }} />
+        )}
+        <div ref={barRef} tabIndex={0} className="absolute inset-0 cursor-pointer group focus:outline-none focus:ring-2 focus:ring-[var(--accent)]/50"
+          style={{ top: "50%", height: "3px", transform: "translateY(-50%)" }}
           onMouseDown={handleBarMouseDown} onKeyDown={handleBarKeyDown}
           role="slider" aria-label="Seek" aria-valuemin={0} aria-valuemax={durationMs} aria-valuenow={positionMs}>
-          <div className="h-full rounded-full relative transition-none" style={{ width: `${progress * 100}%`, background: "linear-gradient(90deg, #3ab8b0, #4eccc4)" }}>
-            <div className="absolute right-0 top-1/2 -translate-y-1/2 w-2.5 h-2.5 rounded-full opacity-0 group-hover:opacity-100 transition-opacity shadow" style={{ background: "var(--accent)" }} />
+          <div className="w-full h-full rounded-full relative" style={{ background: "var(--border)" }}>
+            <div className="h-full rounded-full relative transition-none" style={{ width: `${progress * 100}%`, background: "linear-gradient(90deg, #3ab8b0, #4eccc4)" }}>
+              <div className="absolute right-0 top-1/2 -translate-y-1/2 w-2.5 h-2.5 rounded-full opacity-0 group-hover:opacity-100 transition-opacity shadow" style={{ background: "var(--accent)" }} />
+            </div>
           </div>
         </div>
-        <span className="text-xs tabular-nums w-10" style={{ color: "var(--text-muted)" }}>{formatTime(durationMs)}</span>
       </div>
+      <span className="text-xs tabular-nums w-10" style={{ color: "var(--text-muted)" }}>{formatTime(durationMs)}</span>
+    </div>
+  );
 
-      {/* Controls */}
-      <div className="flex justify-center items-center gap-1.5">
-        <button onClick={onReplay} className="w-10 h-10 rounded-[10px] flex items-center justify-center transition btn-icon" title="Replay (R)">
-          <RotateCcw size={16} />
+  const controls = (
+    <div className="flex justify-center items-center gap-1">
+      <button onClick={onReplay} className="ctrl-btn ctrl-ter" title="Replay (R)">
+        <RotateCcw size={13} />
+      </button>
+      <button onClick={isPlaying ? onPause : onPlay} className="ctrl-btn ctrl-main" title="Play/Pause (Space)"
+        style={{ background: "var(--accent-muted)", border: "1px solid rgba(78,204,196,0.3)", color: "var(--accent)" }}>
+        {isPlaying ? <Pause size={22} /> : <Play size={22} />}
+      </button>
+      <button onClick={onNext} className="ctrl-btn ctrl-sec" title="Next (N)">
+        <SkipForward size={15} />
+      </button>
+      <button onClick={handleHeart} className={`ctrl-btn ctrl-ter ${heartAnim ? "heart-pop" : ""}`}
+        onAnimationEnd={() => setHeartAnim(false)} title="Heart (H)"
+        style={{ color: "#f472b6" }}>
+        <Heart size={13} />
+        <ParticleBurst active={heartAnim} color="#f078a8" />
+      </button>
+      <button onClick={handleDislike} className={`ctrl-btn ctrl-ter ${dislikeAnim ? "shake" : ""}`}
+        onAnimationEnd={() => setDislikeAnim(false)} title="Dislike (D)">
+        <ThumbsDown size={13} />
+        <ParticleBurst active={dislikeAnim} color="#f09060" />
+      </button>
+      <div style={{ width: "1px", height: "16px", background: "var(--border)", margin: "0 2px" }} />
+      {onVibeLockToggle && (
+        <button onClick={onVibeLockToggle} className="ctrl-btn ctrl-ter"
+          style={{
+            color: vibeLock?.active ? "#a870f0" : "var(--text-muted)",
+          }}
+          title={vibeLock?.active ? "Unlock vibe (V)" : "Lock to this song's vibe (V)"}>
+          {vibeLock?.active ? <Lock size={13} /> : <Unlock size={13} />}
         </button>
-        <button onClick={isPlaying ? onPause : onPlay} className="w-12 h-12 rounded-xl flex items-center justify-center transition" title="Play/Pause (Space)"
-          style={{ background: "var(--accent-muted)", border: "1px solid rgba(78,204,196,0.3)", color: "var(--accent)" }}>
-          {isPlaying ? <Pause size={19} /> : <Play size={19} />}
-        </button>
-        <button onClick={onNext} className="w-10 h-10 rounded-[10px] flex items-center justify-center transition btn-icon" title="Next (N)">
-          <SkipForward size={16} />
-        </button>
-        <button onClick={handleHeart} className={`w-10 h-10 rounded-[10px] flex items-center justify-center transition btn-icon btn-icon-pink ${heartAnim ? "heart-pop" : ""}`}
-          onAnimationEnd={() => setHeartAnim(false)} title="Heart (H)">
-          <Heart size={16} className={heartAnim ? "fill-pink-500 text-pink-500" : ""} />
-          <ParticleBurst active={heartAnim} color="#f078a8" />
-        </button>
-        <button onClick={handleDislike} className={`w-10 h-10 rounded-[10px] flex items-center justify-center transition btn-icon btn-icon-orange ${dislikeAnim ? "shake" : ""}`}
-          onAnimationEnd={() => setDislikeAnim(false)} title="Dislike (D)">
-          <ThumbsDown size={16} />
-          <ParticleBurst active={dislikeAnim} color="#f09060" />
-        </button>
-        <button onClick={onClearQueue} className="w-10 h-10 rounded-[10px] flex items-center justify-center transition btn-icon btn-icon-red" title="Clear queue">
-          <Trash2 size={16} />
-        </button>
-        {onVibeLockToggle && (
-          <button onClick={onVibeLockToggle}
-            className={`w-10 h-10 rounded-[10px] flex items-center justify-center transition ${vibeLock?.active ? "" : "btn-icon btn-icon-purple"}`}
-            style={{
-              background: vibeLock?.active ? "rgba(168, 112, 240, 0.12)" : "var(--bg-muted)",
-              border: vibeLock?.active ? "1px solid rgba(168, 112, 240, 0.25)" : "none",
-              color: vibeLock?.active ? "#a870f0" : "var(--text-muted)",
-            }}
-            title={vibeLock?.active ? "Unlock vibe (V)" : "Lock to this song's vibe (V)"}>
-            {vibeLock?.active ? <Lock size={16} /> : <Unlock size={16} />}
-          </button>
-        )}
-      </div>
+      )}
+    </div>
+  );
+
+  if (compact) return <>{seekBar}{controls}</>;
+
+  return (
+    <div className="space-y-3">
+      {seekBar}
+      {controls}
     </div>
   );
 }

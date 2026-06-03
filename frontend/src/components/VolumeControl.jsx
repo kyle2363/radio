@@ -13,8 +13,8 @@ const VolumeControl = React.memo(function VolumeControl({ volume, onChange }) {
   };
 
   return (
-    <div className="flex items-center gap-3 rounded-xl px-5 py-3" style={{ background: "var(--bg-surface)" }}>
-      <span style={{ color: "var(--text-muted)" }}>{value === 0 ? <VolumeX size={14} /> : <Volume2 size={14} />}</span>
+    <div className="flex items-center gap-2 flex-1">
+      <span style={{ color: "var(--text-muted)", flexShrink: 0 }}>{value === 0 ? <VolumeX size={14} /> : <Volume2 size={14} />}</span>
       <div className="flex-1 relative h-[3px] rounded-full cursor-pointer" style={{ background: "var(--border)" }}>
         <div className="absolute h-full rounded-full" style={{ width: `${value}%`, background: "var(--accent)" }} />
         <input type="range" min="0" max="100" value={value} onChange={handleChange}

@@ -14,9 +14,43 @@ import threading
 import time
 from pathlib import Path
 
+from announcer.tts_engine import run_with_timeout
+
 import config
 
 logger = logging.getLogger(__name__)
+
+# Module-level GPU detection cache — shared across all engine instances
+_GLOBAL_GPU_AVAILABLE: bool | None = None
+_GLOBAL_GPU_LOG_ONCE = False
+
+
+def _detect_gpu_once() -> bool:
+    """Detect CUDA GPU availability once at module level.
+    
+    All OmniVoiceTTSEngine instances share this result so the
+    CUDA availability log is emitted exactly once per process.
+    """
+    global _GLOBAL_GPU_AVAILABLE, _GLOBAL_GPU_LOG_ONCE
+    if _GLOBAL_GPU_AVAILABLE is not None:
+        return _GLOBAL_GPU_AVAILABLE
+    try:
+        import torch
+        _GLOBAL_GPU_AVAILABLE = torch.cuda.is_available()
+        if _GLOBAL_GPU_AVAILABLE and not _GLOBAL_GPU_LOG_ONCE:
+            _GLOBAL_GPU_LOG_ONCE = True
+            device_name = torch.cuda.get_device_name(0)
+            logger.info(f"OmniVoice: CUDA available — {device_name}")
+        elif not _GLOBAL_GPU_AVAILABLE:
+            logger.warning("OmniVoice: CUDA not available, will fall back to Piper")
+    except ImportError:
+        _GLOBAL_GPU_AVAILABLE = False
+        logger.warning("OmniVoice: torch not installed")
+    except Exception as e:
+        _GLOBAL_GPU_AVAILABLE = False
+        logger.error(f"OmniVoice: GPU detection failed: {e}")
+    return _GLOBAL_GPU_AVAILABLE
+
 
 # Directory containing reference audio MP3s
 VOICES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "voices")
@@ -79,23 +113,14 @@ class OmniVoiceTTSEngine:
         self._load_lock = threading.Lock()
 
     def _detect_gpu(self) -> bool:
-        """Check if CUDA GPU is available."""
+        """Check if CUDA GPU is available.
+
+        Delegates to module-level _detect_gpu_once() which caches the
+        result and logs the GPU message exactly once per process.
+        """
         if self._gpu_available is not None:
             return self._gpu_available
-        try:
-            import torch
-            self._gpu_available = torch.cuda.is_available()
-            if self._gpu_available:
-                device_name = torch.cuda.get_device_name(0)
-                logger.info(f"OmniVoice: CUDA available — {device_name}")
-            else:
-                logger.warning("OmniVoice: CUDA not available, will fall back to Piper")
-        except ImportError:
-            self._gpu_available = False
-            logger.warning("OmniVoice: torch not installed")
-        except Exception as e:
-            self._gpu_available = False
-            logger.error(f"OmniVoice: GPU detection failed: {e}")
+        self._gpu_available = _detect_gpu_once()
         return self._gpu_available
 
     def _load_model(self) -> bool:
@@ -171,8 +196,11 @@ class OmniVoiceTTSEngine:
         Returns:
             output_path on success, None on failure
         """
-        # Preprocess text: replace periods with .?. for better pausing
-        text = text.replace(".", ".?.")
+        # Preprocess text: replace periods with .,. for better pausing
+        text = text.replace(".", ".,.")
+        # Collapse any stacked .,. markers (from existing .,. in text) back to single
+        while ".,.," in text:
+            text = text.replace(".,.,", ".,.")
 
         # Randomize speed around the persona baseline
         actual_speed = speed + random.uniform(-0.1, 0.1)
@@ -211,36 +239,27 @@ class OmniVoiceTTSEngine:
             start = time.time()
 
             # Run inference in a thread with timeout
-            result = [None]
-            error = [None]
-
             def _do_generate():
-                try:
-                    audio = self._model.generate(
-                        text=text,
-                        ref_audio=ref_audio,
-                        ref_text=ref_text,
-                        speed=actual_speed,
-                    )
-                    result[0] = audio
-                except Exception as e:
-                    error[0] = e
+                return self._model.generate(
+                    text=text,
+                    ref_audio=ref_audio,
+                    ref_text=ref_text,
+                    speed=actual_speed,
+                )
 
-            t = threading.Thread(target=_do_generate, daemon=True)
-            t.start()
-            t.join(timeout=30)
-            if t.is_alive():
-                logger.error("OmniVoice: synthesis timed out after 30s")
+            ok, result_or_err = run_with_timeout(_do_generate, timeout=30)
+            if not ok:
+                if isinstance(result_or_err, TimeoutError):
+                    logger.error("OmniVoice: synthesis timed out after 30s")
+                else:
+                    logger.error(f"OmniVoice: synthesis failed: {result_or_err}")
                 return None
-            if error[0]:
-                logger.error(f"OmniVoice: synthesis failed: {error[0]}")
-                return None
-            if result[0] is None:
+
+            # result_or_err is a list of np.ndarray at 24kHz
+            audio_array = result_or_err
+            if audio_array is None:
                 logger.error("OmniVoice: synthesis returned None")
                 return None
-
-            # result is a list of np.ndarray at 24kHz
-            audio_array = result[0]
             sf.write(output_path, audio_array[0], 24000)
             elapsed = time.time() - start
             logger.info(f"OmniVoice: synthesis done in {elapsed:.1f}s -> {output_path}")

@@ -40,13 +40,14 @@ function MarqueeText({ text, className, style }) {
 
 const STYLES = ["orbit", "pulse", "float"];
 
-function NowPlaying({ song, isPlaying, whyReason, queue = [], audioRms, talkSegmentActive, positionMs = 0, durationMs = 0 }) {
+function NowPlaying({ song, isPlaying, whyReason, queue = [], audioRms, talkSegmentActive, positionMs = 0, durationMs = 0, compact = false }) {
   const [showWhy, setShowWhy] = useState(false);
   const [trajectory, setTrajectory] = useState(null);
   const [similar, setSimilar] = useState([]);
   const [showSimilar, setShowSimilar] = useState(false);
   const [showLyrics, setShowLyrics] = useState(false);
   const [vizStyle, setVizStyle] = useState(0);
+  const [animId, setAnimId] = useState(0);
   const lyricsRef = useRef(null);
   const activeLineRef = useRef(null);
 
@@ -69,6 +70,7 @@ function NowPlaying({ song, isPlaying, whyReason, queue = [], audioRms, talkSegm
   useEffect(() => {
     if (!song?.id) return;
     api.fetchEnergyTrajectory().then(setTrajectory).catch(() => {});
+    setAnimId((v) => v + 1);
   }, [song?.id]);
 
   const fetchSimilar = async () => {
@@ -89,6 +91,13 @@ function NowPlaying({ song, isPlaying, whyReason, queue = [], audioRms, talkSegm
   };
 
   if (!song && !talkSegmentActive) {
+    if (compact) {
+      return (
+        <div className="text-center py-10" style={{ color: "var(--text-muted)" }}>
+          <div className="text-sm">Nothing playing</div>
+        </div>
+      );
+    }
     return (
       <div className="rounded-xl border bg-surface/50 p-8 text-center" style={{ borderColor: "var(--border)" }}>
         <div className="text-lg mb-2" style={{ color: "var(--text-muted)" }}>Nothing playing</div>
@@ -107,17 +116,20 @@ function NowPlaying({ song, isPlaying, whyReason, queue = [], audioRms, talkSegm
       guest_takeover_outro: "Handing back",
     };
     const icons = {
-      caller: "\uD83D\uDCDE",
-      dj_monologue: "\uD83C\uDF99\uFE0F",
-      guest_takeover_intro: "\uD83C\uDFA7\uFE0F",
-      guest_takeover_outro: "\uD83C\uDFA7\uFE0F",
+      caller: "📞",
+      dj_monologue: "🎙️",
+      guest_takeover_intro: "🎧️",
+      guest_takeover_outro: "🎧️",
     };
+    const talkStyle = compact
+      ? { borderTop: "1px solid var(--border)", paddingTop: "10px", marginTop: "auto" }
+      : { background: "var(--bg-surface)", border: "1px solid var(--border)" };
     return (
-      <div className="rounded-xl p-5 fade-enter relative overflow-hidden" style={{ background: "var(--bg-surface)", border: "1px solid var(--border)" }}>
+      <div className={`fade-enter relative overflow-hidden ${compact ? '' : 'rounded-xl p-5'}`} style={talkStyle}>
         <div className="flex items-center gap-4">
           <div className="flex-shrink-0 w-14 h-14 rounded-full flex items-center justify-center text-2xl"
             style={{ background: "var(--accent-muted)" }}>
-            {icons[segType] || "\uD83D\uDCE2"}
+            {icons[segType] || "📢"}
           </div>
           <div className="flex-1 min-w-0">
             <div className="text-sm font-medium" style={{ color: "var(--text-primary)" }}>
@@ -140,59 +152,50 @@ function NowPlaying({ song, isPlaying, whyReason, queue = [], audioRms, talkSegm
     );
   }
 
-  const TRAJ_ICONS = { rising: "\u2197", falling: "\u2198", stable: "\u2192" };
+  const TRAJ_ICONS = { rising: "↗", falling: "↘", stable: "→" };
   const TRAJ_COLORS = { rising: "text-orange-400", falling: "text-blue-400", stable: "text-gray-500" };
 
-  return (
-    <div className="rounded-xl p-5 fade-enter fade-enter-active relative overflow-hidden" style={{ background: "var(--bg-surface)", border: "1px solid var(--border)" }}>
-
-      <div className="flex gap-4 items-start">
-        {/* Left: canvas + style selector */}
-        <div className="flex-shrink-0">
-          <WaveformViz song={song} queue={queue} styleIndex={vizStyle} audioRms={audioRms} />
-          <div className="flex gap-1 justify-center mt-2">
-            {STYLES.map((name, i) => (
-              <button key={i} onClick={() => setVizStyle(i)}
-                className="px-3 py-1 rounded text-xs transition"
-                style={{
-                  color: i === vizStyle ? "var(--accent)" : "var(--text-muted)",
-                  background: i === vizStyle ? "var(--accent-muted)" : "transparent",
-                }}>
-                {name}
-              </button>
-            ))}
+  const innerGrid = (
+    <div className={compact ? "now-playing-grid" : "flex gap-4 items-start"}>
+      {/* Left: canvas + pill style selector */}
+      <div className="flex-shrink-0">
+        <WaveformViz song={song} queue={queue} styleIndex={vizStyle} audioRms={audioRms} size={compact ? 168 : undefined} />
+          <div className="flex justify-center mt-2">
+            <div className="mood-seg" style={{ padding: "2px", gap: "2px" }}>
+              {STYLES.map((name, i) => (
+                <button key={i} onClick={() => setVizStyle(i)}
+                  className={`mood-opt ${i === vizStyle ? "active" : ""}`}
+                  style={{ padding: "4px 8px", fontSize: "10px", letterSpacing: "0.06em" }}>
+                  {name}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
 
         {/* Right: song info */}
         <div className="flex-1 min-w-0 flex flex-col gap-2 pt-1">
-          <div className="space-y-1">
+          <div className="space-y-0.5">
             <MarqueeText text={song.title || "Unknown Title"}
-              className="text-lg font-bold"
-              style={{ color: "var(--text-primary)", maxWidth: "100%" }} />
+              className="text-2xl font-bold"
+              style={{ color: "var(--text-primary)", maxWidth: "100%", lineHeight: "1.1", letterSpacing: "-0.02em" }} />
             <MarqueeText text={song.artist || "Unknown Artist"}
               className="text-sm"
-              style={{ color: "var(--text-muted)", maxWidth: "100%" }} />
+              style={{ color: "var(--text-secondary)", maxWidth: "100%", fontWeight: 400 }} />
           </div>
 
           <div className="flex flex-wrap gap-1.5">
             {song.bpm && (
-              <span className="px-2 py-0.5 rounded text-xs font-medium" style={{ background: "rgba(255,255,255,0.05)", color: "var(--text-muted)" }}>
-                {song.bpm} BPM
-              </span>
+              <span className="badge b-dim">{song.bpm} BPM</span>
             )}
             {song.energy != null && (
-              <span className="px-2 py-0.5 rounded text-xs font-medium" style={{ background: "rgba(255,180,30,0.08)", color: "#c49030" }}>
-                E: {(song.energy * 100).toFixed(0)}%
-              </span>
+              <span className="badge b-teal">E {(song.energy * 100).toFixed(0)}%</span>
             )}
             {song.valence != null && (
-              <span className="px-2 py-0.5 rounded text-xs font-medium" style={{ background: "rgba(78,204,196,0.1)", color: "#4ab5ad" }}>
-                V: {(song.valence * 100).toFixed(0)}%
-              </span>
+              <span className="badge b-blue">V {(song.valence * 100).toFixed(0)}%</span>
             )}
             {trajectory && (
-              <span className="px-2 py-0.5 rounded text-xs" style={{ background: "rgba(255,255,255,0.05)", color: "var(--text-muted)" }}>
+              <span className="badge b-dim" style={{ borderColor: "rgba(255,255,255,0.08)" }}>
                 {TRAJ_ICONS[trajectory.direction] || ""} {trajectory.direction}
               </span>
             )}
@@ -264,6 +267,13 @@ function NowPlaying({ song, isPlaying, whyReason, queue = [], audioRms, talkSegm
           )}
         </div>
       </div>
+    );
+
+  if (compact) return <>{innerGrid}</>;
+
+  return (
+    <div key={animId} className="rounded-xl p-5 song-enter song-enter-active relative overflow-hidden" style={{ background: "var(--bg-surface)", border: "1px solid var(--border)" }}>
+      {innerGrid}
     </div>
   );
 }

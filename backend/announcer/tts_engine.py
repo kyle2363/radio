@@ -18,6 +18,33 @@ from pathlib import Path
 
 import config
 
+# Shared timeout runner — avoids circular imports across announcer submodules
+def run_with_timeout(fn, timeout):
+    """Run *fn* in a daemon thread, enforce *timeout* seconds.
+
+    Returns ``(ok, result_or_error)``:
+    - ``(True, result)``  — fn completed within timeout
+    - ``(False, TimeoutError)``  — fn did not complete in time
+    - ``(False, Exception)``  — fn raised an exception
+    """
+    result = [None]
+    err = [None]
+
+    def _run():
+        try:
+            result[0] = fn()
+        except Exception as e:
+            err[0] = e
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    t.join(timeout=timeout)
+    if t.is_alive():
+        return False, TimeoutError(f"Operation timed out after {timeout}s")
+    if err[0]:
+        return False, err[0]
+    return True, result[0]
+
 logger = logging.getLogger(__name__)
 
 
@@ -119,28 +146,23 @@ class PiperTTSEngine(TTSEngine):
                 return False
         try:
             import piper
-            # Use thread with timeout to prevent ONNX model loading from blocking forever
-            result = [False]
 
             def _do_load():
-                try:
-                    with self._lock:
-                        if voice_id not in self._voices:
-                            voice = piper.PiperVoice.load(self._voice_path(voice_id))
-                            self._voices[voice_id] = voice
-                    result[0] = True
-                except Exception as e:
-                    print(f"PiperTTSEngine: failed to load voice {voice_id}: {e}")
+                with self._lock:
+                    if voice_id not in self._voices:
+                        voice = piper.PiperVoice.load(self._voice_path(voice_id))
+                        self._voices[voice_id] = voice
 
-            t = threading.Thread(target=_do_load, daemon=True)
-            t.start()
-            t.join(timeout=15)
-            if t.is_alive():
-                logger.warning(f"PiperTTSEngine: load_voice timed out for {voice_id}")
+            ok, result_or_err = run_with_timeout(_do_load, timeout=30)
+            if not ok:
+                if isinstance(result_or_err, TimeoutError):
+                    logger.warning(f"PiperTTSEngine: load_voice timed out for {voice_id}")
+                else:
+                    logger.error(f"PiperTTSEngine: failed to load voice {voice_id}: {result_or_err}")
                 return False
-            return result[0]
+            return True
         except Exception as e:
-            print(f"PiperTTSEngine: load_voice exception: {e}")
+            logger.error(f"PiperTTSEngine: load_voice exception: {e}")
             return False
 
     def _download_voice(self, voice_id: str) -> bool:
@@ -148,14 +170,14 @@ class PiperTTSEngine(TTSEngine):
         import requests
         base_url = self.VOICE_URLS.get(voice_id)
         if not base_url:
-            print(f"PiperTTSEngine: unknown voice {voice_id}")
+            logger.warning(f"PiperTTSEngine: unknown voice {voice_id}")
             return False
 
         piper_name = self.VOICE_IDS.get(voice_id, voice_id)
         onnx_url = f"{base_url}/{piper_name}.onnx"
         json_url = f"{base_url}/{piper_name}.onnx.json"
 
-        print(f"Downloading Piper voice: {piper_name}")
+        logger.info(f"Downloading Piper voice: {piper_name}")
         try:
             for url, path in [(onnx_url, self._voice_path(voice_id)),
                               (json_url, self._voice_json_path(voice_id))]:
@@ -165,7 +187,7 @@ class PiperTTSEngine(TTSEngine):
                     f.write(r.content)
             return True
         except Exception as e:
-            print(f"Failed to download voice {voice_id}: {e}")
+            logger.error(f"Failed to download voice {voice_id}: {e}")
             return False
 
     def download_all_voices(self, progress_callback=None) -> dict[str, bool]:
@@ -198,30 +220,21 @@ class PiperTTSEngine(TTSEngine):
 
         try:
             import piper
-            logger.info(f"PiperTTSEngine: calling voice.synthesize_wav...")
-            # Run synthesis in a thread with timeout to prevent indefinite blocking
-            result_path = [None]
-            error = [None]
 
             def _do_synthesize():
-                try:
-                    with wave.open(output_path, "wb") as wav_file:
-                        voice.synthesize_wav(text, wav_file)
-                    result_path[0] = output_path
-                except Exception as e:
-                    error[0] = e
+                with wave.open(output_path, "wb") as wav_file:
+                    voice.synthesize_wav(text, wav_file)
+                return output_path
 
-            t = threading.Thread(target=_do_synthesize, daemon=True)
-            t.start()
-            t.join(timeout=10)
-            if t.is_alive():
-                logger.warning(f"PiperTTSEngine: synthesize timed out after 10s, falling back")
+            ok, result_or_err = run_with_timeout(_do_synthesize, timeout=30)
+            if not ok:
+                if isinstance(result_or_err, TimeoutError):
+                    logger.warning(f"PiperTTSEngine: synthesize timed out after 30s, falling back")
+                else:
+                    logger.error(f"PiperTTSEngine: synthesize failed: {result_or_err}")
                 return self._fallback_synth(text, output_path)
-            if error[0]:
-                logger.error(f"PiperTTSEngine: synthesize failed: {error[0]}")
-                return self._fallback_synth(text, output_path)
-            logger.info(f"PiperTTSEngine: synthesize SUCCESS -> {output_path}")
-            return output_path
+            logger.info(f"PiperTTSEngine: synthesize SUCCESS -> {result_or_err}")
+            return result_or_err
         except Exception as e:
             logger.error(f"PiperTTSEngine: synthesize failed: {e}")
             return self._fallback_synth(text, output_path)
@@ -263,10 +276,10 @@ class PiperTTSEngine(TTSEngine):
                 wav_file.setnchannels(1)
                 wav_file.setsampwidth(2)
                 wav_file.setframerate(sample_rate)
-                wav_file.writeframes(struct.pack(f"{len(samples)}h", *samples))
+                wav_file.writeframes(bytearray(samples))
             return output_path
         except Exception as e:
-            print(f"Fallback synth failed: {e}")
+            logger.error(f"Fallback synth failed: {e}")
             return None
 
 

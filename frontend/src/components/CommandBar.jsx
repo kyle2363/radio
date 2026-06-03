@@ -1,17 +1,18 @@
 import React, { useState, useRef, useEffect } from "react";
-import { Terminal } from "lucide-react";
+import { Terminal, Heart, ThumbsDown, SkipBack, Play, Pause, Volume2, RefreshCw, Moon, Zap, HelpCircle } from "lucide-react";
 import * as api from "../api";
 
-const COMMAND_HINTS = ['"more energetic"', '"chill vibes"', '"vibe lock"', '"what is next"', '"play more jazz"', '"help"'];
+const COMMAND_HINTS = ['"more energetic"', '"chill vibes"', '"vibe lock"', '"what is next"', '"play more jazz"', '"heart this"', '"pause"', '"play 5 songs from Radiohead"', '"queue chill songs for studying"', '"play something upbeat"', '"help"'];
 const MAX_HISTORY = 10;
 
-function CommandBar({ onCommandSent, compact = false, onFocus }) {
+function CommandBar({ onCommandSent, compact = false, onFocus, onClose }) {
   const [text, setText] = useState("");
   const [response, setResponse] = useState(null);
   const [sending, setSending] = useState(false);
   const [history, setHistory] = useState([]);
   const [historyIdx, setHistoryIdx] = useState(-1);
   const inputRef = useRef(null);
+  const submittedCmdRef = useRef(null);
 
   useEffect(() => {
     const handler = (e) => {
@@ -30,16 +31,22 @@ function CommandBar({ onCommandSent, compact = false, onFocus }) {
     setSending(true);
     setResponse(null);
     const cmd = text.trim();
+    submittedCmdRef.current = cmd;
     setHistory((prev) => [cmd, ...prev].slice(0, MAX_HISTORY));
     setHistoryIdx(-1);
-    setText("");
     try {
       const data = await api.sendCommand(cmd);
       setResponse(data);
       onCommandSent?.(data);
+      // Only clear input if user hasn't typed a new command while waiting
+      const currentInput = inputRef.current?.value || "";
+      if (currentInput.trim() === cmd) {
+        setText("");
+      }
     } catch (err) {
       setResponse({ explanation: "Command failed. Is the server running?" });
     } finally {
+      submittedCmdRef.current = null;
       setSending(false);
     }
   };
@@ -87,6 +94,10 @@ function CommandBar({ onCommandSent, compact = false, onFocus }) {
           className="flex-1 bg-transparent border-none outline-none text-sm"
           style={{ color: "var(--text-primary)" }}
           disabled={sending} />
+        {onClose && (
+          <button type="button" onClick={onClose} className="px-2 py-1 rounded text-xs transition hover:opacity-80"
+            style={{ color: "var(--text-muted)" }}>✕</button>
+        )}
         <button type="submit" disabled={sending || !text.trim()} className="px-5 py-2 rounded-md text-xs font-medium transition"
           style={{ background: "var(--accent-muted)", color: "var(--accent)", border: "1px solid rgba(78,204,196,0.25)" }}>
           {sending ? (
@@ -101,10 +112,25 @@ function CommandBar({ onCommandSent, compact = false, onFocus }) {
       {response && (
         <div className="mt-2 px-4 py-2.5 rounded-lg text-sm" style={{ background: "var(--bg-elevated)" }}>
           <p className="font-medium" style={{ color: "var(--accent)" }}>{response.explanation}</p>
-          {response.commands && (
+          {response.commands && Array.isArray(response.commands) && (
             <ul className="mt-1.5 space-y-0.5">
               {response.commands.map((cmd, i) => <li key={i} className="text-xs font-mono" style={{ color: "var(--text-muted)" }}>{cmd}</li>)}
             </ul>
+          )}
+          {response.commands && !Array.isArray(response.commands) && typeof response.commands === 'object' && (
+            <div className="mt-2 space-y-2.5">
+              {Object.entries(response.commands).map(([category, cmds]) => (
+                <div key={category}>
+                  <div className="text-xs font-bold tracking-wide mb-1" style={{ color: "var(--accent)" }}>{category}</div>
+                  {Array.isArray(cmds) && cmds.map(([cmd, desc], i) => (
+                    <div key={i} className="flex justify-between items-center py-0.5">
+                      <span className="text-xs font-mono" style={{ color: "var(--text-primary)" }}>{cmd}</span>
+                      <span className="text-[10px] ml-2 text-right" style={{ color: "var(--text-muted)" }}>{desc}</span>
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
           )}
         </div>
       )}

@@ -1,36 +1,23 @@
-import sys
-sys.path.insert(0, "C:/Users/kyleh/Desktop/data/projects/radio/backend")
-from db import database
+import json, os, sys
 
-database.init_db()
-conn = database.get_connection()
+base = r'C:\Users\kyleh\Desktop\data\projects\radio\docs\understand_new'
+targets = ['Diviners', "it's all the same", 'Runaway Kids', 'Kiss Me', '5ever', 'At Once', 'dreaming about you']
 
-# Check schema
-schema = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='songs'").fetchone()[0]
-print("=== SONGS SCHEMA ===")
-print(schema)
-print()
+files = {}
+for f in os.listdir(base):
+    if f.endswith('.json'):
+        files[f.lower()] = os.path.join(base, f)
 
-# Count by lyrics status
-counts = conn.execute("""
-    SELECT 
-        SUM(CASE WHEN lyrics IS NOT NULL AND TRIM(lyrics) != '' AND TRIM(lyrics) != 'TODO' THEN 1 ELSE 0 END) as has_lyrics,
-        SUM(CASE WHEN lyrics IS NULL OR TRIM(lyrics) = '' OR TRIM(lyrics) = 'TODO' THEN 1 ELSE 0 END) as no_lyrics
-    FROM songs
-""").fetchone()
-print(f"Total: {counts[0] + counts[1]}")
-print(f"Has lyrics: {counts[0]}")
-print(f"No lyrics: {counts[1]}")
-
-# Show some NULL lyrics examples
-rows = conn.execute("""SELECT id, title, lyrics FROM songs 
-    WHERE (lyrics IS NULL OR TRIM(lyrics) = '' OR TRIM(lyrics) = 'TODO') LIMIT 5""").fetchall()
-print("\nSample songs with no lyrics:")
-for r in rows:
-    print(f"  {r[0]}: {r[1]} — lyrics={repr(r[2][:50] if r[2] else None)}")
-
-# Check if there's an 'instrument' column at all
-cols = [r[1] for r in conn.execute("PRAGMA table_info(songs)").fetchall()]
-print(f"\nColumns: {cols}")
-
-conn.close()
+for t in targets:
+    t_low = t.lower()
+    found = False
+    for k, v in files.items():
+        if t_low in k:
+            with open(v, 'r', encoding='utf-8') as fh:
+                data = json.load(fh)
+            lyr = data[0].get('lyrics', '')
+            print(f'  {t}: len={len(lyr)} ok={len(lyr) > 20}', flush=True)
+            found = True
+            break
+    if not found:
+        print(f'  {t}: NOT FOUND ON DISK', flush=True)

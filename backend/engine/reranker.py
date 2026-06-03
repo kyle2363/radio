@@ -29,19 +29,21 @@ CURRENT STATE:
 CANDIDATES (id | artist - title | energy | genre | lyrics):
 {candidates_list}
 
-Return a JSON array with exactly 5 picks:
-[
-  {{"id": <song_id>, "slot": "exploit", "reason": "<1 sentence why>"}},
-  {{"id": <song_id>, "slot": "exploit", "reason": "<1 sentence why>"}},
-  {{"id": <song_id>, "slot": "explore", "reason": "<1 sentence why>"}},
-  {{"id": <song_id>, "slot": "wildcard", "reason": "<1 sentence why>"}},
-  {{"id": <song_id>, "slot": "context", "reason": "<1 sentence why>"}}
-]
+Return a JSON object with a \"picks\" array containing exactly 5 entries:
+{{
+  "picks": [
+    {{"id": <song_id>, "slot": "exploit", "reason": "<1 sentence why>"}},
+    {{"id": <song_id>, "slot": "exploit", "reason": "<1 sentence why>"}},
+    {{"id": <song_id>, "slot": "explore", "reason": "<1 sentence why>"}},
+    {{"id": <song_id>, "slot": "wildcard", "reason": "<1 sentence why>"}},
+    {{"id": <song_id>, "slot": "context", "reason": "<1 sentence why>"}}
+  ]
+}}
 
 Rules:
 - Each reason must be specific to the song — you can reference lyrics
 - Slots must match: 2 exploit, 1 explore, 1 wildcard, 1 context
-- Return ONLY the JSON array, no preamble
+- Return ONLY the JSON object, no preamble
 """
 
 
@@ -77,7 +79,10 @@ def rerank(candidates, current_song=None, mood_state=None, energy_trajectory="st
         list of pick dicts: [{"id": N, "slot": "exploit", "reason": "..."}, ...]
         or None if LLM fails after retries.
     """
+    logger.debug("rerank: candidates=%d mood=%s energy_traj=%s hour=%s skip_streak=%d vibe_lock=%r",
+                 len(candidates) if candidates else 0, mood_state, energy_trajectory, hour, skip_streak, vibe_lock)
     if not candidates:
+        logger.debug("rerank: no candidates, returning None")
         return None
 
     current_song_str = f"{current_song['artist']} - {current_song['title']}" if current_song else "None"
@@ -111,8 +116,8 @@ def rerank(candidates, current_song=None, mood_state=None, energy_trajectory="st
 
     # Override the hardcoded slot rules in the prompt
     prompt = prompt.replace(
-        "Return a JSON array with exactly 5 picks:",
-        f"Return a JSON array with exactly {5 if not is_vibe_lock else 5} picks:",
+        'Return a JSON object with a "picks" array containing exactly 5 entries:',
+        f'Return a JSON object with a "picks" array containing exactly {5 if not is_vibe_lock else 5} entries:',
     )
     prompt = prompt.replace(
         "Slots must match: 2 exploit, 1 explore, 1 wildcard, 1 context",
@@ -138,7 +143,7 @@ def rerank(candidates, current_song=None, mood_state=None, energy_trajectory="st
                 think=False,
                 response_format={"type": "json_object"},
             )
-            text = response["message"]["content"]
+            text = response.content
 
             # Extract JSON from response
             json_str = text.strip()
@@ -146,7 +151,8 @@ def rerank(candidates, current_song=None, mood_state=None, energy_trajectory="st
                 lines = json_str.split("\n")
                 json_str = "\n".join(lines[1:-1]) if lines[-1].strip() == "```" else json_str
 
-            picks = json.loads(json_str)
+            parsed = json.loads(json_str)
+            picks = parsed.get("picks", []) if isinstance(parsed, dict) else parsed
             if isinstance(picks, list) and len(picks) > 0:
                 # Deduplicate by song_id - keep first occurrence of each
                 seen_ids = set()
@@ -210,6 +216,7 @@ def fallback_assignment(candidates, slots_result):
 
     Uses the slot allocation from slots.py to assign songs.
     """
+    logger.debug("fallback_assignment: candidates=%d slots_result=%r", len(candidates) if candidates else 0, {k: len(v) for k, v in slots_result.items()} if slots_result else None)
     picks = []
     for slot_name, slot_songs in slots_result.items():
         for song in slot_songs:
@@ -226,4 +233,5 @@ def deterministic_assignment(candidates, slots_result):
 
     Same as fallback_assignment but always used in normal mode.
     """
+    logger.debug("deterministic_assignment: candidates=%d slots_result=%r", len(candidates) if candidates else 0, {k: len(v) for k, v in slots_result.items()} if slots_result else None)
     return fallback_assignment(candidates, slots_result)

@@ -15,6 +15,7 @@ websockets>=13.1
 pydantic>=2.9.0
 tqdm>=4.66.0
 requests>=2.32.0
+rapidfuzz>=3.0.0
 
 # OmniVoice TTS (voice cloning) — requires CUDA GPU
 # torch>=2.1.0  # Install separately with CUDA support: pip install torch --index-url https://download.pytorch.org/whl/cu121

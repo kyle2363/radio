@@ -77,4 +77,35 @@ export function SkeletonStats() {
   );
 }
 
+export function SkeletonQueueCompact({ count = 5 }) {
+  return (
+    <div>
+      {Array.from({ length: count }).map((_, i) => (
+        <div key={i} className="animate-pulse" style={{
+          background: "var(--bg-elevated)",
+          padding: "6px 8px",
+          marginBottom: "3px",
+          borderLeft: "3px solid transparent",
+          borderTop: "1px solid var(--border-subtle)",
+          borderRight: "1px solid var(--border-subtle)",
+          borderBottom: "1px solid var(--border-subtle)",
+        }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 5, marginBottom: 2 }}>
+            <div className="bg-gray-800 rounded" style={{ height: 12, width: "60%", minWidth: 80 }} />
+            <div className="bg-gray-800 rounded" style={{ height: 12, width: 40, flexShrink: 0 }} />
+          </div>
+          <div className="bg-gray-800 rounded" style={{ height: 8, width: "45%", marginBottom: 4 }} />
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <div className="bg-gray-800 rounded" style={{ height: 8, width: 12 }} />
+            <div className="bg-gray-800 rounded" style={{ height: 3, width: 34 }} />
+            <div className="bg-gray-800 rounded" style={{ height: 8, width: 12 }} />
+            <div className="bg-gray-800 rounded" style={{ height: 3, width: 34 }} />
+            <div className="bg-gray-800 rounded" style={{ height: 8, width: 40, marginLeft: "auto" }} />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default Skeleton;

@@ -1,12 +1,39 @@
 import json
 import math
 import os
+import re
 import sqlite3
+import threading
+import time
+from contextlib import contextmanager
 from datetime import datetime, timedelta
+
+from rapidfuzz import fuzz
 
 import config
 
 DB_PATH = config.DB_PATH
+
+# --- Settings cache (Issue 3: avoid DB reads in hot paths) ---
+_settings_cache = {}
+_settings_cache_lock = threading.Lock()
+_SETTINGS_CACHE_TTL = 5  # seconds
+
+
+def _get_cached_setting(key):
+    with _settings_cache_lock:
+        entry = _settings_cache.get(key)
+        if entry and time.time() - entry["ts"] < _SETTINGS_CACHE_TTL:
+            return entry["val"]
+    val = get_setting(key)
+    with _settings_cache_lock:
+        _settings_cache[key] = {"val": val, "ts": time.time()}
+    return val
+
+
+def _invalidate_setting(key):
+    with _settings_cache_lock:
+        _settings_cache.pop(key, None)
 
 
 def get_connection():
@@ -16,9 +43,6 @@ def get_connection():
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
-
-
-from contextlib import contextmanager
 
 
 @contextmanager
@@ -35,12 +59,6 @@ def init_db():
     conn = get_connection()
     with open(os.path.join(os.path.dirname(__file__), "schema.sql"), "r") as f:
         conn.executescript(f.read())
-    # Migration: add raw feature columns if missing
-    cursor = conn.execute("PRAGMA table_info(songs)")
-    columns = {row[1] for row in cursor.fetchall()}
-    for col in ["raw_rms", "crest_factor", "spectral_contrast", "spectral_rolloff", "spectral_flatness"]:
-        if col not in columns:
-            conn.execute(f"ALTER TABLE songs ADD COLUMN {col} REAL")
     conn.commit()
     conn.close()
     add_missing_columns()
@@ -78,10 +96,118 @@ def add_missing_columns():
                     conn.execute(f"ALTER TABLE songs ADD COLUMN {col} INTEGER DEFAULT 0")
                 else:
                     conn.execute(f"ALTER TABLE songs ADD COLUMN {col} TEXT")
+        # Migration: add dj_effect_eligible column to songs
+        if "dj_effect_eligible" not in columns:
+            conn.execute("ALTER TABLE songs ADD COLUMN dj_effect_eligible INTEGER DEFAULT 1")
+
+        # Migration: add subfolder column to songs
+        if "subfolder" not in columns:
+            conn.execute("ALTER TABLE songs ADD COLUMN subfolder TEXT")
+            _populate_subfolders(conn)
+
+        # Migration: add undone column to play_events
+        cursor = conn.execute("PRAGMA table_info(play_events)")
+        pe_columns = {row[1] for row in cursor.fetchall()}
+        if "undone" not in pe_columns:
+            conn.execute("ALTER TABLE play_events ADD COLUMN undone INTEGER DEFAULT 0")
+        # Migration: add blacklist level columns
+        cursor = conn.execute("PRAGMA table_info(blacklist)")
+        bl_columns = {row[1] for row in cursor.fetchall()}
+        for col in ["level", "expires_at", "mood", "artist", "cluster_ids"]:
+            if col not in bl_columns:
+                if col == "level":
+                    conn.execute("ALTER TABLE blacklist ADD COLUMN level TEXT NOT NULL DEFAULT 'never_play'")
+                else:
+                    conn.execute(f"ALTER TABLE blacklist ADD COLUMN {col} TEXT")
+        # Ensure the column-level index exists (safe after ALTER TABLE above)
+        try:
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_blacklist_level ON blacklist(level)")
+        except Exception as idx_e:
+            import logging
+            logging.getLogger(__name__).warning(f"Could not create blacklist level index: {idx_e}")
         conn.commit()
     except Exception as e:
         import logging
         logging.getLogger(__name__).error(f"Migration failed: {e}")
+    finally:
+        conn.close()
+
+
+def _populate_subfolders(conn):
+    """Extract subfolder from filepath and update existing songs that have NULL subfolder."""
+    try:
+        rows = conn.execute("SELECT id, filepath FROM songs WHERE subfolder IS NULL OR subfolder = ''").fetchall()
+        updated = 0
+        for row in rows:
+            subfolder = _extract_subfolder_from_path(row["filepath"])
+            if subfolder:
+                conn.execute("UPDATE songs SET subfolder = ? WHERE id = ?", (subfolder, row["id"]))
+                updated += 1
+        if updated:
+            conn.commit()
+            import logging
+            logging.getLogger(__name__).info(f"Populated subfolder for {updated} songs")
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Failed to populate subfolders: {e}")
+
+
+def _extract_subfolder_from_path(filepath):
+    """Extract the subfolder name relative to the music directory from a filepath.
+
+    E.g. '.../audio_files/song 40/file.mp3' → 'song 40'
+    """
+    if not filepath:
+        return None
+    import config
+    music_dir = str(config.MUSIC_DIR).replace("\\", "/").rstrip("/")
+    normalized = filepath.replace("\\", "/").rstrip("/")
+    if music_dir in normalized:
+        rel = normalized[len(music_dir) + 1:]
+        parts = rel.split("/")
+        if len(parts) >= 2:
+            return parts[0]
+    # Fallback: return parent directory name
+    import os
+    return os.path.basename(os.path.dirname(filepath))
+
+
+def get_subfolders():
+    """Get sorted list of unique subfolders that have songs."""
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT DISTINCT subfolder FROM songs WHERE subfolder IS NOT NULL AND subfolder != '' ORDER BY subfolder"
+        ).fetchall()
+        return [r["subfolder"] for r in rows]
+    finally:
+        conn.close()
+
+
+def get_subfolder_song_counts():
+    """Get count of songs per subfolder."""
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT subfolder, COUNT(*) as cnt FROM songs WHERE subfolder IS NOT NULL AND subfolder != '' GROUP BY subfolder ORDER BY subfolder"
+        ).fetchall()
+        return {r["subfolder"]: r["cnt"] for r in rows}
+    finally:
+        conn.close()
+
+
+def get_song_ids_in_subfolders(folders):
+    """Get all song IDs that belong to the given subfolders."""
+    if not folders:
+        return []
+    conn = get_connection()
+    try:
+        placeholders = ",".join("?" for _ in folders)
+        rows = conn.execute(
+            f"SELECT id FROM songs WHERE subfolder IN ({placeholders})",
+            list(folders),
+        ).fetchall()
+        return [r["id"] for r in rows]
     finally:
         conn.close()
 
@@ -104,13 +230,30 @@ def add_song(filepath, file_hash):
         conn.close()
 
 
+_ALLOWED_SONG_COLUMNS = {
+    "artist", "title", "album", "user_tags", "user_notes",
+    "energy", "valence", "bpm", "ingest_phase", "art_file",
+    "play_count", "skip_count", "complete_count", "replay_count",
+    "avg_completion", "recovery_score", "last_played",
+    "ai_description", "emotional_tags", "genre_tags", "instrument_tags",
+    "lyrics", "keyscale", "timesignature", "vocal_language",
+    "raw_rms", "crest_factor", "spectral_contrast",
+    "spectral_rolloff", "spectral_flatness",
+    "duration_secs", "rms_envelope", "dj_effect_eligible",
+    "subfolder", "file_hash", "cluster_id",
+}
+
+
 def update_song(song_id, **kwargs):
     conn = get_connection()
     try:
         if not kwargs:
             return
-        sets = ", ".join(f"{k} = ?" for k in kwargs.keys())
-        values = list(kwargs.values()) + [song_id]
+        allowed = {k: v for k, v in kwargs.items() if k in _ALLOWED_SONG_COLUMNS}
+        if not allowed:
+            return
+        sets = ", ".join(f"{k} = ?" for k in allowed)
+        values = list(allowed.values()) + [song_id]
         conn.execute(f"UPDATE songs SET {sets} WHERE id = ?", values)
         conn.commit()
     finally:
@@ -122,6 +265,21 @@ def get_song(song_id):
     try:
         row = conn.execute("SELECT * FROM songs WHERE id = ?", (song_id,)).fetchone()
         return _row_to_dict(row)
+    finally:
+        conn.close()
+
+
+def get_songs_by_ids(song_ids):
+    """Batch-fetch songs by ID list. Returns dict keyed by song_id."""
+    if not song_ids:
+        return {}
+    conn = get_connection()
+    try:
+        placeholders = ",".join("?" * len(song_ids))
+        rows = conn.execute(
+            f"SELECT * FROM songs WHERE id IN ({placeholders})", song_ids
+        ).fetchall()
+        return {r["id"]: _row_to_dict(r) for r in rows}
     finally:
         conn.close()
 
@@ -210,7 +368,7 @@ def set_ingest_phases(song_ids, phase):
         return
     conn = get_connection()
     try:
-        placeholders = ",".join("?" * len(song_ids))
+        placeholders = ",".join(["?"] * len(song_ids))
         conn.execute(
             f"UPDATE songs SET ingest_phase = ? WHERE id IN ({placeholders})",
             [phase] + song_ids,
@@ -224,7 +382,7 @@ def get_ingest_status():
     conn = get_connection()
     try:
         rows = conn.execute(
-            "SELECT ingest_phase, COUNT(*) as cnt FROM songs GROUP BY ingest_phase ORDER BY id"
+            "SELECT ingest_phase, COUNT(*) as cnt FROM songs GROUP BY ingest_phase ORDER BY ingest_phase"
         ).fetchall()
         return {r["ingest_phase"]: r["cnt"] for r in rows}
     finally:
@@ -243,8 +401,10 @@ def get_total_song_count():
 def record_play_event(song_id, session_id, signal, **kwargs):
     conn = get_connection()
     try:
-        hour = datetime.now().hour
-        day_type = "weekday" if datetime.now().weekday() < 5 else "weekend"
+        now = datetime.now()
+        hour = now.hour
+        day_type = "weekday" if now.weekday() < 5 else "weekend"
+        conn.execute("BEGIN")
         conn.execute(
             """INSERT INTO play_events 
                (song_id, session_id, signal, skip_at_secs, completion_pct, 
@@ -270,15 +430,192 @@ def record_play_event(song_id, session_id, signal, **kwargs):
             )
         elif signal in ("skip_early", "skip_late"):
             conn.execute(
-                "UPDATE songs SET skip_count = skip_count + 1, play_count = play_count + 1 WHERE id = ?",
+                "UPDATE songs SET skip_count = skip_count + 1 WHERE id = ?",
                 (song_id,),
             )
         elif signal == "playing":
             conn.execute(
                 "UPDATE songs SET play_count = play_count + 1, last_played = ? WHERE id = ?",
-                (datetime.now().isoformat(), song_id),
+                (now.isoformat(), song_id),
             )
         conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def record_skip_feedback(session_id, skip_streak, reason):
+    """Record a skip feedback reason."""
+    conn = get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO skip_feedback (session_id, skip_streak, reason) VALUES (?, ?, ?)",
+            (session_id, skip_streak, reason),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_recent_skip_feedback(session_id, limit=5):
+    """Get recent skip feedback for a session."""
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM skip_feedback WHERE session_id = ? ORDER BY created_at DESC LIMIT ?",
+            (session_id, limit),
+        ).fetchall()
+        return [_row_to_dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def undo_play_event(song_id, signal_type):
+    """Mark the most recent play_event of a given signal type as undone."""
+    conn = get_connection()
+    try:
+        conn.execute(
+            """UPDATE play_events SET undone = 1
+               WHERE id = (SELECT id FROM play_events
+                           WHERE song_id = ? AND signal = ? AND (undone IS NULL OR undone = 0)
+                           ORDER BY played_at DESC LIMIT 1)""",
+            (song_id, signal_type),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_last_play_event(song_id, signal_type):
+    """Get the most recent play_event for a song/signal combo."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT * FROM play_events WHERE song_id = ? AND signal = ? ORDER BY played_at DESC LIMIT 1",
+            (song_id, signal_type),
+        ).fetchone()
+        return _row_to_dict(row)
+    finally:
+        conn.close()
+
+
+def search_songs_advanced(query=None, artist=None, genre_tag=None,
+                           energy_min=None, energy_max=None,
+                           valence_min=None, valence_max=None,
+                           cluster_id=None, limit=20, offset=0,
+                           sort_by=None, order="ASC", fuzzy=True):
+    """Advanced song search with multiple optional filters.
+
+    All filters are ANDed together. Only returns clustered songs.
+    When fuzzy=True, applies rapidfuzz token_sort_ratio ranking to handle
+    spelling errors (e.g. "Radiohed" -> "Radiohead"). Merges SQL LIKE
+    results with fuzzy-ranked results and deduplicates by song ID.
+    """
+    conn = get_connection()
+    try:
+        conditions = ["s.ingest_phase = 'clustered'"]
+        params = []
+
+        if query:
+            conditions.append("(LOWER(s.title) LIKE ? OR LOWER(s.artist) LIKE ?)")
+            like = f"%{query.lower()}%"
+            params.extend([like, like])
+
+        if artist:
+            conditions.append("LOWER(s.artist) LIKE ?")
+            params.append(f"%{artist.lower()}%")
+
+        if genre_tag:
+            conditions.append("LOWER(s.genre_tags) LIKE ?")
+            params.append(f"%{genre_tag.lower()}%")
+
+        if energy_min is not None:
+            conditions.append("s.energy >= ?")
+            params.append(float(energy_min))
+
+        if energy_max is not None:
+            conditions.append("s.energy <= ?")
+            params.append(float(energy_max))
+
+        if valence_min is not None:
+            conditions.append("s.valence >= ?")
+            params.append(float(valence_min))
+
+        if valence_max is not None:
+            conditions.append("s.valence <= ?")
+            params.append(float(valence_max))
+
+        if cluster_id is not None:
+            conditions.append("s.cluster_id = ?")
+            params.append(int(cluster_id))
+
+        allowed_sorts = {"energy", "valence", "bpm", "title", "artist",
+                         "play_count", "avg_completion", "duration_secs",
+                         "added_at"}
+        order_col = "s.id"
+        if sort_by and sort_by in allowed_sorts:
+            order_col = f"s.{sort_by}"
+        order_dir = "ASC" if order.upper() != "DESC" else "DESC"
+
+        where = " AND ".join(conditions)
+        sql = f"""SELECT s.* FROM songs s
+                  LEFT JOIN blacklist b ON s.id = b.song_id
+                  WHERE {where} AND b.song_id IS NULL
+                  ORDER BY {order_col} {order_dir}
+                  LIMIT ? OFFSET ?"""
+        params.extend([limit, offset])
+
+        like_rows = conn.execute(sql, params).fetchall()
+        like_results = [_row_to_dict(r) for r in like_rows]
+
+        # Fuzzy ranking pass (runs when query/artist provided and fuzzy enabled)
+        if fuzzy and (query or artist) and not genre_tag and energy_min is None and energy_max is None and valence_min is None and valence_max is None and cluster_id is None:
+            # No restrictive filters — do full fuzzy scan
+            fuzzy_rows = conn.execute(
+                "SELECT s.*, s.filepath FROM songs s LEFT JOIN blacklist b ON s.id = b.song_id WHERE s.ingest_phase = 'clustered' AND b.song_id IS NULL",
+            ).fetchall()
+            fuzzy_results = []
+            for r in fuzzy_rows:
+                d = dict(r)
+                artist_text = (d.get("artist") or "").strip()
+                title_text = (d.get("title") or "").strip()
+                # Strip common filename prefixes like "01 - "
+                title_text = re.sub(r'^\d+\s*-\s*', '', title_text).strip()
+                if not artist_text and not title_text:
+                    continue
+                combined = f"{artist_text} {title_text}"
+                score = 0
+                # Compare query against artist, title, and combined — take max
+                if query:
+                    q = query.lower()
+                    score = max(score, fuzz.token_sort_ratio(q, artist_text.lower()))
+                    score = max(score, fuzz.token_sort_ratio(q, title_text.lower()))
+                    score = max(score, fuzz.token_sort_ratio(q, combined.lower()))
+                if artist:
+                    a = artist.lower()
+                    score = max(score, fuzz.token_sort_ratio(a, artist_text.lower()))
+                    score = max(score, fuzz.token_sort_ratio(a, title_text.lower()))
+                    score = max(score, fuzz.token_sort_ratio(a, combined.lower()))
+                if score >= 65:
+                    d["_fuzzy_score"] = score
+                    d["_fuzzy"] = True
+                    fuzzy_results.append(d)
+            fuzzy_results.sort(key=lambda x: -x["_fuzzy_score"])
+            # Merge: like_results first, then fuzzy, dedup by ID
+            seen_ids = {r["id"] for r in like_results}
+            for fr in fuzzy_results:
+                if fr["id"] not in seen_ids:
+                    like_results.append(fr)
+                    seen_ids.add(fr["id"])
+            # Trim to limit
+            if offset > 0:
+                like_results = like_results[offset:]
+            like_results = like_results[:limit]
+            return like_results
+
+        return like_results
     finally:
         conn.close()
 
@@ -291,17 +628,6 @@ def get_recent_plays(song_id, n=10):
             (song_id, n),
         ).fetchall()
         return [_row_to_dict(r) for r in rows]
-    finally:
-        conn.close()
-
-
-def update_song_stats(song_id, **kwargs):
-    conn = get_connection()
-    try:
-        sets = ", ".join(f"{k} = ?" for k in kwargs.keys())
-        values = list(kwargs.values()) + [song_id]
-        conn.execute(f"UPDATE songs SET {sets} WHERE id = ?", values)
-        conn.commit()
     finally:
         conn.close()
 
@@ -323,23 +649,44 @@ def get_neutral_centroid_songs(n=20):
         conn.close()
 
 
+def get_neutral_centroid_songs_excluding(n=20, exclude_ids=None):
+    conn = get_connection()
+    try:
+        query = """SELECT * FROM songs 
+                   WHERE ingest_phase = 'clustered' 
+                    AND energy BETWEEN 0.3 AND 0.7
+                    AND valence BETWEEN 0.3 AND 0.7"""
+        params = []
+        if exclude_ids:
+            placeholders = ','.join('?' * len(exclude_ids))
+            query += f" AND id NOT IN ({placeholders})"
+            params.extend(exclude_ids)
+        query += " ORDER BY ABS(energy - 0.5) + ABS(valence - 0.5) LIMIT ?"
+        params.append(n)
+        rows = conn.execute(query, params).fetchall()
+        return [_row_to_dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
 def get_blacklisted():
     conn = get_connection()
     try:
         rows = conn.execute(
-            "SELECT b.song_id, b.reason, b.added_at, s.artist, s.title FROM blacklist b LEFT JOIN songs s ON b.song_id = s.id"
+            "SELECT b.song_id, b.level, b.reason, b.mood, b.artist, b.cluster_ids, b.added_at, b.expires_at, s.artist as song_artist, s.title, s.cluster_id FROM blacklist b LEFT JOIN songs s ON b.song_id = s.id WHERE b.expires_at IS NULL OR b.expires_at > datetime('now')"
         ).fetchall()
         return [_row_to_dict(r) for r in rows]
     finally:
         conn.close()
 
 
-def blacklist_song(song_id, reason):
+def blacklist_song(song_id, level="never_play", reason="user", mood=None, artist=None, cluster_ids=None, expires_at=None):
     conn = get_connection()
     try:
         conn.execute(
-            "INSERT OR IGNORE INTO blacklist (song_id, reason) VALUES (?, ?)",
-            (song_id, reason),
+            """INSERT OR REPLACE INTO blacklist (song_id, level, reason, mood, artist, cluster_ids, expires_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (song_id, level, reason, mood, artist, cluster_ids, expires_at),
         )
         conn.commit()
     finally:
@@ -350,6 +697,161 @@ def unblacklist_song(song_id):
     conn = get_connection()
     try:
         conn.execute("DELETE FROM blacklist WHERE song_id = ?", (song_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_songs_by_artists(artist_names):
+    """Get all song IDs for a set of artist names (case-insensitive)."""
+    if not artist_names:
+        return []
+    conn = get_connection()
+    try:
+        placeholders = ",".join("?" for _ in artist_names)
+        rows = conn.execute(
+            f"SELECT id FROM songs WHERE LOWER(artist) IN ({placeholders})",
+            [a.lower() for a in artist_names],
+        ).fetchall()
+        return [r["id"] for r in rows]
+    finally:
+        conn.close()
+
+
+def get_songs_by_clusters(cluster_ids):
+    """Get all song IDs for a set of cluster IDs."""
+    if not cluster_ids:
+        return []
+    conn = get_connection()
+    try:
+        placeholders = ",".join("?" for _ in cluster_ids)
+        rows = conn.execute(
+            f"SELECT id FROM songs WHERE cluster_id IN ({placeholders})",
+            list(cluster_ids),
+        ).fetchall()
+        return [r["id"] for r in rows]
+    finally:
+        conn.close()
+
+
+# ── Collections ──────────────────────────────────────────────
+
+
+def get_collections():
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """SELECT c.*, (SELECT COUNT(*) FROM collection_songs WHERE collection_id = c.id) as song_count
+               FROM collections c ORDER BY c.name"""
+        ).fetchall()
+        return [_row_to_dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def create_collection(name, description=""):
+    conn = get_connection()
+    try:
+        cur = conn.execute(
+            "INSERT INTO collections (name, description) VALUES (?, ?)",
+            (name, description),
+        )
+        conn.commit()
+        return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def update_collection(collection_id, name=None, description=None):
+    conn = get_connection()
+    try:
+        updates = {}
+        if name is not None:
+            updates["name"] = name
+        if description is not None:
+            updates["description"] = description
+        if updates:
+            updates["updated_at"] = datetime.now().isoformat()
+            sets = ", ".join(f"{k} = ?" for k in updates.keys())
+            values = list(updates.values()) + [collection_id]
+            conn.execute(f"UPDATE collections SET {sets} WHERE id = ?", values)
+            conn.commit()
+    finally:
+        conn.close()
+
+
+def delete_collection(collection_id):
+    conn = get_connection()
+    try:
+        conn.execute("DELETE FROM collections WHERE id = ?", (collection_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_collection_songs(collection_id):
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """SELECT s.*, cs.position, cs.added_at as collection_added_at
+               FROM collection_songs cs
+               JOIN songs s ON cs.song_id = s.id
+               WHERE cs.collection_id = ?
+               ORDER BY cs.position""",
+            (collection_id,),
+        ).fetchall()
+        return [_row_to_dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def add_to_collection(collection_id, song_id, position=None):
+    conn = get_connection()
+    try:
+        if position is None:
+            row = conn.execute(
+                "SELECT COALESCE(MAX(position), -1) + 1 as next_pos FROM collection_songs WHERE collection_id = ?",
+                (collection_id,),
+            ).fetchone()
+            position = row["next_pos"]
+        conn.execute(
+            "INSERT OR IGNORE INTO collection_songs (collection_id, song_id, position) VALUES (?, ?, ?)",
+            (collection_id, song_id, position),
+        )
+        conn.execute("UPDATE collections SET updated_at = ? WHERE id = ?",
+                      (datetime.now().isoformat(), collection_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def remove_from_collection(collection_id, song_id):
+    conn = get_connection()
+    try:
+        conn.execute(
+            "DELETE FROM collection_songs WHERE collection_id = ? AND song_id = ?",
+            (collection_id, song_id),
+        )
+        conn.execute("UPDATE collections SET updated_at = ? WHERE id = ?",
+                      (datetime.now().isoformat(), collection_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def reorder_collection(collection_id, song_ids):
+    """Reorder songs in a collection by position."""
+    conn = get_connection()
+    try:
+        now = datetime.now()
+        conn.execute("BEGIN")
+        params = [(pos, collection_id, song_id) for pos, song_id in enumerate(song_ids)]
+        conn.executemany(
+            "UPDATE collection_songs SET position = ? WHERE collection_id = ? AND song_id = ?",
+            params,
+        )
+        conn.execute("UPDATE collections SET updated_at = ? WHERE id = ?",
+                      (now.isoformat(), collection_id))
         conn.commit()
     finally:
         conn.close()
@@ -372,6 +874,7 @@ def set_setting(key, value):
             (key, str(value)),
         )
         conn.commit()
+        _invalidate_setting(key)
     finally:
         conn.close()
 
@@ -451,18 +954,36 @@ def close_session(session_id):
         conn.close()
 
 
+def get_session(session_id):
+    """Retrieve a session by ID."""
+    if not session_id:
+        return None
+    conn = get_connection()
+    try:
+        row = conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
+        if not row:
+            return None
+        session = _row_to_dict(row)
+        if session.get("mood_changes"):
+            session["mood_changes"] = json.loads(session["mood_changes"])
+        return session
+    finally:
+        conn.close()
+
+
 def record_mood_change(session_id, mood_state, source="auto"):
     """Record a mood change in the session's mood_changes JSON array."""
     if not session_id:
         return
     conn = get_connection()
     try:
+        entry = {"mood": mood_state, "timestamp": datetime.now().isoformat(), "source": source}
         row = conn.execute("SELECT mood_changes FROM sessions WHERE id = ?", (session_id,)).fetchone()
-        changes = json.loads(row["mood_changes"]) if row and row["mood_changes"] else []
-        changes.append({"mood": mood_state, "timestamp": datetime.now().isoformat(), "source": source})
+        existing = json.loads(row["mood_changes"]) if row and row["mood_changes"] else []
+        existing.append(entry)
         conn.execute(
             "UPDATE sessions SET mood_changes = ? WHERE id = ?",
-            (json.dumps(changes), session_id),
+            (json.dumps(existing), session_id),
         )
         conn.commit()
     finally:

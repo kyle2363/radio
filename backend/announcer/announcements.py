@@ -3,6 +3,7 @@
 import enum
 import logging
 import random
+import threading
 import time
 from datetime import datetime
 
@@ -28,6 +29,7 @@ _last_announcement_time = 0
 _DEFAULT_MIN_INTERVAL = 30  # default seconds between announcements
 _radio_intro_count = 0  # counter for every-N-songs radio intros
 _songs_since_last_skip = 0  # adaptive interval tracker
+_announce_lock = threading.Lock()
 
 
 def get_announcement(context: dict, trigger: AnnounceTrigger = AnnounceTrigger.RADIO_INTRO) -> str:
@@ -50,12 +52,13 @@ def get_announcement(context: dict, trigger: AnnounceTrigger = AnnounceTrigger.R
     global _last_announcement_time
     logger.debug(f"get_announcement START: trigger={trigger.value}")
 
-    # Respect minimum interval between announcements
-    now = time.time()
+    # Respect minimum interval between announcements (atomic check+read)
     interval = get_announcement_interval()
-    if now - _last_announcement_time < interval:
-        logger.debug("get_announcement: skipped (interval not elapsed)")
-        return None
+    with _announce_lock:
+        now = time.time()
+        if now - _last_announcement_time < interval:
+            logger.debug("get_announcement: skipped (interval not elapsed)")
+            return None
 
     current_song = context.get("current_song", {})
     next_song = context.get("next_song", {})
@@ -315,11 +318,12 @@ Rules:
             think=False,
         )
         logger.debug("get_announcement: LLM returned")
-        announcement = response["message"]["content"].strip()
+        announcement = response.content.strip()
         # Remove any quotes or formatting, strip non-ASCII (emojis)
         announcement = announcement.strip('"\'').strip()
         announcement = announcement.encode('ascii', 'ignore').decode('ascii')
-        _last_announcement_time = time.time()
+        with _announce_lock:
+            _last_announcement_time = time.time()
         logger.debug(f"get_announcement: returning text ({len(announcement)} chars)")
         return announcement
     except Exception as e:
@@ -379,11 +383,19 @@ def should_announce(context: dict) -> bool:
                    AnnounceTrigger.WILDCARD, AnnounceTrigger.RECOVERY):
         return True
 
-    # Radio intro: announce every 3-4 songs
+    # Radio intro: announce every N songs (configurable via radio_intro_frequency)
     if trigger == AnnounceTrigger.RADIO_INTRO:
         global _radio_intro_count
-        _radio_intro_count = (_radio_intro_count + 1) % 4
-        return _radio_intro_count == 0
+        try:
+            from db import database
+            freq = database.get_setting("radio_intro_frequency")
+            frequency = int(freq) if freq is not None else 3
+        except Exception:
+            frequency = 3
+        with _announce_lock:
+            _radio_intro_count = (_radio_intro_count + 1) % frequency
+            count = _radio_intro_count
+        return count == 0
 
     # Song intro: announce every other song
     if trigger == AnnounceTrigger.SONG_INTRO:

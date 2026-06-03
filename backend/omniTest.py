@@ -4,7 +4,7 @@ import torch
 
 model = OmniVoice.from_pretrained(
     "k2-fsa/OmniVoice",
-    device_map="cuda:0",
+    device_map="cpu",
     dtype=torch.float16
 )
 

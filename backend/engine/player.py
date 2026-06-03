@@ -86,6 +86,11 @@ class Player:
         self._chain_items = []
         self._current_chain_index = 0
 
+        # Talk-playing state: True when current chain contains TTS items
+        # (talk segment playing, real song follows).  Cleared when VLC
+        # advances past the last TTS item to the real song.
+        self._talk_playing = False
+
         # Internal MediaPlayer end-reached handler is re-attached each play()
         self._mp_event_manager = None
 
@@ -144,7 +149,7 @@ class Player:
 
         self._current_chain_index += 1
 
-        # Update _current_song_id if we just advanced to a real song
+        # Clear talk-playing when we advance from TTS to the real song
         if self._current_chain_index < len(self._chain_items):
             cur = self._chain_items[self._current_chain_index]
             if not cur.get("is_tts"):
@@ -152,6 +157,9 @@ class Player:
                 if sid:
                     self._current_song_id = sid
                     _song_logger.debug("  -> updated current_song_id=%s from chain", sid)
+                if self._talk_playing:
+                    self._talk_playing = False
+                    _song_logger.debug("  -> talk ended (chain advanced to real song)")
 
     def _on_end_reached(self, event, user_data):
         """Called when the entire media list playback is done.
@@ -173,6 +181,7 @@ class Player:
         self._stop_in_progress = False
         self._state = "stopped"
         self._current_song_id = None
+        self._talk_playing = False
         self._chain_items = []
         self._current_chain_index = 0
         _song_logger.debug("  -> cleaned up: state=stopped song_id=None")
@@ -216,6 +225,7 @@ class Player:
         self._state = "stopped"
         self._current_song_id = None
         self._current_session_id = None
+        self._talk_playing = False
         self._chain_items = []
         self._current_chain_index = 0
         _song_logger.debug("  -> cleaned up: state=stopped song_id=None")
@@ -312,6 +322,7 @@ class Player:
                 return
             song_id = self._current_song_id
             self._state = "stopped"  # prevent double-fire via _on_end_reached
+            self._talk_playing = False
             _song_logger.debug("  -> firing ended for song %s (from internal mp event)", song_id)
             self._fire_song_ended(song_id)
             self._current_song_id = None
@@ -320,7 +331,7 @@ class Player:
 
     def play_song(self, song_id, filepath, session_id=None):
         """Play a single song. Returns True if playback started."""
-        _song_logger.debug("play_song(id=%s, file=%s) entering", song_id, os.path.basename(filepath))
+        _song_logger.debug("play_song(id=%s, file=%s) entering", song_id, os.path.basename(filepath) if filepath else None)
         try:
             with self._lock:
                 self._play_gen += 1
@@ -340,6 +351,7 @@ class Player:
                 self._media_list.add_media(media)
                 self._chain_items = [{"song_id": song_id, "is_tts": False}]
                 self._current_chain_index = 0
+                self._talk_playing = False
                 _song_logger.debug("  -> play new media")
                 self._list_player.play()
                 # Attach MediaPlayerEndReached directly on internal player
@@ -382,7 +394,10 @@ class Player:
                     self._media_list.add_media(media)
                 self._chain_items = items
                 self._current_chain_index = 0
-                _song_logger.debug("  -> play new chain")
+                # Determine if this chain contains TTS (talk) items
+                self._talk_playing = any(it.get("is_tts") for it in items)
+                _song_logger.debug("  -> play new chain, talk_playing=%s",
+                                   self._talk_playing)
                 self._list_player.play()
                 # Attach MediaPlayerEndReached directly on internal player
                 self._attach_mp_end_reached()
@@ -418,6 +433,7 @@ class Player:
         self._current_song_id = None
         self._current_session_id = None
         self._state = "stopped"
+        self._talk_playing = False
         self._chain_items = []
         self._current_chain_index = 0
 
@@ -451,6 +467,10 @@ class Player:
     def get_current_song_id(self):
         """Return the currently playing song ID."""
         return self._current_song_id
+
+    def is_talk_playing(self):
+        """Return True if a talk segment is currently playing (TTS in chain)."""
+        return self._talk_playing
 
     def _get_mp(self):
         """Return the internal MediaPlayer, or None."""
@@ -510,6 +530,17 @@ class Player:
                     mp.audio_set_volume(max(0, min(100, volume)))
         except Exception as e:
             _song_logger.debug("set_volume failed: %s", e)
+
+    def get_volume(self):
+        """Get current volume (0-100)."""
+        try:
+            with self._lock:
+                mp = self._get_mp()
+                if mp:
+                    return mp.audio_get_volume()
+        except Exception as e:
+            _song_logger.debug("get_volume failed: %s", e)
+        return 70
 
     def seek(self, ms):
         """Seek to a position in milliseconds."""

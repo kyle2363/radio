@@ -129,9 +129,19 @@ def detect_language(lyrics):
 def main():
     resume = '--resume' in sys.argv
     dry_run = '--dry-run' in sys.argv
+    limit = None
+    if '--limit' in sys.argv:
+        idx = sys.argv.index('--limit')
+        if idx + 1 < len(sys.argv):
+            try:
+                limit = int(sys.argv[idx + 1])
+            except ValueError:
+                pass
 
     json_files = sorted(UNDERSTAND_DIR.glob('*.json'))
     json_files = [f for f in json_files if f.name != 'batch_manifest.json']
+    if limit:
+        json_files = json_files[:limit]
 
     print(f"Found {len(json_files)} JSON file(s) in {UNDERSTAND_DIR}")
     print(f"Resume: {resume}, Dry run: {dry_run}")

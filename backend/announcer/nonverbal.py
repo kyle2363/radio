@@ -113,6 +113,58 @@ def inject_nonverbal_tags(text: str) -> str:
     return result
 
 
+def inject_nonverbal_tags_monologue(text: str) -> str:
+    """Inject non-verbal tags into monologue text (restrained variant).
+
+    Same logic as inject_nonverbal_tags but with:
+    - Max 1 tag per segment (vs 2 for callers)
+    - Lower global probability (15% vs 25% for callers)
+    - Only the most natural tags (laughter, sigh)
+
+    Args:
+        text: Raw monologue text from LLM
+
+    Returns:
+        Text with restrained non-verbal tags injected
+    """
+    if not text or not text.strip():
+        return text
+
+    sentences = _split_sentences(text)
+    if not sentences:
+        return text
+
+    tags_added = 0
+    result_sentences = []
+
+    for sentence in sentences:
+        if tags_added >= 1:
+            result_sentences.append(sentence)
+            continue
+
+        # Lower global probability for monologues — 15%
+        if random.random() > 0.15:
+            result_sentences.append(sentence)
+            continue
+
+        # Only check first two rules (laughter, sigh) for monologues
+        for pattern, tag, probability in _TAG_RULES[:2]:
+            if pattern.search(sentence):
+                if random.random() < probability:
+                    tagged_text = f"{tag} {sentence}"
+                    result_sentences.append(tagged_text)
+                    tags_added += 1
+                    break
+
+        if tags_added == 0:
+            result_sentences.append(sentence)
+
+    result = _join_sentences(result_sentences)
+    if tags_added > 0:
+        logger.debug(f"NonVerbal: injected {tags_added} tag(s) into monologue")
+    return result
+
+
 def strip_nonverbal_tags(text: str) -> str:
     """Remove all non-verbal tags from text.
 

@@ -41,62 +41,30 @@ def get_ingest_progress():
     return dict(_ingest_progress)
 
 
-def run_normalize_only():
-    """Run only the normalization pass on songs that have raw features but stale energy/valence."""
+# ──────────────────────────────────────────────────────────
+# Standalone phase functions (for step-by-step execution)
+# ──────────────────────────────────────────────────────────
+
+def run_phase_raw():
+    """Phase 1: Scan music dir, add new songs to DB, extract album art."""
     _reset_progress()
-    _ingest_progress["running"] = True
-    _ingest_progress["phase"] = "normalizing"
-    database.init_db()
-
-    print("Normalizing energy/valence across library...")
-    conn = database.get_connection()
-    try:
-        rows = conn.execute(
-            "SELECT id, raw_rms, crest_factor, spectral_contrast, spectral_rolloff, spectral_flatness "
-            "FROM songs WHERE raw_rms IS NOT NULL"
-        ).fetchall()
-        songs = [dict(r) for r in rows]
-    finally:
-        conn.close()
-
-    if not songs:
-        print("  No songs with raw features found.")
-        _ingest_progress["running"] = False
-        return
-
-    print(f"  Found {len(songs)} songs with raw features")
-    updates = audio.normalize_all_songs(songs)
-
-    for upd in updates:
-        database.update_song(upd["id"], energy=upd["energy"], valence=upd["valence"])
-
-    print(f"  Normalized {len(updates)} songs")
-    _ingest_progress["processed"] = len(updates)
-    _ingest_progress["total"] = len(updates)
-    _ingest_progress["running"] = False
-    print("Normalization complete!")
-    return updates
-
-
-def run_ingest():
-    """Run the full ingest pipeline: raw -> analyzed -> normalized -> described -> embedded -> clustered."""
-    _reset_progress()
-    _ingest_progress["running"] = True
-
-    # Initialize database tables if they don't exist
-    database.init_db()
-
-    # Phase 1: Scan and add songs
     _ingest_progress["phase"] = "raw"
+
     print("Phase 1: Scanning music directory...")
     scan_result = scanner.scan_music_dir(config.MUSIC_DIR)
     print(f"  Found {scan_result['unique_files']} unique files, {scan_result['duplicates']} duplicates")
 
     new_ids = []
-    for filepath in scan_result["duplicate_details"]:
-        print(f"  Duplicate skipped: {filepath['file']} (kept: {filepath['kept']})")
+    for detail in scan_result.get("duplicate_details", []):
+        print(f"  Duplicate skipped: {detail['file']} (kept: {detail['kept']})")
 
-    for filepath in scanner.find_audio_files(config.MUSIC_DIR):
+    # Use deduplicated file list — prevents adding the same file twice
+    # when it exists in multiple folders with different paths
+    all_files = scanner.find_audio_files(config.MUSIC_DIR)
+    dedup = scanner.deduplicate(all_files)
+    kept_paths = set(dedup["unique"])
+
+    for filepath in dedup["unique"]:
         file_hash = scanner.compute_file_hash(filepath)
         existing = database.get_song_by_filepath(filepath)
         if existing:
@@ -115,31 +83,41 @@ def run_ingest():
                 new_ids.append(song["id"])
 
     _ingest_progress["total"] = len(new_ids)
+    _ingest_progress["processed"] = len(new_ids)
     print(f"  {len(new_ids)} songs in database")
 
     # Phase 1b: Extract album art from ID3 tags
     print("Phase 1b: Extracting album art...")
     from ingest.tags import extract_album_art
-    import config as cfg
     art_count = 0
     for song_id in new_ids:
         song = database.get_song(song_id)
         if song and song.get("filepath") and not song.get("art_file"):
-            art_path = extract_album_art(song["filepath"], cfg.ART_DIR, song_id)
+            art_path = extract_album_art(song["filepath"], config.ART_DIR, song_id)
             if art_path:
                 database.update_song(song_id, art_file=art_path)
                 art_count += 1
     print(f"  Extracted album art for {art_count} songs")
 
-    # Phase 2: Analyze audio — extract raw features
+    _ingest_progress["running"] = False
+    print("Phase 1 complete!")
+    return {"added": len(new_ids), "art_extracted": art_count}
+
+
+def run_phase_analyze():
+    """Phase 2: Analyze audio — extract raw features for 'raw' songs."""
+    _reset_progress()
     _ingest_progress["phase"] = "analyzed"
+
     print("Phase 2: Analyzing audio (raw features)...")
     unprocessed = database.get_by_ingest_phase("raw")
     analyzed_ids = []
     total_to_analyze = len(unprocessed)
+    _ingest_progress["total"] = total_to_analyze
+
     for i, song in enumerate(tqdm(unprocessed, desc="Analyzing")):
         _ingest_progress["current_song"] = f"{song['artist']} - {song['title']}" if song.get('artist') else song['filepath']
-        _ingest_progress["processed"] = i
+        _ingest_progress["processed"] = i + 1
         try:
             result = audio.analyze_audio(song["filepath"])
             database.update_song(song["id"], **result)
@@ -149,8 +127,16 @@ def run_ingest():
             print(f"  Failed to analyze {song['filepath']}: {e}")
             database.set_ingest_error(song["id"], f"analyze failed: {e}")
 
-    # Phase 2b: Normalize energy/valence across the full library
+    _ingest_progress["running"] = False
+    print(f"Phase 2 complete! Analyzed {len(analyzed_ids)} songs.")
+    return {"analyzed": len(analyzed_ids)}
+
+
+def run_phase_normalize():
+    """Phase 2b: Normalize energy/valence across the full library."""
+    _reset_progress()
     _ingest_progress["phase"] = "normalizing"
+
     print("Phase 2b: Normalizing energy/valence across library...")
     conn = database.get_connection()
     try:
@@ -158,32 +144,47 @@ def run_ingest():
             "SELECT id, raw_rms, crest_factor, spectral_contrast, spectral_rolloff, spectral_flatness "
             "FROM songs WHERE raw_rms IS NOT NULL"
         ).fetchall()
-        all_songs_raw = [dict(r) for r in rows]
+        songs = [dict(r) for r in rows]
     finally:
         conn.close()
 
-    if all_songs_raw:
-        updates = audio.normalize_all_songs(all_songs_raw)
-        for upd in updates:
-            database.update_song(upd["id"], energy=upd["energy"], valence=upd["valence"])
-        print(f"  Normalized {len(updates)} songs")
-    else:
-        print("  No songs with raw features to normalize")
+    if not songs:
+        print("  No songs with raw features found.")
+        _ingest_progress["running"] = False
+        return {"normalized": 0}
 
-    # Phase 3: Describe with LLM (acestep metadata + Ollama tags)
+    _ingest_progress["total"] = len(songs)
+    _ingest_progress["processed"] = len(songs)
+    updates = audio.normalize_all_songs(songs)
+
+    for upd in updates:
+        database.update_song(upd["id"], energy=upd["energy"], valence=upd["valence"])
+
+    print(f"  Normalized {len(updates)} songs")
+    _ingest_progress["running"] = False
+    print("Phase 2b complete!")
+    return {"normalized": len(updates)}
+
+
+def run_phase_describe():
+    """Phase 3: LLM tag 'analyzed' songs using acestep captions."""
+    _reset_progress()
     _ingest_progress["phase"] = "described"
+
     print("Phase 3: Generating LLM tags...")
 
-    # Load all acestep metadata ONCE (expensive JSON parsing)
+    # Load all acestep metadata ONCE
     ace_metadata = metadata.load_all_metadata()
     print(f"  Loaded {len(ace_metadata)} acestep metadata entries")
 
     unprocessed = database.get_by_ingest_phase("analyzed")
     described_ids = []
     total_to_tag = len(unprocessed)
+    _ingest_progress["total"] = total_to_tag
+
     for i, song in enumerate(tqdm(unprocessed, desc="Tagging")):
         _ingest_progress["current_song"] = f"{song['artist']} - {song['title']}" if song.get('artist') else song['filepath']
-        _ingest_progress["processed"] = i
+        _ingest_progress["processed"] = i + 1
         try:
             # Load acestep metadata for this song
             ace_metadata_for_song = metadata.get_metadata_for_mp3(song["filepath"], ace_metadata)
@@ -205,6 +206,8 @@ def run_ingest():
                     db_tags["timesignature"] = ace_metadata_for_song["timesignature"]
                 if ace_metadata_for_song.get("vocal_language"):
                     db_tags["vocal_language"] = ace_metadata_for_song["vocal_language"]
+                if "dj_effect_eligible" in ace_metadata_for_song and ace_metadata_for_song["dj_effect_eligible"] is not None:
+                    db_tags["dj_effect_eligible"] = 1 if ace_metadata_for_song["dj_effect_eligible"] else 0
 
             # Generate LLM tags from caption AND lyrics for richer analysis
             lyrics_for_tags = ace_metadata_for_song.get("lyrics", "") if ace_metadata_for_song else ""
@@ -223,36 +226,84 @@ def run_ingest():
             print(f"  Failed to tag {song['filepath']}: {e}")
             database.set_ingest_error(song["id"], f"tagging failed: {e}")
 
-    # Phase 4: Embed + cluster
+    _ingest_progress["running"] = False
+    print(f"Phase 3 complete! Tagged {len(described_ids)} songs.")
+    return {"described": len(described_ids)}
+
+
+def run_phase_embed():
+    """Phase 4: Embed ALL songs at 'described' phase."""
+    _reset_progress()
     _ingest_progress["phase"] = "embedded"
+
     print("Phase 4: Generating embeddings...")
-    # Embed newly described songs
+    from ingest import embedder
+
+    # Embed ALL songs at described phase (not just new ones — in case model changed)
+    described_songs = database.get_by_ingest_phase("described")
+    described_ids = [s["id"] for s in described_songs]
+    _ingest_progress["total"] = len(described_ids)
+
     if described_ids:
-        from ingest import embedder
+        print(f"  Found {len(described_ids)} songs at described phase")
         embedded_ids = embedder.embed_described_songs(described_ids)
         print(f"  Embedded {len(embedded_ids)} songs")
-    # Also embed any remaining songs at "described" phase that weren't just tagged
-    remaining_described = database.get_by_ingest_phase("described")
-    remaining_ids = [s["id"] for s in remaining_described]
-    if remaining_ids:
-        print(f"  Found {len(remaining_ids)} remaining songs at described phase, embedding...")
-        from ingest import embedder
-        embedded_remaining = embedder.embed_described_songs(remaining_ids)
-        print(f"  Embedded {len(embedded_remaining)} remaining songs")
-    # Phase 5: Clustering (re-cluster ALL songs, not just newly embedded)
+    else:
+        print("  No songs at described phase")
+
+    _ingest_progress["running"] = False
+    print("Phase 4 complete!")
+    return {"embedded": _ingest_progress["total"]}
+
+
+def run_phase_cluster():
+    """Phase 5: Re-cluster ALL embedded songs."""
+    _reset_progress()
     _ingest_progress["phase"] = "clustered"
+
     print("Phase 5: Clustering...")
     from ingest import clusterer
+
+    # Count embedded songs for progress
+    embedded_songs = database.get_by_ingest_phase("embedded")
+    _ingest_progress["total"] = len(embedded_songs)
+
     clustered_ids = clusterer.cluster_songs()
     print(f"  Clustered {len(clustered_ids)} songs")
-    described_ids = clustered_ids  # for progress reporting
 
     _ingest_progress["processed"] = _ingest_progress["total"]
-    _ingest_progress["results"] = {
-        "analyzed": len(analyzed_ids),
-        "described": len(described_ids),
-    }
     _ingest_progress["running"] = False
+    print("Phase 5 complete!")
+    return {"clustered": len(clustered_ids)}
 
-    print("Ingest complete!")
-    return _ingest_progress["results"]
+
+# ──────────────────────────────────────────────────────────
+# Full pipeline (calls phases sequentially)
+# ──────────────────────────────────────────────────────────
+
+def run_ingest():
+    """Run the full ingest pipeline: raw -> analyzed -> normalized -> described -> embedded -> clustered."""
+    phases = [
+        ("raw", run_phase_raw),
+        ("analyzed", run_phase_analyze),
+        ("normalizing", run_phase_normalize),
+        ("described", run_phase_describe),
+        ("embedded", run_phase_embed),
+        ("clustered", run_phase_cluster),
+    ]
+
+    _ingest_progress["running"] = True
+    results = {}
+    for phase_name, phase_fn in phases:
+        _ingest_progress["phase"] = phase_name
+        try:
+            result = phase_fn()
+            results[phase_name] = result
+        except Exception as e:
+            print(f"Phase '{phase_name}' failed: {e}")
+            results[phase_name] = {"error": str(e)}
+            break
+
+    _ingest_progress["running"] = False
+    _ingest_progress["results"] = results
+    return results

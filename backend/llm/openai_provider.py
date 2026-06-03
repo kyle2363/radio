@@ -6,10 +6,11 @@ including llama.cpp-specific params like chat_template_kwargs and response_forma
 Does NOT use the openai SDK — raw httpx POST calls ensure all params reach the server.
 """
 
+import json
 import httpx
 
 import config
-from .base import ChatClient, EmbedClient
+from .base import ChatClient, EmbedClient, ChatResponse, ToolCall
 
 
 class OpenAIChatClient(ChatClient):
@@ -19,7 +20,9 @@ class OpenAIChatClient(ChatClient):
 
     def chat(self, model: str | None, messages: list,
              options: dict | None = None, think: bool = False,
-             response_format: dict | None = None) -> dict:
+             response_format: dict | None = None,
+             tools: list[dict] | None = None,
+             timeout: float | None = None) -> ChatResponse:
         chat_model = model or config.OPENAI_CHAT_MODEL
         payload: dict = {
             "model": chat_model,
@@ -36,25 +39,37 @@ class OpenAIChatClient(ChatClient):
         payload["chat_template_kwargs"] = {"enable_thinking": think}
         if response_format:
             payload["response_format"] = response_format
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = "auto"
 
         resp = httpx.post(
             f"{self._base_url}/chat/completions",
             json=payload,
             headers={"Authorization": f"Bearer {self._api_key}"},
-            timeout=120,
+            timeout=timeout or config.LLM_CHAT_TIMEOUT,
         )
         resp.raise_for_status()
         data = resp.json()
         choice = data["choices"][0]
         message = choice["message"]
         content = message.get("content") or ""
-        return {
-            "model": data.get("model", chat_model),
-            "message": {
-                "role": message.get("role", "assistant"),
-                "content": content,
-            },
-        }
+        tool_calls_raw = message.get("tool_calls")
+
+        tool_calls = []
+        if tool_calls_raw:
+            for tc in tool_calls_raw:
+                try:
+                    args = json.loads(tc["function"]["arguments"])
+                except (json.JSONDecodeError, KeyError, TypeError):
+                    args = {}
+                tool_calls.append(ToolCall(
+                    id=tc.get("id", ""),
+                    function_name=tc["function"]["name"],
+                    arguments=args,
+                ))
+
+        return ChatResponse(content=content, tool_calls=tool_calls)
 
 
 
@@ -63,7 +78,8 @@ class OpenAIEmbedClient(EmbedClient):
         self._base_url = config.OPENAI_BASE_URL_EMBED.rstrip("/")
         self._api_key = config.OPENAI_API_KEY or "not-needed"
 
-    def embed(self, model: str | None, input: str) -> dict:
+    def embed(self, model: str | None, input: str,
+              timeout: float | None = None) -> dict:
         embed_model = model or config.OPENAI_EMBED_MODEL
         payload = {
             "model": embed_model,
@@ -73,7 +89,7 @@ class OpenAIEmbedClient(EmbedClient):
             f"{self._base_url}/embeddings",
             json=payload,
             headers={"Authorization": f"Bearer {self._api_key}"},
-            timeout=60,
+            timeout=timeout or config.LLM_EMBED_TIMEOUT,
         )
         resp.raise_for_status()
         data = resp.json()

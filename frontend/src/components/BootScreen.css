@@ -1,0 +1,382 @@
+/* ══════════════════════════════════════════════════════
+   Boot Screen — Loading / Startup overlay
+   ══════════════════════════════════════════════════════ */
+
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&family=Space+Mono&display=swap');
+
+.boot-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #070a10;
+  color: #dce8f0;
+  font-family: 'Outfit', sans-serif;
+  overflow: hidden;
+  user-select: none;
+}
+
+/* ── Ambient bg glow ─────────────────────────────────── */
+.boot-screen .glow-top {
+  position: absolute;
+  top: -120px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 700px;
+  height: 400px;
+  background: radial-gradient(ellipse at center, rgba(29,233,182,0.055) 0%, transparent 70%);
+  pointer-events: none;
+}
+
+.boot-screen .glow-bottom {
+  position: absolute;
+  bottom: -160px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 500px;
+  height: 300px;
+  background: radial-gradient(ellipse at center, rgba(29,100,233,0.04) 0%, transparent 70%);
+  pointer-events: none;
+}
+
+/* ── Scanlines ───────────────────────────────────────── */
+.boot-screen .scanlines {
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0,0,0,0.07) 2px,
+    rgba(0,0,0,0.07) 4px
+  );
+  pointer-events: none;
+}
+
+/* ── Grid ────────────────────────────────────────────── */
+.boot-screen .grid {
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(29,233,182,0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(29,233,182,0.015) 1px, transparent 1px);
+  background-size: 60px 60px;
+  pointer-events: none;
+}
+
+/* ── Center content ──────────────────────────────────── */
+.boot-center {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 40px;
+  opacity: 0;
+  animation: bootPageIn 0.9s cubic-bezier(0.22, 1, 0.36, 1) 0.2s forwards;
+}
+
+@keyframes bootPageIn {
+  from { opacity: 0; transform: translateY(14px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ── Logo ────────────────────────────────────────────── */
+.boot-logo {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  position: relative;
+}
+
+.boot-logo::after {
+  content: '';
+  position: absolute;
+  bottom: -14px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 40%;
+  height: 1px;
+  background: linear-gradient(to right, transparent, rgba(29,233,182,0.18), transparent);
+}
+
+.boot-logo.error::after {
+  background: linear-gradient(to right, transparent, rgba(240,120,136,0.18), transparent);
+}
+
+.boot-logo .dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #22c55e;
+  box-shadow: 0 0 0 3px rgba(34,197,94,0.15), 0 0 14px rgba(34,197,94,0.5);
+  animation: bootDotPulse 2.2s ease-in-out infinite;
+  flex-shrink: 0;
+}
+
+.boot-logo.error .dot {
+  background: #f07888;
+  box-shadow: 0 0 0 3px rgba(240,120,136,0.15), 0 0 14px rgba(240,120,136,0.5);
+  animation: none;
+}
+
+@keyframes bootDotPulse {
+  0%, 100% { box-shadow: 0 0 0 3px rgba(34,197,94,0.15), 0 0 14px rgba(34,197,94,0.5); opacity: 1; }
+  50%      { box-shadow: 0 0 0 2px rgba(34,197,94,0.08), 0 0 5px rgba(34,197,94,0.3); opacity: 0.55; }
+}
+
+.boot-logo .logo-word {
+  font-size: 52px;
+  font-weight: 700;
+  letter-spacing: -1.5px;
+  color: #fff;
+  line-height: 1;
+}
+
+/* ── Status tag ──────────────────────────────────────── */
+.status-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  background: rgba(29,233,182,0.1);
+  border: 1px solid rgba(29,233,182,0.2);
+  border-radius: 6px;
+  padding: 4px 10px 4px 8px;
+  font-size: 12px;
+  font-weight: 400;
+  color: #1de9b6;
+  font-family: 'Space Mono', monospace;
+  letter-spacing: 0.02em;
+}
+
+.status-tag .s-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #1de9b6;
+  animation: bootDotPulse 1.6s ease-in-out infinite;
+}
+
+/* ── Equalizer ───────────────────────────────────────── */
+.eq {
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  height: 64px;
+}
+
+.eq-bar {
+  width: 4px;
+  border-radius: 2px 2px 0 0;
+  background: linear-gradient(to top, #1de9b6 0%, rgba(29,233,182,0.25) 100%);
+  transform-origin: bottom;
+  animation: eqBounce var(--d, 0.5s) ease-in-out var(--delay, 0s) infinite alternate;
+}
+
+@keyframes eqBounce {
+  from { transform: scaleY(var(--lo, 0.06)); opacity: 0.45; }
+  to   { transform: scaleY(1); opacity: 1; }
+}
+
+/* ── Terminal ────────────────────────────────────────── */
+.terminal {
+  font-family: 'Space Mono', monospace;
+  font-size: 11.5px;
+  width: 310px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-height: 110px;
+}
+
+.t-line {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  opacity: 0;
+  animation: bootLineIn 0.25s ease forwards;
+}
+
+.t-prefix {
+  color: #1de9b6;
+  opacity: 0.55;
+  flex-shrink: 0;
+}
+
+.t-msg {
+  color: #344d63;
+}
+
+.t-line.active .t-msg {
+  color: #5a7e9a;
+}
+
+.t-ok {
+  margin-left: auto;
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: rgba(34,197,94,0.12);
+  border: 1px solid rgba(34,197,94,0.3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.8;
+}
+
+.t-ok::before {
+  content: '\2713';
+  font-size: 8px;
+  color: #22c55e;
+  line-height: 1;
+}
+
+.t-line.loading .t-ok {
+  background: rgba(29,233,182,0.08);
+  border-color: rgba(29,233,182,0.25);
+  animation: bootSpin 1s linear infinite;
+}
+
+.t-line.loading .t-ok::before {
+  content: '\00b7';
+  color: #1de9b6;
+  font-size: 10px;
+}
+
+@keyframes bootSpin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+@keyframes bootLineIn {
+  from { opacity: 0; transform: translateX(-5px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+/* ── Progress bar ────────────────────────────────────── */
+.prog-wrap {
+  width: 310px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+}
+
+.prog-track {
+  width: 100%;
+  height: 2px;
+  background: rgba(255,255,255,0.04);
+  border-radius: 1px;
+  overflow: visible;
+  position: relative;
+}
+
+.prog-fill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  width: 0;
+  background: linear-gradient(to right, rgba(29,233,182,0.4), #1de9b6);
+  border-radius: 1px;
+  transition: width 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.prog-fill::after {
+  content: '';
+  position: absolute;
+  right: -1px;
+  top: -3px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #1de9b6;
+  box-shadow: 0 0 10px #1de9b6, 0 0 3px #1de9b6;
+}
+
+.prog-meta {
+  font-family: 'Space Mono', monospace;
+  font-size: 10px;
+  color: #344d63;
+  letter-spacing: 0.06em;
+}
+
+/* ── Version watermark ───────────────────────────────── */
+.version {
+  position: absolute;
+  bottom: 18px;
+  right: 22px;
+  font-family: 'Space Mono', monospace;
+  font-size: 10px;
+  color: rgba(30,47,64,1);
+  letter-spacing: 0.06em;
+  z-index: 2;
+}
+
+.build-id {
+  position: absolute;
+  bottom: 18px;
+  left: 22px;
+  font-family: 'Space Mono', monospace;
+  font-size: 10px;
+  color: rgba(30,47,64,1);
+  letter-spacing: 0.04em;
+  z-index: 2;
+}
+
+/* ── Error state ─────────────────────────────────────── */
+.boot-error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  margin-top: 20px;
+}
+
+.error-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: rgba(240,120,136,0.12);
+  border: 1px solid rgba(240,120,136,0.3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  font-weight: 700;
+  color: #f07888;
+}
+
+.error-text {
+  font-family: 'Space Mono', monospace;
+  font-size: 11px;
+  color: #5a7e9a;
+  text-align: center;
+  max-width: 280px;
+  line-height: 1.5;
+}
+
+.retry-btn {
+  background: rgba(29,233,182,0.1);
+  border: 1px solid rgba(29,233,182,0.25);
+  border-radius: 6px;
+  padding: 6px 16px;
+  font-family: 'Space Mono', monospace;
+  font-size: 11px;
+  color: #1de9b6;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.retry-btn:hover {
+  background: rgba(29,233,182,0.2);
+}
+
+/* ── Fade transition for boot exit ───────────────────── */
+.boot-fade {
+  opacity: 0;
+  transition: opacity 400ms ease-in;
+}

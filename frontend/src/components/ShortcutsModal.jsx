@@ -11,8 +11,8 @@ const SHORTCUTS = [
   { keys: ["M"], action: "Cycle mood" },
   { keys: ["/"], action: "Focus command bar" },
   { keys: ["?"], action: "Show this panel" },
-  { keys: ["\u2191", "\u2193"], action: "Volume up / down" },
-  { keys: ["\u2190", "\u2192"], action: "Seek \u00b110s" },
+  { keys: ["↑", "↓"], action: "Volume up / down" },
+  { keys: ["←", "→"], action: "Seek ±10s" },
   { keys: ["Esc"], action: "Close panel" },
 ];
 

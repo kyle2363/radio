@@ -4,6 +4,10 @@ Allocates songs into exploit/explore/wildcard/context slots
 based on taste similarity, recency, and vibe lock state.
 """
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 def _get_song_id(song):
     """Extract song_id from a candidate dict."""
@@ -44,7 +48,10 @@ def allocate_slots(candidates, current_song, vibe_lock=None, exploration_level=0
 
     # Apply slot_bias filters if provided (from guest persona)
     filtered = candidates
+    logger.debug("allocate_slots: candidates=%d vibe_lock=%r exploration=%f archetype=%r slot_bias=%r",
+                 len(candidates), vibe_lock, exploration_level, archetype, slot_bias)
     if slot_bias:
+        logger.debug("allocate_slots: slot_bias type=%s", type(slot_bias).__name__)
         energy_range = slot_bias.get("energy_range")
         valence_range = slot_bias.get("valence_range")
         if energy_range or valence_range:

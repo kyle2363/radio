@@ -1,4 +1,4 @@
-import React, { useRef, useEffect } from "react";
+import React, { useRef, useEffect, useMemo } from "react";
 
 const MOOD_HUES = { energetic: 28, melancholy: 215, chill: 168, focus: 275, neutral: 210, discovery: 140 };
 
@@ -21,25 +21,26 @@ function getHue(hsl) {
   return parseInt(hsl.match(/hsl\((\d+)/)?.[1] ?? "200");
 }
 
-const SIZE = 210;
-const CX = SIZE / 2;
-const CY = SIZE / 2;
+const _instanceGeo = new Map();
+let _nextInstanceId = 0;
+const DEFAULT_SIZE = 210;
 
-function drawOrbit(ctx, song, tick, colors, audioRms) {
+function drawOrbit(ctx, song, tick, colors, audioRms, geo) {
   let a = 2, b = 3;
   if (song.bpm < 82) { a = 1; b = 2; }
   else if (song.bpm > 115) { a = 3; b = 4; }
   const rmsMod = (audioRms || 0.5) * 0.25;
   const amp = 72 * (0.44 + ((song.energy || 0.5) + rmsMod) * 0.52);
   const delta = tick * 0.18;
+  const { cx, cy, size } = geo;
 
   ctx.lineWidth = 1.2;
   ctx.strokeStyle = hslToHsla(colors.primary, 0.3);
   ctx.beginPath();
   for (let i = 0; i <= 500; i++) {
     const tt = (i / 500) * Math.PI * 2;
-    const x = CX + amp * Math.sin(a * tt + delta);
-    const y = CY + amp * Math.sin(b * tt);
+    const x = cx + amp * Math.sin(a * tt + delta);
+    const y = cy + amp * Math.sin(b * tt);
     i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
   }
   ctx.stroke();
@@ -51,8 +52,8 @@ function drawOrbit(ctx, song, tick, colors, audioRms) {
     const f = 1 - i / 40;
     ctx.beginPath();
     ctx.arc(
-      CX + amp * Math.sin(a * ta + delta),
-      CY + amp * Math.sin(b * ta),
+      cx + amp * Math.sin(a * ta + delta),
+      cy + amp * Math.sin(b * ta),
       1.4 + f * 2.6, 0, Math.PI * 2
     );
     ctx.fillStyle = hslToHsla(colors.primary, f * 0.88);
@@ -60,21 +61,22 @@ function drawOrbit(ctx, song, tick, colors, audioRms) {
   }
   ctx.beginPath();
   ctx.arc(
-    CX + amp * Math.sin(a * ht + delta),
-    CY + amp * Math.sin(b * ht),
+    cx + amp * Math.sin(a * ht + delta),
+    cy + amp * Math.sin(b * ht),
     4.5, 0, Math.PI * 2
   );
   ctx.fillStyle = colors.secondary;
   ctx.fill();
 }
 
-function drawPulse(ctx, song, tick, colors, audioRms) {
+function drawPulse(ctx, song, tick, colors, audioRms, geo) {
   const N = 48;
   const baseR = 27;
   const rmsMod = (audioRms || 0.5) * 0.6;
   const maxE = 60 * (0.28 + ((song.energy || 0.5) + rmsMod * 0.4) * 0.72);
   const sp = ((song.bpm || 120) / 60) * 1.65;
   const bh = getHue(colors.primary);
+  const { cx, cy } = geo;
 
   for (let i = 0; i < N; i++) {
     const angle = (i / N) * Math.PI * 2 - Math.PI / 2;
@@ -86,34 +88,35 @@ function drawPulse(ctx, song, tick, colors, audioRms) {
     ctx.strokeStyle = `hsla(${Math.round(fh)},73%,66%,0.9)`;
     ctx.lineWidth = 1.8;
     ctx.beginPath();
-    ctx.moveTo(CX + Math.cos(angle) * baseR, CY + Math.sin(angle) * baseR);
-    ctx.lineTo(CX + Math.cos(angle) * h, CY + Math.sin(angle) * h);
+    ctx.moveTo(cx + Math.cos(angle) * baseR, cy + Math.sin(angle) * baseR);
+    ctx.lineTo(cx + Math.cos(angle) * h, cy + Math.sin(angle) * h);
     ctx.stroke();
   }
   ctx.beginPath();
-  ctx.arc(CX, CY, baseR * 0.58, 0, Math.PI * 2);
+  ctx.arc(cx, cy, baseR * 0.58, 0, Math.PI * 2);
   ctx.fillStyle = hslToHsla(colors.primary, 0.18);
   ctx.fill();
   ctx.beginPath();
-  ctx.arc(CX, CY, baseR * 0.58, 0, Math.PI * 2);
+  ctx.arc(cx, cy, baseR * 0.58, 0, Math.PI * 2);
   ctx.strokeStyle = hslToHsla(colors.primary, 0.55);
   ctx.lineWidth = 1;
   ctx.stroke();
 }
 
-function drawFloat(ctx, song, tick, colors, audioRms) {
+function drawFloat(ctx, song, tick, colors, audioRms, geo) {
   const rmsMod = (audioRms || 0.5) * 0.3;
   const N = 2 + Math.round(((song.energy || 0.5) + rmsMod) * 4);
   const sp = ((song.bpm || 120) / 60) * 0.38;
   const bh = getHue(colors.primary);
+  const { cx, cy } = geo;
 
   ctx.globalCompositeOperation = "lighter";
   for (let i = 0; i < N; i++) {
     const phase = (i / N) * Math.PI * 2;
     const oR = (0.1 + (i / N) * 0.28) * 96;
     const angle = tick * sp * (1 + i * 0.2) + phase;
-    const x = CX + Math.cos(angle) * oR;
-    const y = CY + Math.sin(angle) * oR * 0.7;
+    const x = cx + Math.cos(angle) * oR;
+    const y = cy + Math.sin(angle) * oR * 0.7;
     const r = Math.max((0.28 - i * 0.034) * 96, 9);
     const oh = (bh + i * 42) % 360;
     const g = ctx.createRadialGradient(x, y, 0, x, y, r);
@@ -130,11 +133,22 @@ function drawFloat(ctx, song, tick, colors, audioRms) {
 
 const DRAW_FNS = [drawOrbit, drawPulse, drawFloat];
 
-export default function WaveformViz({ song, styleIndex = 0, audioRms }) {
+export default function WaveformViz({ song, styleIndex = 0, audioRms, size }) {
+  const instanceId = useRef(++_nextInstanceId);
   const canvasRef = useRef(null);
   const tickRef = useRef(0);
   const rafRef = useRef(null);
   const prevSongIdRef = useRef(null);
+
+  const geo = useMemo(() => {
+    const s = size && size > 0 ? size : DEFAULT_SIZE;
+    return { size: s, cx: s / 2, cy: s / 2 };
+  }, [size]);
+
+  useEffect(() => {
+    _instanceGeo.set(instanceId.current, geo);
+    return () => _instanceGeo.delete(instanceId.current);
+  }, [geo]);
 
   useEffect(() => {
     if (song?.id !== prevSongIdRef.current) {
@@ -148,26 +162,27 @@ export default function WaveformViz({ song, styleIndex = 0, audioRms }) {
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
     const dpr = window.devicePixelRatio || 1;
-    canvas.width = SIZE * dpr;
-    canvas.height = SIZE * dpr;
+    canvas.width = geo.size * dpr;
+    canvas.height = geo.size * dpr;
     ctx.scale(dpr, dpr);
 
     const draw = () => {
       const s = song || { energy: 0.5, valence: 0.5, bpm: 120, mood: "neutral" };
       const c = getColors(s);
-      ctx.clearRect(0, 0, SIZE, SIZE);
+      ctx.clearRect(0, 0, geo.size, geo.size);
       ctx.fillStyle = c.bg;
-      ctx.fillRect(0, 0, SIZE, SIZE);
-      DRAW_FNS[styleIndex](ctx, s, tickRef.current, c, audioRms);
+      ctx.fillRect(0, 0, geo.size, geo.size);
+      const instGeo = _instanceGeo.get(instanceId.current) || geo;
+      DRAW_FNS[styleIndex](ctx, s, tickRef.current, c, audioRms, instGeo);
       tickRef.current += 0.016;
       rafRef.current = requestAnimationFrame(draw);
     };
 
     draw();
     return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); };
-  }, [song, styleIndex]);
+  }, [song, styleIndex, geo, audioRms]);
 
   return (
-    <canvas ref={canvasRef} width={SIZE} height={SIZE} className="rounded-xl block" style={{ width: SIZE, height: SIZE }} />
+    <canvas ref={canvasRef} width={geo.size} height={geo.size} className="rounded-xl block" style={{ width: geo.size, height: geo.size }} />
   );
 }

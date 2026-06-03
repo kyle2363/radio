@@ -27,6 +27,8 @@ Usage:
 
 import logging
 import os
+
+import config
 from announcer.voice_manager import (
     get_voice_manager,
     set_tts_engine,
@@ -38,7 +40,7 @@ from announcer.voice_manager import (
 
 logger = logging.getLogger(__name__)
 
-TTS_CACHE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "tts_cache")
+TTS_CACHE_DIR = config.TTS_CACHE_DIR
 
 
 def tts_say(text: str, voice_id: str | None = None, output_dir: str | None = None, song_id: int | None = None, trigger_type: str | None = None, speed: float | None = None) -> str | None:

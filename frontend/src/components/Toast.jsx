@@ -1,6 +1,13 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 
-function Toast({ message, type = "error", progress, onClose }) {
+const DOT_COLORS = {
+  error: "var(--danger)",
+  success: "var(--accent)",
+  info: "var(--info)",
+  action: "var(--accent)",
+};
+
+function Toast({ message, type = "error", progress, onClose, actionLabel, onAction }) {
   const [visible, setVisible] = useState(true);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
@@ -33,36 +40,54 @@ function Toast({ message, type = "error", progress, onClose }) {
     startTimer();
   };
 
-  const bg = type === "error"
-    ? "bg-red-500/90 border-red-400"
-    : type === "success"
-      ? "bg-[#4eccc4]/90 border-[#4eccc4]/60"
-      : "bg-blue-500/90 border-blue-400";
+  const iconMap = {
+    error: (
+      <svg className="w-4 h-4 text-[var(--danger)] flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+      </svg>
+    ),
+    success: (
+      <svg className="w-4 h-4 text-[var(--accent)] flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+      </svg>
+    ),
+    info: (
+      <svg className="w-4 h-4 text-[var(--info)] flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+      </svg>
+    ),
+    action: (
+      <svg className="w-4 h-4 text-[var(--accent)] flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+      </svg>
+    ),
+  };
 
   return (
-    <div className={`${bg} border rounded-xl px-5 py-3.5 shadow-lg backdrop-blur-sm transition-all duration-300 ${visible ? "opacity-100 translate-y-0" : "opacity-0 translate-y-2"}`}
-      onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave}>
-      <div className="flex items-center gap-2">
-        {type === "error" && (
-          <svg className="w-4 h-4 text-white flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-          </svg>
-        )}
-        {type === "success" && (
-          <svg className="w-4 h-4 text-white flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-          </svg>
-        )}
-        <p className="text-sm text-white flex-1">{message}</p>
+    <div className={`rounded-lg px-4 py-3 shadow-[0_8px_32px_rgba(0,0,0,0.4)] backdrop-blur-xl border border-[var(--border)] transition-all duration-300 ${visible ? "opacity-100 translate-y-0" : "opacity-0 translate-y-2"}`}
+      onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave}
+      style={{ background: "var(--bg-overlay)" }}>
+      <div className="flex items-center gap-2.5">
+        <div style={{ width: 6, height: 6, borderRadius: "50%", background: DOT_COLORS[type], flexShrink: 0 }} />
+        {iconMap[type]}
+        <p className="text-sm text-[var(--text-primary)] flex-1 leading-snug">{message}</p>
         {progress != null && (
-          <span className="text-xs text-white/70 tabular-nums">{Math.round(progress)}%</span>
+          <span className="text-xs text-[var(--text-muted)] tabular-nums flex-shrink-0">{Math.round(progress)}%</span>
+        )}
+        {actionLabel && onAction && (
+          <button
+            onClick={() => { onAction(); setVisible(false); setTimeout(() => onCloseRef.current(), 300); }}
+            className="text-xs font-semibold text-[var(--accent)] bg-[var(--accent-muted)] hover:bg-[var(--accent-hover)]/20 rounded-md px-2.5 py-1 transition-colors flex-shrink-0"
+          >
+            {actionLabel}
+          </button>
         )}
       </div>
       {progress != null && (
-        <div className="mt-2 h-1 bg-white/20 rounded-full overflow-hidden">
+        <div className="mt-2 h-[3px] rounded-full overflow-hidden" style={{ background: "var(--border)" }}>
           <div
-            className="h-full bg-white rounded-full transition-all duration-300"
-            style={{ width: `${Math.min(100, Math.max(0, progress))}%` }}
+            className="h-full rounded-full transition-all duration-300"
+            style={{ width: `${Math.min(100, Math.max(0, progress))}%`, background: "var(--accent)" }}
           />
         </div>
       )}
@@ -79,6 +104,8 @@ export default function ToastContainer({ toasts, onRemove }) {
           message={toast.message}
           type={toast.type}
           progress={toast.progress}
+          actionLabel={toast.actionLabel}
+          onAction={toast.onAction}
           onClose={() => onRemove(toast.id)}
         />
       ))}

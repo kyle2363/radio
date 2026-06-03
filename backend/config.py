@@ -24,15 +24,15 @@ OMNIVOICE_DEVICE = os.environ.get("OMNIVOICE_DEVICE", "cuda:0")
 OMNIVOICE_DTYPE = os.environ.get("OMNIVOICE_DTYPE", "float16")
 
 # Lyrics truncation lengths (word counts for different contexts)
-LYRICS_EMBED_WORDS = 250       # Words in embedding text
+LYRICS_EMBED_WORDS = 300       # Words in embedding text
 LYRICS_RERANKER_WORDS = 40   # Words in reranker candidate preview
 LYRICS_CURRENT_WORDS = 60    # Words for "current song" in reranker prompt
-LYRICS_TALK_WORDS = 50       # Words in talk segment prompts
-LYRICS_TAG_WORDS = 150       # Words for LLM tag generation
+LYRICS_TALK_WORDS = 75       # Words in talk segment prompts
+LYRICS_TAG_WORDS = 200       # Words for LLM tag generation
 LYRICS_DISPLAY_WORDS = None  # None = full lyrics in UI, no truncation
 
 # Embedding text truncation (characters/words)
-AI_DESCRIPTION_MAX_CHARS = 800  # Max chars of ai_description in embedding text
+AI_DESCRIPTION_MAX_CHARS = 850  # Max chars of ai_description in embedding text
 
 # Radio Talk Show defaults (overridden by DB settings)
 TALK_SEGMENTS_ENABLED = False
@@ -46,7 +46,7 @@ TALK_GUEST_SONGS_PER_SET = 4
 # Song-end debug log
 LOG_PATH = os.path.join(BASE_DIR, "data", "playback.log")
 API_PORT = 8765
-N_CLUSTERS = 18
+N_CLUSTERS = 21
 
 # VLC stderr suppression (set True to hide libvlc init warnings, False to debug VLC issues)
 VLC_SUPPRESS_STDERR = True
@@ -81,3 +81,6 @@ OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 # Model names for OpenAI-compatible endpoints (used when provider forces "openai")
 OPENAI_CHAT_MODEL = os.environ.get("OPENAI_CHAT_MODEL", "llama3.2:3b")
 OPENAI_EMBED_MODEL = os.environ.get("OPENAI_EMBED_MODEL", "qwen3-embedding:0.6b")
+
+# TTS cache directory — shared by voice_manager.py, tts.py, and main.py
+TTS_CACHE_DIR = os.path.join(DATA_DIR, "tts_cache")
