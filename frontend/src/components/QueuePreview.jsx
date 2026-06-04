@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { RefreshCw, Mic } from "lucide-react";
+import { RefreshCw, Mic, X } from "lucide-react";
 import * as api from "../api";
 import { SkeletonQueueCompact } from "./Skeleton";
 
@@ -13,7 +13,14 @@ const SLOT_STYLES = {
   manual: { cls: "manual", label: "manual" },
 };
 
-const QueuePreview = React.memo(function QueuePreview({ queue, isRebuilding, onPromoteSong, onRebuild, compact = false, queueLoading = false }) {
+function moodMatchColor(pct) {
+  if (pct == null) return null;
+  if (pct > 70) return "#2dd4a0";
+  if (pct > 40) return "#f59e0b";
+  return "#f87171";
+}
+
+const QueuePreview = React.memo(function QueuePreview({ queue, isRebuilding, onPromoteSong, onRemoveSong, onRebuild, compact = false, queueLoading = false }) {
   const [rebuilding, setRebuilding] = useState(false);
 
   const handleRebuild = async () => {
@@ -121,9 +128,16 @@ const QueuePreview = React.memo(function QueuePreview({ queue, isRebuilding, onP
                 <span style={{ fontSize: 11, fontWeight: 600, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>
                   {item.artist} – {item.title}
                 </span>
-                <span style={{ fontSize: 8, fontWeight: 700, letterSpacing: ".08em", textTransform: "uppercase", padding: "1px 4px", borderRadius: 3, background: slotBgs[item.slot] || "rgba(255,255,255,0.05)", color: slotColors[item.slot] || "var(--text-muted)", flexShrink: 0 }}>
-                  {slot.label}
-                </span>
+                <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
+                  <span style={{ fontSize: 8, fontWeight: 700, letterSpacing: ".08em", textTransform: "uppercase", padding: "1px 4px", borderRadius: 3, background: slotBgs[item.slot] || "rgba(255,255,255,0.05)", color: slotColors[item.slot] || "var(--text-muted)" }}>
+                    {slot.label}
+                  </span>
+                  {item.slot === "manual" && onRemoveSong && (
+                    <button className="qc-remove" onClick={(e) => { e.stopPropagation(); onRemoveSong(item.song_id); }}>
+                      <X size={10} />
+                    </button>
+                  )}
+                </div>
               </div>
               {item.reason && (
                 <div style={{ fontSize: 10, color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginBottom: 4 }}>{item.reason}</div>
@@ -137,6 +151,11 @@ const QueuePreview = React.memo(function QueuePreview({ queue, isRebuilding, onP
                   <span style={{ fontSize: 9, color: "var(--text-muted)" }}>V</span>
                   <div className="qb"><div className="qb-fill valence" style={{ width: `${Math.min(100, Math.round((item.valence || 0.5) * 100))}%` }} /></div>
                 </div>
+                {item.mood_match != null && (
+                  <span style={{ fontSize: 9, color: moodMatchColor(item.mood_match), fontWeight: 600 }}>
+                    {item.mood_match}%
+                  </span>
+                )}
                 {item.bpm > 0 && (
                   <span style={{ fontSize: 9, color: "var(--text-muted)", marginLeft: "auto" }}>{item.bpm} BPM</span>
                 )}
@@ -160,7 +179,23 @@ const QueuePreview = React.memo(function QueuePreview({ queue, isRebuilding, onP
                   {item.artist} – {item.title}
                 </span>
               </div>
-              <span className={`slot-badge ${slot.cls}`}>{slot.label}</span>
+              <div className="flex items-center gap-1" style={{ flexShrink: 0 }}>
+                {item.mood_match != null && (
+                  <span style={{
+                    fontSize: 9, fontWeight: 700, padding: "1px 4px", borderRadius: 3,
+                    background: `${moodMatchColor(item.mood_match)}15`,
+                    color: moodMatchColor(item.mood_match),
+                  }}>
+                    {item.mood_match}%
+                  </span>
+                )}
+                <span className={`slot-badge ${slot.cls}`}>{slot.label}</span>
+                {item.slot === "manual" && onRemoveSong && (
+                  <button className="qc-remove" onClick={(e) => { e.stopPropagation(); onRemoveSong(item.song_id); }}>
+                    <X size={12} />
+                  </button>
+                )}
+              </div>
             </div>
             {item.reason && (
               <div className="text-[11px] truncate" style={{ color: "var(--text-muted)" }}>{item.reason}</div>

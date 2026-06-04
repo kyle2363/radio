@@ -294,12 +294,15 @@ class QueueManager:
             else:
                 target_energy = None
 
-            # Build taste vector (now returns tuple: vector, drift_score)
-            taste_vector, drift_score = self._memory.get_blended_taste_vector(
+            # Build taste vectors (text + audio)
+            taste_vectors = self._memory.get_taste_vectors(
                 session_id=self._current_session_id,
                 skip_streak=self._skip_streak,
             )
-            _log_step(f"Taste vector built, drift={drift_score:.2f}")
+            taste_vector = taste_vectors["text"]  # legacy fallback
+            drift_score = taste_vectors["drift"]
+            _log_step(f"Taste vectors built: text={len(taste_vectors['text']) if taste_vectors['text'] else 'None'}, "
+                      f"audio={len(taste_vectors['audio']) if taste_vectors['audio'] else 'None'}, drift={drift_score:.2f}")
 
             # Emit taste drift event if significant divergence detected
             if drift_score > 0.6:
@@ -313,13 +316,16 @@ class QueueManager:
                 vibe_lock = {
                     "active": True,
                     "embedding": vibe_info.get("embedding"),
+                    "audio_embedding": vibe_info.get("audio_embedding"),
                     "songs_remaining": vibe_info.get("songs_remaining", 0),
                 }
                 _log_step(f"Vibe lock active, {vibe_info.get('songs_remaining')} songs remaining")
 
-            # Get repulsion vector (negative feedback embedding)
-            repulsion_vector = self._memory.get_repulsion_vector()
-            _log_step(f"Repulsion vector built (type={type(repulsion_vector).__name__}, len={len(repulsion_vector) if repulsion_vector else 0})")
+            # Get repulsion vectors (text + audio)
+            text_repulsion = self._memory.get_repulsion_vector()
+            audio_repulsion = self._memory.get_audio_repulsion_vector()
+            _log_step(f"Repulsion vectors: text={type(text_repulsion).__name__} len={len(text_repulsion) if text_repulsion else 0}, "
+                      f"audio={type(audio_repulsion).__name__} len={len(audio_repulsion) if audio_repulsion else 0}")
 
             # Build candidate list - exclude queued + recently recommended to prevent cycling
             exclude_ids = ([s.get("song_id") for s in self._queue]
@@ -354,14 +360,18 @@ class QueueManager:
             #              type(repulsion_vector).__name__, len(repulsion_vector) if repulsion_vector else None,
             #              subfolder_filter, type(exclude_ids).__name__, len(exclude_ids))
             candidates = retriever.build_candidate_list(
-                taste_vector=taste_vector,
+                text_taste_vector=taste_vector,
+                audio_taste_vector=taste_vectors["audio"],
                 current_song_id=self._current_song_id,
                 exclude_ids=exclude_ids,
                 mood_energy_range=mood_energy,
                 mood_valence_range=mood_valence,
-                repulsion_vector=repulsion_vector,
+                text_repulsion_vector=text_repulsion,
+                audio_repulsion_vector=audio_repulsion,
                 skip_feedback=recent_feedback,
                 subfolder_filter=subfolder_filter,
+                vibe_lock=vibe_lock,
+                mood_state=self._mood.get_state(),
             )
             _log_step(f"Candidates: {len(candidates)}")
 
@@ -516,7 +526,8 @@ class QueueManager:
             if len(new_queue) < 4:
                 _log_step(f"Queue only {len(new_queue)}, adding fillers")
                 additional = retriever.build_candidate_list(
-                    taste_vector=taste_vector,
+                    text_taste_vector=taste_vector,
+                    audio_taste_vector=taste_vectors["audio"],
                     current_song_id=self._current_song_id,
                     exclude_ids=[p["song_id"] for p in new_queue],
                     subfolder_filter=subfolder_filter,
@@ -603,11 +614,11 @@ class QueueManager:
         """Get a single song recommendation (fallback when queue is empty)."""
         try:
             current_song = self._db.get_song(self._current_song_id) if self._current_song_id else None
-            tv, _ = self._memory.get_blended_taste_vector(
+            taste_vectors = self._memory.get_taste_vectors(
                 session_id=self._current_session_id,
                 skip_streak=self._skip_streak,
             )
-            taste_vector = tv
+            taste_vector = taste_vectors["text"]
 
             # Parse folder filter
             subfolder_filter = None
@@ -621,7 +632,8 @@ class QueueManager:
                     pass
 
             candidates = retriever.build_candidate_list(
-                taste_vector=taste_vector or [0.0] * retriever.get_embedding_dimension(),
+                text_taste_vector=taste_vector or [0.0] * retriever.get_embedding_dimension(),
+                audio_taste_vector=taste_vectors["audio"],
                 current_song_id=self._current_song_id or 0,
                 exclude_ids=[],
                 subfolder_filter=subfolder_filter,
@@ -732,6 +744,25 @@ class QueueManager:
             self._manual_queue = []
             self._pending_talk_segments.clear()
             self._condition.notify_all()
+
+    def remove_manual(self, song_id: int) -> bool:
+        """Remove a song from the manual queue by song_id.
+
+        Args:
+            song_id: The song ID to remove.
+
+        Returns:
+            True if removed, False if not found.
+        """
+        with self._condition:
+            for i, item in enumerate(self._manual_queue):
+                if item.get("song_id") == song_id:
+                    self._manual_queue.pop(i)
+                    self._condition.notify_all()
+                    logger.info(f"remove_manual: song_id={song_id} manual_queue_size={len(self._manual_queue)}")
+                    self._broadcast("queue_updated", {"queue": self._get_display_queue(), "gen": self._broadcast_gen})
+                    return True
+            return False
 
     def add_manual(self, song_ids: list[int], position: str = "back") -> list[int]:
         """Add songs to the manual queue (survives AI rebuilds).
@@ -1145,6 +1176,11 @@ class QueueManager:
             from announcer.talk_segments import get_active_dj_effect_preset
             preset_name = get_active_dj_effect_preset()
             if not preset_name:
+                # Guest takeover ended or never started — clear stale cache
+                with self._dj_effect_cache_lock:
+                    if self._dj_effect_cache:
+                        logger.info(f"DJ effect cache cleared (guest ended, had {len(self._dj_effect_cache)} entries)")
+                        self._dj_effect_cache.clear()
                 return
 
             enabled = self._db.get_setting("dj_effect_enabled") or "true"
@@ -1280,12 +1316,18 @@ class QueueManager:
                 logger.warning(f"play_next: file not found: {filepath}")
                 return
 
-            # Check for DJ effect modified version
+            # Check for DJ effect modified version (only if guest takeover is active)
+            from announcer.talk_segments import get_active_dj_effect_preset
             with self._dj_effect_cache_lock:
                 modified_fp = self._dj_effect_cache.get(song_id)
                 if modified_fp and os.path.exists(modified_fp):
-                    filepath = modified_fp
-                    logger.info(f"play_next: using DJ effect version for song {song_id}")
+                    if get_active_dj_effect_preset():
+                        filepath = modified_fp
+                        logger.info(f"play_next: using DJ effect version for song {song_id}")
+                    else:
+                        # Guest ended — remove stale entry so we don't re-check
+                        self._dj_effect_cache.pop(song_id, None)
+                        logger.info(f"play_next: DJ effect cache stale for song {song_id} (guest ended), removed")
 
             session_id = self._current_session_id
             p = player_engine.get_player()
@@ -1451,13 +1493,18 @@ class QueueManager:
                 song_id = next_song_item.get("song_id")
                 song = self._db.get_song(song_id)
                 if song and song.get("filepath") and os.path.exists(song["filepath"]):
-                    # Check for DJ effect modified version
+                    # Check for DJ effect modified version (only if guest takeover is active)
                     fp = song["filepath"]
+                    from announcer.talk_segments import get_active_dj_effect_preset
                     with self._dj_effect_cache_lock:
                         modified_fp = self._dj_effect_cache.get(song_id)
                         if modified_fp and os.path.exists(modified_fp):
-                            fp = modified_fp
-                            logger.info(f"_play_talk_segment: using DJ effect version for song {song_id}")
+                            if get_active_dj_effect_preset():
+                                fp = modified_fp
+                                logger.info(f"_play_talk_segment: using DJ effect version for song {song_id}")
+                            else:
+                                self._dj_effect_cache.pop(song_id, None)
+                                logger.info(f"_play_talk_segment: DJ effect cache stale for song {song_id} (guest ended), removed")
                     # Chain: talk WAVs + song back-to-back
                     logger.info(f"_play_talk_segment: playing {len(valid_wavs)} WAVs + song chain ({len(valid_wavs) + 1} items)")
                     items = []

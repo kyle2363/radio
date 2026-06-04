@@ -77,6 +77,7 @@ export const skipSong = () => post("/api/queue/skip");
 export const clearQueue = () => post("/api/queue/clear");
 export const replaySong = () => post("/api/queue/replay");
 export const addToQueue = (id) => post(`/api/queue/add/${id}`);
+export const removeFromQueue = (id) => del(`/api/queue/remove/${id}`);
 export const rebuildQueue = () => post("/api/queue/rebuild");
 export const reorderQueue = (order) => put("/api/queue/reorder", { order });
 export const fetchQueueHistory = (limit = 30) => get(`/api/queue/history?limit=${limit}`);
@@ -112,6 +113,8 @@ export const blacklistSong = (id, level = "never_play", extra = {}) => post(`/ap
 export const unblacklistSong = (id) => del(`/api/songs/${id}/blacklist`);
 export const fetchBlacklist = () => get("/api/blacklist");
 export const updateSongTags = (id, user_tags, user_notes) => put(`/api/songs/${id}/tags`, { user_tags, user_notes });
+export const fetchSongMetadataSource = (id) => get(`/api/songs/${id}/metadata-source`);
+export const updateSongMetadata = (id, data) => put(`/api/songs/${id}/metadata`, data);
 export const reprocessSong = (id) => post(`/api/ingest/reprocess-single/${id}`);
 export const fetchSongArt = (id) => `${BASE}/api/songs/${id}/art.jpg`;
 

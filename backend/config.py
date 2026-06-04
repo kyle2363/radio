@@ -84,3 +84,10 @@ OPENAI_EMBED_MODEL = os.environ.get("OPENAI_EMBED_MODEL", "qwen3-embedding:0.6b"
 
 # TTS cache directory — shared by voice_manager.py, tts.py, and main.py
 TTS_CACHE_DIR = os.path.join(DATA_DIR, "tts_cache")
+
+# --- MuQ-MuLan audio embedding settings ---
+MUQ_ENABLED = os.environ.get("MUQ_ENABLED", "true").lower() == "true"
+MUQ_MODEL_NAME = os.environ.get("MUQ_MODEL_NAME", "OpenMuQ/MuQ-MuLan-large")
+MUQ_SAMPLE_RATE = 24000  # MuQ-MuLan expects 24kHz audio
+MUQ_AUDIO_BLEND = float(os.environ.get("MUQ_AUDIO_BLEND", "0.5"))  # 0.0=text only, 1.0=audio only
+MUQ_AUDIO_COLLECTION = "songs_audio"  # ChromaDB collection name for audio embeddings

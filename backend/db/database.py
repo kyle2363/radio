@@ -472,6 +472,85 @@ def get_recent_skip_feedback(session_id, limit=5):
         conn.close()
 
 
+def record_mood_skip_repulsion(mood_state, reason, song_id, audio_embedding):
+    """Store a song's audio embedding as mood-specific skip repulsion."""
+    conn = get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO mood_skip_repulsion (mood_state, reason, song_id, audio_embedding) VALUES (?, ?, ?, ?)",
+            (mood_state, reason, song_id, json.dumps(audio_embedding)),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_mood_repulsion_vector(mood_state, reason=None, limit=20):
+    """Get average audio embedding of recently rejected songs in this mood.
+
+    Returns a 512-dim vector (list of floats) or None if insufficient data.
+    """
+    conn = get_connection()
+    try:
+        if reason:
+            rows = conn.execute(
+                "SELECT audio_embedding FROM mood_skip_repulsion WHERE mood_state = ? AND reason = ? ORDER BY created_at DESC LIMIT ?",
+                (mood_state, reason, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT audio_embedding FROM mood_skip_repulsion WHERE mood_state = ? ORDER BY created_at DESC LIMIT ?",
+                (mood_state, limit),
+            ).fetchall()
+        if not rows:
+            return None
+        embeddings = [json.loads(r[0]) for r in rows]
+        dim = len(embeddings[0])
+        avg = [sum(e[i] for e in embeddings) / len(embeddings) for i in range(dim)]
+        return avg
+    finally:
+        conn.close()
+
+
+def get_completed_songs_by_mood(mood_state, limit=50):
+    """Get song IDs completed in a given mood state, most recent first."""
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """SELECT DISTINCT song_id FROM play_events
+               WHERE mood_state = ? AND signal = 'completed'
+               ORDER BY played_at DESC LIMIT ?""",
+            (mood_state, limit),
+        ).fetchall()
+        return [{"song_id": r["song_id"]} for r in rows]
+    finally:
+        conn.close()
+    """Get average audio embedding of recently rejected songs in this mood.
+
+    Returns a 512-dim vector (list of floats) or None if insufficient data.
+    """
+    conn = get_connection()
+    try:
+        if reason:
+            rows = conn.execute(
+                "SELECT audio_embedding FROM mood_skip_repulsion WHERE mood_state = ? AND reason = ? ORDER BY created_at DESC LIMIT ?",
+                (mood_state, reason, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT audio_embedding FROM mood_skip_repulsion WHERE mood_state = ? ORDER BY created_at DESC LIMIT ?",
+                (mood_state, limit),
+            ).fetchall()
+        if not rows:
+            return None
+        embeddings = [json.loads(r[0]) for r in rows]
+        dim = len(embeddings[0])
+        avg = [sum(e[i] for e in embeddings) / len(embeddings) for i in range(dim)]
+        return avg
+    finally:
+        conn.close()
+
+
 def undo_play_event(song_id, signal_type):
     """Mark the most recent play_event of a given signal type as undone."""
     conn = get_connection()

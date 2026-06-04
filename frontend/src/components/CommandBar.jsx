@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from "react";
 import { Terminal, Heart, ThumbsDown, SkipBack, Play, Pause, Volume2, RefreshCw, Moon, Zap, HelpCircle } from "lucide-react";
 import * as api from "../api";
 
-const COMMAND_HINTS = ['"more energetic"', '"chill vibes"', '"vibe lock"', '"what is next"', '"play more jazz"', '"heart this"', '"pause"', '"play 5 songs from Radiohead"', '"queue chill songs for studying"', '"play something upbeat"', '"help"'];
+const COMMAND_HINTS = ['"more energetic"', '"chill vibes"', '"vibe lock"', '"what is next"', '"play more jazz"', '"heart this"', '"pause"', '"play 5 songs from Radiohead"', '"queue chill songs for studying"', '"play something upbeat"', '"sounds like midnight driving"', '"play dreamy reverb music"', '"help"'];
 const MAX_HISTORY = 10;
 
 function CommandBar({ onCommandSent, compact = false, onFocus, onClose }) {
@@ -112,6 +112,23 @@ function CommandBar({ onCommandSent, compact = false, onFocus, onClose }) {
       {response && (
         <div className="mt-2 px-4 py-2.5 rounded-lg text-sm" style={{ background: "var(--bg-elevated)" }}>
           <p className="font-medium" style={{ color: "var(--accent)" }}>{response.explanation}</p>
+          {response.songs && response.songs.length > 0 && (
+            <div className="mt-2 space-y-1">
+              <div className="text-[10px] font-semibold tracking-wide uppercase mb-1" style={{ color: "var(--text-muted)" }}>
+                Audio matches
+              </div>
+              {response.songs.map((song, i) => (
+                <div key={i} className="flex items-center justify-between py-1 px-2 rounded" style={{ background: "rgba(255,255,255,0.03)" }}>
+                  <span className="text-xs truncate" style={{ color: "var(--text-primary)" }}>
+                    {song.artist} — {song.title}
+                  </span>
+                  <span className="text-[10px] ml-2 flex-shrink-0" style={{ color: song.score > 0.7 ? "#2dd4a0" : song.score > 0.4 ? "#f59e0b" : "var(--text-muted)" }}>
+                    {Math.round((song.score || 0) * 100)}%
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
           {response.commands && Array.isArray(response.commands) && (
             <ul className="mt-1.5 space-y-0.5">
               {response.commands.map((cmd, i) => <li key={i} className="text-xs font-mono" style={{ color: "var(--text-muted)" }}>{cmd}</li>)}

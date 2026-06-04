@@ -244,6 +244,21 @@ _COMMAND_TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_music_crossmodal",
+            "description": "Search songs by describing how they SOUND (timbre, mood, instrumentation, production style, atmosphere). Uses audio analysis to find sonically similar music. Use when the user describes a vibe, feeling, or sonic quality rather than a specific artist/title/genre. Examples: 'dreamy reverb guitar', 'midnight driving music', 'aggressive distorted bass', 'smooth jazz piano'.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Text description of the desired sound, vibe, or atmosphere"},
+                    "limit": {"type": "integer", "description": "Max results (default 5, max 15)"},
+                },
+                "required": ["query"],
+            },
+        },
+    },
 ]
 
 
@@ -274,8 +289,64 @@ def _search_songs_tool(args: dict) -> str:
     return json.dumps(summary, default=str)
 
 
+def _crossmodal_search_tool(args: dict) -> str:
+    """Execute cross-modal music search using MuQ-MuLan text encoder.
+
+    Embeds the text query with MuQ's text encoder and queries the audio
+    embedding collection for sonically similar songs.
+    """
+    if not config.MUQ_ENABLED:
+        return json.dumps({"error": "Audio search not available (MUQ disabled)"})
+
+    try:
+        from llm.muq_engine import is_available, embed_texts
+        if not is_available():
+            return json.dumps({"error": "Audio embedding model not available (install torch + muq)"})
+    except ImportError:
+        return json.dumps({"error": "MuQ engine not installed"})
+
+    query = args.get("query", "")
+    if not query:
+        return json.dumps({"error": "No query provided"})
+
+    limit = min(args.get("limit", 5), 15)
+
+    try:
+        text_embeds = embed_texts([query])
+        if not text_embeds:
+            return json.dumps({"error": "Failed to embed text query"})
+
+        from engine.retriever import get_chroma_collection
+        audio_collection = get_chroma_collection(config.MUQ_AUDIO_COLLECTION)
+        results = audio_collection.query(
+            query_embeddings=text_embeds[0],
+            n_results=limit,
+            include=["distances", "metadatas"],
+        )
+
+        songs = []
+        for i in range(len(results["ids"][0])):
+            sid = int(results["ids"][0][i])
+            meta = results["metadatas"][0][i]
+            dist = results["distances"][0][i]
+            score = 1.0 - dist
+            song = database.get_song(sid)
+            if song:
+                songs.append({
+                    "id": sid,
+                    "artist": song.get("artist", ""),
+                    "title": song.get("title", ""),
+                    "energy": float(meta.get("energy", 0.5)),
+                    "valence": float(meta.get("valence", 0.5)),
+                    "score": round(score, 4),
+                })
+        return json.dumps({"songs": songs, "query": query})
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
 # Tools that can be fully executed inside the parser (only need DB access).
-_EXECUTABLE_TOOLS = {"search_songs"}
+_EXECUTABLE_TOOLS = {"search_songs", "search_music_crossmodal"}
 
 # Tools that are accumulated as pending actions for main.py to execute.
 _ACTION_TOOLS = {
@@ -303,6 +374,8 @@ def _execute_tool(tool_call) -> str | None:
 
     if name == "search_songs":
         return _search_songs_tool(args)
+    if name == "search_music_crossmodal":
+        return _crossmodal_search_tool(args)
     if name == "get_current_info":
         return json.dumps(tool_call._context if hasattr(tool_call, '_context') else {})
 
@@ -496,6 +569,13 @@ _COMMAND_PATTERNS = [
     (r'\b(safe|conservative|familiar|comfortable|cozy|predictable)\b', {"action": "exploration", "level": "low"}),
     (r'\b(less|decrease|reduce) exploration\b', {"action": "exploration", "level": "low"}),
 
+    # Cross-modal sound search ("play something dreamy", "sounds like rain", "music for studying")
+    (r'\b(play|find|get|queue|search)\s+(me\s+)?(something|songs?|music)?\s*(that\s+)?(sounds?|feels?|like)\s+(.{3,})', {"action": "crossmodal_search", "query": None}),
+    (r'\b(sounds?|feels?)\s+like\s+(.{3,})', {"action": "crossmodal_search", "query": None}),
+    (r'\b(play|find|queue)\s+(me\s+)?(.{3,})\s+vibes?\b', {"action": "crossmodal_search", "query": None}),
+    (r'\b(music|songs?)\s+(for|that|to)\s+(.{3,})', {"action": "crossmodal_search", "query": None}),
+    (r'\b(something|tracks?)\s+(with|that have|featuring)\s+(.{3,})', {"action": "crossmodal_search", "query": None}),
+
     # Genre/artist
     (r'\b(more|play more) (\w+(?:[\s-]+\w+)?)\b.*\b(jazz|rock|pop|hip.?hop|rap|classical|electronic|ambient|lo.?fi|soul|funk|disco|country|folk|metal|punk|indie|r\b)\b', {"action": "genre_filter", "genre": None}),
     (r'\b(more|play more) (\w+(?:[\s-]+\w+)*)\b', {"action": "artist_filter", "artist": None}),
@@ -606,6 +686,7 @@ _EXPLANATION_MAP = {
     "talk_show": "Talk show {enabled}",
     "stop": "Stopping playback",
     "help": "Showing available commands",
+    "crossmodal_search": "Searching for music that sounds like: {query}",
 }
 
 
@@ -670,6 +751,13 @@ _HELP_CATEGORIES = {
         ("find fast jazz and queue a few", "Narrow by genre + energy in one command"),
         ("sleep in 30", "Set sleep timer for 30 minutes"),
         ("cancel sleep timer", "Cancel the sleep timer"),
+    ],
+    "Sound Search": [
+        ("play something dreamy with reverb", "Find songs that sound dreamy"),
+        ("sounds like midnight driving", "Search by sonic description"),
+        ("music for studying", "Find music matching a vibe or activity"),
+        ("aggressive distorted bass tracks", "Search by production style"),
+        ("smooth jazz piano vibes", "Search by instrumentation + mood"),
     ],
     "Features": [
         ("radio mode", "Switch to AI radio mode"),

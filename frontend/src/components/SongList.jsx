@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { Plus, Heart, MoreHorizontal, Music, Play, Bolt, ChevronUp, ChevronDown, XCircle, RotateCcw, Pencil } from "lucide-react";
+import { Plus, Heart, MoreHorizontal, Music, Play, Bolt, ChevronUp, ChevronDown, XCircle, RotateCcw, Pencil, Edit3 } from "lucide-react";
 import * as api from "../api";
 import { SkeletonRow } from "./Skeleton";
 import StatsDashboard from "./StatsDashboard";
@@ -30,6 +30,12 @@ function SongList({ addToast, currentSongId, onPlay }) {
   const [editingSong, setEditingSong] = useState(null);
   const [editTags, setEditTags] = useState("");
   const [editNotes, setEditNotes] = useState("");
+  const [editingMetadata, setEditingMetadata] = useState(null);
+  const [metaForm, setMetaForm] = useState({
+    artist: "", title: "", album: "", bpm: "",
+    keyscale: "", timesignature: "", vocal_language: "", lyrics: "", caption: "",
+  });
+  const [savingMetadata, setSavingMetadata] = useState(false);
   const [openMenuId, setOpenMenuId] = useState(null);
   const menuRef = useRef(null);
 
@@ -162,6 +168,50 @@ function SongList({ addToast, currentSongId, onPlay }) {
     }
   }, [editingSong, editTags, editNotes, addToast, fetchSongs]);
 
+  const handleOpenMetadata = useCallback(async (e, song) => {
+    e.stopPropagation();
+    setOpenMenuId(null);
+    setEditingMetadata(song);
+    setMetaForm({
+      artist: song.artist || "",
+      title: song.title || "",
+      album: song.album || "",
+      bpm: song.bpm ?? "",
+      keyscale: song.keyscale || "",
+      timesignature: song.timesignature || "",
+      vocal_language: song.vocal_language || "",
+      lyrics: song.lyrics || "",
+      caption: song.ai_description || "",
+    });
+  }, []);
+
+  const handleSaveMetadata = useCallback(async () => {
+    if (!editingMetadata) return;
+    setSavingMetadata(true);
+    try {
+      const payload = {};
+      if (metaForm.artist?.trim()) payload.artist = metaForm.artist.trim();
+      if (metaForm.title?.trim()) payload.title = metaForm.title.trim();
+      if (metaForm.album?.trim()) payload.album = metaForm.album.trim();
+      if (metaForm.bpm !== "") payload.bpm = parseInt(metaForm.bpm, 10);
+      if (metaForm.keyscale?.trim()) payload.keyscale = metaForm.keyscale.trim();
+      if (metaForm.timesignature?.trim()) payload.timesignature = metaForm.timesignature.trim();
+      if (metaForm.vocal_language?.trim()) payload.vocal_language = metaForm.vocal_language.trim();
+      if (metaForm.lyrics !== undefined) payload.lyrics = metaForm.lyrics;
+      if (metaForm.caption !== undefined) payload.caption = metaForm.caption;
+
+      await api.updateSongMetadata(editingMetadata.id, payload);
+      const title = metaForm.title.trim() || editingMetadata.title || "Song";
+      addToast?.(`Metadata saved for "${title}"`, "success");
+      setEditingMetadata(null);
+      fetchSongs();
+    } catch (err) {
+      addToast?.("Failed to save metadata", "error");
+    } finally {
+      setSavingMetadata(false);
+    }
+  }, [editingMetadata, metaForm, addToast, fetchSongs]);
+
   const handleHeart = useCallback(async (e, song) => {
     e.stopPropagation();
     try {
@@ -274,7 +324,7 @@ function SongList({ addToast, currentSongId, onPlay }) {
                 <SongRow key={song.id} song={song} isPlaying={currentSongId === song.id}
                   onPlay={handlePlay} onAddToQueue={handleAddToQueue}
                   onBlacklist={handleBlacklist} onReprocess={handleReprocess}
-                  onEditTags={handleEditTags} onHeart={handleHeart}
+                  onEditTags={handleEditTags} onEditMetadata={handleOpenMetadata} onHeart={handleHeart}
                   openMenuId={openMenuId} setOpenMenuId={setOpenMenuId} menuRef={menuRef} />
               ))
             )}
@@ -322,7 +372,7 @@ function SongList({ addToast, currentSongId, onPlay }) {
                 <SongRow key={song.id} song={song} isPlaying={currentSongId === song.id}
                   onPlay={handlePlay} onAddToQueue={handleAddToQueue}
                   onBlacklist={handleBlacklist} onReprocess={handleReprocess}
-                  onEditTags={handleEditTags} onHeart={handleHeart}
+                  onEditTags={handleEditTags} onEditMetadata={handleOpenMetadata} onHeart={handleHeart}
                   openMenuId={openMenuId} setOpenMenuId={setOpenMenuId} menuRef={menuRef} />
               ))
             )}
@@ -372,11 +422,90 @@ function SongList({ addToast, currentSongId, onPlay }) {
           </div>
         </div>
       )}
+
+      {/* Metadata Editor Modal */}
+      {editingMetadata && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.6)" }}
+          onClick={() => setEditingMetadata(null)}>
+          <div onClick={(e) => e.stopPropagation()}
+            style={{ background: "var(--bg-surface)", borderRadius: "12px", border: "1px solid var(--border)", padding: "24px", width: "480px", maxHeight: "85vh", overflow: "auto", boxShadow: "0 8px 32px rgba(0,0,0,0.4)" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px" }}>
+              <h3 style={{ fontSize: "16px", fontWeight: 600, color: "var(--text-primary)", margin: 0 }}>Edit Metadata</h3>
+              <button onClick={() => setEditingMetadata(null)} style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", fontSize: "18px", padding: "4px" }}>×</button>
+            </div>
+
+            <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
+              <div>
+                <label style={{ display: "block", fontSize: "11px", color: "var(--text-muted)", marginBottom: "4px" }}>Artist</label>
+                <input type="text" value={metaForm.artist} onChange={(e) => setMetaForm({ ...metaForm, artist: e.target.value })}
+                  style={{ width: "100%", padding: "8px 12px", borderRadius: "8px", background: "var(--bg-elevated)", border: "1px solid var(--border)", color: "var(--text-primary)", fontSize: "12px", outline: "none", boxSizing: "border-box" }} />
+              </div>
+              <div>
+                <label style={{ display: "block", fontSize: "11px", color: "var(--text-muted)", marginBottom: "4px" }}>Title</label>
+                <input type="text" value={metaForm.title} onChange={(e) => setMetaForm({ ...metaForm, title: e.target.value })}
+                  style={{ width: "100%", padding: "8px 12px", borderRadius: "8px", background: "var(--bg-elevated)", border: "1px solid var(--border)", color: "var(--text-primary)", fontSize: "12px", outline: "none", boxSizing: "border-box" }} />
+              </div>
+              <div>
+                <label style={{ display: "block", fontSize: "11px", color: "var(--text-muted)", marginBottom: "4px" }}>Album</label>
+                <input type="text" value={metaForm.album} onChange={(e) => setMetaForm({ ...metaForm, album: e.target.value })}
+                  style={{ width: "100%", padding: "8px 12px", borderRadius: "8px", background: "var(--bg-elevated)", border: "1px solid var(--border)", color: "var(--text-primary)", fontSize: "12px", outline: "none", boxSizing: "border-box" }} />
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
+                <div>
+                  <label style={{ display: "block", fontSize: "11px", color: "var(--text-muted)", marginBottom: "4px" }}>BPM</label>
+                  <input type="number" value={metaForm.bpm} onChange={(e) => setMetaForm({ ...metaForm, bpm: e.target.value })}
+                    style={{ width: "100%", padding: "8px 12px", borderRadius: "8px", background: "var(--bg-elevated)", border: "1px solid var(--border)", color: "var(--text-primary)", fontSize: "12px", outline: "none", boxSizing: "border-box" }} />
+                </div>
+                <div>
+                  <label style={{ display: "block", fontSize: "11px", color: "var(--text-muted)", marginBottom: "4px" }}>Key/Scale</label>
+                  <input type="text" value={metaForm.keyscale} onChange={(e) => setMetaForm({ ...metaForm, keyscale: e.target.value })}
+                    style={{ width: "100%", padding: "8px 12px", borderRadius: "8px", background: "var(--bg-elevated)", border: "1px solid var(--border)", color: "var(--text-primary)", fontSize: "12px", outline: "none", boxSizing: "border-box" }} />
+                </div>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
+                <div>
+                  <label style={{ display: "block", fontSize: "11px", color: "var(--text-muted)", marginBottom: "4px" }}>Time Sig</label>
+                  <input type="text" value={metaForm.timesignature} onChange={(e) => setMetaForm({ ...metaForm, timesignature: e.target.value })}
+                    style={{ width: "100%", padding: "8px 12px", borderRadius: "8px", background: "var(--bg-elevated)", border: "1px solid var(--border)", color: "var(--text-primary)", fontSize: "12px", outline: "none", boxSizing: "border-box" }} />
+                </div>
+                <div>
+                  <label style={{ display: "block", fontSize: "11px", color: "var(--text-muted)", marginBottom: "4px" }}>Language</label>
+                  <input type="text" value={metaForm.vocal_language} onChange={(e) => setMetaForm({ ...metaForm, vocal_language: e.target.value })}
+                    style={{ width: "100%", padding: "8px 12px", borderRadius: "8px", background: "var(--bg-elevated)", border: "1px solid var(--border)", color: "var(--text-primary)", fontSize: "12px", outline: "none", boxSizing: "border-box" }} />
+                </div>
+              </div>
+              <div>
+                <label style={{ display: "block", fontSize: "11px", color: "var(--text-muted)", marginBottom: "4px" }}>Caption (AI Description)</label>
+                <textarea value={metaForm.caption} onChange={(e) => setMetaForm({ ...metaForm, caption: e.target.value })}
+                  placeholder="acestep caption / AI description" rows={3}
+                  style={{ width: "100%", padding: "8px 12px", borderRadius: "8px", background: "var(--bg-elevated)", border: "1px solid var(--border)", color: "var(--text-primary)", fontSize: "12px", outline: "none", resize: "none", boxSizing: "border-box" }} />
+              </div>
+              <div>
+                <label style={{ display: "block", fontSize: "11px", color: "var(--text-muted)", marginBottom: "4px" }}>Lyrics</label>
+                <textarea value={metaForm.lyrics} onChange={(e) => setMetaForm({ ...metaForm, lyrics: e.target.value })}
+                  placeholder="Song lyrics" rows={6}
+                  style={{ width: "100%", padding: "8px 12px", borderRadius: "8px", background: "var(--bg-elevated)", border: "1px solid var(--border)", color: "var(--text-primary)", fontSize: "12px", outline: "none", resize: "none", boxSizing: "border-box" }} />
+              </div>
+            </div>
+
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: "8px", marginTop: "20px" }}>
+              <button onClick={() => setEditingMetadata(null)} disabled={savingMetadata}
+                style={{ padding: "8px 16px", borderRadius: "8px", background: "var(--bg-elevated)", border: "1px solid var(--border)", color: "var(--text-muted)", fontSize: "12px", cursor: "pointer" }}>
+                Cancel
+              </button>
+              <button onClick={handleSaveMetadata} disabled={savingMetadata}
+                style={{ padding: "8px 16px", borderRadius: "8px", background: "var(--accent-muted)", border: "1px solid var(--border)", color: "var(--accent)", fontSize: "12px", fontWeight: 500, cursor: "pointer", opacity: savingMetadata ? 0.6 : 1 }}>
+                {savingMetadata ? "Saving…" : "Save"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-const SongRow = React.memo(({ song, isPlaying, onPlay, onAddToQueue, onBlacklist, onReprocess, onEditTags, onHeart, openMenuId, setOpenMenuId, menuRef }) => {
+const SongRow = React.memo(({ song, isPlaying, onPlay, onAddToQueue, onBlacklist, onReprocess, onEditTags, onEditMetadata, onHeart, openMenuId, setOpenMenuId, menuRef }) => {
   const energyPct = Math.round((song.energy ?? 0.5) * 100);
   const valencePct = Math.round((song.valence ?? 0.5) * 100);
   const completionPct = Math.round(song.avg_completion ?? 0);
@@ -424,6 +553,10 @@ const SongRow = React.memo(({ song, isPlaying, onPlay, onAddToQueue, onBlacklist
                 <div onClick={(e) => onEditTags(e, song)}
                   style={{ display: "flex", alignItems: "center", gap: "6px", padding: "6px 8px", borderRadius: "4px", fontSize: "11px", color: "var(--text-secondary)", cursor: "pointer" }}>
                   <Pencil size={11} /> Edit tags
+                </div>
+                <div onClick={(e) => onEditMetadata(e, song)}
+                  style={{ display: "flex", alignItems: "center", gap: "6px", padding: "6px 8px", borderRadius: "4px", fontSize: "11px", color: "var(--text-secondary)", cursor: "pointer" }}>
+                  <Edit3 size={11} /> Edit metadata
                 </div>
                 <div onClick={(e) => onReprocess(e, song)}
                   style={{ display: "flex", alignItems: "center", gap: "6px", padding: "6px 8px", borderRadius: "4px", fontSize: "11px", color: "var(--text-secondary)", cursor: "pointer" }}>

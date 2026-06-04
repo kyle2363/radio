@@ -192,3 +192,14 @@ CREATE TABLE IF NOT EXISTS sleep_timer (
     switch_to_chill INTEGER DEFAULT 1,
     cancelled       INTEGER DEFAULT 0
 );
+
+-- mood_skip_repulsion — per-mood audio embedding repulsion from skip feedback
+CREATE TABLE IF NOT EXISTS mood_skip_repulsion (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    mood_state      TEXT NOT NULL,
+    reason          TEXT NOT NULL,
+    song_id         INTEGER NOT NULL,
+    audio_embedding TEXT NOT NULL,  -- JSON serialized 512-dim vector
+    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_mood_skip_repulsion_mood ON mood_skip_repulsion(mood_state);

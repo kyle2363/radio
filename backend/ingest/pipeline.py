@@ -232,11 +232,11 @@ def run_phase_describe():
 
 
 def run_phase_embed():
-    """Phase 4: Embed ALL songs at 'described' phase."""
+    """Phase 4: Embed ALL songs at 'described' phase (text embeddings)."""
     _reset_progress()
     _ingest_progress["phase"] = "embedded"
 
-    print("Phase 4: Generating embeddings...")
+    print("Phase 4: Generating text embeddings...")
     from ingest import embedder
 
     # Embed ALL songs at described phase (not just new ones — in case model changed)
@@ -254,6 +254,50 @@ def run_phase_embed():
     _ingest_progress["running"] = False
     print("Phase 4 complete!")
     return {"embedded": _ingest_progress["total"]}
+
+
+def run_phase_embed_audio():
+    """Phase 4b: Generate MuQ-MuLan audio embeddings for all songs."""
+    _reset_progress()
+    _ingest_progress["phase"] = "audio_embedded"
+
+    if not config.MUQ_ENABLED:
+        print("Phase 4b: MuQ disabled, skipping audio embeddings")
+        _ingest_progress["running"] = False
+        return {"audio_embedded": 0}
+
+    try:
+        from llm.muq_engine import is_available
+        if not is_available():
+            print("Phase 4b: MuQ-MuLan not available (torch/muq not installed), skipping")
+            _ingest_progress["running"] = False
+            return {"audio_embedded": 0}
+    except Exception as e:
+        print(f"Phase 4b: MuQ-MuLan check failed: {e}, skipping")
+        _ingest_progress["running"] = False
+        return {"audio_embedded": 0}
+
+    print("Phase 4b: Generating MuQ-MuLan audio embeddings...")
+    from ingest import embedder
+
+    # Get all songs that have been text-embedded (need filepath for audio)
+    embedded_songs = database.get_by_ingest_phase("embedded")
+    clustered_songs = database.get_by_ingest_phase("clustered")
+    all_songs = embedded_songs + clustered_songs
+    song_ids = [s["id"] for s in all_songs]
+    _ingest_progress["total"] = len(song_ids)
+
+    if song_ids:
+        print(f"  Processing {len(song_ids)} songs for audio embeddings")
+        embedded_ids = embedder.embed_audio_songs(song_ids)
+        _ingest_progress["completed"] = len(embedded_ids)
+        print(f"  Audio-embedded {len(embedded_ids)} songs")
+    else:
+        print("  No songs available for audio embedding")
+
+    _ingest_progress["running"] = False
+    print("Phase 4b complete!")
+    return {"audio_embedded": len(embedded_ids) if song_ids else 0}
 
 
 def run_phase_cluster():
@@ -289,6 +333,7 @@ def run_ingest():
         ("normalizing", run_phase_normalize),
         ("described", run_phase_describe),
         ("embedded", run_phase_embed),
+        ("audio_embedded", run_phase_embed_audio),
         ("clustered", run_phase_cluster),
     ]
 

@@ -1,4 +1,9 @@
-"""Generate embeddings for songs and sync to ChromaDB."""
+"""Generate embeddings for songs and sync to ChromaDB.
+
+Supports two embedding types:
+  - Text embeddings (qwen3-embedding via LLM provider) — metadata/caption/lyrics
+  - Audio embeddings (MuQ-MuLan) — raw audio waveform similarity
+"""
 
 import json
 import os
@@ -21,6 +26,8 @@ import config
 from llm import llm_embed
 from db import database
 
+logger = logging.getLogger(__name__)
+
 _chroma_client = None
 
 
@@ -32,6 +39,15 @@ def _get_chroma_client():
         os.makedirs(config.CHROMA_PATH, exist_ok=True)
         _chroma_client = chromadb.PersistentClient(path=config.CHROMA_PATH)
     return _chroma_client
+
+
+def get_audio_collection():
+    """Get or create the ChromaDB collection for MuQ-MuLan audio embeddings."""
+    client = _get_chroma_client()
+    return client.get_or_create_collection(
+        config.MUQ_AUDIO_COLLECTION,
+        metadata={"hnsw:space": "cosine"},
+    )
 
 
 def _build_embedding_text(song: dict) -> str:
@@ -146,5 +162,87 @@ def embed_described_songs(song_ids: list) -> list:
             embedded_ids.append(song_id)
         else:
             print(f"  Failed to embed song {song_id}, will retry on next run")
+
+    return embedded_ids
+
+
+# ──────────────────────────────────────────────────────────
+# Audio embeddings (MuQ-MuLan)
+# ──────────────────────────────────────────────────────────
+
+def embed_audio_song(song_id: int, filepath: str, song: dict = None) -> bool:
+    """Embed a song's audio using MuQ-MuLan and upsert to audio collection.
+
+    Args:
+        song_id: database ID of the song
+        filepath: path to the audio file
+        song: optional song dict (avoids extra DB fetch if already available)
+
+    Returns:
+        True on success, False on failure
+    """
+    try:
+        from llm.muq_engine import embed_audio
+
+        embedding = embed_audio(filepath)
+
+        audio_collection = get_audio_collection()
+
+        # Delete first to avoid ChromaDB duplicate ID issues
+        try:
+            audio_collection.delete(ids=[str(song_id)])
+        except Exception:
+            pass
+
+        # Use provided song dict or fetch from SQLite
+        if song is None:
+            song = database.get_song(song_id)
+        audio_collection.upsert(
+            ids=[str(song_id)],
+            embeddings=[embedding],
+            metadatas=[{
+                "song_id": song_id,
+                "artist": (song.get("artist") or "") if song else "",
+                "title": (song.get("title") or "") if song else "",
+                "energy": song.get("energy") if song and song.get("energy") is not None else 0.5,
+                "valence": song.get("valence") if song and song.get("valence") is not None else 0.5,
+                "cluster_id": song.get("cluster_id") if song and song.get("cluster_id") is not None else -1,
+                "subfolder": song.get("subfolder") or "" if song else "",
+            }],
+        )
+        return True
+    except Exception as e:
+        logger.warning("Failed to audio-embed song %d: %s", song_id, e)
+        return False
+
+
+def embed_audio_songs(song_ids: list) -> list:
+    """Embed audio for multiple songs. Returns list of successfully embedded IDs."""
+    audio_collection = get_audio_collection()
+
+    # Check which songs already have audio embeddings
+    already_embedded = set()
+    try:
+        existing = audio_collection.get(
+            ids=[str(sid) for sid in song_ids],
+            include=[],
+        )
+        if existing and existing["ids"]:
+            already_embedded = set(existing["ids"])
+    except Exception as e:
+        logger.warning("Could not check audio collection for existing songs: %s", e)
+
+    to_embed = [sid for sid in song_ids if str(sid) not in already_embedded]
+    embedded_ids = []
+
+    for song_id in to_embed:
+        song = database.get_song(song_id)
+        if song and song.get("filepath"):
+            if embed_audio_song(song_id, song["filepath"], song=song):
+                embedded_ids.append(song_id)
+            else:
+                logger.warning("Failed to audio-embed song %d, will retry", song_id)
+        else:
+            logger.warning("Song %d not found or no filepath, skipping audio embed", song_id)
 
     return embedded_ids

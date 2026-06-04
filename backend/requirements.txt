@@ -17,6 +17,7 @@ tqdm>=4.66.0
 requests>=2.32.0
 rapidfuzz>=3.0.0
 
-# OmniVoice TTS (voice cloning) — requires CUDA GPU
+# Audio embeddings (MuQ-MuLan) — requires CUDA GPU for reasonable speed
 # torch>=2.1.0  # Install separately with CUDA support: pip install torch --index-url https://download.pytorch.org/whl/cu121
+# muq            # Install separately: pip install muq
 # omnivoice     # Install separately: pip install omnivoice

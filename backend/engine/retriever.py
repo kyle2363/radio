@@ -1,4 +1,11 @@
-"""ChromaDB vector retrieval for song recommendations."""
+"""ChromaDB vector retrieval for song recommendations.
+
+Supports dual embedding paths:
+  - Text embeddings (LLM provider) — metadata/caption/lyrics similarity
+  - Audio embeddings (MuQ-MuLan) — musical similarity
+
+Both searches run in parallel and scores are blended using MUQ_AUDIO_BLEND.
+"""
 
 import json
 import logging
@@ -33,20 +40,11 @@ def get_chroma_collection(name="songs"):
     return client.get_collection(name)
 
 
-def get_embedding_dimension() -> int:
-    """Get the embedding dimension from the ChromaDB songs collection."""
+def get_embedding_dimension(collection_name: str = "songs") -> int:
+    """Get the embedding dimension from a ChromaDB collection."""
     try:
-        collection = get_chroma_collection()
-        metadata = collection.metadata or {}
-        if metadata.get("hnsw:M"):
-            return int(metadata.get("hnsw:M"))
-        if metadata.get("embedding_dimension"):
-            return int(metadata.get("embedding_dimension"))
-    except Exception:
-        pass
-    # Fallback: query one vector to discover dimension
-    try:
-        sample = get_chroma_collection().get(limit=1, include=["embeddings"])
+        collection = get_chroma_collection(collection_name)
+        sample = collection.get(limit=1, include=["embeddings"])
         if sample and sample.get("embeddings") and sample["embeddings"][0]:
             return len(sample["embeddings"][0])
     except Exception:
@@ -54,13 +52,15 @@ def get_embedding_dimension() -> int:
     return 1024
 
 
+def get_audio_embedding_dimension() -> int:
+    """Get the embedding dimension from the audio collection."""
+    if not config.MUQ_ENABLED:
+        return 0
+    return get_embedding_dimension(config.MUQ_AUDIO_COLLECTION)
+
+
 def _jitter_vector(v, strength=0.03):
-    """Add small random noise to a vector for variety between calls.
-    
-    This prevents the same candidates from being returned every time
-    while preserving the overall direction of the query.
-    """
-    # logger.debug("_jitter_vector: v type=%s len=%s", type(v).__name__, len(v) if v else None)
+    """Add small random noise to a vector for variety between calls."""
     noise = [random.gauss(0, strength) for _ in v]
     noise_mag = math.sqrt(sum(x * x for x in noise))
     if noise_mag > 0:
@@ -68,7 +68,11 @@ def _jitter_vector(v, strength=0.03):
     return [a + b for a, b in zip(v, noise)]
 
 
-def search_by_vector(taste_vector, n=60, exclude_ids=None, min_energy=None, max_energy=None, min_valence=None, max_valence=None, subfolder_filter=None):
+def search_by_vector(taste_vector, n=60, exclude_ids=None,
+                     min_energy=None, max_energy=None,
+                     min_valence=None, max_valence=None,
+                     subfolder_filter=None,
+                     collection_name="songs"):
     """Search ChromaDB by embedding vector with optional filters.
 
     When subfolder_filter is set (list of folder names), only songs from
@@ -77,20 +81,16 @@ def search_by_vector(taste_vector, n=60, exclude_ids=None, min_energy=None, max_
 
     Returns list of dicts with song_id, score, metadata.
     """
-  # logger.debug("search_by_vector: taste_vector type=%s len=%s, n=%d, min_energy=%s, max_energy=%s, min_valence=%s, max_valence=%s",
-   #              type(taste_vector).__name__, len(taste_vector) if taste_vector else None,
-   #              n, min_energy, max_energy, min_valence, max_valence)
     if exclude_ids is None:
         exclude_ids = []
 
-    collection = get_chroma_collection()
-    # Add small jitter to taste vector for variety between calls
+    collection = get_chroma_collection(collection_name)
     query_vector = _jitter_vector(taste_vector)
-    # Build where clause for folder filter
+
     where_clause = None
     if subfolder_filter:
         where_clause = {"subfolder": {"$in": subfolder_filter}}
-    # Inflate query to get a broader pool, then subsample
+
     inflated_n = min(max(n * 2, 120), 200)
     results = collection.query(
         query_embeddings=[query_vector],
@@ -98,23 +98,16 @@ def search_by_vector(taste_vector, n=60, exclude_ids=None, min_energy=None, max_
         where=where_clause,
         include=["distances", "metadatas"],
     )
- # logger.debug("search_by_vector: ChromaDB results ids=%r distances=%r metadatas_len=%s",
-   #              results.get("ids")[:2] if results else None,
-   #              results.get("distances")[:2] if results else None,
-   #              len(results.get("metadatas", [])) if results else 0)
 
     song_ids = []
     ids_row = results["ids"][0] if results and results.get("ids") else []
-    # logger.debug("search_by_vector: ids_row type=%s len=%s first_elem=%r", type(ids_row).__name__, len(ids_row) if ids_row else 0, ids_row[0] if ids_row else None)
     for i in range(len(ids_row)):
         song_id = int(ids_row[i])
-        song_id = int(results["ids"][0][i])
         if song_id in exclude_ids:
             continue
-
         song_ids.append(song_id)
 
-    # Fetch artist/title from SQLite since ChromaDB metadata may be stale/empty
+    # Fetch artist/title from SQLite
     song_info = {}
     if song_ids:
         conn = database.get_connection()
@@ -136,9 +129,8 @@ def search_by_vector(taste_vector, n=60, exclude_ids=None, min_energy=None, max_
 
         meta = results["metadatas"][0][i]
         distance = results["distances"][0][i]
-        score = 1.0 - distance  # Convert distance to similarity
+        score = 1.0 - distance
 
-        # Apply energy/valence filters if specified
         energy = float(meta.get("energy", 0.5))
         valence = float(meta.get("valence", 0.5))
 
@@ -162,18 +154,16 @@ def search_by_vector(taste_vector, n=60, exclude_ids=None, min_energy=None, max_
             "title": info.get("title", meta.get("title", "")),
         })
 
-    # Apply cluster staleness bonus — boost songs from stale clusters
+    # Apply cluster staleness bonus
     staleness = database.get_cluster_staleness()
-    # logger.debug("search_by_vector: staleness=%r (type=%s)", staleness, type(staleness).__name__)
     if staleness:
         for c in candidates:
             cid = c.get("cluster_id", -1)
             hours_ago = staleness.get(cid, 24.0)
             if hours_ago > 6 and cid >= 0:
-                boost = min(0.08, hours_ago * 0.005)  # up to 0.08 bonus for very stale
+                boost = min(0.08, hours_ago * 0.005)
                 c["score"] = min(1.0, c.get("score", 0.5) + boost)
 
-    # Shuffle within top tier to add variety while preserving quality
     if len(candidates) > n + 10:
         pool = candidates[:n + 10]
         random.shuffle(pool)
@@ -181,6 +171,56 @@ def search_by_vector(taste_vector, n=60, exclude_ids=None, min_energy=None, max_
     else:
         candidates = candidates[:n]
     return candidates
+
+
+def _merge_duo_candidates(text_cands, audio_cands, blend):
+    """Merge candidates from text and audio searches with score blending.
+
+    For songs appearing in both result sets, blend scores.
+    For songs in only one set, use that score directly.
+    """
+    text_map = {c["song_id"]: c for c in text_cands}
+    audio_map = {c["song_id"]: c for c in audio_cands}
+    all_ids = set(text_map) | set(audio_map)
+
+    merged = []
+    for sid in all_ids:
+        tc = text_map.get(sid)
+        ac = audio_map.get(sid)
+
+        if tc and ac:
+            # Song in both sets — blend scores
+            ts = tc["score"]
+            as_ = ac["score"]
+            blended_score = (1.0 - blend) * ts + blend * as_
+            # Prefer text metadata (usually richer)
+            merged.append({
+                "song_id": sid,
+                "score": blended_score,
+                "energy": tc.get("energy", ac.get("energy", 0.5)),
+                "valence": tc.get("valence", ac.get("valence", 0.5)),
+                "cluster_id": tc.get("cluster_id", ac.get("cluster_id", -1)),
+                "artist": tc.get("artist") or ac.get("artist", ""),
+                "title": tc.get("title") or ac.get("title", ""),
+                "source": "blended",
+            })
+        elif tc:
+            # Text only — apply blend as discount
+            merged.append({
+                **tc,
+                "score": tc["score"] * (1.0 - blend * 0.3),
+                "source": "text",
+            })
+        elif ac:
+            # Audio only — apply blend as discount
+            merged.append({
+                **ac,
+                "score": ac["score"] * (1.0 - (1.0 - blend) * 0.3),
+                "source": "audio",
+            })
+
+    merged.sort(key=lambda x: x.get("score", 0), reverse=True)
+    return merged
 
 
 def search_by_centroid(centroid_energy=0.5, centroid_valence=0.5, n=60):
@@ -205,7 +245,7 @@ def search_by_centroid(centroid_energy=0.5, centroid_valence=0.5, n=60):
         meta = results["metadatas"][i]
         candidates.append({
             "song_id": int(meta.get("song_id", 0)),
-            "score": 0.5,  # Neutral score for centroid songs
+            "score": 0.5,
             "energy": float(meta.get("energy", 0.5)),
             "valence": float(meta.get("valence", 0.5)),
             "cluster_id": int(meta.get("cluster_id", -1)),
@@ -225,20 +265,7 @@ def get_neutral_centroid_songs(n=60):
 
 
 def _apply_skip_feedback_bias(mood_energy_range, mood_valence_range, skip_feedback=None):
-    """Adjust energy/valence ranges based on recent skip feedback.
-
-    Args:
-        mood_energy_range: (min, max) tuple or None
-        mood_valence_range: (min, max) tuple or None
-        skip_feedback: list of recent skip feedback dicts from DB
-
-    Returns:
-        Adjusted (mood_energy_range, mood_valence_range) tuple.
-    """
-   # logger.debug("_apply_skip_feedback_bias: mood_energy_range=%r (type=%s), mood_valence_range=%r (type=%s), skip_feedback=%r (type=%s)",
-    #              mood_energy_range, type(mood_energy_range).__name__,
-    #              mood_valence_range, type(mood_valence_range).__name__,
-    #              skip_feedback, type(skip_feedback).__name__)
+    """Adjust energy/valence ranges based on recent skip feedback."""
     if not skip_feedback:
         return mood_energy_range, mood_valence_range
 
@@ -251,19 +278,36 @@ def _apply_skip_feedback_bias(mood_energy_range, mood_valence_range, skip_feedba
             lo, hi = mood_energy_range
             mood_energy_range = (min(hi, lo + 0.15), hi)
         elif reason == "too_samey":
-            # No direct range adjustment — handled via jitter/exploration
             pass
 
     return mood_energy_range, mood_valence_range
 
 
-def build_candidate_list(taste_vector, current_song_id, exclude_ids=None, mood_energy_range=None, mood_valence_range=None, repulsion_vector=None, skip_feedback=None, subfolder_filter=None):
+def build_candidate_list(text_taste_vector=None, audio_taste_vector=None,
+                         current_song_id=None, exclude_ids=None,
+                         mood_energy_range=None, mood_valence_range=None,
+                         text_repulsion_vector=None, audio_repulsion_vector=None,
+                         skip_feedback=None, subfolder_filter=None,
+                         vibe_lock=None, mood_state=None,
+                         # Legacy params for backward compatibility
+                         taste_vector=None, repulsion_vector=None):
     """Build a candidate list for slot allocation.
 
-    Stage 1: ChromaDB vector search
-    Stage 2: Exclude recently played, blacklist, current song
+    Runs two ChromaDB searches (text + audio) when both vectors are available,
+    then blends scores using MUQ_AUDIO_BLEND.
+
+    Supports both new dual-vector API and legacy single-vector API:
+      - New: pass text_taste_vector + audio_taste_vector
+      - Legacy: pass taste_vector (text only, no audio search)
+
     Returns up to 40 candidates for LLM reranker.
     """
+    # Handle legacy API: taste_vector → text_taste_vector
+    if text_taste_vector is None and taste_vector is not None:
+        text_taste_vector = taste_vector
+    if text_repulsion_vector is None and repulsion_vector is not None:
+        text_repulsion_vector = repulsion_vector
+
     if exclude_ids is None:
         exclude_ids = set()
     elif isinstance(exclude_ids, list):
@@ -272,12 +316,7 @@ def build_candidate_list(taste_vector, current_song_id, exclude_ids=None, mood_e
     if current_song_id:
         exclude_ids.add(current_song_id)
 
-    # Apply repulsion vector to taste vector (subtract disliked neighborhoods)
-    if taste_vector and repulsion_vector:
-        strength = 0.3
-        taste_vector = [a - strength * b for a, b in zip(taste_vector, repulsion_vector)]
-
-    # Get recently played song IDs (last 3 hours)
+    # Get recently played (last 3 hours)
     recently_played = set()
     conn = database.get_connection()
     try:
@@ -290,7 +329,7 @@ def build_candidate_list(taste_vector, current_song_id, exclude_ids=None, mood_e
     finally:
         conn.close()
 
-    # Get blacklisted song IDs (smart levels)
+    # Get blacklisted song IDs
     blacklisted = set()
     mood_blacklisted = set()
     cluster_blacklisted = set()
@@ -301,7 +340,6 @@ def build_candidate_list(taste_vector, current_song_id, exclude_ids=None, mood_e
         if level == "never_play":
             blacklisted.add(b["song_id"])
         elif level in ("avoid_week", "avoid_today"):
-            # Already filtered by expires_at in DB query
             blacklisted.add(b["song_id"])
         elif level == "avoid_mood":
             if b.get("mood"):
@@ -317,47 +355,168 @@ def build_candidate_list(taste_vector, current_song_id, exclude_ids=None, mood_e
             except (json.JSONDecodeError, TypeError):
                 pass
 
-    # Get songs by blacklisted artists
     if artist_blacklisted:
         artist_song_ids = database.get_songs_by_artists(list(artist_blacklisted))
         blacklisted.update(artist_song_ids)
-
-    # Get songs in blacklisted clusters
     if cluster_blacklisted:
         cluster_song_ids = database.get_songs_by_clusters(list(cluster_blacklisted))
         blacklisted.update(cluster_song_ids)
 
     exclude_ids |= recently_played | blacklisted | mood_blacklisted
 
-    # Apply skip feedback bias to energy/valence ranges
     mood_energy_range, mood_valence_range = _apply_skip_feedback_bias(
         mood_energy_range, mood_valence_range, skip_feedback,
     )
 
-    # If no taste vector, use neutral centroid
-    if not taste_vector:
-           candidates = search_by_vector(
-                    [0.0] * get_embedding_dimension(),
-                    n=60,
+    blend = config.MUQ_AUDIO_BLEND if config.MUQ_ENABLED else 0.0
+    has_audio = (audio_taste_vector is not None and blend > 0)
+
+    # Apply repulsion vectors
+    if text_taste_vector and text_repulsion_vector:
+        strength = 0.3
+        text_taste_vector = [a - strength * b for a, b in zip(text_taste_vector, text_repulsion_vector)]
+    if has_audio and audio_taste_vector and audio_repulsion_vector:
+        strength = 0.3
+        audio_taste_vector = [a - strength * b for a, b in zip(audio_taste_vector, audio_repulsion_vector)]
+
+    # Apply mood-specific skip repulsion (push away from rejected sonic neighborhood)
+    if mood_state and mood_state != "neutral" and config.MUQ_ENABLED:
+        try:
+            mood_repulsion = database.get_mood_repulsion_vector(mood_state)
+            if mood_repulsion and audio_taste_vector and has_audio:
+                audio_taste_vector = [
+                    a - 0.15 * b
+                    for a, b in zip(audio_taste_vector, mood_repulsion)
+                ]
+        except Exception:
+            pass  # Best effort
+
+    if has_audio:
+        # Dual search: text + audio, then blend
+        text_search_vector = text_taste_vector if text_taste_vector else [0.0] * get_embedding_dimension("songs")
+        audio_search_vector = audio_taste_vector
+
+        text_candidates = search_by_vector(
+            text_search_vector, n=60,
             exclude_ids=list(exclude_ids),
             min_energy=mood_energy_range[0] if mood_energy_range else None,
             max_energy=mood_energy_range[1] if mood_energy_range else None,
             min_valence=mood_valence_range[0] if mood_valence_range else None,
             max_valence=mood_valence_range[1] if mood_valence_range else None,
             subfolder_filter=subfolder_filter,
-        )
-    else:
-        # ChromaDB search
-        candidates = search_by_vector(
-            taste_vector,
-            n=60,
-            exclude_ids=list(exclude_ids),
-            min_energy=mood_energy_range[0] if mood_energy_range else None,
-            max_energy=mood_energy_range[1] if mood_energy_range else None,
-            min_valence=mood_valence_range[0] if mood_valence_range else None,
-            max_valence=mood_valence_range[1] if mood_valence_range else None,
-            subfolder_filter=subfolder_filter,
+            collection_name="songs",
         )
 
-    # Cap at 40 for LLM
+        try:
+            audio_candidates = search_by_vector(
+                audio_search_vector, n=60,
+                exclude_ids=list(exclude_ids),
+                min_energy=mood_energy_range[0] if mood_energy_range else None,
+                max_energy=mood_energy_range[1] if mood_energy_range else None,
+                min_valence=mood_valence_range[0] if mood_valence_range else None,
+                max_valence=mood_valence_range[1] if mood_valence_range else None,
+                subfolder_filter=subfolder_filter,
+                collection_name=config.MUQ_AUDIO_COLLECTION,
+            )
+        except Exception:
+            audio_candidates = []
+            has_audio = False
+
+        if has_audio:
+            candidates = _merge_duo_candidates(text_candidates, audio_candidates, blend)
+        else:
+            candidates = text_candidates
+    else:
+        # Text-only search (legacy path)
+        if text_taste_vector:
+            candidates = search_by_vector(
+                text_taste_vector, n=60,
+                exclude_ids=list(exclude_ids),
+                min_energy=mood_energy_range[0] if mood_energy_range else None,
+                max_energy=mood_energy_range[1] if mood_energy_range else None,
+                min_valence=mood_valence_range[0] if mood_valence_range else None,
+                max_valence=mood_valence_range[1] if mood_valence_range else None,
+                subfolder_filter=subfolder_filter,
+                collection_name="songs",
+            )
+        else:
+            candidates = search_by_vector(
+                [0.0] * get_embedding_dimension("songs"),
+                n=60,
+                exclude_ids=list(exclude_ids),
+                min_energy=mood_energy_range[0] if mood_energy_range else None,
+                max_energy=mood_energy_range[1] if mood_energy_range else None,
+                min_valence=mood_valence_range[0] if mood_valence_range else None,
+                max_valence=mood_valence_range[1] if mood_valence_range else None,
+                subfolder_filter=subfolder_filter,
+                collection_name="songs",
+            )
+
+    # Apply vibe lock audio similarity boost
+    if vibe_lock and vibe_lock.get("active") and vibe_lock.get("audio_embedding"):
+        candidates = _apply_vibe_lock_boost(candidates, vibe_lock, exclude_ids)
+
     return candidates[:40]
+
+
+def _apply_vibe_lock_boost(candidates, vibe_lock, exclude_ids):
+    """Boost candidates that sound like the vibe-locked song using audio embeddings.
+
+    Queries the audio embedding collection directly with the locked song's
+    audio_embedding and boosts/adds candidates based on sonic similarity.
+    """
+    if not vibe_lock or not vibe_lock.get("active") or not vibe_lock.get("audio_embedding"):
+        return candidates
+
+    if not config.MUQ_ENABLED:
+        return candidates
+
+    try:
+        audio_collection = get_chroma_collection(config.MUQ_AUDIO_COLLECTION)
+        vibe_results = audio_collection.query(
+            query_embeddings=[vibe_lock["audio_embedding"]],
+            n_results=20,
+            include=["distances", "metadatas"],
+        )
+        # Build a map of song_id -> vibe similarity score
+        vibe_scores = {}
+        for i in range(len(vibe_results["ids"][0])):
+            sid = int(vibe_results["ids"][0][i])
+            dist = vibe_results["distances"][0][i]
+            vibe_scores[sid] = 1.0 - dist
+
+        # Boost existing candidates and add high-scoring new ones
+        candidate_map = {c["song_id"]: c for c in candidates}
+        for sid, vibe_score in vibe_scores.items():
+            if sid in exclude_ids:
+                continue
+            if sid in candidate_map:
+                # Boost existing candidate: 70% vibe similarity weight
+                existing = candidate_map[sid]
+                existing["score"] = (1.0 - 0.70) * existing["score"] + 0.70 * vibe_score
+            elif len(candidates) < 60:
+                # Add as new candidate if scoring well
+                if vibe_score > 0.5:
+                    meta = None
+                    for i in range(len(vibe_results["ids"][0])):
+                        if int(vibe_results["ids"][0][i]) == sid:
+                            meta = vibe_results["metadatas"][0][i]
+                            break
+                    song_info = database.get_song(sid)
+                    if song_info:
+                        candidates.append({
+                            "song_id": sid,
+                            "score": vibe_score * 0.85,
+                            "energy": float((meta or {}).get("energy", 0.5)),
+                            "valence": float((meta or {}).get("valence", 0.5)),
+                            "cluster_id": int((meta or {}).get("cluster_id", -1)),
+                            "artist": song_info.get("artist", ""),
+                            "title": song_info.get("title", ""),
+                            "source": "vibe_lock",
+                        })
+
+        candidates.sort(key=lambda x: x.get("score", 0), reverse=True)
+    except Exception as e:
+        logger.debug("Vibe lock audio boost failed: %s", e)
+
+    return candidates

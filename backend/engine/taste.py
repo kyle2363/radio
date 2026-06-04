@@ -1,4 +1,12 @@
-"""Multi-timescale memory system for taste tracking."""
+"""Multi-timescale memory system for taste tracking.
+
+Supports dual embedding paths:
+  - Text taste vector (from LLM text embeddings)
+  - Audio taste vector (from MuQ-MuLan audio embeddings)
+
+Both vectors are computed in parallel and returned together.
+The retriever blends them using MUQ_AUDIO_BLEND.
+"""
 
 import logging
 import os
@@ -36,7 +44,8 @@ class MemoryLayer:
 
 @dataclass
 class _TasteCacheEntry:
-    vector: list
+    text_vector: list | None
+    audio_vector: list | None
     drift: float
     expires_at: float
 
@@ -53,26 +62,29 @@ class MemorySystem:
     """Multi-timescale taste memory.
 
     Tracks liked/completed/replayed songs across 4 timescales,
-    blends them into a single taste vector via weighted exponential decay.
+    blends them into taste vectors via weighted exponential decay.
+
+    Supports dual embedding paths (text + audio) for the hybrid
+    recommendation pipeline.
     """
 
     def __init__(self):
         self._cache: dict[str, _TasteCacheEntry] = {}
         self._cache_ttl = 15  # seconds
 
-    def _get_chroma_embedding(self, song_id: int) -> list | None:
+    def _get_chroma_embedding(self, song_id: int, collection_name: str = "songs") -> list | None:
         """Fetch a song's embedding from ChromaDB."""
         try:
             client = _get_chroma_client()
-            collection = client.get_collection("songs")
+            collection = client.get_collection(collection_name)
             result = collection.get(ids=[str(song_id)], include=["embeddings"])
             if result and result["embeddings"]:
                 return result["embeddings"][0]
-        except Exception as e:
-            pass  # logger.debug("Could not fetch ChromaDB embedding for song %s: %s", song_id, e)
+        except Exception:
+            pass
         return None
 
-    def _batch_get_chroma_embeddings(self, song_ids: list) -> dict:
+    def _batch_get_chroma_embeddings(self, song_ids: list, collection_name: str = "songs") -> dict:
         """Batch-fetch embeddings for multiple songs in one ChromaDB call.
 
         Returns dict: {str(song_id): embedding_list}
@@ -81,7 +93,7 @@ class MemorySystem:
             return {}
         try:
             client = _get_chroma_client()
-            collection = client.get_collection("songs")
+            collection = client.get_collection(collection_name)
             ids = [str(sid) for sid in song_ids]
             result = collection.get(ids=ids, include=["embeddings"])
             return {
@@ -90,15 +102,16 @@ class MemorySystem:
                 if emb
             }
         except Exception as e:
-            logger.debug("Batch ChromaDB fetch failed for %d songs: %s", len(song_ids), e)
+            logger.debug("Batch ChromaDB fetch failed for %d songs from %s: %s",
+                         len(song_ids), collection_name, e)
             return {}
 
-    def get_recent_signals(self, session_id: int = None, skip_streak: int = 0) -> list:
+    def get_recent_signals(self, session_id: int = None, skip_streak: int = 0,
+                           collection_name: str = "songs") -> list:
         """Get recent behavioral signals (likes, completions, replays).
 
         Returns list of dicts: {song_id, embedding, timestamp, signal_type}
         """
-        # Get recent hearted/replayed/completed songs
         liked = database.get_recent_signals(
             signal_types=['hearted', 'replayed', 'completed'],
             limit=2000,
@@ -107,9 +120,8 @@ class MemorySystem:
         if not liked:
             return []
 
-        # Batch-fetch all embeddings in one ChromaDB call
         song_ids = [ev['song_id'] for ev in liked]
-        embedding_map = self._batch_get_chroma_embeddings(song_ids)
+        embedding_map = self._batch_get_chroma_embeddings(song_ids, collection_name)
 
         signals = []
         for ev in liked:
@@ -168,26 +180,26 @@ class MemorySystem:
         if immediate is None or longterm is None:
             return 0.0
         sim = cosine_similarity(immediate, longterm)
-        # Drift is inverse of similarity, shifted so 0.0-1.0 range
         return max(0.0, 1.0 - sim)
 
-    def get_blended_taste_vector(self, session_id: int = None, skip_streak: int = 0) -> tuple:
-        """Compute blended taste vector from all memory layers.
+    def _compute_taste_vector(self, session_id, skip_streak, collection_name):
+        """Core taste vector computation for any collection.
 
-        Returns (blended_vector, drift_score) where blended_vector
-        is a list of floats or None if no taste signals available.
+        Returns (vector, drift) tuple.
         """
-        # logger.debug("get_blended_taste_vector: session_id=%s skip_streak=%d", session_id, skip_streak)
-        cache_key = f"s:{session_id}:sk:{skip_streak}"
+        cache_key = f"s:{session_id}:sk:{skip_streak}:{collection_name}"
         entry = self._cache.get(cache_key)
         if entry and entry.expires_at > time():
-            return entry.vector, entry.drift
+            return entry.text_vector, entry.drift
 
-        signals = self.get_recent_signals(session_id=session_id, skip_streak=skip_streak)
+        signals = self.get_recent_signals(
+            session_id=session_id,
+            skip_streak=skip_streak,
+            collection_name=collection_name,
+        )
         if not signals:
             return None, 0.0
 
-        # Apply skip streak rebalancing on a COPY to avoid mutating LAYERS
         layers = [MemoryLayer(l.name, l.window, l.weight, l.decay) for l in LAYERS]
         if skip_streak >= 3:
             for layer in layers:
@@ -196,18 +208,14 @@ class MemorySystem:
                 elif layer.name in ('longterm', 'daily'):
                     layer.weight -= 0.05
 
-        # Normalize weights
         total_weight = sum(l.weight for l in layers)
         for layer in layers:
             layer.weight /= total_weight
 
-        # Compute per-layer vectors for drift detection
         layer_vectors = self.get_layer_vectors(signals, layers)
         drift = self.detect_drift(layer_vectors)
 
-        # Blend layers
         blended = None
-        blended_count = 0
         for layer in layers:
             lv = layer_vectors.get(layer.name)
             if lv is None:
@@ -216,24 +224,54 @@ class MemorySystem:
                 blended = [v * layer.weight for v in lv]
             else:
                 blended = [a + b * layer.weight for a, b in zip(blended, lv)]
-            blended_count += 1
 
-        if blended:
-            self._cache[cache_key] = _TasteCacheEntry(
-                vector=blended,
-                drift=drift,
-                expires_at=time() + self._cache_ttl,
-            )
-           # logger.debug("get_blended_taste_vector: returning blended vector type=%s len=%d drift=%.3f",
-            #              type(blended).__name__, len(blended), drift)
-            return blended, drift
+        # Cache the result
         self._cache[cache_key] = _TasteCacheEntry(
-            vector=None,
+            text_vector=blended,
+            audio_vector=None,
             drift=drift,
             expires_at=time() + self._cache_ttl,
         )
-        # logger.debug("get_blended_taste_vector: returning None vector drift=%.3f", drift)
-        return None, drift
+
+        return blended, drift
+
+    def get_blended_taste_vector(self, session_id: int = None, skip_streak: int = 0) -> tuple:
+        """Compute blended text taste vector from all memory layers.
+
+        Returns (blended_vector, drift_score) where blended_vector
+        is a list of floats or None if no taste signals available.
+        """
+        return self._compute_taste_vector(session_id, skip_streak, "songs")
+
+    def get_audio_taste_vector(self, session_id: int = None, skip_streak: int = 0) -> tuple:
+        """Compute blended audio taste vector from MuQ-MuLan embeddings.
+
+        Returns (blended_vector, drift_score) where blended_vector
+        is a list of floats or None if no audio embeddings available.
+        """
+        if not config.MUQ_ENABLED:
+            return None, 0.0
+        return self._compute_taste_vector(session_id, skip_streak, config.MUQ_AUDIO_COLLECTION)
+
+    def get_taste_vectors(self, session_id: int = None, skip_streak: int = 0) -> dict:
+        """Compute both text and audio taste vectors in one call.
+
+        Returns dict:
+            text: text taste vector or None
+            audio: audio taste vector or None
+            drift: drift score from text vector computation
+        """
+        text_vec, text_drift = self.get_blended_taste_vector(session_id, skip_streak)
+        audio_vec, audio_drift = self.get_audio_taste_vector(session_id, skip_streak)
+
+        # Use the higher drift score (either embedding space may show drift)
+        drift = max(text_drift, audio_drift)
+
+        return {
+            "text": text_vec,
+            "audio": audio_vec,
+            "drift": drift,
+        }
 
     def get_neutral_centroid(self) -> list:
         """Return the average embedding of all clustered songs as a neutral centroid.
@@ -243,42 +281,61 @@ class MemorySystem:
         try:
             conn = database.get_connection()
             try:
-                row = conn.execute("SELECT AVG(energy) as ae, AVG(valence) as av FROM songs WHERE ingest_phase = 'clustered'").fetchone()
+                row = conn.execute(
+                    "SELECT AVG(energy) as ae, AVG(valence) as av "
+                    "FROM songs WHERE ingest_phase = 'clustered'"
+                ).fetchone()
             finally:
                 conn.close()
         except Exception:
             pass
         return [0.0] * retriever.get_embedding_dimension()
 
-    def get_repulsion_vector(self) -> list | None:
-        """Compute average embedding of disliked songs (skip_early, thumbed_down).
-
-        Returns a vector to be subtracted from the taste vector,
-        or None if no negative signals exist.
-        """
-        # logger.debug("get_repulsion_vector: fetching signals")
+    def _compute_repulsion_vector(self, collection_name: str) -> list | None:
+        """Compute average embedding of disliked songs from a given collection."""
         signals = database.get_recent_signals(
             signal_types=['skip_early', 'thumbed_down'],
             limit=500,
         )
         if not signals:
             return None
+
+        song_ids = [ev['song_id'] for ev in signals]
+        embedding_map = self._batch_get_chroma_embeddings(song_ids, collection_name)
         embeddings = []
         for ev in signals:
-            emb = self._get_chroma_embedding(ev['song_id'])
+            emb = embedding_map.get(str(ev['song_id']))
             if emb:
                 embeddings.append(emb)
+
         if not embeddings:
-            # logger.debug("get_repulsion_vector: no embeddings found, returning None")
             return None
+
         dim = len(embeddings[0])
         avg = [0.0] * dim
         for emb in embeddings:
             for i in range(dim):
                 avg[i] += emb[i]
         avg = [v / len(embeddings) for v in avg]
-        # logger.debug("get_repulsion_vector: returning vector type=%s len=%d", type(avg).__name__, len(avg))
         return avg
+
+    def get_repulsion_vector(self) -> list | None:
+        """Compute average embedding of disliked songs (text embeddings).
+
+        Returns a vector to be subtracted from the taste vector,
+        or None if no negative signals exist.
+        """
+        return self._compute_repulsion_vector("songs")
+
+    def get_audio_repulsion_vector(self) -> list | None:
+        """Compute average embedding of disliked songs (audio embeddings).
+
+        Returns a vector to be subtracted from the audio taste vector,
+        or None if no negative signals exist.
+        """
+        if not config.MUQ_ENABLED:
+            return None
+        return self._compute_repulsion_vector(config.MUQ_AUDIO_COLLECTION)
 
     def record_signal(self, song_id, signal, session_id=None):
         """Record a behavioral signal to the database.
@@ -294,5 +351,4 @@ class MemorySystem:
                 session_id=session_id,
                 signal=signal,
             )
-        # Invalidate taste cache on any behavioral signal
         self._cache.clear()

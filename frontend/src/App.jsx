@@ -61,7 +61,7 @@ function AppInner() {
   } = playback;
 
   // Queue state
-  const { queue, queueRebuilding, whyReason, handlePromoteSong, setQueue, setQueueRebuilding, setWhyReason } = useQueueState(currentSongRef);
+  const { queue, queueRebuilding, whyReason, handlePromoteSong, handleRemoveFromQueue, setQueue, setQueueRebuilding, setWhyReason } = useQueueState(currentSongRef);
 
   // Rebuild queue with HTTP polling (no WebSocket dependency)
   const handleRebuild = useCallback(async () => {
@@ -88,18 +88,7 @@ function AppInner() {
     applyStatus, setMood, setVibeLock, setSkipStreak,
   } = mood;
 
-  const refreshStatus = useCallback(async () => {
-    const data = await fetchStatus();
-    if (data) {
-      applyPlaybackStatus(data);
-      applyStatus(data);
-    }
-    return data;
-  }, [fetchStatus, applyPlaybackStatus, applyStatus]);
-
-  const { wsConnected, connectWebSocket } = useWebSocket(refreshStatus);
-
-  // UI state
+  // UI state (must be before refreshStatus to avoid TDZ)
   const ui = useUIState(fetchStatus);
   const {
     showSettings, setShowSettings,
@@ -113,6 +102,21 @@ function AppInner() {
     handleCancelSleepTimer, handleCommandSent, toggleTheme,
     handleOnboardingComplete, handleOnboardingSkip, handleReseedTaste,
   } = ui;
+
+  const refreshStatus = useCallback(async () => {
+    const data = await fetchStatus();
+    if (data) {
+      applyPlaybackStatus(data);
+      applyStatus(data);
+      // Sync talk overlay: clear when backend says talk is no longer playing
+      if (!data.talk_playing && talkSegmentActive) {
+        setTalkSegmentActive(null);
+      }
+    }
+    return data;
+  }, [fetchStatus, applyPlaybackStatus, applyStatus, talkSegmentActive, setTalkSegmentActive]);
+
+  const { wsConnected, connectWebSocket } = useWebSocket(refreshStatus);
 
  // Total songs count
   const [totalSongs, setTotalSongs] = useState(342);
@@ -290,6 +294,7 @@ function AppInner() {
     };
     window._ws._songStartedHandler = async () => {
       console.log(">>> song_started handler called");
+      setTalkSegmentActive(null);
       setQueue([]);
       setQueueRebuilding(true);
       console.log(">>> queue cleared, rebuilding=true");
@@ -514,7 +519,7 @@ function AppInner() {
           <div className={`${isElectron ? '' : 'w-full lg:w-80 xl:w-96'} flex-shrink-0 ${isElectron ? 'right-rail' : ''}`} style={isElectron ? { width: rightRailWidth } : undefined}>
             <div className={isElectron ? '' : 'lg:sticky lg:top-20 lg:max-h-[calc(100vh-6rem)] lg:overflow-y-auto'} style={isElectron ? { display: "flex", flexDirection: "column", flex: 1, overflow: "hidden", minHeight: 0, height: "100%" } : { display: "flex", flexDirection: "column" }}>
               <div style={{ display: "flex", flexDirection: "column", gap: "6px", flex: 1, overflow: "hidden" }}>
-                <section className={isElectron ? 'queue-section' : ''}><QueuePreview queue={queue} isRebuilding={queueRebuilding} onPromoteSong={handlePromoteSong} onRebuild={handleRebuild} compact={isElectron} queueLoading={queueLoading} /></section>
+                <section className={isElectron ? 'queue-section' : ''}><QueuePreview queue={queue} isRebuilding={queueRebuilding} onPromoteSong={handlePromoteSong} onRemoveSong={handleRemoveFromQueue} onRebuild={handleRebuild} compact={isElectron} queueLoading={queueLoading} /></section>
                 <section className={isElectron ? 'prior-section' : ''}><PriorSongs currentSongId={currentSong?.id} compact={isElectron} /></section>
               </div>
               <section className={isElectron ? 'context-section' : ''} style={{ background: "var(--bg-sunken)", borderTop: "1px solid var(--border)", padding: isElectron ? "8px 10px" : "8px 20px", borderRadius: isElectron ? 0 : "0 0 12px 12px" }}>

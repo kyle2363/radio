@@ -196,11 +196,11 @@ class OmniVoiceTTSEngine:
         Returns:
             output_path on success, None on failure
         """
-        # Preprocess text: replace periods with .,. for better pausing
-        text = text.replace(".", ".,.")
-        # Collapse any stacked .,. markers (from existing .,. in text) back to single
-        while ".,.," in text:
-            text = text.replace(".,.,", ".,.")
+        # Preprocess text: replace periods with ... for better pausing
+        text = text.replace(".", "...")
+        # Collapse any stacked ... markers (from existing ... in text) back to single
+        while "......" in text:
+            text = text.replace("......", "...")
 
         # Randomize speed around the persona baseline
         actual_speed = speed + random.uniform(-0.1, 0.1)

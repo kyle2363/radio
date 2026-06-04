@@ -32,11 +32,20 @@ export default function useQueueState(currentSongRef) {
     }
   }, [queue, addToast, setQueue]);
 
+  const handleRemoveFromQueue = useCallback(async (songId) => {
+    try {
+      await api.removeFromQueue(songId);
+      setQueue((prev) => prev.filter((item) => item.song_id !== songId));
+    } catch (e) {
+      addToast("Failed to remove from queue", "error");
+    }
+  }, [addToast, setQueue]);
+
   return {
     // State
     queue, queueRebuilding, whyReason,
     // Actions
-    handlePromoteSong,
+    handlePromoteSong, handleRemoveFromQueue,
     // Setters (for WebSocket/poll handlers)
     setQueue, setQueueRebuilding, setWhyReason,
   };

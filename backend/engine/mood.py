@@ -70,6 +70,7 @@ class MoodStateMachine:
             "active": False,
             "song_id": None,
             "embedding": None,
+            "audio_embedding": None,
             "expires_at": None,
             "songs_remaining": 0,
         }
@@ -137,11 +138,18 @@ class MoodStateMachine:
 
         return None
 
-    def activate_vibe_lock(self, song_id, embedding):
-        """Activate vibe lock for a specific song."""
+    def activate_vibe_lock(self, song_id, embedding, audio_embedding=None):
+        """Activate vibe lock for a specific song.
+
+        Args:
+            song_id: ID of the song to lock to
+            embedding: text embedding vector
+            audio_embedding: optional MuQ-MuLan audio embedding vector
+        """
         self._vibe_lock["active"] = True
         self._vibe_lock["song_id"] = song_id
         self._vibe_lock["embedding"] = embedding
+        self._vibe_lock["audio_embedding"] = audio_embedding
         self._vibe_lock["expires_at"] = time.time() + (30 * 60)  # 30 minutes
         self._vibe_lock["songs_remaining"] = 10
         self._current_state = None  # Clear auto mood during vibe lock
@@ -152,6 +160,7 @@ class MoodStateMachine:
         self._vibe_lock["active"] = False
         self._vibe_lock["song_id"] = None
         self._vibe_lock["embedding"] = None
+        self._vibe_lock["audio_embedding"] = None
         self._vibe_lock["expires_at"] = None
         self._vibe_lock["songs_remaining"] = 0
         self._save_state()
@@ -192,3 +201,46 @@ class MoodStateMachine:
         state = state_name or self.get_state()
         config = self.get_mood_config(state)
         return config["valence_range"]
+
+    def get_mood_centroid(self, mood_state=None):
+        """Compute the audio embedding centroid for a mood from completed plays.
+
+        Returns a 512-dim vector (list of floats) or None if insufficient data.
+        Requires at least 3 completed plays in the given mood.
+        """
+        import config as app_config
+        if not app_config.MUQ_ENABLED:
+            return None
+
+        try:
+            from llm.muq_engine import is_available
+            if not is_available():
+                return None
+        except ImportError:
+            return None
+
+        state = mood_state or self.get_state()
+        if state == "neutral":
+            return None
+
+        songs = database.get_completed_songs_by_mood(state, limit=50)
+        if len(songs) < 3:
+            return None
+
+        try:
+            import chromadb
+            client = chromadb.PersistentClient(path=app_config.CHROMA_PATH)
+            audio_collection = client.get_collection(app_config.MUQ_AUDIO_COLLECTION)
+            song_ids = [str(s["song_id"]) for s in songs]
+            data = audio_collection.get(ids=song_ids, include=["embeddings"])
+
+            if not data or not data.get("embeddings"):
+                return None
+
+            embeddings = data["embeddings"]
+            dim = len(embeddings[0])
+            centroid = [sum(e[i] for e in embeddings) / len(embeddings) for i in range(dim)]
+            return centroid
+        except Exception as e:
+            logger.debug("Failed to compute mood centroid for %s: %s", state, e)
+            return None

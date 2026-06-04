@@ -298,6 +298,19 @@ class TagsRequest(BaseModel):
     user_notes: str | None = None
 
 
+class MetadataUpdateRequest(BaseModel):
+    artist: str | None = None
+    title: str | None = None
+    album: str | None = None
+    bpm: int | None = None
+    duration_secs: float | None = None
+    keyscale: str | None = None
+    timesignature: str | None = None
+    vocal_language: str | None = None
+    lyrics: str | None = None
+    caption: str | None = None
+
+
 class DjEffectEligibleRequest(BaseModel):
     eligible: bool
 
@@ -493,6 +506,33 @@ def _get_mood_state_machine():
     return _mood_state_machine
 
 
+def _fetch_song_embeddings(song_id: int) -> tuple:
+    """Fetch both text and audio embeddings for a song from ChromaDB.
+
+    Returns (text_embedding, audio_embedding) tuple.
+    """
+    text_embedding = None
+    audio_embedding = None
+
+    try:
+        client = chromadb.PersistentClient(path=config.CHROMA_PATH)
+        collection = client.get_collection("songs")
+        result = collection.get(ids=[str(song_id)], include=["embeddings"])
+        text_embedding = result["embeddings"][0] if result["embeddings"] else None
+    except Exception:
+        pass
+
+    if config.MUQ_ENABLED:
+        try:
+            audio_collection = client.get_collection(config.MUQ_AUDIO_COLLECTION)
+            audio_result = audio_collection.get(ids=[str(song_id)], include=["embeddings"])
+            audio_embedding = audio_result["embeddings"][0] if audio_result["embeddings"] else None
+        except Exception:
+            pass
+
+    return text_embedding, audio_embedding
+
+
 _sleep_timer = None
 
 def _get_sleep_timer():
@@ -679,6 +719,46 @@ def ingest_retry_failures():
         database.set_ingest_error(f["id"], "")
         count += 1
     return {"status": "retried", "count": count}
+
+
+@app.post("/api/embed/rebuild-audio")
+def rebuild_audio_embeddings():
+    """Rebuild MuQ-MuLan audio embeddings for all songs.
+
+    One-time migration endpoint. Requires torch + muq packages.
+    Runs synchronously — for 342 songs, expect ~3 min on GPU, ~30 min on CPU.
+    """
+    if not config.MUQ_ENABLED:
+        return {"error": "MuQ is disabled (set MUQ_ENABLED=true)"}
+
+    try:
+        from llm.muq_engine import is_available
+        if not is_available():
+            return {"error": "MuQ-MuLan not available (install torch + muq)"}
+    except Exception as e:
+        return {"error": f"MuQ check failed: {e}"}
+
+    from ingest import embedder
+    from tqdm import tqdm
+
+    # Get all songs that have been text-embedded or clustered
+    embedded_songs = database.get_by_ingest_phase("embedded")
+    clustered_songs = database.get_by_ingest_phase("clustered")
+    all_songs = embedded_songs + clustered_songs
+    song_ids = [s["id"] for s in all_songs]
+
+    if not song_ids:
+        return {"error": "No songs available for audio embedding"}
+
+    print(f"Rebuilding audio embeddings for {len(song_ids)} songs...")
+    embedded_ids = embedder.embed_audio_songs(song_ids)
+    print(f"Audio-embedded {len(embedded_ids)} songs")
+
+    return {
+        "status": "complete",
+        "total": len(song_ids),
+        "embedded": len(embedded_ids),
+    }
 
 
 @app.post("/api/ingest/reprocess-single/{song_id}")
@@ -1156,6 +1236,150 @@ def update_song_tags(song_id: int, req: TagsRequest):
     return {"status": "updated", "song_id": song_id}
 
 
+@app.get("/api/songs/{song_id:int}/metadata-source")
+def get_metadata_source(song_id: int):
+    """Get current metadata from source files (ID3 tags + acestep JSON)."""
+    from ingest.metadata import load_all_metadata
+
+    song = database.get_song(song_id)
+    if not song:
+        return {"error": "Song not found"}
+
+    filepath = song.get("filepath", "")
+    result = {"db": song}
+
+    # Read ID3 tags from MP3
+    try:
+        from ingest.tags import extract_tags
+        id3 = extract_tags(filepath)
+        result["id3"] = {k: v for k, v in id3.items() if v}
+    except Exception as e:
+        result["id3_error"] = str(e)
+
+    # Read acestep JSON
+    try:
+        all_meta = load_all_metadata()
+        from ingest.metadata import get_metadata_for_mp3
+        ace = get_metadata_for_mp3(filepath, all_meta)
+        if ace:
+            result["acestep"] = {k: v for k, v in ace.items() if v}
+    except Exception as e:
+        result["acestep_error"] = str(e)
+
+    return result
+
+
+@app.put("/api/songs/{song_id:int}/metadata")
+def update_song_metadata(song_id: int, req: MetadataUpdateRequest):
+    """Update metadata for a song and persist to source files (MP3 ID3 + acestep JSON).
+
+    If artist or title changes, the MP3 file and acestep JSON are renamed
+    to match the new name, and the DB filepath is updated.
+
+    Writes to three places:
+    1. MP3 ID3 tags (artist, title, album)
+    2. Acestep JSON (bpm, duration, keyscale, lyrics, caption, etc.)
+    3. Database (all fields + filepath if renamed)
+    """
+    song = database.get_song(song_id)
+    if not song:
+        return {"error": "Song not found"}
+
+    # Build DB update dict
+    db_updates = {}
+    if req.artist is not None:
+        db_updates["artist"] = req.artist.strip() or None
+    if req.title is not None:
+        db_updates["title"] = req.title.strip() or None
+    if req.album is not None:
+        db_updates["album"] = req.album.strip() or None
+    if req.bpm is not None:
+        db_updates["bpm"] = req.bpm
+    if req.duration_secs is not None:
+        db_updates["duration_secs"] = req.duration_secs
+    if req.keyscale is not None:
+        db_updates["keyscale"] = req.keyscale.strip() or None
+    if req.timesignature is not None:
+        db_updates["timesignature"] = req.timesignature.strip() or None
+    if req.vocal_language is not None:
+        db_updates["vocal_language"] = req.vocal_language.strip() or None
+    if req.lyrics is not None:
+        db_updates["lyrics"] = req.lyrics or None
+    if req.caption is not None:
+        db_updates["ai_description"] = req.caption.strip() or None
+
+    # Check if artist or title changed (triggers file rename)
+    new_artist = (req.artist or "").strip()
+    new_title = (req.title or "").strip()
+    old_artist = (song.get("artist") or "").strip()
+    old_title = (song.get("title") or "").strip()
+    name_changed = (new_artist != old_artist) or (new_title != old_title)
+
+    # Persist to source files
+    filepath = song.get("filepath", "")
+    id3_result = {"status": "skipped"}
+    ace_result = {"status": "skipped"}
+    rename_result = {"mp3": {"status": "skipped"}, "json": {"status": "skipped"}}
+
+    if filepath:
+        # Rename MP3 and JSON files if artist/title changed
+        if name_changed:
+            try:
+                from ingest.metadata_writer import rename_song_files
+                rename_result = rename_song_files(filepath, new_artist, new_title)
+                # Update filepath to the new path
+                new_filepath = rename_result.get("mp3", {}).get("new_path")
+                if new_filepath:
+                    db_updates["filepath"] = new_filepath
+            except Exception as e:
+                logger.error("Failed to rename song files: %s", e)
+                rename_result = {"mp3": {"status": "error", "reason": str(e)}, "json": {"status": "error", "reason": str(e)}}
+
+        # Determine the current filepath (may have been updated by rename)
+        current_filepath = db_updates.get("filepath", filepath)
+
+        # Write ID3 tags
+        try:
+            from ingest.metadata_writer import write_id3_tags
+            id3_result = write_id3_tags(
+                current_filepath,
+                artist=req.artist,
+                title=req.title,
+                album=req.album,
+            )
+        except Exception as e:
+            id3_result = {"error": str(e)}
+
+        # Write acestep JSON
+        try:
+            from ingest.metadata_writer import write_acestep_json
+            ace_result = write_acestep_json(
+                current_filepath,
+                caption=req.caption,
+                lyrics=req.lyrics,
+                bpm=req.bpm,
+                duration=req.duration_secs,
+                keyscale=req.keyscale,
+                timesignature=req.timesignature,
+                vocal_language=req.vocal_language,
+            )
+        except Exception as e:
+            ace_result = {"error": str(e)}
+
+    # Update DB (including filepath if renamed)
+    if db_updates:
+        database.update_song(song_id, **db_updates)
+
+    updated_song = database.get_song(song_id)
+    return {
+        "status": "updated",
+        "song": updated_song,
+        "id3": id3_result,
+        "acestep": ace_result,
+        "rename": rename_result,
+    }
+
+
 # ── DJ Effects ──────────────────────────────────────────────
 
 
@@ -1315,7 +1539,7 @@ def play_status():
         "current_mode": current_mode,
         "audio_rms": audio_rms,
         "talk_segment_active": talk_segment_active,
-        "talk_playing": talk_segment_active if talk_segment_active else False,
+        "talk_playing": p.is_talk_playing(),
     }
 
 
@@ -1543,7 +1767,39 @@ def stop_playback():
 @app.get("/api/queue")
 def get_queue():
     qm = _get_queue_manager()
-    return qm._get_display_queue()
+    display_queue = qm._get_display_queue()
+
+    # Add mood match scores when mood is active and MuQ is available
+    mood_state = qm._mood.get_state()
+    if mood_state and mood_state != "neutral" and config.MUQ_ENABLED:
+        try:
+            from llm.muq_engine import is_available
+            if is_available():
+                centroid = qm._mood.get_mood_centroid(mood_state)
+                if centroid:
+                    song_ids = [str(item["song_id"]) for item in display_queue if "song_id" in item]
+                    if song_ids:
+                        import chromadb
+                        client = chromadb.PersistentClient(path=config.CHROMA_PATH)
+                        audio_collection = client.get_collection(config.MUQ_AUDIO_COLLECTION)
+                        data = audio_collection.get(ids=song_ids, include=["embeddings"])
+                        emb_map = {}
+                        if data and data.get("ids"):
+                            for i in range(len(data["ids"])):
+                                emb_map[data["ids"][i]] = data["embeddings"][i]
+
+                        from engine.utils import cosine_similarity
+                        for item in display_queue:
+                            sid = str(item.get("song_id", ""))
+                            if sid in emb_map:
+                                sim = cosine_similarity(centroid, emb_map[sid])
+                                item["mood_match"] = round(sim * 100)
+                            else:
+                                item["mood_match"] = None
+        except Exception:
+            pass  # Best effort — don't fail the queue endpoint
+
+    return display_queue
 
 
 @app.get("/api/queue/status")
@@ -1612,6 +1868,16 @@ def queue_add(song_id: int):
     qm = _get_queue_manager()
     qm.add_manual([song_id])
     return {"status": "added", "song_id": song_id}
+
+
+@app.delete("/api/queue/remove/{song_id:int}")
+def queue_remove(song_id: int):
+    """Remove a song from the manual queue."""
+    qm = _get_queue_manager()
+    removed = qm.remove_manual(song_id)
+    if removed:
+        return {"status": "removed", "song_id": song_id}
+    return {"error": "Not in manual queue"}
 
 
 @app.put("/api/queue/reorder")
@@ -1795,6 +2061,25 @@ def submit_skip_feedback(body: SkipFeedbackRequest):
     if not session_id:
         return {"status": "no_session"}
     database.record_skip_feedback(session_id, qm._skip_streak, body.reason)
+
+    # Record audio embedding for mood-specific repulsion
+    if config.MUQ_ENABLED and qm._mood.get_state() != "neutral":
+        current_song_id = qm._current_song_id
+        if current_song_id:
+            try:
+                from llm.muq_engine import is_available
+                if is_available():
+                    song = database.get_song(current_song_id)
+                    if song and song.get("filepath"):
+                        _, audio_emb = _fetch_song_embeddings(current_song_id)
+                        if audio_emb:
+                            database.record_mood_skip_repulsion(
+                                qm._mood.get_state(), body.reason,
+                                current_song_id, audio_emb,
+                            )
+            except Exception:
+                pass  # Best effort — don't fail the feedback submission
+
     return {"status": "recorded", "reason": body.reason}
 
 
@@ -1878,20 +2163,20 @@ def set_mood(req: MoodSetRequest):
 
 @app.post("/api/mood/vibe-lock/activate")
 def activate_vibe_lock(req: VibeLockActivateRequest):
-    """Activate vibe lock for a specific song."""
+    """Activate vibe lock for a specific song.
+
+    Stores both text and audio embeddings for the locked song.
+    The audio embedding is used for Musically-similar recommendations.
+    """
     msm = _get_mood_state_machine()
     song = database.get_song(req.song_id)
     if not song:
         return {"error": "Song not found"}
 
-    # Get embedding from ChromaDB
-    client = chromadb.PersistentClient(path=config.CHROMA_PATH)
-    collection = client.get_collection("songs")
-    result = collection.get(ids=[str(req.song_id)], include=["embeddings"])
-    embedding = result["embeddings"][0] if result["embeddings"] else None
+    text_embedding, audio_embedding = _fetch_song_embeddings(req.song_id)
 
-    if embedding:
-        msm.activate_vibe_lock(req.song_id, embedding)
+    if text_embedding:
+        msm.activate_vibe_lock(req.song_id, text_embedding, audio_embedding=audio_embedding)
         return {
             "status": "vibe_lock_active",
             "song_id": req.song_id,
@@ -2238,24 +2523,66 @@ def mood_history():
         conn.close()
 
 
+@app.get("/api/mood/centroid")
+def get_mood_centroid(mood: str):
+    """Get the audio embedding centroid for a mood (computed from completed plays).
+
+    Returns the centroid vector and availability status.
+    The centroid is the average MuQ-MuLan audio embedding of songs completed
+    in the given mood, representing the user's personal "sound" for that mood.
+    """
+    msm = _get_mood_state_machine()
+    centroid = msm.get_mood_centroid(mood)
+    if centroid is None:
+        return {"centroid": None, "available": False}
+    return {"centroid": centroid, "available": True}
+
+
 @app.get("/api/songs/{song_id:int}/similar")
-def similar_songs(song_id: int, limit: int = 10):
-    """Find songs similar to a given song using ChromaDB embedding search."""
+def similar_songs(song_id: int, limit: int = 10, source: str = "auto"):
+    """Find songs similar to a given song using ChromaDB embedding search.
+
+    source param:
+      - "auto" (default): prefer audio embeddings if available, fall back to text
+      - "audio": force MuQ-MuLan audio embeddings (musical similarity)
+      - "text": force text embeddings (metadata/description similarity)
+    """
     from engine.retriever import get_chroma_collection
-    collection = get_chroma_collection()
+
+    # Determine which collection to use
+    use_audio = False
+    if source in ("auto", "audio") and config.MUQ_ENABLED:
+        try:
+            audio_collection = get_chroma_collection(config.MUQ_AUDIO_COLLECTION)
+            audio_check = audio_collection.get(ids=[str(song_id)], include=["embeddings"])
+            if audio_check["embeddings"] and audio_check["embeddings"][0]:
+                use_audio = True
+        except Exception:
+            pass
+
+    if use_audio:
+        collection = get_chroma_collection(config.MUQ_AUDIO_COLLECTION)
+    else:
+        collection = get_chroma_collection("songs")
+
     try:
         results = collection.get(
             ids=[str(song_id)],
             include=["embeddings"],
         )
         if not results["embeddings"] or not results["embeddings"][0]:
-            return {"error": "Song has no embedding"}
+            # Fallback to the other collection
+            fallback = get_chroma_collection("songs") if use_audio else None
+            if fallback:
+                results = fallback.get(ids=[str(song_id)], include=["embeddings"])
+                collection = fallback
+            if not results["embeddings"] or not results["embeddings"][0]:
+                return {"error": "Song has no embedding"}
         embedding = results["embeddings"][0]
 
-        # Query for similar songs
         similar = collection.query(
             query_embeddings=[embedding],
-            n_results=limit + 1,  # +1 to exclude self
+            n_results=limit + 1,
             include=["distances", "metadatas"],
         )
 
@@ -2267,7 +2594,68 @@ def similar_songs(song_id: int, limit: int = 10):
             meta = similar["metadatas"][0][i]
             dist = similar["distances"][0][i]
             score = 1.0 - dist
-            # Get full song info from SQLite
+            song = database.get_song(sid)
+            if song:
+                songs.append({
+                    "song_id": sid,
+                    "score": round(score, 4),
+                    "artist": song.get("artist", ""),
+                    "title": song.get("title", ""),
+                    "energy": float(meta.get("energy", 0.5)),
+                    "valence": float(meta.get("valence", 0.5)),
+                    "source": "audio" if use_audio else "text",
+                })
+            if len(songs) >= limit:
+                break
+        return songs
+    except Exception as e:
+        return {"error": str(e)}
+
+
+class MusicSearchRequest(BaseModel):
+    text: str
+    limit: int = 10
+
+
+@app.post("/api/search/music")
+def search_music(req: MusicSearchRequest):
+    """Search for songs by text description using MuQ-MuLan cross-modal embeddings.
+
+    Embeds the text query with MuQ-MuLan's text encoder, then queries
+    the audio embedding collection for musically similar songs.
+    """
+    if not config.MUQ_ENABLED:
+        return {"error": "MuQ is disabled (set MUQ_ENABLED=true)"}
+
+    try:
+        from llm.muq_engine import is_available, embed_texts
+        if not is_available():
+            return {"error": "MuQ-MuLan not available (install torch + muq)"}
+    except Exception as e:
+        return {"error": f"MuQ check failed: {e}"}
+
+    try:
+        # Embed the text query
+        text_embeds = embed_texts([req.text])
+        if not text_embeds:
+            return {"error": "Failed to embed text query"}
+        query_vector = text_embeds[0]
+
+        # Query audio collection
+        from engine.retriever import get_chroma_collection
+        audio_collection = get_chroma_collection(config.MUQ_AUDIO_COLLECTION)
+        results = audio_collection.query(
+            query_embeddings=[query_vector],
+            n_results=req.limit,
+            include=["distances", "metadatas"],
+        )
+
+        songs = []
+        for i in range(len(results["ids"][0])):
+            sid = int(results["ids"][0][i])
+            meta = results["metadatas"][0][i]
+            dist = results["distances"][0][i]
+            score = 1.0 - dist
             song = database.get_song(sid)
             if song:
                 songs.append({
@@ -2278,8 +2666,6 @@ def similar_songs(song_id: int, limit: int = 10):
                     "energy": float(meta.get("energy", 0.5)),
                     "valence": float(meta.get("valence", 0.5)),
                 })
-            if len(songs) >= limit:
-                break
         return songs
     except Exception as e:
         return {"error": str(e)}
@@ -3057,7 +3443,8 @@ def _execute_command_actions(actions: list, explanation: str,
             if enabled:
                 cs_id = p.get_current_song_id()
                 if cs_id:
-                    msm.activate_vibe_lock(cs_id, None)
+                    text_emb, audio_emb = _fetch_song_embeddings(cs_id)
+                    msm.activate_vibe_lock(cs_id, text_emb, audio_embedding=audio_emb)
                     broadcast("vibe_lock_activated", {"song_id": cs_id})
                     results.append({"action": "vibe_lock", "enabled": True})
             else:
@@ -3178,7 +3565,8 @@ def handle_command(req: CommandRequest):
     elif action == "vibe_lock":
         if not song_id:
             return {"action": action, "explanation": "No song playing to lock"}
-        msm.activate_vibe_lock(song_id, None)
+        text_emb, audio_emb = _fetch_song_embeddings(song_id)
+        msm.activate_vibe_lock(song_id, text_emb, audio_embedding=audio_emb)
         broadcast("vibe_lock_activated", {"song_id": song_id})
         return {"action": action, "explanation": parsed["explanation"]}
 
@@ -3268,6 +3656,51 @@ def handle_command(req: CommandRequest):
         database.set_setting("genre_filter", genre)
         qm.on_song_started(song_id, _current_session_id)
         return {"action": action, "genre": genre, "explanation": parsed["explanation"]}
+
+    elif action == "crossmodal_search":
+        query = parsed.get("query", "")
+        if not query:
+            return {"action": action, "explanation": "What sound are you looking for? Try 'sounds like midnight driving'"}
+        if not config.MUQ_ENABLED:
+            return {"action": action, "explanation": "Audio search not available (MuQ disabled)"}
+        try:
+            from llm.muq_engine import is_available, embed_texts
+            if not is_available():
+                return {"action": action, "explanation": "Audio embedding model not available"}
+            text_embeds = embed_texts([query])
+            if not text_embeds:
+                return {"action": action, "explanation": "Failed to process search query"}
+            from engine.retriever import get_chroma_collection
+            audio_collection = get_chroma_collection(config.MUQ_AUDIO_COLLECTION)
+            results = audio_collection.query(
+                query_embeddings=text_embeds[0],
+                n_results=10,
+                include=["distances", "metadatas"],
+            )
+            songs = []
+            for i in range(len(results["ids"][0])):
+                sid = int(results["ids"][0][i])
+                dist = results["distances"][0][i]
+                meta = results["metadatas"][0][i]
+                score = 1.0 - dist
+                song = database.get_song(sid)
+                if song:
+                    songs.append({
+                        "song_id": sid,
+                        "score": round(score, 4),
+                        "artist": song.get("artist", ""),
+                        "title": song.get("title", ""),
+                        "energy": float(meta.get("energy", 0.5)),
+                        "valence": float(meta.get("valence", 0.5)),
+                    })
+            return {
+                "action": action,
+                "songs": songs,
+                "query": query,
+                "explanation": f"Found {len(songs)} songs matching '{query}'",
+            }
+        except Exception as e:
+            return {"action": action, "explanation": f"Search failed: {e}"}
 
     elif action == "artist_filter":
         artist = parsed.get("artist", "")
