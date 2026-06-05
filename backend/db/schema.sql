@@ -152,7 +152,15 @@ INSERT OR IGNORE INTO settings (key, value) VALUES
     ('right_rail_width', '255'),
     ('dj_effect_enabled', 'true'),
     ('dj_effect_preset', 'slowed_reverb'),
-    ('folder_filter', '');
+    ('folder_filter', ''),
+    ('jitter_strength', '0.12'),
+    ('recency_exclude_hours', '1'),
+    ('vibe_lock_duration_minutes', '30'),
+    ('vibe_lock_max_songs', '10'),
+    ('dislike_decay_rate', '0.029'),
+    ('dj_speech_speed', '0.90'),
+    ('dj_intro_start_hour', '6'),
+    ('dj_intro_end_hour', '23');
 
 -- skip_feedback — structured skip reason collection
 CREATE TABLE IF NOT EXISTS skip_feedback (

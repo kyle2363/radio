@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback, useRef } from "react";
 import useTransition from "./hooks/useTransition";
 import * as api from "./api";
-import { Radio, Loader2, Mic, Filter, X } from "lucide-react";
+import { Radio, Loader2, Mic, Filter, X, Sparkles } from "lucide-react";
 
 import MiniPlayer from "./components/MiniPlayer";
 import NowPlaying from "./components/NowPlaying";
@@ -29,6 +29,7 @@ import SleepTimer from "./components/SleepTimer";
 import WikiPage from "./components/WikiPage";
 import CollectionsList from "./components/CollectionsList";
 import CollectionDetail from "./components/CollectionDetail";
+import ConstellationMap from "./components/ConstellationMap";
 
 // Focused hooks
 import { RadioProvider, useSharedRadio, useFetchStatus, useWebSocket, useOnboarding } from "./hooks/useRadioState";
@@ -256,6 +257,32 @@ function AppInner() {
   const libraryTrans = useTransition(showLibrary, 250);
   const [commandExpanded, setCommandExpanded] = useState(false);
 
+  // Constellation state
+  const [showConstellations, setShowConstellations] = useState(false);
+  const [constellationData, setConstellationData] = useState(null);
+  useEffect(() => {
+    if (uiMode !== "radio") return;
+    const fetch = async () => {
+      try {
+        const data = await api.fetchConstellations();
+        setConstellationData(data);
+      } catch (_) {}
+    };
+    fetch();
+    const id = setInterval(fetch, 30000);
+    return () => clearInterval(id);
+  }, [uiMode]);
+  useEffect(() => {
+    if (!showConstellations) return;
+    const id = setInterval(async () => {
+      try {
+        const data = await api.fetchConstellations();
+        setConstellationData(data);
+      } catch (_) {}
+    }, 15000);
+    return () => clearInterval(id);
+  }, [showConstellations]);
+
   // Polling — fetch play status + mood/archetype
   useEffect(() => {
     const id = setInterval(() => {
@@ -469,6 +496,19 @@ function AppInner() {
             <button onClick={() => setShowLibrary(true)} className="min-w-[84px] px-4 py-2.5 rounded-lg text-xs transition flex items-center justify-center gap-1.5 btn-muted">
               Library
             </button>
+            {uiMode === "radio" && (
+              <button onClick={() => setShowConstellations(true)} className="min-w-[84px] px-4 py-2.5 rounded-lg text-xs transition flex items-center justify-center gap-1.5 btn-muted"
+                title="Taste Constellations">
+                <Sparkles size={14} />
+                {constellationData?.active && (
+                  <span style={{
+                    width: 6, height: 6, borderRadius: "50%", flexShrink: 0,
+                    background: constellationData?.influencing ? "#4ade80" : "#4a5a78",
+                    boxShadow: constellationData?.influencing ? "0 0 4px rgba(74,222,128,0.4)" : "none",
+                  }} />
+                )}
+              </button>
+            )}
             <button onClick={() => setShowShortcuts(true)} className="min-w-[84px] px-4 py-2.5 rounded-lg text-xs transition flex items-center justify-center btn-muted"
               title="Keyboard shortcuts (?)">?</button>
             <button onClick={() => { setShowLibrary(true); setLibraryTab("settings"); }} className="min-w-[84px] px-4 py-2.5 rounded-lg text-xs transition flex items-center justify-center gap-1.5 btn-muted">
@@ -547,6 +587,17 @@ function AppInner() {
       </main>
 
       {showOnboarding && <Onboarding onComplete={handleOnboardingComplete} onSkip={handleOnboardingSkip} addToast={addToast} />}
+
+      {showConstellations && constellationData && (
+        <div className="fixed inset-0 z-50 flex flex-col fade-in" style={{ background: "var(--bg-overlay)" }}>
+          <ConstellationMap
+            constellations={constellationData}
+            onPlaySong={(id) => api.playSong(id)}
+            onAddToQueue={(id) => api.addToQueue(id)}
+            onClose={() => setShowConstellations(false)}
+          />
+        </div>
+      )}
 
       {libraryTrans.shouldRender && (
         <div className={`fixed inset-0 z-50 flex flex-col slide-in-right ${libraryTrans.animClass === "exit-active" ? "slide-out-right" : ""}`}>

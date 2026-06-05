@@ -127,6 +127,7 @@ export const fetchIngestFailures = () => get("/api/ingest/failures");
 export const retryIngestFailures = () => post("/api/ingest/retry-failures");
 export const runIngestPhase = (phase) => post("/api/ingest/run-phase/" + phase);
 export const fetchIngestPhaseStatus = () => get("/api/ingest/phase-status");
+export const reembedAll = () => post("/api/ingest/reembed-all");
 
 // ── Onboarding ────────────────────────────────────────────
 export const fetchOnboardingSongs = () => get("/api/onboarding/songs");
@@ -186,6 +187,7 @@ export const reorderCollection = (id, song_ids) => put(`/api/collections/${id}/r
 
 // ── Taste Reseed ─────────────────────────────────────────
 export const reseedTaste = () => post("/api/taste/reseed");
+export const fetchConstellations = () => get("/api/taste/constellations");
 
 // ── Clusters & Tags ───────────────────────────────────────
 export const fetchClusters = () => get("/api/clusters");

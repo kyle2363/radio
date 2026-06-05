@@ -29,6 +29,8 @@ def record_transition(from_song_id, to_song_id, signal):
             existing_success = row["success_count"]
             existing_failure = row["failure_count"]
             new_score = 0.8 * existing_score + 0.2 * success_value
+            # Decay toward neutral (0.5) to prevent permanent lock-in
+            new_score = 0.95 * new_score + 0.05 * 0.5
             conn.execute(
                 "UPDATE transitions SET score = ?, success_count = ?, failure_count = ? WHERE from_song_id = ? AND to_song_id = ?",
                 (new_score, existing_success + (1 if success_value > 0.5 else 0), existing_failure + (1 if success_value <= 0.5 else 0), from_song_id, to_song_id),

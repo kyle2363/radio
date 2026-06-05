@@ -57,6 +57,7 @@ if not _playback_logger.handlers:
 async def lifespan(app):
     database.init_db()
     database.close_stale_sessions()
+    database.cleanup_old_mood_repulsion(days=30)
     # Reset stale genre/artist/folder filters (session-only)
     if database.get_setting("genre_filter") == "jazz":
         database.set_setting("genre_filter", "")
@@ -64,6 +65,14 @@ async def lifespan(app):
     print(f"Database initialized at {config.DB_PATH}")
     print(f"Music directory: {config.MUSIC_DIR}")
     print(f"Acestep JSON directory: {config.ACESTEP_JSON_DIR}")
+
+    # ChromaDB health check (async, non-blocking)
+    def _run_chroma_health():
+        try:
+            _chromadb_health_check()
+        except Exception as e:
+            logger.debug("Startup ChromaDB health check failed: %s", e)
+    threading.Thread(target=_run_chroma_health, daemon=True).start()
 
     # Clear stale DJ effect cache files on startup
     from engine.dj_effects import cleanup_cache as cleanup_dj_cache
@@ -239,6 +248,90 @@ def health():
         "database": "connected" if db_ok else "missing",
         "version": "0.1.0",
     }
+
+
+def _chromadb_health_check():
+    """Check ChromaDB collections for consistency with SQLite.
+
+    Detects: duplicate IDs, missing embeddings, collection size mismatches.
+    Logs warnings for the user but does not block startup.
+    """
+    try:
+        conn = database.get_connection()
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*) as cnt FROM songs WHERE ingest_phase = 'clustered'"
+            ).fetchone()
+            sqlite_count = row["cnt"] if row else 0
+        finally:
+            conn.close()
+
+        client = chromadb.PersistentClient(path=config.CHROMA_PATH)
+
+        # Check 'songs' collection
+        try:
+            songs_col = client.get_collection("songs")
+            songs_count = songs_col.count()
+            all_ids = songs_col.get(include=["metadatas"])
+
+            # Detect duplicate IDs
+            id_counts = {}
+            for id_str in all_ids["ids"]:
+                id_counts[id_str] = id_counts.get(id_str, 0) + 1
+            duplicates = {sid: cnt for sid, cnt in id_counts.items() if cnt > 1}
+
+            if duplicates:
+                logger.warning("ChromaDB 'songs' collection has %d duplicate IDs: %s",
+                             len(duplicates), list(duplicates.keys())[:10])
+        except Exception as e:
+            logger.warning("ChromaDB 'songs' collection check failed: %s", e)
+            songs_count = 0
+            duplicates = {}
+
+        # Check 'songs_audio' collection
+        audio_count = 0
+        audio_duplicates = {}
+        if config.MUQ_ENABLED:
+            try:
+                audio_col = client.get_collection(config.MUQ_AUDIO_COLLECTION)
+                audio_count = audio_col.count()
+                audio_ids = audio_col.get(include=["metadatas"])
+                audio_id_counts = {}
+                for id_str in audio_ids["ids"]:
+                    audio_id_counts[id_str] = audio_id_counts.get(id_str, 0) + 1
+                audio_duplicates = {sid: cnt for sid, cnt in audio_id_counts.items() if cnt > 1}
+                if audio_duplicates:
+                    logger.warning("ChromaDB '%s' collection has %d duplicate IDs: %s",
+                                 config.MUQ_AUDIO_COLLECTION, len(audio_duplicates),
+                                 list(audio_duplicates.keys())[:10])
+            except Exception as e:
+                logger.debug("ChromaDB '%s' collection check skipped: %s", config.MUQ_AUDIO_COLLECTION, e)
+
+        # Summary
+        logger.info("ChromaDB health: songs=%d (SQLite=%d), audio=%d, duplicates=%d, audio_duplicates=%d",
+                    songs_count, sqlite_count, audio_count, len(duplicates), len(audio_duplicates))
+
+        if songs_count == 0 and sqlite_count > 0:
+            logger.warning("ChromaDB 'songs' collection is empty but SQLite has %d clustered songs. "
+                         "Re-run ingest to populate embeddings.", sqlite_count)
+
+        return {
+            "songs_collection": songs_count,
+            "sqlite_clustered": sqlite_count,
+            "audio_collection": audio_count,
+            "duplicates": duplicates,
+            "audio_duplicates": audio_duplicates,
+            "healthy": len(duplicates) == 0 and len(audio_duplicates) == 0,
+        }
+    except Exception as e:
+        logger.warning("ChromaDB health check failed: %s", e)
+        return {"error": str(e), "healthy": False}
+
+
+@app.get("/api/chroma/health")
+def chroma_health():
+    """ChromaDB health check endpoint — returns collection stats and detects issues."""
+    return _chromadb_health_check()
 
 
 # WebSocket clients
@@ -634,6 +727,7 @@ PHASE_PREREQUISITES = {
     ],
     "describe": lambda: database.get_by_ingest_phase("analyzed"),
     "embed": lambda: database.get_by_ingest_phase("described"),
+    "audio_embed": lambda: database.get_by_ingest_phase("embedded"),
     "cluster": lambda: database.get_by_ingest_phase("embedded"),
 }
 
@@ -643,6 +737,7 @@ PHASE_FUNCTIONS = {
     "normalize": pipeline.run_phase_normalize,
     "describe": pipeline.run_phase_describe,
     "embed": pipeline.run_phase_embed,
+    "audio_embed": pipeline.run_phase_embed_audio,
     "cluster": pipeline.run_phase_cluster,
 }
 
@@ -758,6 +853,56 @@ def rebuild_audio_embeddings():
         "status": "complete",
         "total": len(song_ids),
         "embedded": len(embedded_ids),
+    }
+
+
+@app.post("/api/ingest/reembed-all")
+def reembed_all():
+    """Re-embed all songs with updated embedding text (folder, collection, neighboring folder).
+
+    Runs synchronously — for 700+ songs, expect ~5-10 min.
+    Requires the embedding LLM server to be running.
+    """
+    from ingest import embedder
+
+    # Get all songs that have been through the pipeline (embedded or clustered)
+    embedded_songs = database.get_by_ingest_phase("embedded")
+    clustered_songs = database.get_by_ingest_phase("clustered")
+    all_songs = embedded_songs + clustered_songs
+    song_ids = [s["id"] for s in all_songs]
+
+    if not song_ids:
+        return {"error": "No songs available for re-embedding"}
+
+    # Track progress
+    _ingest_progress = {"phase": "reembed", "running": True, "total": len(song_ids), "current": 0, "current_song": ""}
+
+    success = 0
+    failed = 0
+    for i, song_id in enumerate(song_ids):
+        song = database.get_song(song_id)
+        if not song:
+            failed += 1
+            continue
+        _ingest_progress["current"] = i + 1
+        _ingest_progress["current_song"] = f"{song.get('artist', '?')} - {song.get('title', '?')}"
+        if embedder.embed_song(song_id, song):
+            success += 1
+        else:
+            failed += 1
+
+    _ingest_progress["running"] = False
+
+    # Invalidate constellation cache so it rebuilds with new embeddings
+    qm = _get_queue_manager()
+    if hasattr(qm, '_constellations') and qm._constellations:
+        qm._constellations.invalidate()
+
+    return {
+        "status": "complete",
+        "total": len(song_ids),
+        "success": success,
+        "failed": failed,
     }
 
 
@@ -1680,6 +1825,7 @@ def resume_playback():
                 mood_state=_get_mood_state_machine().get_state(),
             )
             qm.play_next(pick)
+            qm.on_song_started(pick["song_id"], session_id)
             broadcast("song_started", {"song_id": pick["song_id"], "session_id": session_id})
         return {"status": "playing", "action": "new_song", "song_id": pick.get("song_id")}
 
@@ -1705,6 +1851,32 @@ def set_volume(req: VolumeRequest):
 @app.post("/api/play/next")
 def play_next():
     p = player_engine.get_player()
+    qm = _get_queue_manager()
+    msm = _get_mood_state_machine()
+    song_id = p.get_current_song_id()
+
+    if song_id:
+        session_id = p._current_session_id if hasattr(p, '_current_session_id') else _current_session_id
+        elapsed_ms = p.get_time()
+        total_ms = p.get_length()
+        pct = round((elapsed_ms / max(1, total_ms)) * 100, 1)
+        # Last 10% = treat as completed, not a skip
+        if pct >= 90.0:
+            signal = "completed"
+            pct = 100.0
+        else:
+            signal = "skip_early" if elapsed_ms < 30000 else "skip_late"
+        database.record_play_event(
+            song_id=song_id,
+            session_id=session_id,
+            signal=signal,
+            mood_state=msm.get_state(),
+            completion_pct=pct,
+        )
+        song = database.get_song(song_id)
+        qm.record_action("skip", song_id, song, signal_type=signal)
+        broadcast("song_skipped", {"song_id": song_id})
+
     p.stop()
     return {"status": "next"}
 
@@ -1918,25 +2090,38 @@ def queue_skip():
     msm = _get_mood_state_machine()
     song_id = p.get_current_song_id()
 
+    is_completed = False
     if song_id:
         session_id = p._current_session_id if hasattr(p, '_current_session_id') else _current_session_id
+        elapsed_ms = p.get_time()
+        total_ms = p.get_length()
+        pct = round((elapsed_ms / max(1, total_ms)) * 100, 1)
+        # Last 10% = treat as completed, not a skip
+        if pct >= 90.0:
+            signal = "completed"
+            pct = 100.0
+            is_completed = True
+        else:
+            signal = "skip_early" if elapsed_ms < 30000 else "skip_late"
         database.record_play_event(
             song_id=song_id,
             session_id=session_id,
-            signal="skip_early",
+            signal=signal,
             mood_state=msm.get_state(),
+            completion_pct=pct,
         )
         # Track for potential undo
         song = database.get_song(song_id)
-        qm.record_action("skip", song_id, song, signal_type="skip_early")
+        qm.record_action("skip", song_id, song, signal_type=signal)
         broadcast("song_skipped", {"song_id": song_id})
 
-    # Increment skip streak
-    qm._skip_streak += 1
+    # Only increment skip streak for actual skips (not near-complete listens)
+    if not is_completed:
+        qm._skip_streak += 1
 
-    # Check for auto mood shift on skip streak
+    # Check for auto mood shift on skip streak (only for real skips)
     mood_shifted = False
-    if qm._skip_streak >= 3:
+    if not is_completed and qm._skip_streak >= 3:
         new_state = msm.check_auto_mood_shift([], qm._skip_streak)
         if new_state:
             msm.set_state(new_state)
@@ -1998,6 +2183,7 @@ def queue_skip():
                 mood_state=msm.get_state(),
             )
             qm.play_next(pick)
+            qm.on_song_started(pick["song_id"], session_id)
         broadcast("queue_updated", {"queue": qm._get_display_queue()})
         response["next"] = pick
         return response
@@ -2022,6 +2208,7 @@ def queue_play_next():
                 mood_state=_get_mood_state_machine().get_state(),
             )
             qm.play_next(pick)
+            qm.on_song_started(pick["song_id"], session_id)
         broadcast("queue_updated", {"queue": qm._get_display_queue()})
         return {"status": "playing", "next": pick}
     return {"error": "No recommendation available"}
@@ -2860,11 +3047,24 @@ def reseed_taste():
     qm.clear_queue()
     _get_mood_state_machine().deactivate_vibe_lock()
 
+    # Invalidate constellations (will rebuild on next queue)
+    if hasattr(qm, '_constellations') and qm._constellations:
+        qm._constellations.invalidate()
+
     # Trigger onboarding pick screen
     database.set_setting("onboarding_complete", "false")
 
     broadcast("taste_reseeded", {})
     return {"status": "reseeded", "message": "Taste reseeded. Pick 5 songs to re-calibrate."}
+
+
+@app.get("/api/taste/constellations")
+def get_constellations():
+    """Return current taste constellation data."""
+    qm = _get_queue_manager()
+    if not hasattr(qm, '_constellations') or not qm._constellations:
+        return {"active": False, "reason": "not_initialized"}
+    return qm._constellations.get_constellation_summary()
 
 
 # ============================================================

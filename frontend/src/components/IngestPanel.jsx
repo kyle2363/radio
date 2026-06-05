@@ -2,11 +2,24 @@ import React, { useState, useEffect, useCallback } from "react";
 import * as api from "../api";
 
 const PHASES = [
-  { key: "raw", dbKey: "raw", label: "Raw" },
-  { key: "analyze", dbKey: "analyzed", label: "Analyzed" },
-  { key: "describe", dbKey: "described", label: "Described" },
-  { key: "cluster", dbKey: "clustered", label: "Clustered" },
+  { key: "raw", dbKey: "raw", apiPhase: "raw", label: "Scan & add", desc: "Scan music dir, add new songs, extract art" },
+  { key: "analyze", dbKey: "analyzed", apiPhase: "analyze", label: "Analyze audio", desc: "Extract raw audio features (RMS, spectral, BPM)" },
+  { key: "normalize", dbKey: null, apiPhase: "normalize", label: "Normalize", desc: "Normalize energy/valence across library" },
+  { key: "describe", dbKey: "described", apiPhase: "describe", label: "LLM tags", desc: "Generate emotional/genre/instrument tags" },
+  { key: "embed", dbKey: "embedded", apiPhase: "embed", label: "Text embeddings", desc: "Embed song metadata for similarity search" },
+  { key: "audio_embed", dbKey: null, apiPhase: "audio_embed", label: "Audio embeddings", desc: "MuQ-MuLan audio embeddings (optional)" },
+  { key: "cluster", dbKey: "clustered", apiPhase: "cluster", label: "Cluster", desc: "Group songs into KMeans clusters" },
 ];
+
+const PHASE_PROGRESS_MAP = {
+  raw: "raw",
+  analyzed: "analyze",
+  normalizing: "normalize",
+  described: "describe",
+  embedded: "embed",
+  audio_embedded: "audio_embed",
+  clustered: "cluster",
+};
 
 function IngestPanel({ addToast }) {
   const [phaseStatus, setPhaseStatus] = useState(null);
@@ -18,6 +31,7 @@ function IngestPanel({ addToast }) {
   const [showDuplicates, setShowDuplicates] = useState(false);
   const [failures, setFailures] = useState([]);
   const [showFailures, setShowFailures] = useState(false);
+  const [reembedding, setReembedding] = useState(false);
 
   const total = phaseStatus ? Object.values(phaseStatus).reduce((a, b) => a + b, 0) : 0;
 
@@ -28,13 +42,14 @@ function IngestPanel({ addToast }) {
         api.fetchIngestProgress(),
       ]);
       setPhaseStatus(statusData?.by_phase || null);
-      setProgress({ ...progressData, total });
+      setProgress(progressData);
 
       if (progressData?.running && progressData?.phase) {
-        const phaseKey = PHASES.find(p => progressData.phase.includes(p.key) || p.key === progressData.phase)?.key;
-        setRunningPhase(phaseKey || null);
+        const phaseKey = PHASE_PROGRESS_MAP[progressData.phase] || null;
+        setRunningPhase(phaseKey);
       } else {
         setRunningPhase(null);
+        setRunningAll(false);
       }
     } catch (e) {}
   }, []);
@@ -77,8 +92,41 @@ function IngestPanel({ addToast }) {
     }
   }
 
-  const isRunning = runningPhase || runningAll;
-  const clustered = phaseStatus?.clustered || 0;
+  async function handleReembed() {
+    setReembedding(true);
+    try {
+      const data = await api.reembedAll();
+      if (data.error) {
+        addToast?.("Re-embed failed: " + data.error, "error");
+      } else {
+        addToast?.(`Re-embed complete: ${data.success}/${data.total} songs`, "success");
+        fetchData();
+      }
+    } catch (e) {
+      addToast?.("Re-embed failed: " + (e.message || "unknown error"), "error");
+    } finally {
+      setReembedding(false);
+    }
+  }
+
+  async function handleRunPhase(apiPhase) {
+    try {
+      const data = await api.runIngestPhase(apiPhase);
+      if (data.status === "no_work") {
+        addToast?.(`No songs ready for ${apiPhase}`, "info");
+        return;
+      }
+      if (data.status === "already_running") {
+        addToast?.("Another phase is already running", "info");
+        return;
+      }
+      addToast?.(`Phase started: ${apiPhase}`, "success");
+    } catch (e) {
+      addToast?.(`Failed to start ${apiPhase}: ` + (e.message || "unknown error"), "error");
+    }
+  }
+
+  const isRunning = runningPhase || runningAll || reembedding;
 
   return (
     <div>
@@ -92,39 +140,93 @@ function IngestPanel({ addToast }) {
         <button onClick={handleRunAll} disabled={isRunning || total === 0}
           style={{ fontSize: "11px", padding: "5px 12px", borderRadius: "5px", background: "var(--accent-muted)", border: "1px solid var(--border)", color: "var(--accent)", cursor: isRunning || total === 0 ? "default" : "pointer", opacity: isRunning || total === 0 ? 0.4 : 1, display: "flex", alignItems: "center", gap: "4px", fontWeight: 500 }}>
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-          {runningAll ? "Ingesting..." : "Ingest"}
+          {runningAll ? "Ingesting..." : "Ingest all"}
+        </button>
+        <button onClick={handleReembed} disabled={isRunning || total === 0}
+          style={{ fontSize: "11px", padding: "5px 12px", borderRadius: "5px", background: "var(--bg-elevated)", border: "1px solid var(--border)", color: "var(--text-secondary)", cursor: isRunning || total === 0 ? "default" : "pointer", opacity: isRunning || total === 0 ? 0.4 : 1, display: "flex", alignItems: "center", gap: "4px" }}>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="1 4 1 10 7 10"/><polyline points="23 20 23 14 17 14"/><path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15"/></svg>
+          {reembedding ? "Re-embedding..." : "Re-embed all"}
         </button>
       </div>
 
-      {/* Phase progress bars */}
-      <div className="prog-sec">
+      {/* Phase rows */}
+      <div style={{ display: "flex", flexDirection: "column", gap: "1px" }}>
         {PHASES.map((phase) => {
-          const count = phaseStatus?.[phase.dbKey] || 0;
-          const isClustered = phase.key === "cluster";
-          const fill = isClustered && total > 0 ? (clustered / total) * 100 : 0;
-          const color = isClustered && fill >= 100 ? "var(--accent)" : "var(--border)";
-          const labelColor = isClustered && fill >= 100 ? "var(--accent)" : "var(--text-muted)";
-          const countColor = isClustered && fill >= 100 ? "var(--accent)" : "var(--text-muted)";
+          const count = phase.dbKey ? (phaseStatus?.[phase.dbKey] || 0) : null;
+          const isPhaseRunning = runningPhase === phase.key;
+          const progressPct = isPhaseRunning && progress?.total > 0
+            ? Math.round((progress.processed / progress.total) * 100)
+            : 0;
 
           return (
-            <div key={phase.key} className="prog-item">
-              <div className="prog-label">
-                <span style={{ fontSize: "10px", color: labelColor }}>{phase.label}</span>
-                {isClustered ? (
-                  <span style={{ fontSize: "10px", color: "var(--accent)", fontWeight: 600 }}>
-                    {count} / {total}
+            <div key={phase.key} style={{
+              display: "flex", alignItems: "center", gap: "8px",
+              padding: "6px 8px", borderRadius: "4px",
+              background: isPhaseRunning ? "rgba(93,173,226,0.06)" : "transparent",
+              transition: "background 0.15s",
+            }}>
+              {/* Phase label */}
+              <div style={{ minWidth: "110px", flexShrink: 0 }}>
+                <div style={{ fontSize: "11px", color: isPhaseRunning ? "var(--accent)" : "var(--text-secondary)", fontWeight: isPhaseRunning ? 500 : 400 }}>
+                  {phase.label}
+                </div>
+                <div style={{ fontSize: "9px", color: "var(--text-muted)", marginTop: "1px" }}>
+                  {phase.desc}
+                </div>
+              </div>
+
+              {/* Count or progress */}
+              <div style={{ minWidth: "70px", flexShrink: 0, textAlign: "right" }}>
+                {isPhaseRunning && progress ? (
+                  <span style={{ fontSize: "10px", color: "var(--accent)" }}>
+                    {progress.processed}/{progress.total}
+                  </span>
+                ) : count !== null ? (
+                  <span style={{ fontSize: "10px", color: "var(--text-muted)" }}>
+                    {count}{phase.key === "cluster" && total > 0 ? ` / ${total}` : ""}
                   </span>
                 ) : (
-                  <span style={{ fontSize: "10px", color: countColor }}>{count}</span>
+                  <span style={{ fontSize: "10px", color: "var(--text-muted)" }}>—</span>
                 )}
               </div>
-              <div className="prog-track">
-                <div className="prog-fill-bar" style={{ width: `${fill}%`, background: color }} />
+
+              {/* Progress bar */}
+              <div style={{ flex: 1, height: "3px", borderRadius: "2px", background: "var(--border-subtle)", overflow: "hidden", minWidth: "40px" }}>
+                {isPhaseRunning && (
+                  <div style={{
+                    height: "100%", borderRadius: "2px",
+                    width: `${progressPct}%`, background: "var(--accent)",
+                    transition: "width 0.3s ease",
+                  }} />
+                )}
               </div>
+
+              {/* Run button */}
+              <button
+                onClick={() => handleRunPhase(phase.apiPhase)}
+                disabled={isRunning}
+                style={{
+                  fontSize: "9px", padding: "2px 8px", borderRadius: "3px",
+                  background: isPhaseRunning ? "var(--accent-muted)" : "var(--bg-elevated)",
+                  border: `1px solid ${isPhaseRunning ? "var(--accent)" : "var(--border)"}`,
+                  color: isPhaseRunning ? "var(--accent)" : "var(--text-muted)",
+                  cursor: isRunning ? "default" : "pointer",
+                  opacity: isRunning && !isPhaseRunning ? 0.35 : 1,
+                  flexShrink: 0, transition: "all 0.15s",
+                }}>
+                {isPhaseRunning ? "Running..." : "Run"}
+              </button>
             </div>
           );
         })}
       </div>
+
+      {/* Current song indicator */}
+      {runningPhase && progress?.current_song && (
+        <div style={{ marginTop: "6px", fontSize: "10px", color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {progress.current_song}
+        </div>
+      )}
 
       {/* Duplicates */}
       {duplicates.length > 0 && (

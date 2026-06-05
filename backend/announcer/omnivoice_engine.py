@@ -20,6 +20,26 @@ import config
 
 logger = logging.getLogger(__name__)
 
+
+def _talk_debug(msg: str):
+    """Write to talk show debug log when TALK_SHOW_DEBUG is enabled.
+    
+    Easy to remove: grep for '_talk_debug' or 'TALK_SHOW_DEBUG' across the file.
+    """
+    if not getattr(config, "TALK_SHOW_DEBUG", False):
+        return
+    try:
+        import datetime
+        ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        line = f"[{ts}] [OmniVoice] {msg}\n"
+        log_path = getattr(config, "TALK_DEBUG_LOG_PATH", "")
+        if log_path:
+            os.makedirs(os.path.dirname(log_path), exist_ok=True)
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(line)
+    except Exception:
+        pass
+
 # Module-level GPU detection cache — shared across all engine instances
 _GLOBAL_GPU_AVAILABLE: bool | None = None
 _GLOBAL_GPU_LOG_ONCE = False
@@ -206,6 +226,9 @@ class OmniVoiceTTSEngine:
         actual_speed = speed + random.uniform(-0.1, 0.1)
         actual_speed = max(0.5, min(1.5, actual_speed))
 
+        _talk_debug(f"synthesize called: voice_id={voice_id}, text_len={len(text)}, speed={actual_speed:.2f}")
+        _talk_debug(f"  text preview: {text[:200]}{'...' if len(text) > 200 else ''}")
+
         logger.info(f"OmniVoiceTTSEngine.synthesize: voice={voice_id}, text_len={len(text)}, speed={actual_speed:.2f}")
 
         # Load model if not already loaded
@@ -218,6 +241,7 @@ class OmniVoiceTTSEngine:
             self._voice_mp3s = _list_voice_mp3s()
         ref_audio = self._voice_mp3s.get(voice_id)
         if not ref_audio or not os.path.exists(ref_audio):
+            _talk_debug(f"FAILED: reference audio not found for voice '{voice_id}'")
             logger.error(f"OmniVoice: reference audio not found for voice '{voice_id}'")
             return None
 
@@ -225,12 +249,18 @@ class OmniVoiceTTSEngine:
         self._ensure_transcripts()
         ref_text = self._transcripts.get(voice_id)
         if not ref_text:
+            _talk_debug(f"WARNING: no transcript for voice '{voice_id}', using fallback ref text")
             logger.warning(f"OmniVoice: no transcript for voice '{voice_id}', using voice description as fallback")
             # Fallback: use the voice prompt descriptions
             ref_text = self._get_fallback_ref_text(voice_id)
             if not ref_text:
+                _talk_debug(f"FAILED: no reference text available for voice '{voice_id}'")
                 logger.error(f"OmniVoice: no reference text available for voice '{voice_id}'")
                 return None
+
+        _talk_debug(f"ref_audio: {ref_audio}")
+        _talk_debug(f"ref_text: {ref_text[:150]}{'...' if len(ref_text) > 150 else ''}")
+        _talk_debug(f"model.generate kwargs: text_len={len(text)}, ref_audio={os.path.basename(ref_audio)}, ref_text_len={len(ref_text)}, speed={actual_speed:.2f}")
 
         try:
             import soundfile as sf
@@ -247,21 +277,27 @@ class OmniVoiceTTSEngine:
                     speed=actual_speed,
                 )
 
+            _talk_debug(f"calling model.generate...")
             ok, result_or_err = run_with_timeout(_do_generate, timeout=30)
+            _talk_debug(f"model.generate returned: ok={ok}")
             if not ok:
                 if isinstance(result_or_err, TimeoutError):
+                    _talk_debug(f"FAILED: synthesis timed out after 30s")
                     logger.error("OmniVoice: synthesis timed out after 30s")
                 else:
+                    _talk_debug(f"FAILED: synthesis error: {result_or_err}")
                     logger.error(f"OmniVoice: synthesis failed: {result_or_err}")
                 return None
 
             # result_or_err is a list of np.ndarray at 24kHz
             audio_array = result_or_err
             if audio_array is None:
+                _talk_debug(f"FAILED: synthesis returned None")
                 logger.error("OmniVoice: synthesis returned None")
                 return None
             sf.write(output_path, audio_array[0], 24000)
             elapsed = time.time() - start
+            _talk_debug(f"synthesis OK: {elapsed:.1f}s, output_shape={audio_array[0].shape if hasattr(audio_array[0], 'shape') else 'unknown'}, path={output_path}")
             logger.info(f"OmniVoice: synthesis done in {elapsed:.1f}s -> {output_path}")
             return output_path
 

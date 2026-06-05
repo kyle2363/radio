@@ -6,6 +6,7 @@ Each state has energy/valence ranges, emotional tags, and a centroid for blendin
 
 import logging
 import time
+import config
 from db import database
 
 logger = logging.getLogger(__name__)
@@ -76,14 +77,79 @@ class MoodStateMachine:
         }
         self._load_state()
 
+    def _get_vibe_lock_duration_seconds(self):
+        """Get vibe lock duration in seconds from DB settings."""
+        try:
+            val = database.get_setting("vibe_lock_duration_minutes")
+            minutes = int(val) if val is not None else 30
+            return max(5, min(120, minutes)) * 60  # clamp 5-120 min
+        except (ValueError, TypeError):
+            return 30 * 60
+
+    def _get_vibe_lock_max_songs(self):
+        """Get vibe lock max songs from DB settings."""
+        try:
+            val = database.get_setting("vibe_lock_max_songs")
+            songs = int(val) if val is not None else 10
+            return max(1, min(50, songs))  # clamp 1-50
+        except (ValueError, TypeError):
+            return 10
+
     def _load_state(self):
         """Load mood state from settings on startup."""
         active = database.get_setting("vibe_lock_active")
         if active and active.lower() == "true":
-            self._vibe_lock["active"] = True
-            self._vibe_lock["song_id"] = int(database.get_setting("vibe_lock_song_id") or 0)
+            song_id = int(database.get_setting("vibe_lock_song_id") or 0)
             expires = database.get_setting("vibe_lock_expires")
-            self._vibe_lock["expires_at"] = float(expires) if expires else None
+            expires_at = float(expires) if expires else None
+
+            # Vibe lock requires an embedding to function.  Embeddings are
+            # in-memory only and never persisted to the settings table, so
+            # after a restart they are always None.  We must deactivate.
+            import time
+            if expires_at and time.time() > expires_at:
+                logger.info("Vibe lock expired during downtime, deactivating")
+                self._save_state()
+                return
+
+            if not song_id:
+                logger.info("Vibe lock has no song_id, deactivating")
+                self._save_state()
+                return
+
+            # Try to re-fetch the embedding from ChromaDB
+            embedding = None
+            audio_embedding = None
+            try:
+                from engine import retriever
+                collection = retriever.get_chroma_collection("songs")
+                result = collection.get(ids=[str(song_id)], include=["embeddings"])
+                if result and result.get("embeddings") and result["embeddings"][0]:
+                    embedding = result["embeddings"][0]
+            except Exception as e:
+                logger.debug("Could not re-fetch vibe lock embedding for song %s: %s", song_id, e)
+
+            if config.MUQ_ENABLED:
+                try:
+                    audio_collection = retriever.get_chroma_collection(config.MUQ_AUDIO_COLLECTION)
+                    result = audio_collection.get(ids=[str(song_id)], include=["embeddings"])
+                    if result and result.get("embeddings") and result["embeddings"][0]:
+                        audio_embedding = result["embeddings"][0]
+                except Exception:
+                    pass
+
+            if embedding is None:
+                logger.info("Vibe lock embedding unavailable for song %s, deactivating", song_id)
+                self._save_state()
+                return
+
+            self._vibe_lock["active"] = True
+            self._vibe_lock["song_id"] = song_id
+            self._vibe_lock["embedding"] = embedding
+            self._vibe_lock["audio_embedding"] = audio_embedding
+            self._vibe_lock["expires_at"] = expires_at
+            self._vibe_lock["songs_remaining"] = self._get_vibe_lock_max_songs()
+            logger.info("Vibe lock restored for song %s (expires_at=%s)", song_id, expires_at)
 
     def _save_state(self):
         """Persist mood state to settings."""
@@ -150,8 +216,8 @@ class MoodStateMachine:
         self._vibe_lock["song_id"] = song_id
         self._vibe_lock["embedding"] = embedding
         self._vibe_lock["audio_embedding"] = audio_embedding
-        self._vibe_lock["expires_at"] = time.time() + (30 * 60)  # 30 minutes
-        self._vibe_lock["songs_remaining"] = 10
+        self._vibe_lock["expires_at"] = time.time() + self._get_vibe_lock_duration_seconds()
+        self._vibe_lock["songs_remaining"] = self._get_vibe_lock_max_songs()
         self._current_state = None  # Clear auto mood during vibe lock
         self._save_state()
 

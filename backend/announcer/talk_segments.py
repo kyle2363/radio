@@ -10,6 +10,7 @@ All segments are rendered to WAV via TTS and played through play_chain().
 
 import enum
 import json
+import os
 import random
 from collections import deque
 from dataclasses import dataclass, field
@@ -23,6 +24,26 @@ from announcer.personas import PERSONAS, Persona, get_persona, get_guest_persona
 import threading
 import logging
 logger = logging.getLogger(__name__)
+
+
+def _talk_debug(msg: str):
+    """Write to talk show debug log when TALK_SHOW_DEBUG is enabled.
+    
+    Easy to remove: grep for '_talk_debug' or 'TALK_SHOW_DEBUG' across the file.
+    """
+    if not getattr(config, "TALK_SHOW_DEBUG", False):
+        return
+    try:
+        import datetime
+        ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        line = f"[{ts}] [TalkSegment] {msg}\n"
+        log_path = getattr(config, "TALK_DEBUG_LOG_PATH", "")
+        if log_path:
+            os.makedirs(os.path.dirname(log_path), exist_ok=True)
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(line)
+    except Exception:
+        pass
 
 # Lock for module-level mutable state (_song_counter, _current_guest_takeover,
 # cooldown tracking lists).  get_next_talk_segment() runs in background threads
@@ -363,10 +384,13 @@ def generate_caller_segment(
     dj = get_persona("dj")
     caller = _pick_caller(cooldown)
     if not caller:
+        _talk_debug("generate_caller: no caller available, aborting")
         return None
 
     call_reason = _pick_caller_reason(session_state)
     caller_opening = _pick_caller_opening()
+
+    _talk_debug(f"generate_caller: dj={dj.name if dj else 'None'}, caller={caller.name}, reason={call_reason}, opening={caller_opening}")
 
     recent = _get_recent_songs_for_context(3, recent_context=recent_context)
     recent_str = "; ".join([f"{s['artist']} - {s['title']}" for s in recent]) or "no songs yet"
@@ -381,8 +405,8 @@ def generate_caller_segment(
     hour = datetime.now().hour
     greeting = _build_greeting_caller(hour)
 
-    # 50/50 chance of providing next song info to the LLM
-    if next_song and random.random() < 0.5:
+    # 60/40 chance of providing next song info to the LLM
+    if next_song and random.random() < 0.6:
         next_song_str = f"{next_song.get('artist', 'Unknown')} - {next_song.get('title', 'Unknown')}"
     else:
         next_song_str = "(not yet known)"
@@ -426,6 +450,7 @@ def generate_caller_segment(
     )
 
     logger.info(f"generate_caller_segment: calling LLM (mood={mood_state})")
+    _talk_debug(f"generate_caller: prompt ({len(prompt)} chars):\n{prompt}")
     try:
         response = llm_chat().chat(
             model=None,
@@ -435,6 +460,7 @@ def generate_caller_segment(
         )
         logger.info("generate_caller_segment: LLM returned, rendering TTS...")
         content = response.content.strip()
+        _talk_debug(f"generate_caller: LLM response ({len(content)} chars):\n{content[:500]}{'...' if len(content) > 500 else ''}")
 
         # Strip markdown fences if present
         if content.startswith("```"):
@@ -450,17 +476,21 @@ def generate_caller_segment(
         for key, voice_id in voice_lines:
             text = data.get(key, "").strip()
             if not text:
+                _talk_debug(f"generate_caller: skipping empty line '{key}'")
                 continue
             # Inject non-verbal tags into caller lines only (not DJ lines)
             if key.startswith("caller"):
                 text = inject_nonverbal_tags(text)
             # Pass speed baseline based on whether this is a caller line or DJ line
             line_speed = caller.speed_base if key.startswith("caller") else dj.speed_base
+            _talk_debug(f"generate_caller: TTS line '{key}' voice={voice_id} speed={line_speed:.2f} text={text[:100]}{'...' if len(text) > 100 else ''}")
             wav = tts_say(text, voice_id=voice_id, speed=line_speed)
             if wav:
                 wav_paths.append(wav)
-                # Estimate duration: ~80ms per character
                 total_duration += max(1.0, len(text) * 0.08)
+                _talk_debug(f"generate_caller: TTS OK -> {wav}")
+            else:
+                _talk_debug(f"generate_caller: TTS FAILED for line '{key}'")
 
         if not wav_paths:
             return None
@@ -479,6 +509,8 @@ def generate_caller_segment(
             _last_segment_mood = mood_shift if mood_shift else mood_state
 
         full_text = " | ".join([data.get(k, "") for k, _ in voice_lines])
+
+        _talk_debug(f"generate_caller: COMPLETE — {len(wav_paths)} wav files, {total_duration:.1f}s, mood_shift={mood_shift}, energy_dir={energy_dir}")
 
         return TalkSegment(
             type=TalkSegmentType.CALLER,
@@ -535,6 +567,7 @@ Context:
 - Time: {greeting}
 - Trigger: {trigger_reason}
 - Recent lyrics to draw from: {recent_lyrics}
+- Next song coming up: {next_song_str}
 
 Monologue type: {monologue_type}
 What this means: {monologue_instruction}
@@ -548,6 +581,7 @@ Rules:
 - DO NOT open with: "You know,", "It's [time]", "Tonight", or "Welcome back"
 - Weave in lyric references naturally — don't quote them like recitation
 - End with something that makes the next song feel like it had to come next
+- If next song is provided, tease it as a natural lead-in — don't name the track, hint at the vibe
 - Avoid these opening patterns used recently: {forbidden_openings}
 
 No quotes, no labels — just the spoken text."""
@@ -590,6 +624,7 @@ def generate_dj_monologue(
     mood_state: str = "neutral",
     trigger_reason: str = "regular interlude",
     recent_context: list[dict] | None = None,
+    next_song: dict | None = None,
 ) -> TalkSegment | None:
     """Generate a longer DJ monologue segment.
     
@@ -599,6 +634,8 @@ def generate_dj_monologue(
         recent_context: Pre-fetched recent songs from PlaybackContext snapshot.
                         Passed to _get_recent_songs_for_context to avoid
                         querying queue_history.
+        next_song: Dict with 'artist' and 'title' of the upcoming song,
+                   so the monologue can tease it.
     """
     dj = get_persona("dj")
     session = _get_session_context()
@@ -640,6 +677,7 @@ def generate_dj_monologue(
         greeting=greeting,
         trigger_reason=trigger_reason,
         recent_lyrics=recent_lyrics or "(no lyrics available)",
+        next_song_str=f"{next_song.get('artist', 'Unknown')} - {next_song.get('title', 'Unknown')}" if next_song else "(not yet known)",
         monologue_type=mono_key.replace("_", " ").title(),
         monologue_instruction=mono_type["instruction"],
         monologue_tone=mono_type["tone"],
@@ -647,6 +685,8 @@ def generate_dj_monologue(
     )
 
     logger.info(f"generate_dj_monologue: calling LLM (mood={mood_state}, type={mono_key})")
+    _talk_debug(f"generate_monologue: type={mono_key}, dj={dj.name if dj else 'None'}")
+    _talk_debug(f"generate_monologue: prompt ({len(prompt)} chars):\n{prompt}")
     try:
         response = llm_chat().chat(
             model=None,
@@ -656,6 +696,7 @@ def generate_dj_monologue(
         )
         logger.info("generate_dj_monologue: LLM returned, rendering TTS...")
         text = response.content.strip()
+        _talk_debug(f"generate_monologue: LLM response ({len(text)} chars):\n{text[:500]}{'...' if len(text) > 500 else ''}")
         # Clean up
         text = text.strip('"\'').strip()
         text = text.encode('ascii', 'ignore').decode('ascii')
@@ -678,11 +719,14 @@ def generate_dj_monologue(
         text = inject_nonverbal_tags_monologue(text)
 
         voice_id = dj.voice_id if dj else "amy"
+        _talk_debug(f"generate_monologue: TTS voice={voice_id} speed={dj.speed_base:.2f} text_len={len(text)}")
         wav = tts_say(text, voice_id=voice_id, speed=dj.speed_base)
         if not wav:
+            _talk_debug(f"generate_monologue: TTS FAILED")
             return None
 
         duration = max(30.0, len(text) * 0.08)
+        _talk_debug(f"generate_monologue: COMPLETE — wav={wav}, {duration:.1f}s, type={mono_key}")
         return TalkSegment(
             type=TalkSegmentType.DJ_MONOLOGUE,
             wav_paths=[wav],
@@ -714,6 +758,7 @@ Context:
 - Last song that just played: {last_song}
 - The vibe you're bringing: {mood_state}
 - Songs coming up in your set: {upcoming_songs_hint}
+- Next song specifically: {next_song_str}
 
 Write a 15-20 second spoken intro for your takeover.
 
@@ -723,6 +768,7 @@ Rules:
 - Opening style this time: {intro_style}
 - DO NOT open with your own name or "Hey everyone" or "What's up"
 - Sound like yourself, not a generic hype voice
+- If next song is provided, tease its energy or feel as a natural lead-in
 - No quotes, no labels, no stage directions — just the spoken words"""
 
 GUEST_OUTRO_PROMPT_TEMPLATE = """You are {guest_name}, handing the show back after your set.
@@ -782,11 +828,13 @@ def generate_guest_takeover_intro(
     last_song: dict | None = None,
     upcoming_songs: list[dict] | None = None,
     mood_state: str = "neutral",
+    next_song: dict | None = None,
 ) -> TalkSegment | None:
     """Generate a guest DJ takeover intro announcement with musical context."""
     guest = get_persona(guest_persona_id)
     dj = get_persona("dj")
     if not guest:
+        _talk_debug(f"generate_guest_intro: persona '{guest_persona_id}' not found")
         return None
 
     intro_style = random.choice(GUEST_INTRO_STYLES)
@@ -796,6 +844,8 @@ def generate_guest_takeover_intro(
     last_song_str = f"{last_song.get('artist', 'Unknown')} - {last_song.get('title', 'Unknown')}" if last_song else "silence"
     upcoming_hint = _describe_upcoming_vibe(upcoming_songs or [])
 
+    _talk_debug(f"generate_guest_intro: guest={guest.name}, last_song={last_song_str}, mood={mood_state}, style={intro_style}")
+
     prompt = GUEST_INTRO_PROMPT_TEMPLATE.format(
         guest_name=guest.name,
         guest_personality=guest.personality,
@@ -803,9 +853,11 @@ def generate_guest_takeover_intro(
         last_song=last_song_str,
         mood_state=mood_state,
         upcoming_songs_hint=upcoming_hint,
+        next_song_str=f"{next_song.get('artist', 'Unknown')} - {next_song.get('title', 'Unknown')}" if next_song else "(not yet known)",
         intro_style=intro_style,
     )
 
+    _talk_debug(f"generate_guest_intro: prompt ({len(prompt)} chars):\n{prompt}")
     try:
         response = llm_chat().chat(
             model=None,
@@ -816,9 +868,12 @@ def generate_guest_takeover_intro(
         text = response.content.strip()
         text = text.strip('"\'').strip()
         text = text.encode('ascii', 'ignore').decode('ascii')
+        _talk_debug(f"generate_guest_intro: LLM response ({len(text)} chars):\n{text[:300]}{'...' if len(text) > 300 else ''}")
 
+        _talk_debug(f"generate_guest_intro: TTS voice={guest.voice_id} speed={guest.speed_base:.2f}")
         wav = tts_say(text, voice_id=guest.voice_id, speed=guest.speed_base)
         if not wav:
+            _talk_debug(f"generate_guest_intro: TTS FAILED")
             return None
 
         # Track last segment mood
@@ -826,6 +881,7 @@ def generate_guest_takeover_intro(
         with _talk_lock:
             _last_segment_mood = mood_state
 
+        _talk_debug(f"generate_guest_intro: COMPLETE — wav={wav}, {max(8.0, len(text) * 0.08):.1f}s")
         return TalkSegment(
             type=TalkSegmentType.GUEST_TAKEOVER_INTRO,
             wav_paths=[wav],
@@ -850,6 +906,7 @@ def generate_guest_takeover_outro(
     guest = get_persona(guest_persona_id)
     dj = get_persona("dj")
     if not guest:
+        _talk_debug(f"generate_guest_outro: persona '{guest_persona_id}' not found")
         return None
 
     played_songs_str = "; ".join(
@@ -857,6 +914,8 @@ def generate_guest_takeover_outro(
     ) or "a great set of tracks"
     dj_name = dj.name if dj else "the main DJ"
     set_mood_str = set_mood or "energetic and fresh"
+
+    _talk_debug(f"generate_guest_outro: guest={guest.name}, played={played_songs_str[:100]}, set_mood={set_mood_str}")
 
     prompt = GUEST_OUTRO_PROMPT_TEMPLATE.format(
         guest_name=guest.name,
@@ -866,6 +925,7 @@ def generate_guest_takeover_outro(
         set_mood=set_mood_str,
     )
 
+    _talk_debug(f"generate_guest_outro: prompt ({len(prompt)} chars):\n{prompt}")
     try:
         response = llm_chat().chat(
             model=None,
@@ -876,9 +936,12 @@ def generate_guest_takeover_outro(
         text = response.content.strip()
         text = text.strip('"\'').strip()
         text = text.encode('ascii', 'ignore').decode('ascii')
+        _talk_debug(f"generate_guest_outro: LLM response ({len(text)} chars):\n{text[:300]}{'...' if len(text) > 300 else ''}")
 
+        _talk_debug(f"generate_guest_outro: TTS voice={guest.voice_id} speed={guest.speed_base:.2f}")
         wav = tts_say(text, voice_id=guest.voice_id, speed=guest.speed_base)
         if not wav:
+            _talk_debug(f"generate_guest_outro: TTS FAILED")
             return None
 
         # Track last segment mood (outro is neutral handoff)
@@ -886,6 +949,7 @@ def generate_guest_takeover_outro(
         with _talk_lock:
             _last_segment_mood = "neutral"
 
+        _talk_debug(f"generate_guest_outro: COMPLETE — wav={wav}, {max(5.0, len(text) * 0.08):.1f}s")
         return TalkSegment(
             type=TalkSegmentType.GUEST_TAKEOVER_OUTRO,
             wav_paths=[wav],
@@ -976,6 +1040,7 @@ def get_next_talk_segment(
     recent_context: list[dict] | None = None,
     last_song: dict | None = None,
     session_state: dict | None = None,
+    increment: bool = True,
 ) -> TalkSegment | None:
     """Decide which talk segment to play next, if any.
     
@@ -996,12 +1061,16 @@ def get_next_talk_segment(
                    used by guest intros for musical context.
         session_state: Dict with skip_streak, mood_changed_recently, hour,
                        session_duration_minutes for weighting call reasons.
-        
+        increment: Whether to increment the song counter.  Pass False when
+                   calling from a rebuild context (queue refresh, settings
+                   change) so only actual song plays advance the counter.
+
     Returns:
         TalkSegment to play, or None if no segment should play
     """
     global _song_counter, _current_guest_takeover
-    logger.info(f"get_next_talk_segment: counter={_song_counter}, guest_active={_current_guest_takeover is not None}")
+    _talk_debug(f"get_next_talk_segment called: counter={_song_counter}, guest_active={_current_guest_takeover is not None}, increment={increment}, mood={mood_state}")
+    logger.info(f"get_next_talk_segment: counter={_song_counter}, guest_active={_current_guest_takeover is not None}, increment={increment}")
 
     if settings is None:
         try:
@@ -1029,6 +1098,7 @@ def get_next_talk_segment(
             _current_guest_takeover["songs_remaining"] -= 1
             if _current_guest_takeover["songs_remaining"] <= 0:
                 played = _current_guest_takeover.get("played_songs", [])
+                _talk_debug(f"guest takeover ending: persona={_current_guest_takeover['persona_id']}, songs_played={len(played)}")
                 outro = generate_guest_takeover_outro(
                     _current_guest_takeover["persona_id"],
                     played_songs=played,
@@ -1041,13 +1111,12 @@ def get_next_talk_segment(
                 return outro
             return None  # Keep playing songs during takeover
 
-        # Increment counter
-        _song_counter += 1
+        # Check if counter has reached talk frequency
         frequency = settings.get("talk_frequency", 4)
         if _song_counter < frequency:
             return None  # Not time for talk yet
 
-        # Time for a segment — reset counter
+        # Counter reached — reset and pick segment type
         _song_counter = 0
 
         # Decide which segment type to play (with cooldown awareness)
@@ -1059,21 +1128,34 @@ def get_next_talk_segment(
         if len(_recent_segment_types) > 10:
             _recent_segment_types.pop(0)
 
+    _talk_debug(f"segment type chosen: {segment_type}")
+
     # --- Generation phase (outside lock, may do LLM calls) ---
     if segment_type == "caller":
         with _talk_lock:
             caller = _pick_caller(cooldown)
         if not caller:
+            _talk_debug(f"get_next_talk_segment: caller segment picked but no caller available")
             return None
-        return generate_caller_segment(
+        result = generate_caller_segment(
             mood_state=mood_state, caller_mode=caller_mode,
             next_song=next_song, cooldown=cooldown,
             recent_context=recent_context,
             session_state=session_state,
         )
+        if result:
+            _talk_debug(f"get_next_talk_segment: returning caller ({result.duration_secs:.1f}s)")
+        else:
+            _talk_debug(f"get_next_talk_segment: caller generation returned None")
+        return result
 
     elif segment_type == "dj_monologue":
-        return generate_dj_monologue(mood_state=mood_state, recent_context=recent_context)
+        result = generate_dj_monologue(mood_state=mood_state, recent_context=recent_context, next_song=next_song)
+        if result:
+            _talk_debug(f"get_next_talk_segment: returning dj_monologue ({result.duration_secs:.1f}s)")
+        else:
+            _talk_debug(f"get_next_talk_segment: dj_monologue generation returned None")
+        return result
 
     elif segment_type == "guest_takeover":
         with _talk_lock:
@@ -1090,6 +1172,7 @@ def get_next_talk_segment(
             last_song=last_song,
             upcoming_songs=[next_song] if next_song else [],
             mood_state=mood_state,
+            next_song=next_song,
         )
         if not intro:
             return None
@@ -1105,6 +1188,7 @@ def get_next_talk_segment(
                 "songs_remaining": songs_per_set,
                 "played_songs": [],
             }
+        _talk_debug(f"guest takeover activated: persona={guest.name}, songs_per_set={songs_per_set}")
         return intro
 
     return None

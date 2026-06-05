@@ -9,8 +9,10 @@ The retriever blends them using MUQ_AUDIO_BLEND.
 """
 
 import logging
+import math
 import os
 from dataclasses import dataclass
+from datetime import datetime
 from time import time
 import config
 from db import database
@@ -91,11 +93,19 @@ class MemorySystem:
         """
         if not song_ids:
             return {}
+        # Deduplicate IDs — ChromaDB requires unique IDs, but callers may
+        # pass lists with repeats (e.g., multiple play_events for same song).
+        seen = set()
+        unique_ids = []
+        for sid in song_ids:
+            key = str(sid)
+            if key not in seen:
+                seen.add(key)
+                unique_ids.append(key)
         try:
             client = _get_chroma_client()
             collection = client.get_collection(collection_name)
-            ids = [str(sid) for sid in song_ids]
-            result = collection.get(ids=ids, include=["embeddings"])
+            result = collection.get(ids=unique_ids, include=["embeddings"])
             return {
                 eid: emb
                 for eid, emb in zip(result["ids"], result["embeddings"])
@@ -103,7 +113,7 @@ class MemorySystem:
             }
         except Exception as e:
             logger.debug("Batch ChromaDB fetch failed for %d songs from %s: %s",
-                         len(song_ids), collection_name, e)
+                         len(unique_ids), collection_name, e)
             return {}
 
     def get_recent_signals(self, session_id: int = None, skip_streak: int = 0,
@@ -292,9 +302,13 @@ class MemorySystem:
         return [0.0] * retriever.get_embedding_dimension()
 
     def _compute_repulsion_vector(self, collection_name: str) -> list | None:
-        """Compute average embedding of disliked songs from a given collection."""
+        """Compute time-weighted average embedding of disliked songs.
+
+        Recent skips have full weight; older ones decay exponentially.
+        Returns a vector to be subtracted from the taste vector.
+        """
         signals = database.get_recent_signals(
-            signal_types=['skip_early', 'thumbed_down'],
+            signal_types=['skip_early', 'skip_late', 'thumbed_down'],
             limit=500,
         )
         if not signals:
@@ -302,22 +316,42 @@ class MemorySystem:
 
         song_ids = [ev['song_id'] for ev in signals]
         embedding_map = self._batch_get_chroma_embeddings(song_ids, collection_name)
-        embeddings = []
+
+        now = datetime.now()
+        weighted_sum = None
+        weight_total = 0.0
+        # Read decay rate once before loop for performance
+        try:
+            decay_val = database.get_setting("dislike_decay_rate")
+            decay_rate = float(decay_val) if decay_val is not None else 0.029
+        except (ValueError, TypeError):
+            decay_rate = 0.029
         for ev in signals:
             emb = embedding_map.get(str(ev['song_id']))
-            if emb:
-                embeddings.append(emb)
+            if not emb:
+                continue
+            # Compute time-based weight
+            played_at = ev.get('played_at')
+            if played_at:
+                try:
+                    ts = datetime.fromisoformat(played_at)
+                    age_hours = max(0.0, (now - ts).total_seconds() / 3600.0)
+                except (ValueError, TypeError):
+                    age_hours = 0.0
+            else:
+                age_hours = 0.0
+            # Exponential decay: full weight at 0h, ~0.5 at 24h, ~0.1 at 72h
+            # Rate is configurable via dislike_decay_rate setting
+            w = math.exp(-decay_rate * age_hours)
+            if weighted_sum is None:
+                weighted_sum = [v * w for v in emb]
+            else:
+                weighted_sum = [a + b * w for a, b in zip(weighted_sum, emb)]
+            weight_total += w
 
-        if not embeddings:
+        if weight_total <= 0:
             return None
-
-        dim = len(embeddings[0])
-        avg = [0.0] * dim
-        for emb in embeddings:
-            for i in range(dim):
-                avg[i] += emb[i]
-        avg = [v / len(embeddings) for v in avg]
-        return avg
+        return [v / weight_total for v in weighted_sum]
 
     def get_repulsion_vector(self) -> list | None:
         """Compute average embedding of disliked songs (text embeddings).
@@ -336,6 +370,17 @@ class MemorySystem:
         if not config.MUQ_ENABLED:
             return None
         return self._compute_repulsion_vector(config.MUQ_AUDIO_COLLECTION)
+
+    def get_positive_signals_for_clustering(self, limit=2000):
+        """Return positive signals with song IDs for constellation clustering.
+
+        Convenience wrapper for the constellation system.
+        Returns list of dicts with song_id, signal, played_at.
+        """
+        return database.get_recent_signals(
+            signal_types=["completed", "hearted", "replayed"],
+            limit=limit,
+        )
 
     def record_signal(self, song_id, signal, session_id=None):
         """Record a behavioral signal to the database.

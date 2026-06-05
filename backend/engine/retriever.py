@@ -59,12 +59,18 @@ def get_audio_embedding_dimension() -> int:
     return get_embedding_dimension(config.MUQ_AUDIO_COLLECTION)
 
 
-def _jitter_vector(v, strength=0.03):
-    """Add small random noise to a vector for variety between calls."""
-    noise = [random.gauss(0, strength) for _ in v]
+def _jitter_vector(v, strength=0.12):
+    """Add random noise to a vector for variety between calls.
+
+    Default strength 0.12. Configurable via 'jitter_strength' setting
+    (0.0 = old behavior 0.03, 1.0 = 0.16 max).
+    """
+    # Map 0-1 setting range to 0.03-0.16 actual strength
+    actual = 0.03 + strength * 0.13
+    noise = [random.gauss(0, actual) for _ in v]
     noise_mag = math.sqrt(sum(x * x for x in noise))
     if noise_mag > 0:
-        noise = [x / noise_mag * strength for x in noise]
+        noise = [x / noise_mag * actual for x in noise]
     return [a + b for a, b in zip(v, noise)]
 
 
@@ -85,7 +91,8 @@ def search_by_vector(taste_vector, n=60, exclude_ids=None,
         exclude_ids = []
 
     collection = get_chroma_collection(collection_name)
-    query_vector = _jitter_vector(taste_vector)
+    jitter_setting = float(database._get_cached_setting("jitter_strength") or "0.12")
+    query_vector = _jitter_vector(taste_vector, strength=jitter_setting)
 
     where_clause = None
     if subfolder_filter:
@@ -164,8 +171,8 @@ def search_by_vector(taste_vector, n=60, exclude_ids=None,
                 boost = min(0.08, hours_ago * 0.005)
                 c["score"] = min(1.0, c.get("score", 0.5) + boost)
 
-    if len(candidates) > n + 10:
-        pool = candidates[:n + 10]
+    if len(candidates) > n + 40:
+        pool = candidates[:n + 40]
         random.shuffle(pool)
         candidates = pool[:n]
     else:
@@ -278,7 +285,13 @@ def _apply_skip_feedback_bias(mood_energy_range, mood_valence_range, skip_feedba
             lo, hi = mood_energy_range
             mood_energy_range = (min(hi, lo + 0.15), hi)
         elif reason == "too_samey":
-            pass
+            # Widen both energy and valence ranges for more diversity
+            if mood_energy_range:
+                lo, hi = mood_energy_range
+                mood_energy_range = (max(0.0, lo - 0.05), min(1.0, hi + 0.05))
+            if mood_valence_range:
+                lo, hi = mood_valence_range
+                mood_valence_range = (max(0.0, lo - 0.05), min(1.0, hi + 0.05))
 
     return mood_energy_range, mood_valence_range
 
@@ -316,16 +329,30 @@ def build_candidate_list(text_taste_vector=None, audio_taste_vector=None,
     if current_song_id:
         exclude_ids.add(current_song_id)
 
-    # Get recently played (last 3 hours)
+    # Get recently played with graduated penalty
+    # recency_exclude_hours: songs played within this window are excluded entirely
+    # Beyond that, a score penalty applies based on how recently they were played
+    exclude_hours = float(database._get_cached_setting("recency_exclude_hours") or "1")
     recently_played = set()
+    recently_played_times = {}  # song_id -> hours ago
     conn = database.get_connection()
     try:
-        cutoff = (datetime.now() - timedelta(hours=3)).isoformat()
         rows = conn.execute(
-            "SELECT DISTINCT song_id FROM play_events WHERE played_at > ?",
-            (cutoff,),
+            "SELECT DISTINCT song_id, played_at FROM play_events WHERE played_at > ?",
+            ((datetime.now() - timedelta(days=3)).isoformat(),),
         ).fetchall()
-        recently_played = {r["song_id"] for r in rows}
+        now = datetime.now()
+        for r in rows:
+            sid = r["song_id"]
+            try:
+                ts = datetime.fromisoformat(r["played_at"])
+                hours_ago = (now - ts).total_seconds() / 3600.0
+            except (ValueError, TypeError):
+                hours_ago = 0.0
+            if hours_ago < exclude_hours:
+                recently_played.add(sid)
+            else:
+                recently_played_times[sid] = hours_ago
     finally:
         conn.close()
 
@@ -455,6 +482,21 @@ def build_candidate_list(text_taste_vector=None, audio_taste_vector=None,
     # Apply vibe lock audio similarity boost
     if vibe_lock and vibe_lock.get("active") and vibe_lock.get("audio_embedding"):
         candidates = _apply_vibe_lock_boost(candidates, vibe_lock, exclude_ids)
+
+    # Apply graduated recency penalty (beyond the hard exclude window)
+    # Penalties: 1-6h: -0.15, 6-24h: -0.08, 1-3 days: -0.03
+    if recently_played_times:
+        for c in candidates:
+            sid = c["song_id"]
+            if sid in recently_played_times:
+                hours_ago = recently_played_times[sid]
+                if hours_ago < 6:
+                    penalty = 0.15
+                elif hours_ago < 24:
+                    penalty = 0.08
+                else:
+                    penalty = 0.03
+                c["score"] = max(0.0, c.get("score", 0.5) - penalty)
 
     return candidates[:40]
 

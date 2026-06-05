@@ -125,6 +125,22 @@ def add_missing_columns():
         except Exception as idx_e:
             import logging
             logging.getLogger(__name__).warning(f"Could not create blacklist level index: {idx_e}")
+
+        # Seed new settings that may not exist in older databases
+        new_settings = {
+            'vibe_lock_duration_minutes': '30',
+            'vibe_lock_max_songs': '10',
+            'dislike_decay_rate': '0.029',
+            'dj_speech_speed': '0.90',
+            'dj_intro_start_hour': '6',
+            'dj_intro_end_hour': '23',
+        }
+        for key, val in new_settings.items():
+            conn.execute(
+                "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
+                (key, val),
+            )
+
         conn.commit()
     except Exception as e:
         import logging
@@ -428,7 +444,7 @@ def record_play_event(song_id, session_id, signal, **kwargs):
                 "UPDATE songs SET complete_count = complete_count + 1 WHERE id = ?",
                 (song_id,),
             )
-        elif signal in ("skip_early", "skip_late"):
+        elif signal in ("skip_early", "skip_late", "thumbed_down"):
             conn.execute(
                 "UPDATE songs SET skip_count = skip_count + 1 WHERE id = ?",
                 (song_id,),
@@ -486,28 +502,55 @@ def record_mood_skip_repulsion(mood_state, reason, song_id, audio_embedding):
 
 
 def get_mood_repulsion_vector(mood_state, reason=None, limit=20):
-    """Get average audio embedding of recently rejected songs in this mood.
+    """Get time-weighted average audio embedding of rejected songs in this mood.
 
+    Recent entries have full weight; older entries decay exponentially.
     Returns a 512-dim vector (list of floats) or None if insufficient data.
     """
     conn = get_connection()
     try:
         if reason:
             rows = conn.execute(
-                "SELECT audio_embedding FROM mood_skip_repulsion WHERE mood_state = ? AND reason = ? ORDER BY created_at DESC LIMIT ?",
+                "SELECT audio_embedding, created_at FROM mood_skip_repulsion WHERE mood_state = ? AND reason = ? ORDER BY created_at DESC LIMIT ?",
                 (mood_state, reason, limit),
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT audio_embedding FROM mood_skip_repulsion WHERE mood_state = ? ORDER BY created_at DESC LIMIT ?",
+                "SELECT audio_embedding, created_at FROM mood_skip_repulsion WHERE mood_state = ? ORDER BY created_at DESC LIMIT ?",
                 (mood_state, limit),
             ).fetchall()
         if not rows:
             return None
-        embeddings = [json.loads(r[0]) for r in rows]
-        dim = len(embeddings[0])
-        avg = [sum(e[i] for e in embeddings) / len(embeddings) for i in range(dim)]
-        return avg
+
+        now = datetime.now()
+        weighted_sum = None
+        weight_total = 0.0
+        for row in rows:
+            emb = json.loads(row[0])
+            created = datetime.fromisoformat(row[1]) if row[1] else now
+            age_hours = max(0.0, (now - created).total_seconds() / 3600.0)
+            # Exponential decay: full weight at 0h, ~0.5 at 24h, ~0.1 at 72h
+            w = math.exp(-0.029 * age_hours)
+            if weighted_sum is None:
+                weighted_sum = [v * w for v in emb]
+            else:
+                weighted_sum = [a + b * w for a, b in zip(weighted_sum, emb)]
+            weight_total += w
+
+        if weight_total <= 0:
+            return None
+        return [v / weight_total for v in weighted_sum]
+    finally:
+        conn.close()
+
+
+def cleanup_old_mood_repulsion(days=30):
+    """Delete mood_skip_repulsion entries older than N days."""
+    conn = get_connection()
+    try:
+        cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+        conn.execute("DELETE FROM mood_skip_repulsion WHERE created_at < ?", (cutoff,))
+        conn.commit()
     finally:
         conn.close()
 
@@ -525,34 +568,10 @@ def get_completed_songs_by_mood(mood_state, limit=50):
         return [{"song_id": r["song_id"]} for r in rows]
     finally:
         conn.close()
-    """Get average audio embedding of recently rejected songs in this mood.
-
-    Returns a 512-dim vector (list of floats) or None if insufficient data.
-    """
-    conn = get_connection()
-    try:
-        if reason:
-            rows = conn.execute(
-                "SELECT audio_embedding FROM mood_skip_repulsion WHERE mood_state = ? AND reason = ? ORDER BY created_at DESC LIMIT ?",
-                (mood_state, reason, limit),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT audio_embedding FROM mood_skip_repulsion WHERE mood_state = ? ORDER BY created_at DESC LIMIT ?",
-                (mood_state, limit),
-            ).fetchall()
-        if not rows:
-            return None
-        embeddings = [json.loads(r[0]) for r in rows]
-        dim = len(embeddings[0])
-        avg = [sum(e[i] for e in embeddings) / len(embeddings) for i in range(dim)]
-        return avg
-    finally:
-        conn.close()
 
 
 def undo_play_event(song_id, signal_type):
-    """Mark the most recent play_event of a given signal type as undone."""
+    """Mark the most recent play_event as undone and reverse side effects."""
     conn = get_connection()
     try:
         conn.execute(
@@ -562,6 +581,17 @@ def undo_play_event(song_id, signal_type):
                            ORDER BY played_at DESC LIMIT 1)""",
             (song_id, signal_type),
         )
+        # Reverse the counter on the songs table
+        if signal_type in ("skip_early", "skip_late"):
+            conn.execute(
+                "UPDATE songs SET skip_count = MAX(0, skip_count - 1) WHERE id = ?",
+                (song_id,),
+            )
+        elif signal_type == "completed":
+            conn.execute(
+                "UPDATE songs SET complete_count = MAX(0, complete_count - 1) WHERE id = ?",
+                (song_id,),
+            )
         conn.commit()
     finally:
         conn.close()
@@ -936,6 +966,22 @@ def reorder_collection(collection_id, song_ids):
         conn.close()
 
 
+def get_collection_names_for_song(song_id):
+    """Return comma-separated collection names that contain this song."""
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """SELECT c.name FROM collections c
+               JOIN collection_songs cs ON cs.collection_id = c.id
+               WHERE cs.song_id = ?
+               ORDER BY c.name""",
+            (song_id,),
+        ).fetchall()
+        return ", ".join(r["name"] for r in rows) if rows else ""
+    finally:
+        conn.close()
+
+
 def get_setting(key):
     conn = get_connection()
     try:
@@ -1081,6 +1127,19 @@ def increment_replay_count(song_id):
         conn.close()
 
 
+def get_recent_queue_song_ids(limit=50):
+    """Get the most recently queued song IDs for seeding the recommendation buffer."""
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT DISTINCT song_id FROM queue_history ORDER BY played_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [r["song_id"] for r in rows]
+    finally:
+        conn.close()
+
+
 def get_recent_signals(signal_types=None, limit=2000, session_id=None):
     """Get recent play events for taste memory.
 
@@ -1099,6 +1158,8 @@ def get_recent_signals(signal_types=None, limit=2000, session_id=None):
         if session_id is not None:
             where_clauses += " AND session_id = ?"
             params.append(session_id)
+
+        where_clauses += " AND (undone IS NULL OR undone = 0)"
 
         query = f"SELECT song_id, played_at, signal, session_id FROM play_events WHERE {where_clauses} ORDER BY played_at DESC LIMIT ?"
         params.append(limit)

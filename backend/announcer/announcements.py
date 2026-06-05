@@ -399,7 +399,15 @@ def should_announce(context: dict) -> bool:
 
     # Song intro: announce every other song
     if trigger == AnnounceTrigger.SONG_INTRO:
-        return (hour >= 6 and hour < 23)  # Only during waking hours
+        try:
+            from db import database
+            start_val = database.get_setting("dj_intro_start_hour")
+            end_val = database.get_setting("dj_intro_end_hour")
+            start_hour = int(start_val) if start_val is not None else 6
+            end_hour = int(end_val) if end_val is not None else 23
+        except (ValueError, TypeError):
+            start_hour, end_hour = 6, 23
+        return (hour >= start_hour and hour < end_hour)  # Only during configured hours
 
     return False
 
@@ -422,7 +430,16 @@ def play_announcement(text: str, next_song_filepath: str, trigger_type: str | No
         return None
     logger.debug("play_announcement: calling tts_say()...")
     dj = get_persona("dj")
-    result = tts_say(text, song_id=None, trigger_type=trigger_type, speed=dj.speed_base if dj else 0.90)
+    base_speed = dj.speed_base if dj else 0.90
+    # Apply user-configurable speed multiplier
+    try:
+        from db import database
+        speed_val = database.get_setting("dj_speech_speed")
+        speed_mult = float(speed_val) if speed_val is not None else 1.0
+    except (ValueError, TypeError):
+        speed_mult = 1.0
+    speed = max(0.5, min(1.5, base_speed * speed_mult))  # clamp to safe range
+    result = tts_say(text, song_id=None, trigger_type=trigger_type, speed=speed)
     logger.debug(f"play_announcement: tts_say returned {'path' if result else 'None'}")
     return result
 

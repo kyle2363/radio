@@ -24,15 +24,17 @@ OMNIVOICE_DEVICE = os.environ.get("OMNIVOICE_DEVICE", "cuda:0")
 OMNIVOICE_DTYPE = os.environ.get("OMNIVOICE_DTYPE", "float16")
 
 # Lyrics truncation lengths (word counts for different contexts)
-LYRICS_EMBED_WORDS = 300       # Words in embedding text
+LYRICS_EMBED_WORDS = 150       # Words in embedding text (reduced from 300 to make room for folder/collection)
 LYRICS_RERANKER_WORDS = 40   # Words in reranker candidate preview
 LYRICS_CURRENT_WORDS = 60    # Words for "current song" in reranker prompt
 LYRICS_TALK_WORDS = 75       # Words in talk segment prompts
 LYRICS_TAG_WORDS = 200       # Words for LLM tag generation
 LYRICS_DISPLAY_WORDS = None  # None = full lyrics in UI, no truncation
 
-# Embedding text truncation (characters/words)
+# Embedding text fields (what goes into the embedding)
 AI_DESCRIPTION_MAX_CHARS = 850  # Max chars of ai_description in embedding text
+EMBED_INCLUDE_FOLDER = True     # Include subfolder in embedding text
+EMBED_INCLUDE_COLLECTIONS = True  # Include collection names in embedding text
 
 # Radio Talk Show defaults (overridden by DB settings)
 TALK_SEGMENTS_ENABLED = False
@@ -42,6 +44,10 @@ TALK_MONOLOGUE_ENABLED = True
 TALK_GUEST_TAKEOVER_ENABLED = True
 TALK_FREQUENCY = 4        # songs between talk segments
 TALK_GUEST_SONGS_PER_SET = 4
+
+# Talk show debug logging (set True to log OmniVoice inputs + talk segment prompts/responses)
+TALK_SHOW_DEBUG = True
+TALK_DEBUG_LOG_PATH = os.path.join(BASE_DIR, "data", "talk_show_debug.log")
 
 # Song-end debug log
 LOG_PATH = os.path.join(BASE_DIR, "data", "playback.log")
@@ -91,3 +97,12 @@ MUQ_MODEL_NAME = os.environ.get("MUQ_MODEL_NAME", "OpenMuQ/MuQ-MuLan-large")
 MUQ_SAMPLE_RATE = 24000  # MuQ-MuLan expects 24kHz audio
 MUQ_AUDIO_BLEND = float(os.environ.get("MUQ_AUDIO_BLEND", "0.5"))  # 0.0=text only, 1.0=audio only
 MUQ_AUDIO_COLLECTION = "songs_audio"  # ChromaDB collection name for audio embeddings
+
+# --- Taste Constellations (multi-centroid taste model) ---
+CONSTELLATION_MIN_SIGNALS = 50       # Minimum positive signals to activate constellations
+CONSTELLATION_MIN_CLUSTER_SIZE = 5   # Min songs per taste cluster
+CONSTELLATION_MAX_CLUSTERS = 8       # Upper bound for adaptive KMeans
+CONSTELLATION_HOP_CHANCE = 0.20      # Probability of sampling from neighboring cluster
+CONSTELLATION_WEIGHT_BOOST = 0.15    # Max score boost for constellation-aligned candidates
+CONSTELLATION_CACHE_TTL = 300        # Seconds to cache constellation state (5 min)
+CONSTELLATION_ARTIST_BLEND = 0.0     # Disabled — artist is already prominent in embedding text

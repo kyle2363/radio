@@ -457,14 +457,14 @@ class VoiceManager:
             speed = 0.90
 
         # Prepend pause marker at start of text for natural-sounding TTS
-        # OmniVoice understands ".,." as a prosody pause; Piper doesn't, so
-        # we strip ".,." markers and prepend actual silence to the WAV instead.
+        # OmniVoice understands ".,." as a prosody pause; Piper doesn't,
+        # so we only add it for OmniVoice. Piper gets silence prepended to
+        # the WAV instead (via _prepend_silence after synthesis).
         if engine_id == "omnivoice":
-            text = ".,. " + text
+            text = "... " + text
         else:
             from announcer.nonverbal import strip_nonverbal_tags
             text = strip_nonverbal_tags(text)
-            text = ".,. " + text
 
         # Cache key includes engine + voice + speed + text hash + optional song id
         text_hash = hashlib.md5(text.encode()).hexdigest()[:12]

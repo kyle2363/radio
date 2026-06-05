@@ -79,8 +79,16 @@ def rerank(candidates, current_song=None, mood_state=None, energy_trajectory="st
         list of pick dicts: [{"id": N, "slot": "exploit", "reason": "..."}, ...]
         or None if LLM fails after retries.
     """
+    # Truncate vibe_lock for logging (avoid dumping huge embedding vectors)
+    _vl_log = None
+    if isinstance(vibe_lock, dict):
+        _vl_log = {k: v for k, v in vibe_lock.items() if k not in ("embedding", "audio_embedding")}
+        emb = vibe_lock.get("embedding")
+        aemb = vibe_lock.get("audio_embedding")
+        _vl_log["embedding"] = f"[...{len(emb)}d vector...]" if emb else "None"
+        _vl_log["audio_embedding"] = f"[...{len(aemb)}d vector...]" if aemb else "None"
     logger.debug("rerank: candidates=%d mood=%s energy_traj=%s hour=%s skip_streak=%d vibe_lock=%r",
-                 len(candidates) if candidates else 0, mood_state, energy_trajectory, hour, skip_streak, vibe_lock)
+                 len(candidates) if candidates else 0, mood_state, energy_trajectory, hour, skip_streak, _vl_log)
     if not candidates:
         logger.debug("rerank: no candidates, returning None")
         return None

@@ -12,6 +12,9 @@ function TalkSettings({ addToast, masterEnabled }) {
   const [segmentCooldown, setSegmentCooldown] = useState(2);
   const [heartbrokenEnabled, setHeartbrokenEnabled] = useState(false);
   const [melancholyEnabled, setMelancholyEnabled] = useState(false);
+  const [djSpeechSpeed, setDjSpeechSpeed] = useState(1.0);
+  const [djIntroStartHour, setDjIntroStartHour] = useState(6);
+  const [djIntroEndHour, setDjIntroEndHour] = useState(23);
   const [voiceStatus, setVoiceStatus] = useState(null);
   const [downloading, setDownloading] = useState(false);
   const [expanded, setExpanded] = useState(false);
@@ -39,6 +42,9 @@ function TalkSettings({ addToast, masterEnabled }) {
       setSegmentCooldown(parseInt(config.talk_segment_cooldown) || 2);
       setHeartbrokenEnabled(config.talk_caller_heartbroken_enabled === "true");
       setMelancholyEnabled(config.talk_caller_melancholy_enabled === "true");
+      setDjSpeechSpeed(parseFloat(config.dj_speech_speed) || 1.0);
+      setDjIntroStartHour(parseInt(config.dj_intro_start_hour) || 6);
+      setDjIntroEndHour(parseInt(config.dj_intro_end_hour) || 23);
     } catch (e) {
       console.error("Failed to load talk config:", e);
     }
@@ -409,6 +415,64 @@ function TalkSettings({ addToast, masterEnabled }) {
               <span>More repeats</span>
             </div>
             <p className="text-[10px] text-gray-600 mt-1">Min segments before a caller/guest can be reused</p>
+          </div>
+
+          {/* DJ Speech Speed */}
+          <div>
+            <label className="block text-sm font-medium text-gray-300 mb-2">
+              DJ speech speed: {djSpeechSpeed.toFixed(3)}x
+            </label>
+            <input
+              type="range" min="0.700" max="1.300" step="0.025"
+              value={djSpeechSpeed}
+              onChange={(e) => {
+                const val = parseFloat(e.target.value);
+                setDjSpeechSpeed(val);
+                saveSetting("dj_speech_speed", String(val));
+              }}
+              className="w-full h-2 bg-gray-800 rounded-full appearance-none cursor-pointer accent-green-500"
+            />
+            <div className="flex justify-between text-xs text-gray-600 mt-1">
+              <span>Slower</span>
+              <span>Faster</span>
+            </div>
+          </div>
+
+          {/* DJ Intro Hours */}
+          <div>
+            <label className="block text-sm font-medium text-gray-300 mb-2">
+              Song intro hours
+            </label>
+            <div className="flex items-center gap-2">
+              <select
+                value={djIntroStartHour}
+                onChange={(e) => {
+                  const val = parseInt(e.target.value);
+                  setDjIntroStartHour(val);
+                  saveSetting("dj_intro_start_hour", String(val));
+                }}
+                className="px-2 py-1.5 rounded-lg bg-gray-800 text-gray-200 text-xs focus:outline-none"
+              >
+                {Array.from({ length: 24 }, (_, i) => (
+                  <option key={i} value={i}>{i === 0 ? "12am" : i < 12 ? `${i}am` : i === 12 ? "12pm" : `${i - 12}pm`}</option>
+                ))}
+              </select>
+              <span className="text-xs text-gray-500">to</span>
+              <select
+                value={djIntroEndHour}
+                onChange={(e) => {
+                  const val = parseInt(e.target.value);
+                  setDjIntroEndHour(val);
+                  saveSetting("dj_intro_end_hour", String(val));
+                }}
+                className="px-2 py-1.5 rounded-lg bg-gray-800 text-gray-200 text-xs focus:outline-none"
+              >
+                {Array.from({ length: 24 }, (_, i) => (
+                  <option key={i} value={i}>{i === 0 ? "12am" : i < 12 ? `${i}am` : i === 12 ? "12pm" : `${i - 12}pm`}</option>
+                ))}
+              </select>
+            </div>
+            <p className="text-[10px] text-gray-600 mt-1">When DJ intros can play (song introductions)</p>
           </div>
 
           {/* Voice Models */}

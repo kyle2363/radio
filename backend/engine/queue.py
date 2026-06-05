@@ -13,6 +13,7 @@ import config
 from dataclasses import dataclass, field
 from datetime import datetime
 from engine import taste, retriever, slots, reranker, transitions, mood, energy, recovery
+from engine.constellations import TasteConstellations
 from engine import player as player_engine
 from db import database
 from announcer import talk_segments
@@ -63,7 +64,13 @@ class QueueManager:
         self._skip_streak = 0
         self._archetype = "mood_listener"
         self._recently_recommended_ids = set()
-        self._max_recent_history = 20
+        self._max_recent_history = 50
+        # Seed from DB so the buffer survives restarts
+        try:
+            recent_ids = database.get_recent_queue_song_ids(self._max_recent_history)
+            self._recently_recommended_ids = set(recent_ids)
+        except Exception:
+            pass
         self._pregen_cache = {}
         self._pregen_lock = threading.Lock()
         self._dj_effect_cache = {}
@@ -72,11 +79,20 @@ class QueueManager:
         self._manual_queue = []  # user/LLM additions — survives song queue rebuilds
         self._rebuild_gen = 0  # incremented each rebuild; used to discard stale results
         self._broadcast_gen = 0  # monotonically increasing counter for broadcast events
+        # Queue preview cache — pre-built queue from the last rebuild, tagged
+        # with the song that was playing when it was generated.  When a song
+        # ends, pop_next() checks if the preview is still valid (same song)
+        # and uses it instantly instead of triggering a fresh rebuild.
+        self._preview_queue = []
+        self._preview_song_id = None
+        self._preview_lock = threading.Lock()
+        self._last_ended_song_id = None  # set by on_song_ended for preview validation
         self._tts_checker_stop = threading.Event()  # signals staleness checker to stop
         # Undo tracking (single-deep)
         self._last_action = None  # {"type": "skip"|"thumbs_down", "song_id": int, "timestamp": float}
         self._last_skipped_song = None  # song dict of most recently skipped song
         self._prev_mood_state = None  # previous mood state for MOOD_CHANGE trigger detection
+        self._constellations = TasteConstellations()  # multi-centroid taste model
 
     def on_song_ended(self, song_id):
         """Called when a song ends. Updates state, does NOT rebuild.
@@ -89,6 +105,8 @@ class QueueManager:
             self._player._explicitly_stopped = False
             self._current_song_id = None
             return
+        # Save ended song ID for preview validation in pop_next()
+        self._last_ended_song_id = song_id
         self._current_song_id = None
         # Record transition
         if self._queue:
@@ -111,9 +129,15 @@ class QueueManager:
         # Stop any running TTS staleness checker (will restart after new rebuild)
         self._tts_checker_stop.set()
 
-        # Clear stale TTS cache entries (will be regenerated for new queue)
+        # Only clear this song's TTS cache entry — preserve pre-generated
+        # TTS for upcoming songs so transitions work when the queue advances.
         with self._pregen_lock:
-            self._pregen_cache.clear()
+            self._pregen_cache.pop(song_id, None)
+
+        # Clear stale preview — it was built for the previous song.
+        with self._preview_lock:
+            self._preview_queue = []
+            self._preview_song_id = None
 
         # Start queue rebuild in background
         with self._condition:
@@ -159,6 +183,18 @@ class QueueManager:
 
             # 3. AI song queue
             if pick is None:
+                # Check preview cache — if it was built for the song that
+                # just ended, use it instantly (no rebuild wait).
+                with self._preview_lock:
+                    if (self._preview_queue
+                            and self._preview_song_id is not None
+                            and self._preview_song_id == self._last_ended_song_id):
+                        logger.info(f"pop_next: using preview queue (built for song {self._preview_song_id}, "
+                                    f"{len(self._preview_queue)} items)")
+                        self._queue = list(self._preview_queue)
+                        self._preview_queue = []
+                        self._preview_song_id = None
+
                 if not self._queue and not self._rebuilding:
                     self._rebuilding = True
                     self._rebuild_gen += 1
@@ -253,7 +289,10 @@ class QueueManager:
     def _rebuild_queue(self):
         """Build the full recommendation queue (called in background thread)."""
         my_gen = self._rebuild_gen
-        _log_step(f"=== REBUILD START (gen={my_gen}) ===")
+        # Snapshot the song that was current when this rebuild started —
+        # used to tag the preview queue for staleness validation.
+        preview_song_id = self._current_song_id
+        _log_step(f"=== REBUILD START (gen={my_gen}, preview_song={preview_song_id}) ===")
         # Notify frontend that rebuilding has started
         with self._condition:
             self._broadcast_gen += 1
@@ -313,13 +352,17 @@ class QueueManager:
             vibe_lock = None
             if self._mood.is_vibe_lock_active():
                 vibe_info = self._mood.get_vibe_lock_info()
-                vibe_lock = {
-                    "active": True,
-                    "embedding": vibe_info.get("embedding"),
-                    "audio_embedding": vibe_info.get("audio_embedding"),
-                    "songs_remaining": vibe_info.get("songs_remaining", 0),
-                }
-                _log_step(f"Vibe lock active, {vibe_info.get('songs_remaining')} songs remaining")
+                if vibe_info.get("embedding") is not None:
+                    vibe_lock = {
+                        "active": True,
+                        "embedding": vibe_info.get("embedding"),
+                        "audio_embedding": vibe_info.get("audio_embedding"),
+                        "songs_remaining": vibe_info.get("songs_remaining", 0),
+                    }
+                    _log_step(f"Vibe lock active, {vibe_info.get('songs_remaining')} songs remaining")
+                else:
+                    _log_step("Vibe lock active but embedding is None — deactivating")
+                    self._mood.deactivate_vibe_lock()
 
             # Get repulsion vectors (text + audio)
             text_repulsion = self._memory.get_repulsion_vector()
@@ -423,6 +466,44 @@ class QueueManager:
                     subfolder_filter=subfolder_filter,
                 )
 
+            # --- Taste Constellations: reweight candidates + taste hopping ---
+            hop_pocket = None
+            try:
+                self._constellations.build()
+                if self._constellations.is_active:
+                    active_pocket = self._constellations.select_active_pocket(
+                        current_song=current_song,
+                        mood_state=self._mood.get_state(),
+                        hour=datetime.now().hour,
+                    )
+                    if active_pocket:
+                        candidates = self._constellations.reweight_candidates(
+                            candidates, active_pocket
+                        )
+                        _log_step(f"Constellation reweighted: active_pocket={active_pocket.constellation_id} "
+                                  f"(mood={active_pocket.primary_mood}, weight={active_pocket.weight:.2f})")
+
+                        # Taste hopping: occasionally inject candidates from neighboring pocket
+                        exploration_level_val = float(self._db.get_setting("exploration_level") or "0.3")
+                        hop_pocket = self._constellations.should_hop(
+                            active_pocket, exploration_level_val
+                        )
+                        if hop_pocket:
+                            hop_emb = hop_pocket.centroid_text
+                            if hop_emb:
+                                hop_candidates = retriever.search_by_vector(
+                                    taste_vector=hop_emb,
+                                    n=10,
+                                    exclude_ids=exclude_ids + [c["song_id"] for c in candidates],
+                                    subfolder_filter=subfolder_filter,
+                                )
+                                for hc in hop_candidates:
+                                    hc["source"] = "constellation_hop"
+                                candidates.extend(hop_candidates)
+                                _log_step(f"Taste hop: {len(hop_candidates)} candidates from pocket {hop_pocket.constellation_id}")
+            except Exception as e:
+                logger.debug("Constellation reweighting skipped: %s", e)
+
             # Apply genre filter if set (batched)
             genre_filter = self._db.get_setting("genre_filter")
             if genre_filter:
@@ -458,11 +539,15 @@ class QueueManager:
             from engine import archetype as archetype_engine
             archetype_name, _ = archetype_engine.detect_archetype()
             guest_bias = talk_segments.get_active_guest_slot_bias()
+            # Pass constellation pockets if available
+            _active_pocket = self._constellations.active_pocket if self._constellations.is_active else None
             _log_step(f"Allocating slots (archetype={archetype_name}, exploration={exploration_level})")
             slots_result = slots.allocate_slots(
                 candidates, current_song, vibe_lock=vibe_lock,
                 exploration_level=exploration_level, archetype=archetype_name,
                 slot_bias=guest_bias,
+                active_pocket=_active_pocket,
+                hop_pocket=hop_pocket,
             )
             _log_step(f"Slots allocated: {slots_result}")
 
@@ -573,6 +658,11 @@ class QueueManager:
                     self._condition.notify_all()
                     return
                 self._queue = new_queue
+                # Cache as preview so pop_next can use it instantly when
+                # the current song ends (no rebuild needed).
+                with self._preview_lock:
+                    self._preview_queue = list(new_queue)
+                    self._preview_song_id = preview_song_id
                 self._rebuilding = False
                 self._condition.notify_all()
 
@@ -946,6 +1036,11 @@ class QueueManager:
             saved_guests = list(_ts_mod._recent_guests)
             saved_types = list(_ts_mod._recent_segment_types)
 
+            # Advance talk counter for this song.  If the rebuild turns
+            # stale, the saved state is restored below — so manual queue
+            # refreshes and stale rebuilds never advance the schedule.
+            _ts_mod._song_counter += 1
+
             # Build last_song context from current song
             last_song = None
             if self._current_song_id:
@@ -977,6 +1072,7 @@ class QueueManager:
                 recent_context=snapshot.recent_context if snapshot else None,
                 last_song=last_song,
                 session_state=session_state,
+                increment=False,
             )
 
             if segment:
@@ -1037,6 +1133,11 @@ class QueueManager:
                     next_song_id = self._queue[0].get("song_id")
 
             if not next_song_id:
+                return
+
+            # Bail out early if rebuild generation changed (stale context)
+            if snapshot and self._rebuild_gen != snapshot.generation:
+                logger.info("_pregen_tts: stale rebuild, skipping")
                 return
 
             tts_enabled = self._db.get_setting("tts_enabled") or "true"
@@ -1282,8 +1383,19 @@ class QueueManager:
                             if seg.get("target_next_song_id") == next_song_id:
                                 _staleness_talk_suppress = True
                                 break
+                    # Build a minimal snapshot so TTS context is correct
+                    # (prevents generating "that was Song X" when current is Song Y)
+                    with self._condition:
+                        current_gen = self._rebuild_gen
+                    staleness_snapshot = PlaybackContext(
+                        generation=current_gen,
+                        current_song_id=self._current_song_id,
+                        next_song_id=next_song_id,
+                        mood_state=self._mood.get_state(),
+                        session_id=self._current_session_id,
+                    )
                     logger.info(f"TTS staleness checker: song {next_song_id} not cached or stale, regenerating")
-                    self._pregen_tts_for_next_song(talk_suppress=_staleness_talk_suppress)
+                    self._pregen_tts_for_next_song(staleness_snapshot, talk_suppress=_staleness_talk_suppress)
                 except Exception as e:
                     logger.debug(f"TTS staleness checker error: {e}")
 
@@ -1380,9 +1492,9 @@ class QueueManager:
 
                     if not should_announce({"trigger": trigger, **context}):
                         # No announcement needed, play song directly
+                        # NOTE: on_song_started() is called by main.py after play_next() returns
                         logger.info(f"play_next: playing song directly (no TTS needed)")
                         p.play_song(song_id, filepath, session_id)
-                        self.on_song_started(song_id, session_id)
                         return
 
                     # Check pre-generation cache (works when predictions match)
@@ -1414,7 +1526,6 @@ class QueueManager:
                             {"filepath": filepath, "song_id": song_id, "is_tts": False},
                         ]
                         p.play_chain(items)
-                        self.on_song_started(song_id, session_id)
                         return
 
                     # Cache miss — play song directly. TTS pre-generation in the background
@@ -1428,7 +1539,6 @@ class QueueManager:
             # Play song directly (no TTS or TTS failed)
             logger.info(f"play_next: playing song directly (no TTS)")
             p.play_song(song_id, filepath, session_id)
-            self.on_song_started(song_id, session_id)
 
         except Exception as e:
             logger.error(f"play_next failed: {e}")

@@ -50,13 +50,39 @@ def get_audio_collection():
     )
 
 
-def _build_embedding_text(song: dict) -> str:
-    """Build a text representation of a song for embedding."""
+def _build_embedding_text(song: dict, song_id: int = None) -> str:
+    """Build a text representation of a song for embedding.
+
+    Includes folder, collection, and neighboring folder for richer
+    clustering. Artist appears once at the start (mean pooling makes
+    duplication unnecessary).
+    """
     parts = []
     if song.get("artist"):
         parts.append(f"artist: {song['artist']}")
     if song.get("title"):
         parts.append(f"title: {song['title']}")
+
+    # Folder context: "song 41" and neighbors "song 40, song 42"
+    if config.EMBED_INCLUDE_FOLDER and song.get("subfolder"):
+        parts.append(f"folder: {song['subfolder']}")
+        # Neighboring folders (+1 and -1)
+        import re
+        match = re.search(r'song\s+(\d+)', song["subfolder"])
+        if match:
+            num = int(match.group(1))
+            neighbors = []
+            if num > 31:
+                neighbors.append(f"song {num - 1}")
+            neighbors.append(f"song {num + 1}")
+            parts.append(f"neighboring folder: {', '.join(neighbors)}")
+
+    # Collection context: which user-curated collections contain this song
+    if config.EMBED_INCLUDE_COLLECTIONS and song_id:
+        collections = database.get_collection_names_for_song(song_id)
+        if collections:
+            parts.append(f"collection: {collections}")
+
     if song.get("genre_tags"):
         try:
             parts.append(f"genres: {', '.join(json.loads(song['genre_tags']))}")
@@ -90,7 +116,7 @@ def _build_embedding_text(song: dict) -> str:
 def embed_song(song_id: int, song: dict) -> bool:
     """Embed a single song and upsert to ChromaDB."""
     try:
-        embedding_text = _build_embedding_text(song)
+        embedding_text = _build_embedding_text(song, song_id=song_id)
         result = llm_embed().embed(
             model=None,
             input=embedding_text,

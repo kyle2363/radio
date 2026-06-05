@@ -24,6 +24,11 @@ function SettingsContent({ addToast, sectionSpacing, onSectionSpacingChange, rig
   const [wiping, setWiping] = useState(false);
   const [talkSegmentsEnabled, setTalkSegmentsEnabled] = useState(false);
   const [waveformMode, setWaveformMode] = useState("orbit");
+  const [jitterStrength, setJitterStrength] = useState(0.12);
+  const [recencyExcludeHours, setRecencyExcludeHours] = useState("1");
+  const [vibeLockDuration, setVibeLockDuration] = useState(30);
+  const [vibeLockMaxSongs, setVibeLockMaxSongs] = useState(10);
+  const [dislikeDecayRate, setDislikeDecayRate] = useState(0.029);
   const [subfolders, setSubfolders] = useState([]);
   const [selectedFolders, setSelectedFolders] = useState([]);
   const [showFolderFilter, setShowFolderFilter] = useState(false);
@@ -80,6 +85,11 @@ function SettingsContent({ addToast, sectionSpacing, onSectionSpacingChange, rig
       setMusicDir(data.music_dir || "");
       setTalkSegmentsEnabled(data.talk_segments_enabled === "true");
       setWaveformMode(data.waveform_mode || "orbit");
+      setJitterStrength(parseFloat(data.jitter_strength) || 0.12);
+      setRecencyExcludeHours(data.recency_exclude_hours || "1");
+      setVibeLockDuration(parseInt(data.vibe_lock_duration_minutes) || 30);
+      setVibeLockMaxSongs(parseInt(data.vibe_lock_max_songs) || 10);
+      setDislikeDecayRate(parseFloat(data.dislike_decay_rate) || 0.029);
     } catch (err) {}
   };
 
@@ -265,6 +275,85 @@ function SettingsContent({ addToast, sectionSpacing, onSectionSpacingChange, rig
                   style={{ width: "80px", accentColor: "var(--accent)" }} />
                 <span className="set-val">{Math.round(explorationLevel * 100)}%</span>
                 <span style={{ fontSize: "10px", color: "var(--text-muted)" }}>Adv.</span>
+              </div>
+            </div>
+            <div className="set-row">
+              <div>
+                <div className="set-label">Variety</div>
+                <div style={{ fontSize: "10px", color: "var(--text-muted)", marginTop: "1px" }}>How much the queue diversifies each cycle</div>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <span style={{ fontSize: "10px", color: "var(--text-muted)" }}>Stable</span>
+                <input type="range" min="0" max="100" value={Math.round(((jitterStrength - 0.03) / 0.13) * 100)} step="5"
+                  onChange={(e) => { const pct = parseInt(e.target.value); const v = 0.03 + (pct / 100) * 0.13; setJitterStrength(v); debouncedSave("jitter_strength", String(v)); }}
+                  style={{ width: "80px", accentColor: "var(--accent)" }} />
+                <span className="set-val">{Math.round(((jitterStrength - 0.03) / 0.13) * 100)}%</span>
+                <span style={{ fontSize: "10px", color: "var(--text-muted)" }}>Mix</span>
+              </div>
+            </div>
+            <div className="set-row">
+              <div>
+                <div className="set-label">Recently played</div>
+                <div style={{ fontSize: "10px", color: "var(--text-muted)", marginTop: "1px" }}>How long before a song can reappear</div>
+              </div>
+              <div className="seg">
+                {[
+                  { value: "0.5", label: "30m" },
+                  { value: "1", label: "1h" },
+                  { value: "3", label: "3h" },
+                  { value: "6", label: "6h" },
+                  { value: "12", label: "12h" },
+                ].map((opt) => (
+                  <div key={opt.value} className={`seg-opt ${recencyExcludeHours === opt.value ? "on" : ""}`}
+                    onClick={() => { setRecencyExcludeHours(opt.value); save("recency_exclude_hours", opt.value, true); }}
+                    style={{ fontSize: "10px", padding: "3px 8px" }}>
+                    {opt.label}
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="set-row">
+              <div>
+                <div className="set-label">Vibe lock length</div>
+                <div style={{ fontSize: "10px", color: "var(--text-muted)", marginTop: "1px" }}>How long a vibe lock lasts</div>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <input type="range" min="10" max="60" step="5" value={vibeLockDuration}
+                  onChange={(e) => { const v = parseInt(e.target.value); setVibeLockDuration(v); debouncedSave("vibe_lock_duration_minutes", String(v)); }}
+                  style={{ width: "80px", accentColor: "var(--accent)" }} />
+                <span className="set-val">{vibeLockDuration}m</span>
+              </div>
+            </div>
+            <div className="set-row">
+              <div>
+                <div className="set-label">Max vibe lock songs</div>
+                <div style={{ fontSize: "10px", color: "var(--text-muted)", marginTop: "1px" }}>Songs before vibe lock expires</div>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <input type="range" min="5" max="20" step="5" value={vibeLockMaxSongs}
+                  onChange={(e) => { const v = parseInt(e.target.value); setVibeLockMaxSongs(v); debouncedSave("vibe_lock_max_songs", String(v)); }}
+                  style={{ width: "80px", accentColor: "var(--accent)" }} />
+                <span className="set-val">{vibeLockMaxSongs}</span>
+              </div>
+            </div>
+            <div className="set-row">
+              <div>
+                <div className="set-label">Dislike memory</div>
+                <div style={{ fontSize: "10px", color: "var(--text-muted)", marginTop: "1px" }}>How long skips stay influential</div>
+              </div>
+              <div className="seg">
+                {[
+                  { value: "0.058", label: "12h" },
+                  { value: "0.029", label: "1 day" },
+                  { value: "0.014", label: "2 days" },
+                  { value: "0.007", label: "4 days" },
+                ].map((opt) => (
+                  <div key={opt.value} className={`seg-opt ${String(dislikeDecayRate) === opt.value ? "on" : ""}`}
+                    onClick={() => { setDislikeDecayRate(parseFloat(opt.value)); save("dislike_decay_rate", opt.value, true); }}
+                    style={{ fontSize: "10px", padding: "3px 8px" }}>
+                    {opt.label}
+                  </div>
+                ))}
               </div>
             </div>
             <div className="set-row">
