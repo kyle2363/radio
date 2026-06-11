@@ -62,7 +62,7 @@ def _build_feature_matrix(songs: list) -> tuple:
                 ids=all_ids,
                 include=["embeddings", "metadatas"],
             )
-            if data and data["embeddings"]:
+            if data and data.get("embeddings") is not None:
                 # Build mapping from ID to embedding for alignment
                 id_to_emb = dict(zip(data["ids"], data["embeddings"]))
                 valid_songs = [s for s in songs if str(s["id"]) in id_to_emb]
@@ -90,7 +90,7 @@ def _build_feature_matrix(songs: list) -> tuple:
             ids=all_ids,
             include=["embeddings", "metadatas"],
         )
-        if data and data["embeddings"]:
+        if data and data.get("embeddings") is not None:
             # Build mapping from ID to embedding for alignment
             id_to_emb = dict(zip(data["ids"], data["embeddings"]))
             valid_songs = [s for s in songs if str(s["id"]) in id_to_emb]
@@ -196,8 +196,10 @@ def cluster_songs() -> list:
             try:
                 audio_coll = chroma_client.get_collection(config.MUQ_AUDIO_COLLECTION)
                 sample = audio_coll.get(limit=1, include=["embeddings"])
-                if sample and sample["embeddings"]:
-                    emb_dim = len(sample["embeddings"][0])
+                if sample and sample.get("embeddings") is not None and len(sample["embeddings"]) > 0:
+                    emb = sample["embeddings"][0]
+                    if emb is not None:
+                        emb_dim = len(emb)
                     emb_source = config.MUQ_AUDIO_COLLECTION
                 else:
                     emb_dim = 0
@@ -213,8 +215,10 @@ def cluster_songs() -> list:
             try:
                 text_coll = chroma_client.get_collection("songs")
                 sample = text_coll.get(limit=1, include=["embeddings"])
-                if sample and sample["embeddings"]:
-                    emb_dim = len(sample["embeddings"][0])
+                if sample and sample.get("embeddings") is not None and len(sample["embeddings"]) > 0:
+                    emb = sample["embeddings"][0]
+                    if emb is not None:
+                        emb_dim = len(emb)
                     emb_source = "songs"
             except Exception:
                 emb_source = None

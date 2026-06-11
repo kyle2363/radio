@@ -12,9 +12,12 @@ export default function usePlaybackState() {
   const [undoState, setUndoState] = useState(null);
   const [showSkipFeedback, setShowSkipFeedback] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [heartedThisPlay, setHeartedThisPlay] = useState(false);
+  const [thumbedDownThisPlay, setThumbedDownThisPlay] = useState(false);
 
   const currentSongRef = useRef(currentSong);
   currentSongRef.current = currentSong;
+  const lastWidgetSongRef = useRef(null);
   const undoStateRef = useRef(undoState);
   undoStateRef.current = undoState;
 
@@ -33,6 +36,32 @@ export default function usePlaybackState() {
     }
     if (data.show_skip_feedback) {
       setShowSkipFeedback(true);
+    }
+    setHeartedThisPlay(!!data.hearted_this_play);
+    setThumbedDownThisPlay(!!data.thumbed_down_this_play);
+
+    // Update Electron tray, taskbar, and widget
+    if (window.electron) {
+      const song = data.current_song;
+      window.electron.updateTraySong(song?.artist || "", song?.title || "");
+      window.electron.updateTrayPlaying(!!data.is_playing);
+      window.electron.updateTaskbarProgress(data.position_ms || 0, data.duration_ms || 0);
+      if (data.skip_streak != null) {
+        window.electron.updateTraySkipStreak(data.skip_streak);
+      }
+      // Only update widget when song changes (avoid redundant IPC spam)
+      if (song?.id && data.is_playing) {
+        if (lastWidgetSongRef.current !== song.id) {
+          lastWidgetSongRef.current = song.id;
+          window.electron.updateWidget(song.artist || "", song.title || "");
+          window.electron.showWidget();
+        }
+      } else {
+        if (lastWidgetSongRef.current !== null) {
+          lastWidgetSongRef.current = null;
+          window.electron.hideWidget();
+        }
+      }
     }
   }, []);
 
@@ -122,7 +151,7 @@ export default function usePlaybackState() {
         addToast(res.mood_shift ? "Mood shifted — current song will finish" : "Skipped", "success");
       }
       if (res.show_feedback) {
-        window._showSkipFeedback = true;
+        setShowSkipFeedback(true);
       }
     } catch (e) {
       addToast("Failed to skip", "error");
@@ -135,7 +164,11 @@ export default function usePlaybackState() {
       return;
     }
     try {
-      await api.heartSong();
+      const res = await api.heartSong();
+      if (res.status === "already_hearted") {
+        addToast("Already hearted this song", "info");
+        return;
+      }
       refreshPlaybackStatus();
       addToast("Hearted", "success");
     } catch (e) {
@@ -150,6 +183,10 @@ export default function usePlaybackState() {
     }
     try {
       const res = await api.thumbsDown();
+      if (res.status === "already_thumbed_down") {
+        addToast("Already thumbed down this song", "info");
+        return;
+      }
       refreshPlaybackStatus();
       if (res.undo?.can_undo) {
         setUndoState(res.undo);
@@ -191,6 +228,7 @@ export default function usePlaybackState() {
     // State
     currentSong, isPlaying, positionMs, durationMs, volume, audioRms,
     undoState, showSkipFeedback, loading,
+    heartedThisPlay, thumbedDownThisPlay,
     // Refs for inter-hook sync
     currentSongRef,
     // Actions

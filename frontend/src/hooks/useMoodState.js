@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import * as api from "../api";
 import { useSharedRadio, useFetchStatus } from "./useRadioState";
 
@@ -19,10 +19,29 @@ export default function useMoodState(currentSongRef, fetchStatusCb) {
 
   const { addToast } = useSharedRadio();
 
+  // Load initial exploration level from settings on mount
+  useEffect(() => {
+    api.fetchSettings().then((data) => {
+      if (data.exploration_level != null) setExplorationLevel(parseFloat(data.exploration_level));
+    }).catch(() => {});
+  }, []);
+
   // Restore mood state from fetchStatus response
   const applyStatus = useCallback((data) => {
-    if (data.mood_state) setMood(data.mood_state);
-    if (data.vibe_lock) setVibeLock(data.vibe_lock);
+    if (data.mood_state) {
+      setMood(data.mood_state);
+      // Update Electron tray mood
+      if (window.electron) {
+        window.electron.updateTrayMood(data.mood_state);
+      }
+    }
+    if (data.vibe_lock) {
+      setVibeLock(data.vibe_lock);
+      // Update Electron tray vibe lock
+      if (window.electron) {
+        window.electron.updateTrayVibeLock(!!data.vibe_lock?.active);
+      }
+    }
     if (data.skip_streak != null) setSkipStreak(data.skip_streak);
     if (data.archetype) {
       setArchetype(data.archetype);
@@ -35,6 +54,10 @@ export default function useMoodState(currentSongRef, fetchStatusCb) {
       await api.setMood(moodState);
       setMood(moodState);
       addToast(`Mood: ${moodState}`, "success");
+      // Update Electron tray mood
+      if (window.electron) {
+        window.electron.updateTrayMood(moodState);
+      }
     } catch (e) {
       addToast("Failed to set mood", "error");
     }
@@ -46,10 +69,18 @@ export default function useMoodState(currentSongRef, fetchStatusCb) {
         await api.deactivateVibeLock();
         setVibeLock(null);
         addToast("Vibe lock deactivated", "success");
+        // Update Electron tray vibe lock
+        if (window.electron) {
+          window.electron.updateTrayVibeLock(false);
+        }
       } else if (currentSongRef.current) {
         await api.activateVibeLock(currentSongRef.current.id);
         setVibeLock({ active: true, song_id: currentSongRef.current.id });
         addToast(`Vibe locked: ${currentSongRef.current.title}`, "success");
+        // Update Electron tray vibe lock
+        if (window.electron) {
+          window.electron.updateTrayVibeLock(true);
+        }
       }
     } catch (e) {
       addToast("Failed to toggle vibe lock", "error");

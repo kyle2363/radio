@@ -93,10 +93,11 @@ class TasteConstellations:
             client = _get_chroma_client()
             collection = client.get_collection(collection_name)
             result = collection.get(ids=unique_ids, include=["embeddings"])
+            embs = result["embeddings"]
             return {
                 eid: emb
-                for eid, emb in zip(result["ids"], result["embeddings"])
-                if emb
+                for eid, emb in zip(result["ids"], embs)
+                if emb is not None
             }
         except Exception as e:
             logger.debug("Batch fetch failed for %d songs from %s: %s", len(unique_ids), collection_name, e)
@@ -313,7 +314,7 @@ class TasteConstellations:
         context = self._fetch_signal_context(song_ids)
 
         # Build aligned arrays — only songs with text embeddings
-        aligned_ids = [sid for sid in song_ids if sid in text_embeddings]
+        aligned_ids = [sid for sid in song_ids if str(sid) in text_embeddings]
         if len(aligned_ids) < config.CONSTELLATION_MIN_CLUSTER_SIZE * 2:
             logger.debug("Not enough embedded songs for constellations (%d)", len(aligned_ids))
             self._pockets = []

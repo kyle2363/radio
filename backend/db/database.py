@@ -105,6 +105,10 @@ def add_missing_columns():
             conn.execute("ALTER TABLE songs ADD COLUMN subfolder TEXT")
             _populate_subfolders(conn)
 
+        # Migration: add gain_db for volume normalization
+        if "gain_db" not in columns:
+            conn.execute("ALTER TABLE songs ADD COLUMN gain_db REAL DEFAULT 0.0")
+
         # Migration: add undone column to play_events
         cursor = conn.execute("PRAGMA table_info(play_events)")
         pe_columns = {row[1] for row in cursor.fetchall()}
@@ -125,6 +129,31 @@ def add_missing_columns():
         except Exception as idx_e:
             import logging
             logging.getLogger(__name__).warning(f"Could not create blacklist level index: {idx_e}")
+
+        # Migration: add duration_hours to skip_feedback
+        cursor = conn.execute("PRAGMA table_info(skip_feedback)")
+        sf_columns = {row[1] for row in cursor.fetchall()}
+        if "duration_hours" not in sf_columns:
+            conn.execute("ALTER TABLE skip_feedback ADD COLUMN duration_hours INTEGER")
+        if "duration" not in sf_columns:
+            conn.execute("ALTER TABLE skip_feedback ADD COLUMN duration TEXT")
+
+        # Ensure song_suppression table exists (in case schema.sql wasn't re-run)
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS song_suppression (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                song_id     INTEGER REFERENCES songs(id),
+                reason      TEXT,
+                expires_at  DATETIME,
+                session_id  INTEGER REFERENCES sessions(id),
+                created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+            )"""
+        )
+        try:
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_song_suppression_song ON song_suppression(song_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_song_suppression_expires ON song_suppression(expires_at)")
+        except Exception:
+            pass
 
         # Seed new settings that may not exist in older databases
         new_settings = {
@@ -247,6 +276,7 @@ def add_song(filepath, file_hash):
 
 
 _ALLOWED_SONG_COLUMNS = {
+    "filepath", "file_hash",
     "artist", "title", "album", "user_tags", "user_notes",
     "energy", "valence", "bpm", "ingest_phase", "art_file",
     "play_count", "skip_count", "complete_count", "replay_count",
@@ -256,7 +286,7 @@ _ALLOWED_SONG_COLUMNS = {
     "raw_rms", "crest_factor", "spectral_contrast",
     "spectral_rolloff", "spectral_flatness",
     "duration_secs", "rms_envelope", "dj_effect_eligible",
-    "subfolder", "file_hash", "cluster_id",
+    "subfolder", "cluster_id", "gain_db",
 }
 
 
@@ -327,6 +357,64 @@ def get_unprocessed():
         return [_row_to_dict(r) for r in rows]
     finally:
         conn.close()
+
+
+def get_all_filepaths():
+    """Return list of (id, filepath) for all songs."""
+    conn = get_connection()
+    try:
+        rows = conn.execute("SELECT id, filepath FROM songs ORDER BY id").fetchall()
+        return [(r["id"], r["filepath"]) for r in rows]
+    finally:
+        conn.close()
+
+
+def delete_song(song_id):
+    """Delete a song by ID. Returns the deleted song dict, or None."""
+    conn = get_connection()
+    try:
+        row = conn.execute("SELECT * FROM songs WHERE id = ?", (song_id,)).fetchone()
+        if not row:
+            return None
+        deleted = dict(row)
+        _delete_child_rows(conn, [song_id])
+        conn.execute("DELETE FROM songs WHERE id = ?", (song_id,))
+        conn.commit()
+        return deleted
+    finally:
+        conn.close()
+
+
+def delete_songs_batch(song_ids):
+    """Delete multiple songs by ID list. Returns list of deleted song dicts."""
+    if not song_ids:
+        return []
+    conn = get_connection()
+    try:
+        placeholders = ",".join("?" * len(song_ids))
+        rows = conn.execute(
+            f"SELECT * FROM songs WHERE id IN ({placeholders})", song_ids
+        ).fetchall()
+        deleted = [dict(r) for r in rows]
+        _delete_child_rows(conn, song_ids)
+        conn.execute(f"DELETE FROM songs WHERE id IN ({placeholders})", song_ids)
+        conn.commit()
+        return deleted
+    finally:
+        conn.close()
+
+
+def _delete_child_rows(conn, song_ids):
+    """Delete rows from child tables that reference songs via FK."""
+    if not song_ids:
+        return
+    ph = ",".join("?" * len(song_ids))
+    conn.execute(f"DELETE FROM play_events WHERE song_id IN ({ph})", song_ids)
+    conn.execute(f"DELETE FROM transitions WHERE from_song_id IN ({ph}) OR to_song_id IN ({ph})", song_ids + song_ids)
+    conn.execute(f"DELETE FROM queue_history WHERE song_id IN ({ph})", song_ids)
+    conn.execute(f"DELETE FROM blacklist WHERE song_id IN ({ph})", song_ids)
+    conn.execute(f"DELETE FROM collection_songs WHERE song_id IN ({ph})", song_ids)
+    conn.execute(f"DELETE FROM mood_skip_repulsion WHERE song_id IN ({ph})", song_ids)
 
 
 def set_ingest_error(song_id, error_msg):
@@ -462,13 +550,33 @@ def record_play_event(song_id, session_id, signal, **kwargs):
         conn.close()
 
 
-def record_skip_feedback(session_id, skip_streak, reason):
+def has_signal_since_last_play(song_id, signal_type):
+    """Check if there's a non-undone event of signal_type for song_id
+    that occurred after the most recent 'playing' event for that song."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            """SELECT COUNT(*) FROM play_events
+               WHERE song_id = ? AND signal = ? AND (undone IS NULL OR undone = 0)
+               AND played_at > COALESCE(
+                   (SELECT MAX(played_at) FROM play_events
+                    WHERE song_id = ? AND signal = 'playing'),
+                   '1970-01-01'
+               )""",
+            (song_id, signal_type, song_id),
+        ).fetchone()
+        return row[0] > 0
+    finally:
+        conn.close()
+
+
+def record_skip_feedback(session_id, skip_streak, reason, duration=None):
     """Record a skip feedback reason."""
     conn = get_connection()
     try:
         conn.execute(
-            "INSERT INTO skip_feedback (session_id, skip_streak, reason) VALUES (?, ?, ?)",
-            (session_id, skip_streak, reason),
+            "INSERT INTO skip_feedback (session_id, skip_streak, reason, duration) VALUES (?, ?, ?, ?)",
+            (session_id, skip_streak, reason, duration),
         )
         conn.commit()
     finally:
@@ -996,7 +1104,7 @@ def set_setting(key, value):
     try:
         conn.execute(
             "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
-            (key, str(value)),
+            (key, str(value) if value is not None else ""),
         )
         conn.commit()
         _invalidate_setting(key)
@@ -1353,5 +1461,119 @@ def get_archetype_metrics():
             "completion_rate": completed / max(1, total_signals),
             "signal_counts": signal_counts,
         }
+    finally:
+        conn.close()
+
+
+# ── Export/Import ─────────────────────────────────────────────
+
+
+def get_collections_with_songs():
+    """Return all collections with their song IDs."""
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """SELECT c.*, (SELECT COUNT(*) FROM collection_songs WHERE collection_id = c.id) as song_count
+               FROM collections c ORDER BY c.name"""
+        ).fetchall()
+        result = []
+        for r in rows:
+            col = _row_to_dict(r)
+            songs = conn.execute(
+                "SELECT song_id, position FROM collection_songs WHERE collection_id = ? ORDER BY position",
+                (col["id"],),
+            ).fetchall()
+            col["song_ids"] = [s["song_id"] for s in songs]
+            result.append(col)
+        return result
+    finally:
+        conn.close()
+
+
+def get_collection_by_name(name):
+    """Return a collection by name, or None."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT * FROM collections WHERE name = ?", (name,)
+        ).fetchone()
+        return _row_to_dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def get_user_modified_songs():
+    """Return songs with non-default user_tags, user_notes, or dj_effect_eligible."""
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """SELECT id, user_tags, user_notes, dj_effect_eligible
+               FROM songs
+               WHERE (user_tags IS NOT NULL AND user_tags != '')
+                  OR (user_notes IS NOT NULL AND user_notes != '')
+                  OR dj_effect_eligible != 1"""
+        ).fetchall()
+        return [_row_to_dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+# ── Song Suppression (temporal skip feedback) ────────────────
+
+
+def add_song_suppression(song_id, reason, hours=None, session_id=None):
+    """Add a temporal suppression for a song.
+    
+    If hours is set, expires_at = now + hours.
+    If session_id is set, expires only when session ends.
+    """
+    conn = get_connection()
+    try:
+        if hours is not None:
+            from datetime import datetime, timedelta
+            expires = (datetime.now() + timedelta(hours=hours)).isoformat()
+            conn.execute(
+                "INSERT INTO song_suppression (song_id, reason, expires_at) VALUES (?, ?, ?)",
+                (song_id, reason, expires),
+            )
+        elif session_id is not None:
+            conn.execute(
+                "INSERT INTO song_suppression (song_id, reason, session_id) VALUES (?, ?, ?)",
+                (song_id, reason, session_id),
+            )
+        else:
+            conn.execute(
+                "INSERT INTO song_suppression (song_id, reason) VALUES (?, ?)",
+                (song_id, reason),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_suppressed_song_ids(session_id=None):
+    """Return set of song_id that are currently suppressed (not expired)."""
+    conn = get_connection()
+    try:
+        query = """
+            SELECT song_id FROM song_suppression
+            WHERE (expires_at IS NULL OR expires_at > datetime('now'))
+        """
+        params = []
+        if session_id is not None:
+            query += " AND (session_id IS NULL OR session_id = ?)"
+            params.append(session_id)
+        rows = conn.execute(query, params).fetchall()
+        return {r["song_id"] for r in rows}
+    finally:
+        conn.close()
+
+
+def cleanup_expired_suppressions():
+    """Remove song suppressions that have expired."""
+    conn = get_connection()
+    try:
+        conn.execute("DELETE FROM song_suppression WHERE expires_at IS NOT NULL AND expires_at < datetime('now')")
+        conn.commit()
     finally:
         conn.close()

@@ -103,18 +103,38 @@ export function useWebSocket(fetchStatusCb) {
       try {
         const data = JSON.parse(event.data);
         if (data.event === "song_started") {
-          fetchStatusRef.current?.();
-          ws._songStartedHandler?.();
+          // Fire notification directly from status response
+          fetchStatusRef.current?.().then((status) => {
+            if (status?.current_song && window.electron) {
+              window.electron.updateNotification(
+                status.current_song.artist || "",
+                status.current_song.title || ""
+              );
+            }
+          });
+          ws._songStartedHandler?.(data);
         } else if (data.event === "song_ended") {
           fetchStatusRef.current?.();
+        } else if (data.event === "song_skipped") {
+          fetchStatusRef.current?.();
+          if (window.electron && data.song_id != null) {
+            const s = data.skip_streak;
+            if (s != null) {
+              window.electron.updateTraySkipStreak(s);
+            }
+          }
+        } else if (data.event === "position_update") {
+          // Update Electron taskbar progress bar
+          if (window.electron && data.position_ms != null) {
+            window.electron.updateTaskbarProgress(data.position_ms, data.duration_ms || 0);
+          }
+          ws._positionHandler?.(data);
         } else if (data.event === "queue_updated") {
           ws._queueHandler?.(data);
         } else if (data.event === "queue_rebuilding") {
           ws._rebuildHandler?.(data);
         } else if (data.event === "mood_changed") {
           ws._moodHandler?.(data.state || data.mood);
-        } else if (data.event === "position_update") {
-          ws._positionHandler?.(data);
         } else if (data.event === "vibe_lock_activated") {
           ws._vibeLockHandler?.({ active: true, song_id: data.song_id });
         } else if (data.event === "vibe_lock_deactivated") {
@@ -137,6 +157,8 @@ export function useWebSocket(fetchStatusCb) {
           fetchStatusRef.current?.();
         } else if (data.event === "sleep_timer_expired") {
           ws._sleepTimerHandler?.(null);
+        } else if (data.event === "play_mode_changed") {
+          ws._playModeHandler?.(data.mode);
         }
       } catch (e) {
         console.error("WebSocket message parse failed:", e);
@@ -197,7 +219,26 @@ export function useOnboarding() {
       if (data.onboarding_complete !== "true") setShowOnboarding(true);
       if (data.theme) setTheme(data.theme);
       if (data.section_spacing) setSectionSpacing(data.section_spacing);
-      if (data.right_rail_width) setRightRailWidth(parseInt(data.right_rail_width) || 255);
+      if (data.right_rail_width) {
+        const w = parseInt(data.right_rail_width) || 255;
+        setRightRailWidth(w);
+        document.documentElement.style.setProperty("--right-rail-width", w + "px");
+      }
+      if (data.start_minimized === "true" && window.electron?.minimizeToTray) {
+        window.electron.minimizeToTray();
+      }
+      if (data.mini_player_enabled != null && window.electron?.setSetting) {
+        window.electron.setSetting("mini_player_enabled", data.mini_player_enabled);
+      }
+      if (data.widget_enabled != null && window.electron?.setSetting) {
+        window.electron.setSetting("widget_enabled", data.widget_enabled);
+      }
+      if (data.accent_color) {
+        const root = document.documentElement;
+        root.style.setProperty("--user-accent", data.accent_color);
+        root.style.setProperty("--user-accent-hover", data.accent_color + "cc");
+        root.style.setProperty("--user-accent-muted", data.accent_color + "21");
+      }
     } catch (e) {
       console.error("Failed to check onboarding:", e);
     }

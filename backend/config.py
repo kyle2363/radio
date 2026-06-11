@@ -44,6 +44,7 @@ TALK_MONOLOGUE_ENABLED = True
 TALK_GUEST_TAKEOVER_ENABLED = True
 TALK_FREQUENCY = 4        # songs between talk segments
 TALK_GUEST_SONGS_PER_SET = 4
+TALK_VOLUME = 100  # percent of main volume for talk segments
 
 # Talk show debug logging (set True to log OmniVoice inputs + talk segment prompts/responses)
 TALK_SHOW_DEBUG = True
@@ -55,7 +56,7 @@ API_PORT = 8765
 N_CLUSTERS = 21
 
 # VLC stderr suppression (set True to hide libvlc init warnings, False to debug VLC issues)
-VLC_SUPPRESS_STDERR = True
+VLC_SUPPRESS_STDERR = False
 
 # Ollama chat options (passed via ollama.Client options= parameter)
 # think=False must be passed as a separate keyword arg to ollama.Client.chat()
@@ -90,6 +91,30 @@ OPENAI_EMBED_MODEL = os.environ.get("OPENAI_EMBED_MODEL", "qwen3-embedding:0.6b"
 
 # TTS cache directory — shared by voice_manager.py, tts.py, and main.py
 TTS_CACHE_DIR = os.path.join(DATA_DIR, "tts_cache")
+
+# Lyrics timing directory — per-song JSON files with word/line timestamps from WhisperX
+LYRICS_TIMING_DIR = os.path.join(DATA_DIR, "lyrics_timing")
+
+# --- WhisperX forced alignment tuning ---
+# Beam search: keep top N candidate sequences (higher = better accuracy, slower)
+WHISPERX_BEAM_SIZE = 5
+# VAD onset: voice activity detection start threshold (lower = more sensitive to vocal onset)
+WHISPERX_VAD_ONSET = 0.15
+# VAD offset: voice activity detection end threshold (lower = more patient about vocal endings)
+WHISPERX_VAD_OFFSET = 0.05
+# Patience: beam search patience factor (higher = explore more candidates before deciding)
+WHISPERX_PATIENCE = 2.0
+# No-speech threshold: segments below this are treated as silence (lower = more aggressive filtering)
+WHISPERX_NO_SPEECH_THRESHOLD = 0.6
+# Compression ratio threshold: segments above this ratio are flagged as repetition/hallucination
+WHISPERX_COMPRESSION_RATIO_THRESHOLD = 2.4
+# Vocal separation before WhisperX (Demucs via audio-separator) — helps with lyrics alignment
+WHISPERX_SEPARATE_VOCALS = True
+WHISPERX_SEPARATOR_MODEL = "UVR-MDX-NET-Voc_FT.onnx"
+WHISPERX_KEEP_SEPARATED = False          # delete temp WAV after processing
+WHISPERX_SMART_SELECT = True             # run both separated & original, pick best
+SEPARATOR_MODEL_DIR = os.path.join(DATA_DIR, "separator_models")
+SEPARATOR_OUTPUT_DIR = os.path.join(DATA_DIR, "separator_output")
 
 # --- MuQ-MuLan audio embedding settings ---
 MUQ_ENABLED = os.environ.get("MUQ_ENABLED", "true").lower() == "true"

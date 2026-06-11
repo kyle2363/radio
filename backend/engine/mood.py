@@ -124,8 +124,10 @@ class MoodStateMachine:
                 from engine import retriever
                 collection = retriever.get_chroma_collection("songs")
                 result = collection.get(ids=[str(song_id)], include=["embeddings"])
-                if result and result.get("embeddings") and result["embeddings"][0]:
-                    embedding = result["embeddings"][0]
+                if result and result.get("embeddings") is not None and len(result["embeddings"]) > 0:
+                    emb = result["embeddings"][0]
+                    if emb is not None:
+                        embedding = emb
             except Exception as e:
                 logger.debug("Could not re-fetch vibe lock embedding for song %s: %s", song_id, e)
 
@@ -133,8 +135,10 @@ class MoodStateMachine:
                 try:
                     audio_collection = retriever.get_chroma_collection(config.MUQ_AUDIO_COLLECTION)
                     result = audio_collection.get(ids=[str(song_id)], include=["embeddings"])
-                    if result and result.get("embeddings") and result["embeddings"][0]:
-                        audio_embedding = result["embeddings"][0]
+                    if result and result.get("embeddings") is not None and len(result["embeddings"]) > 0:
+                        emb = result["embeddings"][0]
+                        if emb is not None:
+                            audio_embedding = emb
                 except Exception:
                     pass
 
@@ -300,7 +304,7 @@ class MoodStateMachine:
             song_ids = [str(s["song_id"]) for s in songs]
             data = audio_collection.get(ids=song_ids, include=["embeddings"])
 
-            if not data or not data.get("embeddings"):
+            if not data or data.get("embeddings") is None:
                 return None
 
             embeddings = data["embeddings"]

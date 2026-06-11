@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body {
+  width: 100%; height: 100%;
+  overflow: hidden;
+  background: transparent;
+  font-family: 'DM Sans', -apple-system, sans-serif;
+  -webkit-app-region: drag;
+  user-select: none;
+}
+body {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 0 14px;
+  background: rgba(6, 14, 28, 0.85);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(78, 204, 196, 0.15);
+  border-radius: 0;
+}
+#track { flex: 1; display: flex; flex-direction: column; justify-content: center; min-width: 0; }
+#title {
+  font-size: 13px; font-weight: 600;
+  color: #c0cce8;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+#artist {
+  font-size: 11px;
+  color: rgba(192, 204, 232, 0.55);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  margin-top: 1px;
+}
+#progress-wrap {
+  position: absolute; bottom: 0; left: 0; right: 0; height: 2px;
+  background: rgba(255,255,255,0.06);
+}
+#progress-fill {
+  height: 100%;
+  background: #4eccc4;
+  width: 0%;
+  transition: width 0.3s linear;
+}
+#status {
+  position: absolute; top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 11px; color: rgba(192, 204, 232, 0.35);
+  display: none;
+}
+</style>
+</head>
+<body>
+<div id="track">
+  <div id="title">No track</div>
+  <div id="artist">—</div>
+</div>
+<div id="progress-wrap"><div id="progress-fill"></div></div>
+<div id="status">Connecting...</div>
+<script>
+const API = "http://localhost:8765";
+const titleEl = document.getElementById("title");
+const artistEl = document.getElementById("artist");
+const progressFill = document.getElementById("progress-fill");
+const statusEl = document.getElementById("status");
+
+let pollTimer = null;
+
+async function poll() {
+  try {
+    const resp = await fetch(API + "/api/play/status", { signal: AbortSignal.timeout(3000) });
+    const data = await resp.json();
+    statusEl.style.display = "none";
+    document.getElementById("track").style.display = "flex";
+    if (data.current_song) {
+      const s = data.current_song;
+      titleEl.textContent = s.title || "Unknown";
+      artistEl.textContent = s.artist || "Unknown artist";
+      const pos = data.position_ms || 0;
+      const dur = data.duration_ms || 0;
+      progressFill.style.width = dur > 0 ? Math.min(100, (pos / dur) * 100) + "%" : "0%";
+    } else {
+      titleEl.textContent = "No track";
+      artistEl.textContent = "—";
+      progressFill.style.width = "0%";
+    }
+  } catch (e) {
+    statusEl.style.display = "block";
+    statusEl.textContent = "Offline";
+    document.getElementById("track").style.display = "none";
+    progressFill.style.width = "0%";
+  }
+}
+
+pollTimer = setInterval(poll, 2000);
+poll();
+
+// Listen for widget updates via IPC from main process
+if (window.electronWidget?.onWidgetUpdate) {
+  window.electronWidget.onWidgetUpdate((data) => {
+    if (data?.artist != null) {
+      titleEl.textContent = data.title || "Unknown";
+      artistEl.textContent = data.artist || "—";
+    }
+  });
+}
+</script>
+</body>
+</html>

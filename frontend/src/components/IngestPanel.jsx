@@ -9,6 +9,7 @@ const PHASES = [
   { key: "embed", dbKey: "embedded", apiPhase: "embed", label: "Text embeddings", desc: "Embed song metadata for similarity search" },
   { key: "audio_embed", dbKey: null, apiPhase: "audio_embed", label: "Audio embeddings", desc: "MuQ-MuLan audio embeddings (optional)" },
   { key: "cluster", dbKey: "clustered", apiPhase: "cluster", label: "Cluster", desc: "Group songs into KMeans clusters" },
+  { key: "lyrics_timing", dbKey: null, apiPhase: "lyrics_timing", label: "Lyrics timing", desc: "WhisperX forced alignment for karaoke" },
 ];
 
 const PHASE_PROGRESS_MAP = {
@@ -19,6 +20,7 @@ const PHASE_PROGRESS_MAP = {
   embedded: "embed",
   audio_embedded: "audio_embed",
   clustered: "cluster",
+  lyrics_timed: "lyrics_timing",
 };
 
 function IngestPanel({ addToast }) {

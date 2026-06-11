@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from "react";
-import { ArrowLeft, Trash2, Search } from "lucide-react";
+import { ArrowLeft, Trash2, Search, Edit3, Check, X } from "lucide-react";
 import * as api from "../api";
 
 export default function CollectionDetail({ collection, onBack, addToast }) {
@@ -8,6 +8,9 @@ export default function CollectionDetail({ collection, onBack, addToast }) {
   const [search, setSearch] = useState("");
   const [allSongs, setAllSongs] = useState([]);
   const [showAdd, setShowAdd] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [editName, setEditName] = useState("");
+  const [editDesc, setEditDesc] = useState("");
 
   const loadSongs = useCallback(async () => {
     try {
@@ -21,7 +24,7 @@ export default function CollectionDetail({ collection, onBack, addToast }) {
 
   const fetchAllSongs = async () => {
     try {
-      const data = await api.fetchSongs({ page: "1", page_size: "200", sort_by: "title" });
+      const data = await api.fetchSongs({ page: "1", page_size: "1500", sort_by: "title" });
       setAllSongs(data.items || []);
     } catch (e) {}
   };
@@ -46,6 +49,29 @@ export default function CollectionDetail({ collection, onBack, addToast }) {
     }
   };
 
+  const startEdit = () => {
+    setEditName(collection.name);
+    setEditDesc(collection.description || "");
+    setEditing(true);
+  };
+
+  const saveEdit = async () => {
+    if (!editName.trim()) return;
+    try {
+      await api.updateCollection(collection.id, editName.trim(), editDesc.trim());
+      collection.name = editName.trim();
+      collection.description = editDesc.trim();
+      setEditing(false);
+      addToast?.("Collection updated", "success");
+    } catch (e) {
+      addToast?.("Failed to update collection", "error");
+    }
+  };
+
+  const cancelEdit = () => {
+    setEditing(false);
+  };
+
   const getPct = (song) => song.avg_completion != null ? Math.round(song.avg_completion * 100) : 0;
   const pctClass = (pct) => pct >= 50 ? "pct-hi" : pct >= 40 ? "pct-mid" : "pct-lo";
   const songIds = new Set(songs.map((s) => s.id));
@@ -58,10 +84,36 @@ export default function CollectionDetail({ collection, onBack, addToast }) {
         <button onClick={onBack} style={{ background: "none", border: "none", cursor: "pointer", padding: 4, color: "var(--text-muted)" }}>
           <ArrowLeft size={14} />
         </button>
-        <div>
-          <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-primary)" }}>{collection.name}</div>
-          {collection.description && <div style={{ fontSize: 10, color: "var(--text-muted)" }}>{collection.description}</div>}
-        </div>
+        {editing ? (
+          <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 4 }}>
+            <input value={editName} onChange={(e) => setEditName(e.target.value)} autoFocus
+              style={{ padding: "4px 6px", borderRadius: 4, background: "var(--bg-surface)", border: "1px solid var(--border)", color: "var(--text-primary)", fontSize: 12, fontWeight: 700, outline: "none" }} />
+            <input value={editDesc} onChange={(e) => setEditDesc(e.target.value)} placeholder="Description (optional)"
+              style={{ padding: "4px 6px", borderRadius: 4, background: "var(--bg-surface)", border: "1px solid var(--border)", color: "var(--text-primary)", fontSize: 10, outline: "none" }} />
+          </div>
+        ) : (
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-primary)" }}>{collection.name}</div>
+            {collection.description && <div style={{ fontSize: 10, color: "var(--text-muted)" }}>{collection.description}</div>}
+          </div>
+        )}
+        {editing ? (
+          <>
+            <button onClick={saveEdit} title="Save"
+              style={{ background: "none", border: "none", cursor: "pointer", padding: 4, color: "var(--accent)" }}>
+              <Check size={14} />
+            </button>
+            <button onClick={cancelEdit} title="Cancel"
+              style={{ background: "none", border: "none", cursor: "pointer", padding: 4, color: "var(--text-muted)" }}>
+              <X size={14} />
+            </button>
+          </>
+        ) : (
+          <button onClick={startEdit} title="Edit name/description"
+            style={{ background: "none", border: "none", cursor: "pointer", padding: 4, color: "var(--text-muted)" }}>
+            <Edit3 size={12} />
+          </button>
+        )}
         <div style={{ flex: 1 }} />
         <span style={{ fontSize: 10, color: "var(--text-muted)", padding: "2px 6px", borderRadius: 3, background: "var(--bg-elevated)" }}>{songs.length} song{songs.length !== 1 ? "s" : ""}</span>
       </div>
@@ -76,7 +128,7 @@ export default function CollectionDetail({ collection, onBack, addToast }) {
           </div>
           <div style={{ maxHeight: 200, overflowY: "auto" }}>
             {filteredAllSongs.length === 0 && <div style={{ fontSize: 11, color: "var(--text-muted)", padding: "8px 0", textAlign: "center" }}>{search ? "No songs match" : "Loading..."}</div>}
-            {filteredAllSongs.slice(0, 30).map((s) => (
+            {filteredAllSongs.map((s) => (
               <div key={s.id} onClick={() => handleAdd(s.id)}
                 style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 6px", cursor: "pointer", borderRadius: 4, fontSize: 11, color: "var(--text-primary)" }}>
                 <span style={{ fontSize: 10, color: "var(--text-muted)", width: 16 }}>{s.bpm || "—"}</span>

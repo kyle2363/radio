@@ -10,11 +10,13 @@ function formatTime(ms) {
   return `${min}:${sec.toString().padStart(2, "0")}`;
 }
 
-function PlayerControls({ isPlaying, onPlay, onPause, onNext, onHeart, onThumbsDown, onReplay, onClearQueue, positionMs, durationMs, onSeek, vibeLock, onVibeLockToggle, audioRms = 0.5, compact = false }) {
+function PlayerControls({ isPlaying, onPlay, onPause, onNext, onHeart, onThumbsDown, onReplay, onClearQueue, positionMs, durationMs, onSeek, vibeLock, onVibeLockToggle, audioRms = 0.5, compact = false, isHearted = false, isThumbedDown = false }) {
   const [isDragging, setIsDragging] = useState(false);
   const [dragProgress, setDragProgress] = useState(0);
   const [heartAnim, setHeartAnim] = useState(false);
   const [dislikeAnim, setDislikeAnim] = useState(false);
+  const [playPauseFlip, setPlayPauseFlip] = useState(false);
+  const prevPlayingRef = useRef(isPlaying);
   const barRef = useRef(null);
   const ghostRef = useRef(null);
 
@@ -80,8 +82,18 @@ function PlayerControls({ isPlaying, onPlay, onPause, onNext, onHeart, onThumbsD
     else if (e.key === "ArrowRight") { e.preventDefault(); e.stopPropagation(); onSeek?.(Math.min(durationMs, positionMs + 5000)); }
   }, [positionMs, durationMs, onSeek]);
 
-  const handleHeart = () => { setHeartAnim(true); onHeart?.(); };
-  const handleDislike = () => { setDislikeAnim(true); onThumbsDown?.(); };
+  const handleHeart = () => { if (isHearted) return; setHeartAnim(true); onHeart?.(); };
+  const handleDislike = () => { if (isThumbedDown) return; setDislikeAnim(true); onThumbsDown?.(); };
+
+  // Flip animation on play/pause toggle
+  useEffect(() => {
+    if (prevPlayingRef.current !== isPlaying) {
+      setPlayPauseFlip(true);
+      const t = setTimeout(() => setPlayPauseFlip(false), 300);
+      prevPlayingRef.current = isPlaying;
+      return () => clearTimeout(t);
+    }
+  }, [isPlaying]);
 
   const seekBar = (
     <div className="flex items-center gap-3 relative">
@@ -92,16 +104,32 @@ function PlayerControls({ isPlaying, onPlay, onPause, onNext, onHeart, onThumbsD
             className="absolute inset-0 w-full pointer-events-none"
             style={{ height: "8px", top: "50%", transform: "translateY(-50%)", opacity: 0.6 }} />
         )}
-        <div ref={barRef} tabIndex={0} className="absolute inset-0 cursor-pointer group focus:outline-none focus:ring-2 focus:ring-[var(--accent)]/50"
+        <div ref={barRef} tabIndex={0} className={`absolute inset-0 cursor-pointer group focus:outline-none focus:ring-2 focus:ring-[var(--accent)]/50 ${isDragging ? "seek-dragging" : ""}`}
           style={{ top: "50%", height: "3px", transform: "translateY(-50%)" }}
           onMouseDown={handleBarMouseDown} onKeyDown={handleBarKeyDown}
           role="slider" aria-label="Seek" aria-valuemin={0} aria-valuemax={durationMs} aria-valuenow={positionMs}>
           <div className="w-full h-full rounded-full relative" style={{ background: "var(--border)" }}>
             <div className="h-full rounded-full relative transition-none" style={{ width: `${progress * 100}%`, background: "linear-gradient(90deg, #3ab8b0, #4eccc4)" }}>
-              <div className="absolute right-0 top-1/2 -translate-y-1/2 w-2.5 h-2.5 rounded-full opacity-0 group-hover:opacity-100 transition-opacity shadow" style={{ background: "var(--accent)" }} />
+              <div className={`absolute right-0 top-1/2 -translate-y-1/2 rounded-full transition-all ${isDragging ? "w-3.5 h-3.5 opacity-100" : "w-2.5 h-2.5 opacity-0 group-hover:opacity-100"}`}
+                style={{ background: "var(--accent)", boxShadow: isDragging ? "0 0 12px rgba(78,204,196,0.5)" : "none" }} />
             </div>
           </div>
         </div>
+        {/* Drag tooltip */}
+        {isDragging && (
+          <div style={{
+            position: "absolute", top: -28,
+            left: `${(dragProgress / (durationMs || 1)) * 100}%`,
+            transform: "translateX(-50%)",
+            padding: "2px 8px", borderRadius: 4, fontSize: 10,
+            background: "var(--bg-elevated)", border: "1px solid var(--border)",
+            color: "var(--accent)", fontVariantNumeric: "tabular-nums",
+            pointerEvents: "none", whiteSpace: "nowrap",
+            boxShadow: "0 2px 8px rgba(0,0,0,0.3)",
+          }}>
+            {formatTime(dragProgress)}
+          </div>
+        )}
       </div>
       <span className="text-xs tabular-nums w-10" style={{ color: "var(--text-muted)" }}>{formatTime(durationMs)}</span>
     </div>
@@ -114,20 +142,29 @@ function PlayerControls({ isPlaying, onPlay, onPause, onNext, onHeart, onThumbsD
       </button>
       <button onClick={isPlaying ? onPause : onPlay} className="ctrl-btn ctrl-main" title="Play/Pause (Space)"
         style={{ background: "var(--accent-muted)", border: "1px solid rgba(78,204,196,0.3)", color: "var(--accent)" }}>
-        {isPlaying ? <Pause size={22} /> : <Play size={22} />}
+        <span className={`icon-wrap ${playPauseFlip ? "flipping" : ""}`}>
+          {isPlaying ? <Pause size={22} /> : <Play size={22} />}
+        </span>
       </button>
       <button onClick={onNext} className="ctrl-btn ctrl-sec" title="Next (N)">
         <SkipForward size={15} />
       </button>
-      <button onClick={handleHeart} className={`ctrl-btn ctrl-ter ${heartAnim ? "heart-pop" : ""}`}
-        onAnimationEnd={() => setHeartAnim(false)} title="Heart (H)"
-        style={{ color: "#f472b6" }}>
-        <Heart size={13} />
+      <button onClick={handleHeart}
+        className={`ctrl-btn ctrl-ter ${heartAnim ? "heart-pop" : ""}`}
+        onAnimationEnd={() => setHeartAnim(false)}
+        disabled={isHearted}
+        title={isHearted ? "Already hearted (H)" : "Heart (H)"}
+        style={{ color: "#f472b6", opacity: isHearted ? 0.45 : 1, cursor: isHearted ? "default" : undefined }}>
+        <Heart size={13} fill={isHearted ? "#f472b6" : "none"} />
         <ParticleBurst active={heartAnim} color="#f078a8" />
       </button>
-      <button onClick={handleDislike} className={`ctrl-btn ctrl-ter ${dislikeAnim ? "shake" : ""}`}
-        onAnimationEnd={() => setDislikeAnim(false)} title="Dislike (D)">
-        <ThumbsDown size={13} />
+      <button onClick={handleDislike}
+        className={`ctrl-btn ctrl-ter ${dislikeAnim ? "shake" : ""}`}
+        onAnimationEnd={() => setDislikeAnim(false)}
+        disabled={isThumbedDown}
+        title={isThumbedDown ? "Already thumbed down (D)" : "Dislike (D)"}
+        style={{ opacity: isThumbedDown ? 0.45 : 1, cursor: isThumbedDown ? "default" : undefined }}>
+        <ThumbsDown size={13} fill={isThumbedDown ? "currentColor" : "none"} />
         <ParticleBurst active={dislikeAnim} color="#f09060" />
       </button>
       <div style={{ width: "1px", height: "16px", background: "var(--border)", margin: "0 2px" }} />

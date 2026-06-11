@@ -15,9 +15,11 @@ function TalkSettings({ addToast, masterEnabled }) {
   const [djSpeechSpeed, setDjSpeechSpeed] = useState(1.0);
   const [djIntroStartHour, setDjIntroStartHour] = useState(6);
   const [djIntroEndHour, setDjIntroEndHour] = useState(23);
+  const [talkVolume, setTalkVolume] = useState(100);
   const [voiceStatus, setVoiceStatus] = useState(null);
+  const [showActiveVoice, setShowActiveVoice] = useState(false);
+  const [showVoiceModels, setShowVoiceModels] = useState(false);
   const [downloading, setDownloading] = useState(false);
-  const [expanded, setExpanded] = useState(false);
 
   // TTS engine state
   const [ttsEngine, setTtsEngineState] = useState("omnivoice");
@@ -45,6 +47,7 @@ function TalkSettings({ addToast, masterEnabled }) {
       setDjSpeechSpeed(parseFloat(config.dj_speech_speed) || 1.0);
       setDjIntroStartHour(parseInt(config.dj_intro_start_hour) || 6);
       setDjIntroEndHour(parseInt(config.dj_intro_end_hour) || 23);
+      setTalkVolume(parseInt(config.talk_volume) || 100);
     } catch (e) {
       console.error("Failed to load talk config:", e);
     }
@@ -70,8 +73,8 @@ function TalkSettings({ addToast, masterEnabled }) {
   };
 
   useEffect(() => {
-    if (expanded) loadVoiceStatus();
-  }, [expanded]);
+    loadVoiceStatus();
+  }, []);
 
   const saveSetting = async (key, value) => {
     try {
@@ -92,20 +95,17 @@ function TalkSettings({ addToast, masterEnabled }) {
     addToast?.(newVal ? "Talk segments enabled" : "Talk segments disabled", "success");
   };
 
-  const handleFrequencyChange = (e) => {
-    const val = parseInt(e.target.value);
+  const handleFrequencyChange = (val) => {
     setFrequency(val);
     saveSetting("talk_frequency", String(val));
   };
 
-  const handleGuestSongsChange = (e) => {
-    const val = parseInt(e.target.value);
+  const handleGuestSongsChange = (val) => {
     setGuestSongs(val);
     saveSetting("talk_guest_songs_per_set", String(val));
   };
 
-  const handleCooldownChange = (e) => {
-    const val = parseInt(e.target.value);
+  const handleCooldownChange = (val) => {
     setSegmentCooldown(val);
     saveSetting("talk_segment_cooldown", String(val));
   };
@@ -167,7 +167,6 @@ function TalkSettings({ addToast, masterEnabled }) {
     setDownloading(false);
   };
 
-  // Separate voices by engine
   const omnivoiceVoices = voiceStatus?.voices
     ? Object.entries(voiceStatus.voices)
         .filter(([k]) => k.startsWith("omnivoice:"))
@@ -183,267 +182,308 @@ function TalkSettings({ addToast, masterEnabled }) {
     : 0;
   const totalVoices = voiceStatus?.voices ? Object.keys(voiceStatus.voices).length : 0;
 
-  const configPanel = (
-    <div className="space-y-4 mt-3">
-      {/* TTS Engine Selector */}
-      <div>
-        <label className="block text-sm font-medium text-gray-300 mb-2">TTS Engine</label>
-        <div className="flex gap-2">
+  const formatHour = (h) => h === 0 ? "12am" : h < 12 ? `${h}am` : h === 12 ? "12pm" : `${h - 12}pm`;
+
+  return (
+    <div>
+      {/* TTS Engine */}
+      <div className="set-row">
+        <div className="set-label">TTS engine</div>
+        <div className="seg">
           {[
-            { id: "omnivoice", label: "OmniVoice", desc: "Voice cloning (GPU)" },
-            { id: "piper", label: "Piper", desc: "Fast local (CPU)" },
+            { id: "omnivoice", label: "OmniVoice" },
+            { id: "piper", label: "Piper" },
           ].map((eng) => (
-            <button
-              key={eng.id}
-              onClick={() => handleEngineChange(eng.id)}
-              className="flex-1 px-3 py-2.5 rounded-xl text-xs font-medium transition text-left"
-              style={{
-                background: ttsEngine === eng.id ? "var(--accent-muted)" : "var(--bg-elevated)",
-                color: ttsEngine === eng.id ? "var(--accent)" : "var(--text-muted)",
-                border: ttsEngine === eng.id ? "1px solid var(--accent)" : "1px solid transparent",
-              }}
-            >
-              <div>{eng.label}</div>
-              <div className="text-[10px] opacity-60 mt-0.5">{eng.desc}</div>
-            </button>
+            <div key={eng.id}
+              className={`seg-opt ${ttsEngine === eng.id ? "on" : ""}`}
+              onClick={() => handleEngineChange(eng.id)}>
+              {eng.label}
+            </div>
           ))}
         </div>
-        {gpuAvailable === false && ttsEngine === "omnivoice" && (
-          <p className="text-xs text-yellow-500 mt-1.5">GPU not available — will fall back to Piper</p>
-        )}
       </div>
+      {gpuAvailable === false && ttsEngine === "omnivoice" && (
+        <div style={{ fontSize: "10px", color: "#eab308", padding: "0 0 4px 0" }}>
+          GPU not available — will fall back to Piper
+        </div>
+      )}
 
       {/* Voice Selection Mode */}
-      <div>
-        <label className="block text-sm font-medium text-gray-300 mb-2">Voice Selection</label>
-        <div className="flex gap-2">
+      <div className="set-row">
+        <div className="set-label">Voice selection</div>
+        <div className="seg">
           {[
-            { id: "user_select", label: "Fixed Voice" },
+            { id: "user_select", label: "Fixed" },
             { id: "random", label: "Random" },
-            { id: "context", label: "By Context" },
+            { id: "context", label: "By context" },
           ].map((mode) => (
-            <button
-              key={mode.id}
-              onClick={() => handleVoiceModeChange(mode.id)}
-              className="flex-1 px-3 py-2 rounded-lg text-xs font-medium transition"
-              style={{
-                background: ttsVoiceMode === mode.id ? "var(--accent-muted)" : "var(--bg-elevated)",
-                color: ttsVoiceMode === mode.id ? "var(--accent)" : "var(--text-muted)",
-              }}
-            >
+            <div key={mode.id}
+              className={`seg-opt ${ttsVoiceMode === mode.id ? "on" : ""}`}
+              onClick={() => handleVoiceModeChange(mode.id)}>
               {mode.label}
-            </button>
+            </div>
           ))}
         </div>
-        <p className="text-[10px] text-gray-600 mt-1">
-          {ttsVoiceMode === "user_select" && "One voice for all announcements"}
-          {ttsVoiceMode === "random" && "Different voice each time"}
-          {ttsVoiceMode === "context" && "Voice matches announcement type"}
-        </p>
+      </div>
+      <div style={{ fontSize: "10px", color: "var(--text-muted)", padding: "0 0 4px 0" }}>
+        {ttsVoiceMode === "user_select" && "One voice for all announcements"}
+        {ttsVoiceMode === "random" && "Different voice each time"}
+        {ttsVoiceMode === "context" && "Voice matches announcement type"}
       </div>
 
-      {enabled && (
+      {/* Voice Models */}
+      <div className="set-row" style={{ borderBottom: showVoiceModels ? "none" : undefined, cursor: "pointer" }}
+        onClick={() => setShowVoiceModels(!showVoiceModels)}>
+        <div className="set-label" style={{ lineHeight: "20px" }}>Voice models</div>
+        <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+          <span className="set-val" style={{ fontSize: "11px" }}>{totalReady}/{totalVoices} ready</span>
+          <span style={{ fontSize: "10px", color: "var(--text-muted)" }}>{showVoiceModels ? "\u2212" : "+"}</span>
+        </div>
+      </div>
+
+      {showVoiceModels && (
         <>
-          {/* Frequency slider */}
-          <div>
-            <label className="block text-sm font-medium text-gray-300 mb-2">
-              Frequency: every {frequency} songs
-            </label>
-            <input
-              type="range" min="2" max="10" step="1"
-              value={frequency}
-              onChange={handleFrequencyChange}
-              className="w-full h-2 bg-gray-800 rounded-full appearance-none cursor-pointer accent-green-500"
-            />
-            <div className="flex justify-between text-xs text-gray-600 mt-1">
-              <span>Frequent</span>
-              <span>Sparse</span>
+          {/* Voice selector (for user_select mode) */}
+          {ttsVoiceMode === "user_select" && voiceStatus?.voices && (
+            <div className="set-row">
+              <div className="set-label">Active voice</div>
+              <select
+                value={`${ttsEngine}:${ttsVoice}`}
+                onChange={(e) => {
+                  const [eng, ...rest] = e.target.value.split(":");
+                  const voice = rest.join(":");
+                  handleVoiceChange(voice);
+                  if (eng !== ttsEngine) handleEngineChange(eng);
+                }}
+                style={{ fontSize: "11px", padding: "4px 8px", borderRadius: "5px", background: "var(--bg-elevated)", border: "1px solid var(--border)", color: "var(--text-secondary)", maxWidth: "180px" }}>
+                {omnivoiceVoices.length > 0 && (
+                  <optgroup label="OmniVoice (cloning)">
+                    {omnivoiceVoices.map((v) => (
+                      <option key={v.id} value={`omnivoice:${v.id}`}>
+                        {v.id} {v.ready ? "(ready)" : ""}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
+                {piperVoices.length > 0 && (
+                  <optgroup label="Piper (local)">
+                    {piperVoices.map((v) => (
+                      <option key={v.id} value={`piper:${v.id}`}>
+                        {v.id} {v.ready ? "(ready)" : ""}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
+              </select>
             </div>
-          </div>
+          )}
 
-          {/* Caller segments */}
-          <div className="flex items-center justify-between">
+          {/* OmniVoice voice list */}
+          {omnivoiceVoices.length > 0 && (
+            <div style={{ padding: "6px 10px", borderRadius: "6px", background: "var(--bg-elevated)", border: "1px solid var(--border)", marginBottom: "8px" }}>
+              <div style={{ fontSize: "10px", fontWeight: 500, color: "var(--text-muted)", marginBottom: "4px" }}>OmniVoice (cloning)</div>
+              {omnivoiceVoices.map((v) => (
+                <div key={v.id} style={{ display: "flex", alignItems: "center", gap: "6px", padding: "2px 0" }}>
+                  <div style={{ width: "6px", height: "6px", borderRadius: "50%", background: v.ready ? "var(--accent)" : "var(--text-muted)" }} />
+                  <span style={{ fontSize: "11px", color: "var(--text-secondary)" }}>{v.id}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Piper voice list */}
+          <div style={{ padding: "6px 10px", borderRadius: "6px", background: "var(--bg-elevated)", border: "1px solid var(--border)", marginBottom: "8px" }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "4px" }}>
+              <span style={{ fontSize: "10px", fontWeight: 500, color: "var(--text-muted)" }}>Piper (fallback)</span>
+              <button
+                onClick={handleDownloadVoices}
+                disabled={downloading}
+                style={{ fontSize: "10px", padding: "2px 8px", borderRadius: "4px", background: "var(--accent-muted)", border: "1px solid var(--border)", color: "var(--accent)", cursor: "pointer", opacity: downloading ? 0.5 : 1 }}>
+                {downloading ? "Downloading..." : "Download All"}
+              </button>
+            </div>
+            {piperVoices.map((v) => (
+              <div key={v.id} style={{ display: "flex", alignItems: "center", gap: "6px", padding: "2px 0" }}>
+                <div style={{ width: "6px", height: "6px", borderRadius: "50%", background: v.ready ? "var(--accent)" : "var(--text-muted)" }} />
+                <span style={{ fontSize: "11px", color: "var(--text-secondary)" }}>{v.id}</span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      {masterEnabled && (
+        <>
+          {/* Frequency */}
+          <div className="set-row">
             <div>
-              <label className="block text-sm font-medium text-gray-300">Caller Segments</label>
-              <p className="text-xs text-gray-600 mt-1">Fake phone-in callers reacting to your music</p>
+              <div className="set-label">Talk frequency</div>
+              <div style={{ fontSize: "10px", color: "var(--text-muted)", marginTop: "1px" }}>Every {frequency} songs</div>
             </div>
-            <button
-              onClick={async () => {
-                const newVal = !callerEnabled;
-                setCallerEnabled(newVal);
-                await saveSetting("talk_caller_enabled", String(newVal));
-              }}
-              className={`relative w-12 h-6 rounded-full transition-colors ${callerEnabled ? "bg-green-600" : "bg-gray-700"}`}
-            >
-              <div className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${callerEnabled ? "translate-x-6" : "translate-x-0.5"}`} />
-            </button>
+            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              <input type="range" min="2" max="10" step="1" value={frequency}
+                onChange={(e) => handleFrequencyChange(parseInt(e.target.value))}
+                style={{ width: "80px", accentColor: "var(--accent)" }} />
+              <span className="set-val">{frequency}</span>
+            </div>
           </div>
 
+          {/* Caller Segments */}
+          <div className="set-row">
+            <div>
+              <div className="set-label">Caller segments</div>
+              <div style={{ fontSize: "10px", color: "var(--text-muted)", marginTop: "1px" }}>Fake phone-in callers reacting to your music</div>
+            </div>
+            <div className={`tog ${callerEnabled ? "" : "off"}`}
+              onClick={() => { const next = !callerEnabled; setCallerEnabled(next); saveSetting("talk_caller_enabled", String(next)); }}>
+              <div className="tog-dot" />
+            </div>
+          </div>
+
+          {/* Caller Mode */}
           {callerEnabled && (
-            <div className="ml-4">
-              <label className="block text-xs font-medium text-gray-400 mb-2">Caller Mode</label>
-              <div className="flex gap-2">
+            <div className="set-row">
+              <div className="set-label">Caller mode</div>
+              <div className="seg">
                 {[
-                  { value: "influences_queue", label: "Influences Queue" },
-                  { value: "narrative_only", label: "Narrative Only" },
+                  { value: "influences_queue", label: "Influences queue" },
+                  { value: "narrative_only", label: "Narrative only" },
                 ].map((opt) => (
-                  <button
-                    key={opt.value}
-                    onClick={async () => {
-                      setCallerMode(opt.value);
-                      await saveSetting("talk_caller_mode", opt.value);
-                    }}
-                    className="flex-1 px-3 py-2 rounded-lg text-xs font-medium transition"
-                    style={{
-                      background: callerMode === opt.value ? "var(--accent-muted)" : "var(--bg-elevated)",
-                      color: callerMode === opt.value ? "var(--accent)" : "var(--text-muted)",
-                    }}
-                  >
+                  <div key={opt.value}
+                    className={`seg-opt ${callerMode === opt.value ? "on" : ""}`}
+                    onClick={() => { setCallerMode(opt.value); saveSetting("talk_caller_mode", opt.value); }}>
                     {opt.label}
-                  </button>
+                  </div>
                 ))}
               </div>
             </div>
           )}
 
-          {/* Emotional Caller Toggles */}
+          {/* Emotional Callers: Heartbroken */}
           {callerEnabled && (
-            <div className="ml-4 space-y-2">
-              <label className="block text-xs font-medium text-gray-400">Emotional Callers</label>
-              <div className="flex items-center justify-between">
-                <div>
-                  <span className="text-xs text-gray-300">Heartbroken</span>
-                  <p className="text-[10px] text-gray-600">Breakup stories, every song is a reminder</p>
-                </div>
-                <button
-                  onClick={async () => {
-                    const newVal = !heartbrokenEnabled;
-                    setHeartbrokenEnabled(newVal);
-                    await saveSetting("talk_caller_heartbroken_enabled", String(newVal));
-                  }}
-                  className={`relative w-10 h-5 rounded-full transition-colors ${heartbrokenEnabled ? "bg-green-600" : "bg-gray-700"}`}
-                >
-                  <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${heartbrokenEnabled ? "translate-x-5" : "translate-x-0.5"}`} />
-                </button>
+            <div className="set-row">
+              <div>
+                <div className="set-label">Heartbroken callers</div>
+                <div style={{ fontSize: "10px", color: "var(--text-muted)", marginTop: "1px" }}>Breakup stories, every song is a reminder</div>
               </div>
-              <div className="flex items-center justify-between">
-                <div>
-                  <span className="text-xs text-gray-300">Melancholy</span>
-                  <p className="text-[10px] text-gray-600">Quiet, poetic, speaks in half-sentences</p>
-                </div>
-                <button
-                  onClick={async () => {
-                    const newVal = !melancholyEnabled;
-                    setMelancholyEnabled(newVal);
-                    await saveSetting("talk_caller_melancholy_enabled", String(newVal));
-                  }}
-                  className={`relative w-10 h-5 rounded-full transition-colors ${melancholyEnabled ? "bg-green-600" : "bg-gray-700"}`}
-                >
-                  <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${melancholyEnabled ? "translate-x-5" : "translate-x-0.5"}`} />
-                </button>
+              <div className={`tog ${heartbrokenEnabled ? "" : "off"}`}
+                onClick={() => { const next = !heartbrokenEnabled; setHeartbrokenEnabled(next); saveSetting("talk_caller_heartbroken_enabled", String(next)); }}>
+                <div className="tog-dot" />
               </div>
             </div>
           )}
 
-          {/* DJ Monologue */}
-          <div className="flex items-center justify-between">
-            <div>
-              <label className="block text-sm font-medium text-gray-300">DJ Monologues</label>
-              <p className="text-xs text-gray-600 mt-1">Longer reflective segments triggered by milestones and mood shifts</p>
+          {/* Emotional Callers: Melancholy */}
+          {callerEnabled && (
+            <div className="set-row">
+              <div>
+                <div className="set-label">Melancholy callers</div>
+                <div style={{ fontSize: "10px", color: "var(--text-muted)", marginTop: "1px" }}>Quiet, poetic, speaks in half-sentences</div>
+              </div>
+              <div className={`tog ${melancholyEnabled ? "" : "off"}`}
+                onClick={() => { const next = !melancholyEnabled; setMelancholyEnabled(next); saveSetting("talk_caller_melancholy_enabled", String(next)); }}>
+                <div className="tog-dot" />
+              </div>
             </div>
-            <button
-              onClick={async () => {
-                const newVal = !monologueEnabled;
-                setMonologueEnabled(newVal);
-                await saveSetting("talk_monologue_enabled", String(newVal));
-              }}
-              className={`relative w-12 h-6 rounded-full transition-colors ${monologueEnabled ? "bg-green-600" : "bg-gray-700"}`}
-            >
-              <div className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${monologueEnabled ? "translate-x-6" : "translate-x-0.5"}`} />
-            </button>
+          )}
+
+          {/* DJ Monologues */}
+          <div className="set-row">
+            <div>
+              <div className="set-label">DJ monologues</div>
+              <div style={{ fontSize: "10px", color: "var(--text-muted)", marginTop: "1px" }}>Reflective segments triggered by milestones and mood shifts</div>
+            </div>
+            <div className={`tog ${monologueEnabled ? "" : "off"}`}
+              onClick={() => { const next = !monologueEnabled; setMonologueEnabled(next); saveSetting("talk_monologue_enabled", String(next)); }}>
+              <div className="tog-dot" />
+            </div>
           </div>
 
-          {/* Guest Takeover */}
-          <div className="flex items-center justify-between">
+          {/* Guest Takeovers */}
+          <div className="set-row">
             <div>
-              <label className="block text-sm font-medium text-gray-300">Guest Takeovers</label>
-              <p className="text-xs text-gray-600 mt-1">Guest DJ personas take over for a set of songs with their own style</p>
+              <div className="set-label">Guest takeovers</div>
+              <div style={{ fontSize: "10px", color: "var(--text-muted)", marginTop: "1px" }}>Guest DJ personas take over for a set of songs</div>
             </div>
-            <button
-              onClick={async () => {
-                const newVal = !guestTakeoverEnabled;
-                setGuestTakeoverEnabled(newVal);
-                await saveSetting("talk_guest_takeover_enabled", String(newVal));
-              }}
-              className={`relative w-12 h-6 rounded-full transition-colors ${guestTakeoverEnabled ? "bg-green-600" : "bg-gray-700"}`}
-            >
-              <div className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${guestTakeoverEnabled ? "translate-x-6" : "translate-x-0.5"}`} />
-            </button>
+            <div className={`tog ${guestTakeoverEnabled ? "" : "off"}`}
+              onClick={() => { const next = !guestTakeoverEnabled; setGuestTakeoverEnabled(next); saveSetting("talk_guest_takeover_enabled", String(next)); }}>
+              <div className="tog-dot" />
+            </div>
           </div>
 
+          {/* Songs per guest set */}
           {guestTakeoverEnabled && (
-            <div className="ml-4">
-              <label className="block text-xs font-medium text-gray-400 mb-2">
-                Songs per guest set: {guestSongs}
-              </label>
-              <input
-                type="range" min="3" max="6" step="1"
-                value={guestSongs}
-                onChange={handleGuestSongsChange}
-                className="w-full h-2 bg-gray-800 rounded-full appearance-none cursor-pointer accent-green-500"
-              />
-              <div className="flex justify-between text-xs text-gray-600 mt-1">
-                <span>Short</span>
-                <span>Long</span>
+            <div className="set-row">
+              <div>
+                <div className="set-label">Songs per guest set</div>
+                <div style={{ fontSize: "10px", color: "var(--text-muted)", marginTop: "1px" }}>How long a guest DJ plays</div>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <input type="range" min="3" max="6" step="1" value={guestSongs}
+                  onChange={(e) => handleGuestSongsChange(parseInt(e.target.value))}
+                  style={{ width: "80px", accentColor: "var(--accent)" }} />
+                <span className="set-val">{guestSongs}</span>
               </div>
             </div>
           )}
 
-          {/* Segment Cooldown */}
-          <div>
-            <label className="block text-sm font-medium text-gray-300 mb-2">
-              Persona cooldown: {segmentCooldown} segments
-            </label>
-            <input
-              type="range" min="1" max="5" step="1"
-              value={segmentCooldown}
-              onChange={handleCooldownChange}
-              className="w-full h-2 bg-gray-800 rounded-full appearance-none cursor-pointer accent-green-500"
-            />
-            <div className="flex justify-between text-xs text-gray-600 mt-1">
-              <span>More variety</span>
-              <span>More repeats</span>
+          {/* Persona Cooldown */}
+          <div className="set-row">
+            <div>
+              <div className="set-label">Persona cooldown</div>
+              <div style={{ fontSize: "10px", color: "var(--text-muted)", marginTop: "1px" }}>{segmentCooldown} segments before reuse</div>
             </div>
-            <p className="text-[10px] text-gray-600 mt-1">Min segments before a caller/guest can be reused</p>
+            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              <input type="range" min="1" max="5" step="1" value={segmentCooldown}
+                onChange={(e) => handleCooldownChange(parseInt(e.target.value))}
+                style={{ width: "80px", accentColor: "var(--accent)" }} />
+              <span className="set-val">{segmentCooldown}</span>
+            </div>
           </div>
 
           {/* DJ Speech Speed */}
-          <div>
-            <label className="block text-sm font-medium text-gray-300 mb-2">
-              DJ speech speed: {djSpeechSpeed.toFixed(3)}x
-            </label>
-            <input
-              type="range" min="0.700" max="1.300" step="0.025"
-              value={djSpeechSpeed}
-              onChange={(e) => {
-                const val = parseFloat(e.target.value);
-                setDjSpeechSpeed(val);
-                saveSetting("dj_speech_speed", String(val));
-              }}
-              className="w-full h-2 bg-gray-800 rounded-full appearance-none cursor-pointer accent-green-500"
-            />
-            <div className="flex justify-between text-xs text-gray-600 mt-1">
-              <span>Slower</span>
-              <span>Faster</span>
+          <div className="set-row">
+            <div>
+              <div className="set-label">DJ speech speed</div>
+              <div style={{ fontSize: "10px", color: "var(--text-muted)", marginTop: "1px" }}>{djSpeechSpeed.toFixed(3)}x</div>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              <input type="range" min="0.700" max="1.300" step="0.025" value={djSpeechSpeed}
+                onChange={(e) => {
+                  const val = parseFloat(e.target.value);
+                  setDjSpeechSpeed(val);
+                  saveSetting("dj_speech_speed", String(val));
+                }}
+                style={{ width: "80px", accentColor: "var(--accent)" }} />
+              <span className="set-val">{djSpeechSpeed.toFixed(2)}x</span>
+            </div>
+          </div>
+
+          {/* Talk Segment Volume */}
+          <div className="set-row">
+            <div>
+              <div className="set-label">Talk segment volume</div>
+              <div style={{ fontSize: "10px", color: "var(--text-muted)", marginTop: "1px" }}>{talkVolume}% of main volume</div>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              <input type="range" min="50" max="200" step="5" value={talkVolume}
+                onChange={(e) => {
+                  const val = parseInt(e.target.value);
+                  setTalkVolume(val);
+                  saveSetting("talk_volume", String(val));
+                }}
+                style={{ width: "80px", accentColor: "var(--accent)" }} />
+              <span className="set-val">{talkVolume}%</span>
             </div>
           </div>
 
           {/* DJ Intro Hours */}
-          <div>
-            <label className="block text-sm font-medium text-gray-300 mb-2">
-              Song intro hours
-            </label>
-            <div className="flex items-center gap-2">
+          <div className="set-row">
+            <div>
+              <div className="set-label">Song intro hours</div>
+              <div style={{ fontSize: "10px", color: "var(--text-muted)", marginTop: "1px" }}>When DJ intros can play</div>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
               <select
                 value={djIntroStartHour}
                 onChange={(e) => {
@@ -451,13 +491,12 @@ function TalkSettings({ addToast, masterEnabled }) {
                   setDjIntroStartHour(val);
                   saveSetting("dj_intro_start_hour", String(val));
                 }}
-                className="px-2 py-1.5 rounded-lg bg-gray-800 text-gray-200 text-xs focus:outline-none"
-              >
+                style={{ fontSize: "11px", padding: "4px 8px", borderRadius: "5px", background: "var(--bg-elevated)", border: "1px solid var(--border)", color: "var(--text-secondary)" }}>
                 {Array.from({ length: 24 }, (_, i) => (
-                  <option key={i} value={i}>{i === 0 ? "12am" : i < 12 ? `${i}am` : i === 12 ? "12pm" : `${i - 12}pm`}</option>
+                  <option key={i} value={i}>{formatHour(i)}</option>
                 ))}
               </select>
-              <span className="text-xs text-gray-500">to</span>
+              <span style={{ fontSize: "10px", color: "var(--text-muted)" }}>to</span>
               <select
                 value={djIntroEndHour}
                 onChange={(e) => {
@@ -465,143 +504,21 @@ function TalkSettings({ addToast, masterEnabled }) {
                   setDjIntroEndHour(val);
                   saveSetting("dj_intro_end_hour", String(val));
                 }}
-                className="px-2 py-1.5 rounded-lg bg-gray-800 text-gray-200 text-xs focus:outline-none"
-              >
+                style={{ fontSize: "11px", padding: "4px 8px", borderRadius: "5px", background: "var(--bg-elevated)", border: "1px solid var(--border)", color: "var(--text-secondary)" }}>
                 {Array.from({ length: 24 }, (_, i) => (
-                  <option key={i} value={i}>{i === 0 ? "12am" : i < 12 ? `${i}am` : i === 12 ? "12pm" : `${i - 12}pm`}</option>
+                  <option key={i} value={i}>{formatHour(i)}</option>
                 ))}
               </select>
             </div>
-            <p className="text-[10px] text-gray-600 mt-1">When DJ intros can play (song introductions)</p>
           </div>
-
-          {/* Voice Models */}
-          <div>
-            <label className="block text-sm font-medium text-gray-300 mb-2">
-              Voice Models
-              <span className="text-xs text-gray-500 ml-2">{totalReady}/{totalVoices} ready</span>
-            </label>
-
-            {/* Voice selector (for user_select mode) */}
-            {ttsVoiceMode === "user_select" && voiceStatus?.voices && (
-              <div className="mb-3">
-                <label className="block text-xs text-gray-400 mb-1.5">Active Voice</label>
-                <select
-                  value={`${ttsEngine}:${ttsVoice}`}
-                  onChange={(e) => {
-                    const [eng, ...rest] = e.target.value.split(":");
-                    const voice = rest.join(":");
-                    handleVoiceChange(voice);
-                    if (eng !== ttsEngine) handleEngineChange(eng);
-                  }}
-                  className="w-full px-3 py-2 rounded-xl bg-gray-800 text-gray-200 text-xs focus:outline-none"
-                >
-                  {omnivoiceVoices.length > 0 && (
-                    <optgroup label="OmniVoice (cloning)">
-                      {omnivoiceVoices.map((v) => (
-                        <option key={v.id} value={`omnivoice:${v.id}`}>
-                          {v.id} {v.ready ? "(ready)" : ""}
-                        </option>
-                      ))}
-                    </optgroup>
-                  )}
-                  {piperVoices.length > 0 && (
-                    <optgroup label="Piper (local)">
-                      {piperVoices.map((v) => (
-                        <option key={v.id} value={`piper:${v.id}`}>
-                          {v.id} {v.ready ? "(ready)" : ""}
-                        </option>
-                      ))}
-                    </optgroup>
-                  )}
-                </select>
-              </div>
-            )}
-
-            {/* OmniVoice voices */}
-            {omnivoiceVoices.length > 0 && (
-              <div className="rounded-xl bg-gray-800 p-3 mb-2">
-                <div className="text-xs font-medium text-gray-300 mb-2">OmniVoice (cloning)</div>
-                <div className="space-y-1">
-                  {omnivoiceVoices.map((v) => (
-                    <div key={v.id} className="flex items-center gap-2 px-2 py-1">
-                      <span className="w-2 h-2 rounded-full" style={{ background: v.ready ? "#4ade80" : "#6b7280" }} />
-                      <span className="text-xs text-gray-400">{v.id}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Piper voices */}
-            <div className="rounded-xl bg-gray-800 p-3">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-xs font-medium text-gray-300">Piper (fallback)</span>
-                <button
-                  onClick={handleDownloadVoices}
-                  disabled={downloading}
-                  className="px-2 py-1 rounded-lg text-[10px] font-medium transition disabled:opacity-40"
-                  style={{ background: "var(--accent-muted)", color: "var(--accent)" }}
-                >
-                  {downloading ? "Downloading..." : "Download All"}
-                </button>
-              </div>
-              <div className="space-y-1">
-                {piperVoices.map((v) => (
-                  <div key={v.id} className="flex items-center gap-2 px-2 py-1">
-                    <span className="w-2 h-2 rounded-full" style={{ background: v.ready ? "#4ade80" : "#6b7280" }} />
-                    <span className="text-xs text-gray-400">{v.id}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-
-          {/* Info text */}
-          <p className="text-xs text-gray-600 italic">
-            Talk segments play between songs when TTS is enabled. Each persona uses a different voice. 
-            Guest DJs influence song recommendations based on their personality.
-          </p>
         </>
       )}
-    </div>
-  );
 
-  if (masterEnabled) {
-    return (
-      <div className="pt-4" style={{ borderTop: "1px solid var(--border)" }}>
-        {configPanel}
-      </div>
-    );
-  }
-
-  if (!expanded) {
-    return (
-      <div className="pt-4" style={{ borderTop: "1px solid var(--border)" }}>
-        <button
-          onClick={() => setExpanded(true)}
-          className="w-full flex items-center justify-between px-1 py-2 text-sm font-medium transition"
-          style={{ color: "var(--text-primary)" }}
-        >
-          <span>Radio Talk Show</span>
-          <span style={{ color: "var(--text-muted)" }}>+</span>
-        </button>
-      </div>
-    );
-  }
-
-  return (
-    <div className="pt-4" style={{ borderTop: "1px solid var(--border)" }}>
-      <button
-        onClick={() => setExpanded(false)}
-        className="w-full flex items-center justify-between px-1 py-2 text-sm font-medium transition"
-        style={{ color: "var(--text-primary)" }}
-      >
-        <span>Radio Talk Show</span>
-        <span style={{ color: "var(--text-muted)" }}>-</span>
-      </button>
-
-      {configPanel}
+      {!masterEnabled && (
+        <div style={{ fontSize: "10px", color: "var(--text-muted)", padding: "8px 0 0 0" }}>
+          Enable the talk show above to configure segments, callers, and voice settings.
+        </div>
+      )}
     </div>
   );
 }

@@ -13,6 +13,8 @@ const SHORTCUTS = [
   { keys: ["?"], action: "Show this panel" },
   { keys: ["↑", "↓"], action: "Volume up / down" },
   { keys: ["←", "→"], action: "Seek ±10s" },
+  { keys: ["Ctrl+Z"], action: "Undo last command" },
+  { keys: ["Ctrl+Shift+K"], action: "Command palette" },
   { keys: ["Esc"], action: "Close panel" },
 ];
 

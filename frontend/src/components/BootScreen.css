@@ -375,8 +375,4 @@
   background: rgba(29,233,182,0.2);
 }
 
-/* ── Fade transition for boot exit ───────────────────── */
-.boot-fade {
-  opacity: 0;
-  transition: opacity 400ms ease-in;
-}
+/* ── Fade transition handled via inline styles in main.jsx ─── */

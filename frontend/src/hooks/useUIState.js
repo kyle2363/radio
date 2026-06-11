@@ -10,6 +10,7 @@ export default function useUIState(fetchStatusCb) {
   const [talkGenerating, setTalkGenerating] = useState(false);
   const [ttsReady, setTtsReady] = useState(false);
   const [sleepTimer, setSleepTimer] = useState(null);
+  const [showQuickSearch, setShowQuickSearch] = useState(false);
 
   const { addToast, removeToast } = useSharedRadio();
 
@@ -28,6 +29,25 @@ export default function useUIState(fetchStatusCb) {
     try {
       await api.submitSkipFeedback(reason);
       addToast("Thanks for the feedback!", "success");
+    } catch (e) {
+      addToast("Failed to submit feedback", "error");
+    } finally {
+      onDismiss?.();
+    }
+  }, [addToast]);
+
+  const handleSkipFeedbackWithDuration = useCallback(async (reason, duration, onDismiss) => {
+    try {
+      const res = await api.submitSkipFeedback(reason, duration);
+      if (duration === "permanent") {
+        addToast("Song blacklisted — won't play again", "success");
+      } else if (duration === "24h") {
+        addToast("Got it — skipped for 24 hours", "success");
+      } else if (duration === "session") {
+        addToast("Skipped for this session", "success");
+      } else {
+        addToast("Thanks for the feedback!", "success");
+      }
     } catch (e) {
       addToast("Failed to submit feedback", "error");
     } finally {
@@ -106,8 +126,9 @@ export default function useUIState(fetchStatusCb) {
     talkGenerating, setTalkGenerating,
     ttsReady, setTtsReady,
     sleepTimer, setSleepTimer,
+    showQuickSearch, setShowQuickSearch,
     // Actions
-    handleModeToggle, handleSkipFeedback, handleSleepTimer,
+    handleModeToggle, handleSkipFeedback, handleSkipFeedbackWithDuration, handleSleepTimer,
     handleCancelSleepTimer, handleCommandSent, toggleTheme,
     handleOnboardingComplete, handleOnboardingSkip, handleReseedTaste,
   };

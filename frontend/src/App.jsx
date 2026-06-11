@@ -1,8 +1,9 @@
-import React, { useEffect, useState, useCallback, useRef } from "react";
+import React, { useEffect, useState, useCallback, useRef, useLayoutEffect } from "react";
 import useTransition from "./hooks/useTransition";
 import * as api from "./api";
 import { Radio, Loader2, Mic, Filter, X, Sparkles } from "lucide-react";
 
+import AmbientGlow from "./components/AmbientGlow";
 import MiniPlayer from "./components/MiniPlayer";
 import NowPlaying from "./components/NowPlaying";
 import PlayerControls from "./components/PlayerControls";
@@ -30,6 +31,9 @@ import WikiPage from "./components/WikiPage";
 import CollectionsList from "./components/CollectionsList";
 import CollectionDetail from "./components/CollectionDetail";
 import ConstellationMap from "./components/ConstellationMap";
+import LyricsPanel from "./components/LyricsPanel";
+import QuickSearch from "./components/QuickSearch";
+import CommandPalette from "./components/CommandPalette";
 
 // Focused hooks
 import { RadioProvider, useSharedRadio, useFetchStatus, useWebSocket, useOnboarding } from "./hooks/useRadioState";
@@ -53,6 +57,7 @@ function AppInner() {
   const {
     currentSong, isPlaying, positionMs, durationMs, volume, audioRms,
     undoState, showSkipFeedback, loading,
+    heartedThisPlay, thumbedDownThisPlay,
     currentSongRef,
     handleVolumeChange, handleSeek, handlePlay, handlePause, handleNext,
     handleHeart, handleThumbsDown, handleReplay, handleClearQueue,
@@ -99,9 +104,10 @@ function AppInner() {
     talkGenerating, setTalkGenerating,
     ttsReady, setTtsReady,
     sleepTimer, setSleepTimer,
-    handleModeToggle, handleSkipFeedback, handleSleepTimer,
+    handleModeToggle, handleSkipFeedback, handleSkipFeedbackWithDuration, handleSleepTimer,
     handleCancelSleepTimer, handleCommandSent, toggleTheme,
     handleOnboardingComplete, handleOnboardingSkip, handleReseedTaste,
+    showQuickSearch, setShowQuickSearch,
   } = ui;
 
   const refreshStatus = useCallback(async () => {
@@ -143,6 +149,32 @@ function AppInner() {
     return () => clearTimeout(id);
   }, [setQueue]);
 
+  // Play mode state (ai/shuffle/sequential)
+  const [playMode, setPlayMode] = useState("ai");
+  useEffect(() => {
+    api.fetchPlayMode().then((d) => { if (d?.mode) setPlayMode(d.mode); }).catch(() => {});
+  }, []);
+
+  const handlePlayModeChange = useCallback(async (mode) => {
+    try {
+      await api.setPlayMode(mode);
+      setPlayMode(mode);
+      addToast?.("Play mode: " + mode, "success");
+    } catch (e) {
+      addToast?.("Failed to change play mode", "error");
+    }
+  }, [addToast]);
+
+  // Handle adding song to collection (from queue context menu)
+  const handleAddToCollection = useCallback(async (songId, collectionId) => {
+    try {
+      await api.addToCollection(collectionId, songId);
+      addToast?.("Added to collection", "success");
+    } catch (e) {
+      addToast?.("Failed to add to collection", "error");
+    }
+  }, [addToast]);
+
   // Wrapped play handler — rebuilds queue if empty, then plays
   const wrappedHandlePlay = useCallback(async () => {
     if (!queue || queue.length === 0) {
@@ -156,6 +188,7 @@ function AppInner() {
   const sRef = useRef({});
   sRef.current = {
     uiMode, theme, sectionSpacing, rightRailWidth,
+    playMode,
     wsConnected,
     currentSong, isPlaying, positionMs, durationMs, volume, audioRms,
     undoState, setUndoState,
@@ -176,6 +209,7 @@ function AppInner() {
     handleOnboardingComplete, handleOnboardingSkip, handleReseedTaste,
     doUndo,
     showShortcuts, setShowShortcuts,
+    showQuickSearch, setShowQuickSearch,
   };
 
   // Keyboard shortcuts
@@ -183,6 +217,11 @@ function AppInner() {
     const handleKeyDown = (e) => {
       if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA" || e.target.isContentEditable) return;
       const st = sRef.current;
+      if ((e.ctrlKey || e.metaKey) && e.key === "k") { e.preventDefault(); st.setShowQuickSearch?.(v => !v); return; }
+      if ((e.ctrlKey || e.metaKey) && e.key === "z") {
+        if (!st.showCommandPalette) { e.preventDefault(); st.handleUndoNlCommand?.(); return; }
+      }
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === "K") { e.preventDefault(); st.setShowCommandPalette?.(v => !v); return; }
       switch (e.key) {
         case " ": e.preventDefault(); st.isPlaying ? st.handlePause() : st.wrappedHandlePlay(); break;
         case "n": case "N": st.handleNext(); break;
@@ -212,11 +251,65 @@ function AppInner() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
 
+  // SMTC / Media Session API — exposes playback to OS media controls
+  useEffect(() => {
+    if (!("mediaSession" in navigator)) return;
+    // Register handlers once; they read current state from sRef
+    navigator.mediaSession.setActionHandler("play", () => sRef.current.wrappedHandlePlay?.());
+    navigator.mediaSession.setActionHandler("pause", () => sRef.current.handlePause?.());
+    navigator.mediaSession.setActionHandler("nexttrack", () => sRef.current.handleNext?.());
+    navigator.mediaSession.setActionHandler("previoustrack", () => {
+      const st = sRef.current;
+      if (st.positionMs > 5000) st.handleSeek?.(0);
+      else st.handleReplay?.();
+    });
+    navigator.mediaSession.setActionHandler("stop", () => sRef.current.handlePause?.());
+  }, []);
+
+  // Update media session metadata when song changes
+  useEffect(() => {
+    if (!("mediaSession" in navigator) || !currentSong?.id) return;
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: currentSong.title || "Unknown",
+      artist: currentSong.artist || "Unknown",
+      album: currentSong.album || "",
+      artwork: [
+        { src: `${window.location.origin}/api/songs/${currentSong.id}/art.jpg`, sizes: "512x512", type: "image/jpeg" },
+      ],
+    });
+  }, [currentSong?.id, currentSong?.title, currentSong?.artist]);
+
+  // Sync media session playback state
+  useEffect(() => {
+    if ("mediaSession" in navigator) {
+      navigator.mediaSession.playbackState = isPlaying ? "playing" : "paused";
+    }
+  }, [isPlaying]);
+
   // Electron mini mode
   const [miniMode, setMiniMode] = useState(false);
+  const [miniPlayerEnabled, setMiniPlayerEnabled] = useState(true);
+  const [showLyrics, setShowLyrics] = useState(true);
   const [isElectron, setIsElectron] = useState(false);
   useEffect(() => {
     checkOnboarding();
+    let cancelled = false;
+    const doFetch = () => {
+      api.fetchSettings().then((d) => {
+        if (cancelled) return;
+        if (d.right_rail_width) {
+          const w = parseInt(d.right_rail_width) || 255;
+          setRightRailWidth(w);
+          document.documentElement.style.setProperty("--right-rail-width", w + "px");
+        }
+        setMiniPlayerEnabled(d.mini_player_enabled !== "false");
+        if (d.show_lyrics != null) setShowLyrics(d.show_lyrics !== "false");
+      }).catch(() => {
+        if (!cancelled) setTimeout(doFetch, 500);
+      });
+    };
+    doFetch();
+    return () => { cancelled = true; };
   }, []);
 
   useEffect(() => {
@@ -227,6 +320,13 @@ function AppInner() {
     const cleanup = window.electron?.onMiniModeChange?.((isMini) => setMiniMode(isMini));
     return () => cleanup?.();
   }, []);
+
+  // Sync layout CSS variables to :root (same pattern as accent_color)
+  useLayoutEffect(() => {
+    const gap = sectionSpacing === "6" ? "0.5rem" : sectionSpacing === "8" ? "1rem" : sectionSpacing === "12" ? "1.5rem" : "1rem";
+    document.documentElement.style.setProperty("--section-gap", gap);
+    document.documentElement.style.setProperty("--right-rail-width", rightRailWidth + "px");
+  }, [sectionSpacing, rightRailWidth]);
 
   // Energy trajectory polling
   const [energyTrajectory, setEnergyTrajectory] = useState(null);
@@ -256,6 +356,159 @@ function AppInner() {
   const [selectedCollection, setSelectedCollection] = useState(null);
   const libraryTrans = useTransition(showLibrary, 250);
   const [commandExpanded, setCommandExpanded] = useState(false);
+  const [commandResponseTimeout, setCommandResponseTimeout] = useState(10);
+  const [commandInactiveTimeout, setCommandInactiveTimeout] = useState(6);
+  const inactiveTimerRef = useRef(null);
+  const lastNlActionRef = useRef(null);
+  const [showCommandPalette, setShowCommandPalette] = useState(false);
+
+  // Lifted response state — persists across compact/expanded CommandBar transitions
+  const [nlResponse, setNlResponse] = useState(null);
+  const [nlResponseVisible, setNlResponseVisible] = useState(false);
+  const nlResponseTimerRef = useRef(null);
+  const nlPausedRef = useRef(false);
+
+  const clearNlResponseTimer = useCallback(() => {
+    if (nlResponseTimerRef.current) {
+      clearTimeout(nlResponseTimerRef.current);
+      nlResponseTimerRef.current = null;
+    }
+  }, []);
+
+  const startNlResponseTimer = useCallback(() => {
+    clearNlResponseTimer();
+    if (commandResponseTimeout <= 0) return;
+    nlResponseTimerRef.current = setTimeout(() => {
+      if (!nlPausedRef.current) {
+        setNlResponseVisible(false);
+        setTimeout(() => setNlResponse(null), 300);
+      }
+    }, commandResponseTimeout * 1000);
+  }, [commandResponseTimeout, clearNlResponseTimer]);
+
+  // Clean up response timer on unmount
+  useEffect(() => {
+    return () => {
+      if (nlResponseTimerRef.current) clearTimeout(nlResponseTimerRef.current);
+    };
+  }, []);
+
+  const clearInactiveTimer = useCallback(() => {
+    if (inactiveTimerRef.current) {
+      clearTimeout(inactiveTimerRef.current);
+      inactiveTimerRef.current = null;
+    }
+  }, []);
+
+  const startInactiveTimer = useCallback(() => {
+    clearInactiveTimer();
+    if (commandInactiveTimeout <= 0) return;
+    inactiveTimerRef.current = setTimeout(() => {
+      setCommandExpanded(false);
+    }, commandInactiveTimeout * 1000);
+  }, [commandInactiveTimeout, clearInactiveTimer]);
+
+  const handleUserActivity = useCallback(() => {
+    if (commandExpanded) {
+      clearInactiveTimer();
+      startInactiveTimer();
+    }
+  }, [commandExpanded, clearInactiveTimer, startInactiveTimer]);
+
+  // Fetch command timeout settings
+  useEffect(() => {
+    api.fetchSettings().then((d) => {
+      if (d.command_response_timeout) setCommandResponseTimeout(parseInt(d.command_response_timeout) || 10);
+      if (d.command_inactive_timeout) setCommandInactiveTimeout(parseInt(d.command_inactive_timeout) || 6);
+    }).catch(() => {});
+  }, []);
+
+  // Start/stop inactivity timer when commandExpanded changes
+  useEffect(() => {
+    if (commandExpanded) {
+      startInactiveTimer();
+    } else {
+      clearInactiveTimer();
+    }
+  }, [commandExpanded, startInactiveTimer, clearInactiveTimer]);
+
+  // Wrap handleCommandSent to track last NL action for undo
+  const wrappedHandleCommandSent = useCallback((data) => {
+    if (data?.action) {
+      const snapshot = {};
+      if (data.action === "mood_shift") {
+        snapshot.previousMood = sRef.current.mood;
+      } else if (data.action === "volume_up" || data.action === "volume_down" || data.action === "set_volume") {
+        snapshot.previousVolume = sRef.current.volume;
+      } else if (data.action === "mode_switch") {
+        snapshot.previousMode = sRef.current.uiMode;
+      }
+      lastNlActionRef.current = { ...data, ...snapshot };
+    }
+    handleCommandSent(data);
+  }, [handleCommandSent]);
+
+  // Undo last NL command
+  const handleUndoNlCommand = useCallback(() => {
+    const last = lastNlActionRef.current;
+    if (!last) {
+      sRef.current.addToast?.("Nothing to undo", "info");
+      return;
+    }
+    lastNlActionRef.current = null;
+    const st = sRef.current;
+    switch (last.action) {
+      case "genre_filter":
+      case "artist_filter":
+        api.sendCommand("clear filters").then((r) => {
+          handleCommandSent(r);
+          st.addToast?.("Filter cleared", "success");
+        }).catch(() => st.addToast?.("Undo failed", "error"));
+        break;
+      case "clear_filters":
+        st.addToast?.("Nothing to undo", "info");
+        break;
+      case "mood_shift":
+        if (last.previousMood) {
+          st.handleMoodSet(last.previousMood);
+          st.addToast?.(`Mood reverted to ${last.previousMood}`, "success");
+        }
+        break;
+      case "volume_up":
+      case "volume_down":
+      case "set_volume":
+        if (last.previousVolume != null) {
+          st.handleVolumeChange(last.previousVolume);
+          st.addToast?.(`Volume reverted to ${last.previousVolume}`, "success");
+        }
+        break;
+      case "mode_switch":
+        if (last.previousMode) {
+          api.toggleMode(last.previousMode).then(() => {
+            handleCommandSent({ action: "mode_switch", mode: last.previousMode });
+            st.addToast?.(`Switched back to ${last.previousMode} mode`, "success");
+          }).catch(() => st.addToast?.("Undo failed", "error"));
+        }
+        break;
+      case "pause":
+        st.wrappedHandlePlay();
+        st.addToast?.("Resumed", "success");
+        break;
+      case "resume":
+        st.handlePause();
+        st.addToast?.("Paused", "success");
+        break;
+      default:
+        st.addToast?.("Can't undo that action", "info");
+    }
+  }, [handleCommandSent]);
+
+  // Sync late-declared values into sRef for keyboard handler access
+  sRef.current.showCommandPalette = showCommandPalette;
+  sRef.current.setShowCommandPalette = setShowCommandPalette;
+  sRef.current.handleUndoNlCommand = handleUndoNlCommand;
+  sRef.current.commandResponseTimeout = commandResponseTimeout;
+  sRef.current.commandInactiveTimeout = commandInactiveTimeout;
 
   // Constellation state
   const [showConstellations, setShowConstellations] = useState(false);
@@ -319,24 +572,12 @@ function AppInner() {
       }
       setWhyReason(data.reason || "");
     };
-    window._ws._songStartedHandler = async () => {
-      console.log(">>> song_started handler called");
+    window._ws._songStartedHandler = (data) => {
       setTalkSegmentActive(null);
-      setQueue([]);
-      setQueueRebuilding(true);
-      console.log(">>> queue cleared, rebuilding=true");
-      try {
-        console.log(">>> starting waitForQueue...");
-        const result = await api.waitForQueue(60000, 1000);
-        console.log(">>> waitForQueue returned:", result);
-        if (result && Array.isArray(result)) {
-          setQueue(result);
-        }
-      } catch (e) {
-        console.error("waitForQueue after song_started failed:", e);
-      } finally {
-        setQueueRebuilding(false);
-      }
+      // Reset position to 0 immediately when a new song starts,
+      // so lyrics don't lag behind during the first position_request cycle.
+      // The song_started broadcast includes elapsed_ms: 0 for fresh starts.
+      setPositionMs(0);
     };
     window._ws._moodHandler = (state) => {
       setMood(state);
@@ -350,19 +591,14 @@ function AppInner() {
     window._ws._sleepTimerHandler = () => {
       setSleepTimer(null);
     };
+    window._ws._playModeHandler = (mode) => {
+      setPlayMode(mode);
+    };
     window._ws._positionHandler = (data) => {
       if (data.elapsed_ms != null) setPositionMs(data.elapsed_ms);
       if (data.duration_ms != null) setDurationMs(data.duration_ms);
     };
-  }, [wsConnected, setQueue, setQueueRebuilding, setWhyReason, setMood, setVibeLock, setTalkSegmentActive, setSleepTimer, setPositionMs, setDurationMs]);
-
-  // Handle skip feedback auto-dismiss
-  useEffect(() => {
-    if (showSkipFeedback) {
-      const id = setTimeout(() => setShowSkipFeedback(false), 5000);
-      return () => clearTimeout(id);
-    }
-  }, [showSkipFeedback]);
+  }, [wsConnected, setQueue, setQueueRebuilding, setWhyReason, setMood, setVibeLock, setTalkSegmentActive, setSleepTimer, setPositionMs, setDurationMs, setPlayMode]);
 
   // Undo state auto-dismiss
   useEffect(() => {
@@ -372,22 +608,23 @@ function AppInner() {
     }
   }, [undoState, setUndoState]);
 
-  // Position update polling
+  // Position update polling — 300ms for smoother lyrics sync
   useEffect(() => {
     const id = setInterval(() => {
       if (window._ws?.readyState === window.WebSocket.OPEN) {
         window._ws.send("position_request");
       }
-    }, 1000);
+    }, 300);
     return () => clearInterval(id);
   }, []);
 
-  if (miniMode) {
+  if (miniMode && miniPlayerEnabled) {
     return <MiniPlayer />;
   }
 
   return (
     <div className="min-h-screen bg-gray-950 text-gray-200 flex flex-col" data-theme={theme}>
+      <AmbientGlow song={currentSong} mood={moodState} />
       <header className="py-3 sticky top-0 z-10" style={{ borderBottom: "1px solid var(--border-subtle)", background: "color-mix(in srgb, var(--bg-page) 85%, transparent)", backdropFilter: "blur(12px)" }}>
         <div className="max-w-6xl mx-auto px-3 sm:px-5 flex items-center gap-3">
           <h1 className="text-lg font-bold tracking-tight" style={{ color: "var(--text-primary)" }}>Radio</h1>
@@ -396,11 +633,28 @@ function AppInner() {
             {uiMode === "radio" ? "Radio" : "Normal"}
           </span>
 
+          {uiMode === "normal" && (
+            <div className="flex items-center gap-0.5 rounded-full py-0.5 px-0.5" style={{ background: "var(--bg-elevated)", border: "1px solid var(--border-subtle)" }}>
+              {["ai", "shuffle", "sequential"].map((m) => (
+                <button key={m} onClick={() => handlePlayModeChange(m)}
+                  className="text-[10px] font-semibold px-2 py-1 rounded-full transition-all"
+                  style={{
+                    background: playMode === m ? "var(--accent-muted)" : "transparent",
+                    color: playMode === m ? "var(--accent)" : "var(--text-muted)",
+                    border: "none", cursor: "pointer", textTransform: "uppercase", letterSpacing: "0.05em",
+                  }}>
+                  {m === "ai" ? "AI" : m === "shuffle" ? "Shuffle" : "Seq"}
+                </button>
+              ))}
+            </div>
+          )}
+
           <div className="flex items-center gap-2 ml-2">
             <span style={{
               width: 6, height: 6, borderRadius: "50%",
               background: wsConnected ? "#4ade80" : "#f59e0b",
               boxShadow: wsConnected ? "0 0 4px rgba(74,222,128,0.4)" : "0 0 4px rgba(245,158,11,0.4)",
+              animation: wsConnected ? "none" : "pulse 1s ease-in-out infinite",
             }} title={wsConnected ? "Connected" : "Reconnecting..."} />
             {uiMode === "radio" && <ArchetypeBadge archetype={archetype} />}
             {uiMode === "radio" && <VibeLockBadge vibeLock={vibeLock} currentSong={currentSong} />}
@@ -515,7 +769,7 @@ function AppInner() {
               Settings
             </button>
             <SleepTimer timer={sleepTimer} onCancel={handleCancelSleepTimer} />
-            {window.electron && (
+            {window.electron && miniPlayerEnabled && (
               <button onClick={() => window.electron.toggleMiniPlayer()} className="min-w-[36px] px-3 py-2.5 rounded-lg text-xs transition flex items-center justify-center btn-muted"
                 title="Mini Player">
                 &#9632;
@@ -525,18 +779,21 @@ function AppInner() {
         </div>
       </header>
 
-      <main className={`${isElectron ? '' : 'max-w-6xl mx-auto px-3 sm:px-6 py-8'} flex flex-col lg:flex-row gap-0 ${isElectron ? 'electron-layout' : ''}`} style={{ "--section-gap": sectionSpacing === "6" ? "1.5rem" : sectionSpacing === "8" ? "2rem" : sectionSpacing === "12" ? "3rem" : "2.5rem", "--right-rail-width": rightRailWidth + "px" }}>
+      <main className={`${isElectron ? '' : 'max-w-6xl mx-auto px-3 sm:px-6 py-8'} flex flex-col lg:flex-row gap-0 ${isElectron ? 'electron-layout' : ''}`}>
         {/* Left column: player + controls */}
         <div className={`flex-1 min-w-0 flex flex-col ${isElectron ? 'left-col' : ''}`} style={{ gap: "var(--section-gap)" }}>
           <div className={isElectron ? 'npc-section' : ''} style={!isElectron ? { display: "flex", flexDirection: "column", gap: "var(--section-gap)" } : {}}>
-            <section><NowPlaying key={currentSong?.id || "empty"} compact={isElectron} song={currentSong} isPlaying={isPlaying} whyReason={whyReason} queue={queue} audioRms={audioRms} talkSegmentActive={talkSegmentActive} positionMs={positionMs} durationMs={durationMs} /></section>
-            <section><PlayerControls compact={isElectron} isPlaying={isPlaying} onPlay={wrappedHandlePlay} onPause={handlePause} onNext={handleNext} onHeart={handleHeart} onThumbsDown={handleThumbsDown} onReplay={handleReplay} onClearQueue={handleClearQueue} positionMs={positionMs} durationMs={durationMs} onSeek={handleSeek} vibeLock={vibeLock} onVibeLockToggle={handleVibeLockToggle} audioRms={audioRms} /></section>
+            <section><NowPlaying compact={isElectron} song={currentSong} isPlaying={isPlaying} whyReason={whyReason} queue={queue} audioRms={audioRms} talkSegmentActive={talkSegmentActive} positionMs={positionMs} durationMs={durationMs} /></section>
+            <section><PlayerControls compact={isElectron} isPlaying={isPlaying} onPlay={wrappedHandlePlay} onPause={handlePause} onNext={handleNext} onHeart={handleHeart} onThumbsDown={handleThumbsDown} onReplay={handleReplay} onClearQueue={handleClearQueue} positionMs={positionMs} durationMs={durationMs} onSeek={handleSeek} vibeLock={vibeLock} onVibeLockToggle={handleVibeLockToggle} audioRms={audioRms} isHearted={heartedThisPlay} isThumbedDown={thumbedDownThisPlay} /></section>
+            {currentSong && showLyrics && (
+              <section><LyricsPanel song={currentSong} positionMs={positionMs} durationMs={durationMs} isPlaying={isPlaying} /></section>
+            )}
           </div>
           {uiMode === "radio" && (
             <div className={isElectron ? 'rcb-section' : ''} style={!isElectron ? { display: "flex", flexDirection: "column", gap: "var(--section-gap)", background: "var(--bg-sunken)", padding: "12px", borderRadius: "12px" } : undefined}>
-              {!commandExpanded && <section><CommandBar onCommandSent={handleCommandSent} compact onFocus={() => setCommandExpanded(true)} /></section>}
+              {!commandExpanded && <section><CommandBar onCommandSent={wrappedHandleCommandSent} compact onFocus={() => setCommandExpanded(true)} responseTimeout={commandResponseTimeout} inactiveTimeout={commandInactiveTimeout} onUserActivity={handleUserActivity} lastCommandRef={lastNlActionRef} onUndo={handleUndoNlCommand} nlResponse={nlResponse} nlResponseVisible={nlResponseVisible} nlResponseTimerRef={nlResponseTimerRef} nlPausedRef={nlPausedRef} clearNlResponseTimer={clearNlResponseTimer} startNlResponseTimer={startNlResponseTimer} setNlResponse={setNlResponse} setNlResponseVisible={setNlResponseVisible} /></section>}
               {commandExpanded && (
-                <section><CommandBar onCommandSent={handleCommandSent} onClose={() => setCommandExpanded(false)} /></section>
+                <section><CommandBar onCommandSent={wrappedHandleCommandSent} onClose={() => setCommandExpanded(false)} responseTimeout={commandResponseTimeout} inactiveTimeout={commandInactiveTimeout} onUserActivity={handleUserActivity} lastCommandRef={lastNlActionRef} onUndo={handleUndoNlCommand} nlResponse={nlResponse} nlResponseVisible={nlResponseVisible} nlResponseTimerRef={nlResponseTimerRef} nlPausedRef={nlPausedRef} clearNlResponseTimer={clearNlResponseTimer} startNlResponseTimer={startNlResponseTimer} setNlResponse={setNlResponse} setNlResponseVisible={setNlResponseVisible} /></section>
               )}
               <section><MoodButtons activeMood={moodState} onMoodSet={handleMoodSet} /></section>
               <section className="flex items-center gap-4 px-6 py-4" style={{ background: "var(--bg-surface)" }}>
@@ -559,7 +816,7 @@ function AppInner() {
           <div className={`${isElectron ? '' : 'w-full lg:w-80 xl:w-96'} flex-shrink-0 ${isElectron ? 'right-rail' : ''}`} style={isElectron ? { width: rightRailWidth } : undefined}>
             <div className={isElectron ? '' : 'lg:sticky lg:top-20 lg:max-h-[calc(100vh-6rem)] lg:overflow-y-auto'} style={isElectron ? { display: "flex", flexDirection: "column", flex: 1, overflow: "hidden", minHeight: 0, height: "100%" } : { display: "flex", flexDirection: "column" }}>
               <div style={{ display: "flex", flexDirection: "column", gap: "6px", flex: 1, overflow: "hidden" }}>
-                <section className={isElectron ? 'queue-section' : ''}><QueuePreview queue={queue} isRebuilding={queueRebuilding} onPromoteSong={handlePromoteSong} onRemoveSong={handleRemoveFromQueue} onRebuild={handleRebuild} compact={isElectron} queueLoading={queueLoading} /></section>
+                <section className={isElectron ? 'queue-section' : ''}><QueuePreview queue={queue} isRebuilding={queueRebuilding} onPromoteSong={handlePromoteSong} onRemoveSong={handleRemoveFromQueue} onRebuild={handleRebuild} compact={isElectron} queueLoading={queueLoading} onAddToCollection={handleAddToCollection} /></section>
                 <section className={isElectron ? 'prior-section' : ''}><PriorSongs currentSongId={currentSong?.id} compact={isElectron} /></section>
               </div>
               <section className={isElectron ? 'context-section' : ''} style={{ background: "var(--bg-sunken)", borderTop: "1px solid var(--border)", padding: isElectron ? "8px 10px" : "8px 20px", borderRadius: isElectron ? 0 : "0 0 12px 12px" }}>
@@ -628,7 +885,7 @@ function AppInner() {
                 ? <CollectionDetail collection={selectedCollection} onBack={() => setSelectedCollection(null)} addToast={addToast} />
                 : <CollectionsList onSelect={(c) => setSelectedCollection(c)} />
             )}
-            {libraryTab === "settings" && <SettingsContent addToast={addToast} sectionSpacing={sectionSpacing} onSectionSpacingChange={setSectionSpacing} rightRailWidth={rightRailWidth} setRightRailWidth={setRightRailWidth} />}
+            {libraryTab === "settings" && <SettingsContent addToast={addToast} sectionSpacing={sectionSpacing} onSectionSpacingChange={setSectionSpacing} rightRailWidth={rightRailWidth} setRightRailWidth={setRightRailWidth} explorationLevel={explorationLevel} onExplorationChange={handleExplorationChange} />}
             {libraryTab === "wiki" && <WikiPage />}
             {libraryTab === "stats" && <div className="px-1 sm:px-2"><StatsDashboard /></div>}
             {libraryTab === "history" && (
@@ -642,7 +899,15 @@ function AppInner() {
         </div>
       )}
 
-      <SkipFeedback visible={showSkipFeedback} onReason={(reason) => handleSkipFeedback(reason, () => setShowSkipFeedback(false))} onDismiss={() => setShowSkipFeedback(false)} />
+      <SkipFeedback visible={showSkipFeedback} onReason={(reason, duration) => {
+        if (duration) {
+          handleSkipFeedbackWithDuration(reason, duration, () => setShowSkipFeedback(false));
+        } else {
+          handleSkipFeedback(reason, () => setShowSkipFeedback(false));
+        }
+      }} onDismiss={() => setShowSkipFeedback(false)} />
+      <QuickSearch visible={showQuickSearch} onClose={() => setShowQuickSearch(false)} addToast={addToast} />
+      <CommandPalette visible={showCommandPalette} onClose={() => setShowCommandPalette(false)} addToast={addToast} onCommandSent={wrappedHandleCommandSent} />
       <ToastContainer toasts={toasts} onRemove={removeToast} />
       <ShortcutsModal isOpen={showShortcuts} onClose={() => setShowShortcuts(false)} />
     </div>

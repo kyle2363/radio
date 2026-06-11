@@ -96,19 +96,48 @@ function Toast({ message, type = "error", progress, onClose, actionLabel, onActi
 }
 
 export default function ToastContainer({ toasts, onRemove }) {
+  const [removingIds, setRemovingIds] = useState(new Set());
+
+  const handleRemove = useCallback((id) => {
+    setRemovingIds((prev) => new Set(prev).add(id));
+    setTimeout(() => {
+      onRemove(id);
+      setRemovingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+    }, 300);
+  }, [onRemove]);
+
+  // Cap at 5 visible toasts
+  const visibleToasts = toasts.slice(0, 5);
+
   return (
     <div className="fixed bottom-4 right-4 z-[100] flex flex-col gap-2 max-w-sm">
-      {toasts.map((toast) => (
-        <Toast
-          key={toast.id}
-          message={toast.message}
-          type={toast.type}
-          progress={toast.progress}
-          actionLabel={toast.actionLabel}
-          onAction={toast.onAction}
-          onClose={() => onRemove(toast.id)}
-        />
-      ))}
+      {visibleToasts.map((toast) => {
+        const isRemoving = removingIds.has(toast.id);
+        return (
+          <div
+            key={toast.id}
+            className="transition-all duration-300 ease-out overflow-hidden"
+            style={{
+              maxHeight: isRemoving ? 0 : 120,
+              opacity: isRemoving ? 0 : 1,
+              marginBottom: isRemoving ? "-8px" : undefined,
+            }}
+          >
+            <Toast
+              message={toast.message}
+              type={toast.type}
+              progress={toast.progress}
+              actionLabel={toast.actionLabel}
+              onAction={toast.onAction}
+              onClose={() => handleRemove(toast.id)}
+            />
+          </div>
+        );
+      })}
     </div>
   );
 }

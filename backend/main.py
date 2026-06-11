@@ -21,7 +21,7 @@ import threading
 import tempfile
 import time
 from datetime import datetime
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Form
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Form, Query
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
@@ -96,9 +96,21 @@ async def lifespan(app):
     p = player_engine.get_player()
     qm = _get_queue_manager()
     msm = _get_mood_state_machine()
+    _talk_ended_lock = threading.Lock()
 
     def _on_song_ended(song_id):
         _playback_logger.debug("=== main._on_song_ended(song=%s) ENTER — running in background thread", song_id)
+
+        # Guard: prevent concurrent talk-ended callbacks.  VLC can fire two
+        # MediaPlayerEndReached events for the same talk-only chain end (one
+        # from _on_end_reached, one from _on_media_end_reached), which would
+        # cause two threads racing to pop_next + play_next — the second one
+        # may block the server by calling play_song() while the first holds
+        # the player lock.
+        if song_id is None and not _talk_ended_lock.acquire(blocking=False):
+            _playback_logger.debug("  -> concurrent talk-ended callback detected, skipping duplicate")
+            return
+
         try:
             # song_id can be None when a talk-only chain ends (no real song was playing)
             if song_id is not None:
@@ -135,7 +147,7 @@ async def lifespan(app):
                     _playback_logger.debug("  -> calling qm.play_next(song)...")
                     qm.play_next(pick)
                     qm.on_song_started(pick["song_id"], session_id)
-                    broadcast("song_started", {"song_id": pick["song_id"], "session_id": session_id})
+                    broadcast("song_started", {"song_id": pick["song_id"], "session_id": session_id, "elapsed_ms": 0})
                     _playback_logger.debug("  <- play_next done")
             else:
                 _playback_logger.warning("  -> qm.pop_next() returned None — nothing to play!")
@@ -144,6 +156,12 @@ async def lifespan(app):
             # Stop playback to avoid stuck state; next user action will rebuild queue
             p.stop()
             broadcast("error", {"message": "Playback error", "details": str(e)})
+        finally:
+            if song_id is None:
+                try:
+                    _talk_ended_lock.release()
+                except RuntimeError:
+                    pass
         _playback_logger.debug("=== main._on_song_ended EXIT")
 
     p.on_song_ended(_on_song_ended)
@@ -355,8 +373,16 @@ class SeekRequest(BaseModel):
     ms: int = 0
 
 
+class PlayModeRequest(BaseModel):
+    mode: str
+
+
 class VolumeRequest(BaseModel):
     volume: int = 70
+
+
+class EqRequest(BaseModel):
+    preset: str = "off"
 
 
 class BlacklistRequest(BaseModel):
@@ -413,7 +439,8 @@ class ReorderRequest(BaseModel):
 
 
 class SkipFeedbackRequest(BaseModel):
-    reason: str
+    reason: str = "just_skip"
+    duration: str | None = None  # "24h", "session", "permanent", or None
 
 
 class SleepTimerRequest(BaseModel):
@@ -611,7 +638,7 @@ def _fetch_song_embeddings(song_id: int) -> tuple:
         client = chromadb.PersistentClient(path=config.CHROMA_PATH)
         collection = client.get_collection("songs")
         result = collection.get(ids=[str(song_id)], include=["embeddings"])
-        text_embedding = result["embeddings"][0] if result["embeddings"] else None
+        text_embedding = result["embeddings"][0] if result.get("embeddings") is not None and len(result["embeddings"]) > 0 and result["embeddings"][0] is not None else None
     except Exception:
         pass
 
@@ -619,7 +646,7 @@ def _fetch_song_embeddings(song_id: int) -> tuple:
         try:
             audio_collection = client.get_collection(config.MUQ_AUDIO_COLLECTION)
             audio_result = audio_collection.get(ids=[str(song_id)], include=["embeddings"])
-            audio_embedding = audio_result["embeddings"][0] if audio_result["embeddings"] else None
+            audio_embedding = audio_result["embeddings"][0] if audio_result.get("embeddings") is not None and len(audio_result["embeddings"]) > 0 and audio_result["embeddings"][0] is not None else None
         except Exception:
             pass
 
@@ -729,6 +756,9 @@ PHASE_PREREQUISITES = {
     "embed": lambda: database.get_by_ingest_phase("described"),
     "audio_embed": lambda: database.get_by_ingest_phase("embedded"),
     "cluster": lambda: database.get_by_ingest_phase("embedded"),
+    "lyrics_timing": lambda: database.get_connection().execute(
+        "SELECT id FROM songs WHERE lyrics IS NOT NULL AND lyrics != '' AND lyrics != 'lyrics not found' AND lyrics != 'TODO'"
+    ).fetchall(),
 }
 
 PHASE_FUNCTIONS = {
@@ -739,6 +769,7 @@ PHASE_FUNCTIONS = {
     "embed": pipeline.run_phase_embed,
     "audio_embed": pipeline.run_phase_embed_audio,
     "cluster": pipeline.run_phase_cluster,
+    "lyrics_timing": pipeline.run_phase_lyrics_timing,
 }
 
 
@@ -919,6 +950,8 @@ def ingest_reprocess_single(song_id: int):
 
     # Re-analyze this one song
     result = audio_module.analyze_audio(song["filepath"])
+    gain_db = audio_module.measure_loudness(song["filepath"])
+    result["gain_db"] = gain_db
     database.update_song(song_id, **result)
 
     # Re-normalize the full library
@@ -963,12 +996,20 @@ def list_songs(
     rediscover: bool = False,
     emotional_tag: str | None = None,
     genre_tag: str | None = None,
+    missing_metadata: bool = False,
+    missing_caption: bool = False,
 ):
     """List songs with filtering, search, sorting, and pagination."""
     conn = database.get_connection()
     try:
         clauses = []
         params = []
+
+        if missing_metadata:
+            clauses.append("(artist IS NULL OR artist = '' OR title IS NULL OR title = '')")
+
+        if missing_caption:
+            clauses.append("(ai_description IS NULL OR ai_description = '')")
 
         if search:
             clauses.append("(LOWER(title) LIKE ? OR LOWER(artist) LIKE ? OR LOWER(lyrics) LIKE ?)")
@@ -1022,12 +1063,15 @@ def list_songs(
         valid_sort = {
             "title", "artist", "energy", "valence", "bpm", "id",
             "play_count", "skip_count", "avg_completion", "complete_count",
-            "last_played", "added_at", "duration_secs",
+            "last_played", "added_at", "duration_secs", "instrumental",
         }
         if sort_by not in valid_sort:
             sort_by = "title"
         dir_ = "DESC" if sort_dir == "desc" else "ASC"
-        order = f"ORDER BY {sort_by} {dir_}"
+        if sort_by == "instrumental":
+            order = f"ORDER BY (CASE WHEN lyrics IS NULL OR lyrics = '' THEN 0 ELSE (LENGTH(lyrics) - LENGTH(REPLACE(lyrics, ' ', '')) + 1) END) {dir_}"
+        else:
+            order = f"ORDER BY {sort_by} {dir_}"
 
         offset = (page - 1) * page_size
         rows = conn.execute(
@@ -1055,6 +1099,48 @@ def get_song(song_id: int):
     if not song:
         return {"error": "Song not found"}
     return song
+
+
+# ── Lyrics Timing ─────────────────────────────────────────
+
+
+@app.get("/api/songs/{song_id:int}/lyrics-timing")
+def get_lyrics_timing(song_id: int):
+    """Return per-line timed lyrics data from WhisperX alignment.
+
+    Returns {lines: [...], language, duration_ms} if timing data exists,
+    or {lines: None} if not yet generated.
+    """
+    path = os.path.join(config.LYRICS_TIMING_DIR, f"{song_id}.json")
+    if not os.path.exists(path):
+        return {"lines": None}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError) as e:
+        return {"lines": None, "error": str(e)}
+
+
+@app.get("/api/lyrics-timing/status")
+def lyrics_timing_status():
+    """Return counts of songs with/without lyrics timing data."""
+    conn = database.get_connection()
+    try:
+        total = conn.execute(
+            "SELECT COUNT(*) FROM songs WHERE lyrics IS NOT NULL AND lyrics != '' AND lyrics != 'lyrics not found' AND lyrics != 'TODO'"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    timed = 0
+    if os.path.exists(config.LYRICS_TIMING_DIR):
+        timed = len([f for f in os.listdir(config.LYRICS_TIMING_DIR) if f.endswith(".json")])
+
+    return {
+        "total_with_lyrics": total,
+        "timed": timed,
+        "remaining": total - timed,
+    }
 
 
 @app.get("/api/clusters")
@@ -1134,7 +1220,7 @@ def chroma_dedup():
         removed = {}
         for song_id, count in duplicates.items():
             existing = collection.get(ids=[song_id], include=["embeddings", "metadatas"])
-            if existing and existing["embeddings"]:
+            if existing and existing.get("embeddings") is not None and len(existing["embeddings"]) > 0 and existing["embeddings"][0] is not None:
                 collection.delete(ids=[song_id])
                 collection.upsert(
                     ids=[song_id],
@@ -1298,6 +1384,293 @@ def unblacklist_song(song_id: int):
     """Remove a song from the blacklist."""
     database.unblacklist_song(song_id)
     return {"status": "unblacklisted", "song_id": song_id}
+
+
+# ============================================================
+# Library Verify — orphan detection & file matching
+# ============================================================
+
+@app.get("/api/library/verify")
+def library_verify():
+    """Compare DB songs against filesystem. Returns orphaned DB entries and unregistered MP3 files."""
+    import time as _time
+    start = _time.time()
+    music_dir = config.MUSIC_DIR
+
+    # 1) Orphaned DB entries — songs whose filepath no longer exists on disk
+    all_filepaths = database.get_all_filepaths()
+    orphaned = []
+    for song_id, fp in all_filepaths:
+        if not os.path.exists(fp):
+            song = database.get_song(song_id)
+            if song:
+                orphaned.append({
+                    "id": song["id"],
+                    "filepath": song["filepath"],
+                    "artist": song.get("artist") or "",
+                    "title": song.get("title") or "",
+                    "file_hash": song.get("file_hash") or "",
+                    "play_count": song.get("play_count") or 0,
+                    "last_played": song.get("last_played"),
+                })
+
+    # 2) Unregistered files — MP3s on disk not in DB
+    from ingest.scanner import find_audio_files, compute_file_hash
+    disk_files = find_audio_files(music_dir)
+    known_paths = {fp for _, fp in all_filepaths}
+    unregistered = []
+    for fp in disk_files:
+        if fp not in known_paths:
+            fsize = 0
+            try:
+                fsize = os.path.getsize(fp)
+            except OSError:
+                pass
+            unregistered.append({
+                "filepath": fp,
+                "filename": os.path.basename(fp),
+                "size": fsize,
+            })
+
+    elapsed = round(_time.time() - start, 2)
+    return {
+        "orphaned": orphaned,
+        "unregistered": unregistered,
+        "stats": {
+            "orphaned_count": len(orphaned),
+            "unregistered_count": len(unregistered),
+            "total_db_songs": len(all_filepaths),
+            "total_disk_files": len(disk_files),
+            "elapsed": elapsed,
+        },
+    }
+
+
+@app.post("/api/library/auto-match")
+def library_auto_match():
+    """Attempt to match orphaned DB entries to unregistered files by filename similarity."""
+    from ingest.metadata import normalize_filename, _find_best_match
+
+    # Get current orphaned and unregistered
+    all_filepaths = database.get_all_filepaths()
+    known_paths = {fp for _, fp in all_filepaths}
+
+    # Build orphan list
+    orphaned = []
+    for song_id, fp in all_filepaths:
+        if not os.path.exists(fp):
+            song = database.get_song(song_id)
+            if song:
+                orphaned.append({
+                    "id": song["id"],
+                    "filepath": song["filepath"],
+                    "artist": song.get("artist") or "",
+                    "title": song.get("title") or "",
+                })
+
+    # Build unregistered list indexed by normalized stem
+    from ingest.scanner import find_audio_files
+    disk_files = find_audio_files(config.MUSIC_DIR)
+    unregistered_stems = {}  # normalized_stem -> filepath
+    unregistered_by_path = {}
+    for fp in disk_files:
+        if fp not in known_paths:
+            stem = os.path.splitext(os.path.basename(fp))[0]
+            norm = normalize_filename(stem)
+            unregistered_stems[norm] = fp
+            unregistered_by_path[fp] = stem
+
+    # Match each orphan against unregistered files
+    matched = []
+    matched_file_paths = set()
+    unmatched_orphans = []
+    for o in orphaned:
+        old_stem = os.path.splitext(os.path.basename(o["filepath"]))[0]
+        norm_old = normalize_filename(old_stem)
+        # Use artist-title if available for better matching
+        if o["artist"] and o["title"]:
+            search_key = normalize_filename(f"{o['artist']} - {o['title']}")
+        else:
+            search_key = norm_old
+        best_path, best_score = _find_best_match(search_key, unregistered_stems)
+        if best_path and best_score >= 0.5:
+            # Skip if another DB song already owns this path
+            existing = database.get_song_by_filepath(best_path)
+            if existing and existing["id"] != o["id"]:
+                o_with_reason = dict(o)
+                o_with_reason["reason"] = f"filepath owned by song {existing['id']}"
+                unmatched_orphans.append(o_with_reason)
+                continue
+            try:
+                from ingest.scanner import compute_file_hash
+                new_hash = compute_file_hash(best_path)
+                database.update_song(o["id"], filepath=best_path, file_hash=new_hash)
+            except Exception as e:
+                o_with_reason = dict(o)
+                o_with_reason["reason"] = str(e)
+                unmatched_orphans.append(o_with_reason)
+                continue
+            # Remove matched path so it can't be re-matched to another orphan
+            norm_best = normalize_filename(os.path.splitext(os.path.basename(best_path))[0])
+            unregistered_stems.pop(norm_best, None)
+            matched.append({
+                "orphan_id": o["id"],
+                "old_filepath": o["filepath"],
+                "new_filepath": best_path,
+                "score": round(best_score, 2),
+                "artist": o["artist"],
+                "title": o["title"],
+            })
+            matched_file_paths.add(best_path)
+        else:
+            unmatched_orphans.append(o)
+
+    # Remaining unregistered files after matches
+    remaining_unregistered = []
+    for fp in disk_files:
+        if fp not in known_paths and fp not in matched_file_paths:
+            fsize = 0
+            try:
+                fsize = os.path.getsize(fp)
+            except OSError:
+                pass
+            remaining_unregistered.append({
+                "filepath": fp,
+                "filename": os.path.basename(fp),
+                "size": fsize,
+            })
+
+    return {
+        "matched": matched,
+        "match_count": len(matched),
+        "unmatched_orphans": unmatched_orphans,
+        "unregistered_remaining": remaining_unregistered,
+        "stats": {
+            "orphaned_total": len(orphaned),
+            "unregistered_total": len(unregistered_stems),
+            "matched": len(matched),
+            "unmatched_orphans": len(unmatched_orphans),
+            "remaining_files": len(remaining_unregistered),
+        },
+    }
+
+
+@app.post("/api/library/confirm-match")
+def library_confirm_match(req: dict):
+    """Manually confirm a match: pair an orphaned DB entry with an unregistered file."""
+    orphan_id = req.get("orphan_id")
+    filepath = req.get("filepath")
+    if not orphan_id or not filepath:
+        return {"error": "orphan_id and filepath required"}, 400
+    if not os.path.exists(filepath):
+        return {"error": f"File not found: {filepath}"}, 404
+
+    song = database.get_song(orphan_id)
+    if not song:
+        return {"error": f"Song {orphan_id} not found in database"}, 404
+
+    existing = database.get_song_by_filepath(filepath)
+    if existing and existing["id"] != orphan_id:
+        return {"error": f"Filepath already owned by song {existing['id']}"}, 409
+
+    from ingest.scanner import compute_file_hash
+    new_hash = compute_file_hash(filepath)
+    database.update_song(orphan_id, filepath=filepath, file_hash=new_hash)
+    return {"status": "matched", "song_id": orphan_id, "new_filepath": filepath}
+
+
+@app.delete("/api/songs/{song_id:int}")
+def library_delete_song(song_id: int):
+    """Delete a song from the database and ChromaDB."""
+    deleted = database.delete_song(song_id)
+    if not deleted:
+        return {"error": "Song not found"}, 404
+
+    # Remove from ChromaDB collections
+    try:
+        os.environ["CHROMA_NO_ANALYTICS"] = "1"
+        client = chromadb.PersistentClient(path=config.CHROMA_PATH)
+        for col_name in ["songs", config.MUQ_AUDIO_COLLECTION]:
+            try:
+                col = client.get_or_create_collection(col_name)
+                col.delete(ids=[str(song_id)])
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    return {
+        "status": "deleted",
+        "song_id": song_id,
+        "filepath": deleted.get("filepath"),
+    }
+
+
+@app.post("/api/library/add-unregistered")
+def library_add_unregistered(req: dict):
+    """Add an unregistered MP3 file as a new song."""
+    filepath = req.get("filepath")
+    if not filepath:
+        return {"error": "filepath required"}, 400
+    if not os.path.exists(filepath):
+        return {"error": f"File not found: {filepath}"}, 404
+
+    # Check if already in DB
+    existing = database.get_song_by_filepath(filepath)
+    if existing:
+        return {"error": "File already in database", "song_id": existing["id"]}, 409
+
+    from ingest.scanner import compute_file_hash, parse_filename
+    file_hash = compute_file_hash(filepath)
+    parsed = parse_filename(filepath)
+
+    database.add_song(filepath, file_hash)
+    # Fetch the newly added song to get its ID
+    new_song = database.get_song_by_filepath(filepath)
+    if new_song:
+        database.update_song(
+            new_song["id"],
+            artist=parsed.get("artist"),
+            title=parsed.get("title"),
+            ingest_phase="raw",
+        )
+
+    return {
+        "status": "added",
+        "song_id": new_song["id"] if new_song else None,
+        "artist": parsed.get("artist"),
+        "title": parsed.get("title"),
+    }
+
+
+@app.post("/api/library/delete-all-orphaned")
+def library_delete_all_orphaned():
+    """Delete all orphaned DB entries (songs whose files are missing)."""
+    all_filepaths = database.get_all_filepaths()
+    orphan_ids = []
+    for song_id, fp in all_filepaths:
+        if not os.path.exists(fp):
+            orphan_ids.append(song_id)
+
+    if not orphan_ids:
+        return {"status": "none", "deleted": 0}
+
+    deleted = database.delete_songs_batch(orphan_ids)
+
+    # Remove from ChromaDB
+    try:
+        os.environ["CHROMA_NO_ANALYTICS"] = "1"
+        client = chromadb.PersistentClient(path=config.CHROMA_PATH)
+        for col_name in ["songs", config.MUQ_AUDIO_COLLECTION]:
+            try:
+                col = client.get_or_create_collection(col_name)
+                col.delete(ids=[str(sid) for sid in orphan_ids])
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    return {"status": "deleted", "deleted": len(deleted), "song_ids": orphan_ids}
 
 
 # ============================================================
@@ -1476,6 +1849,8 @@ def update_song_metadata(song_id: int, req: MetadataUpdateRequest):
                 new_filepath = rename_result.get("mp3", {}).get("new_path")
                 if new_filepath:
                     db_updates["filepath"] = new_filepath
+                    from ingest.scanner import compute_file_hash
+                    db_updates["file_hash"] = compute_file_hash(new_filepath)
             except Exception as e:
                 logger.error("Failed to rename song files: %s", e)
                 rename_result = {"mp3": {"status": "error", "reason": str(e)}, "json": {"status": "error", "reason": str(e)}}
@@ -1615,7 +1990,7 @@ def play_status():
     # Get queue info
     with qm._condition:
         queue_preview = []
-        for item in qm._get_display_queue()[:4]:
+        for item in qm._get_display_queue(_locked=True)[:4]:
             if item.get("type") == "talk_segment":
                 queue_preview.append({
                     "type": "talk_segment",
@@ -1685,6 +2060,8 @@ def play_status():
         "audio_rms": audio_rms,
         "talk_segment_active": talk_segment_active,
         "talk_playing": p.is_talk_playing(),
+        "hearted_this_play": database.has_signal_since_last_play(song_id, "hearted") if song_id else False,
+        "thumbed_down_this_play": database.has_signal_since_last_play(song_id, "thumbed_down") if song_id else False,
     }
 
 
@@ -1720,6 +2097,7 @@ def play_song(song_id: int):
     broadcast("song_started", {
         "song_id": song_id,
         "session_id": session_id,
+        "elapsed_ms": 0,
     })
     return {"status": "playing", "song_id": song_id}
 
@@ -1771,7 +2149,7 @@ def resume_playback():
                 session_id = qm._current_session_id or _ensure_session()
                 p.play_song(fallback_song_id, song["filepath"], session_id)
                 qm.on_song_started(fallback_song_id, session_id)
-                broadcast("song_started", {"song_id": fallback_song_id, "session_id": session_id})
+                broadcast("song_started", {"song_id": fallback_song_id, "session_id": session_id, "elapsed_ms": 0})
                 return {"status": "playing", "action": "resumed", "song_id": fallback_song_id}
         # Nothing to resume — pop from queue
         pick = qm.pop_next()
@@ -1789,7 +2167,7 @@ def resume_playback():
                 )
                 qm.play_next(pick)
                 qm.on_song_started(pick["song_id"], session_id)
-                broadcast("song_started", {"song_id": pick["song_id"], "session_id": session_id})
+                broadcast("song_started", {"song_id": pick["song_id"], "session_id": session_id, "elapsed_ms": 0})
             return {"status": "playing", "action": "resumed", "song_id": pick.get("song_id")}
         return {"status": "stopped", "action": "nothing_to_play"}
 
@@ -1806,7 +2184,7 @@ def resume_playback():
             if success:
                 qm = _get_queue_manager()
                 qm.on_song_started(song_id, session_id)
-                broadcast("song_started", {"song_id": song_id, "session_id": session_id})
+                broadcast("song_started", {"song_id": song_id, "session_id": session_id, "elapsed_ms": 0})
                 return {"status": "playing", "action": "restarted", "song_id": song_id}
 
     # Stopped and no current song — pop from queue
@@ -1826,7 +2204,7 @@ def resume_playback():
             )
             qm.play_next(pick)
             qm.on_song_started(pick["song_id"], session_id)
-            broadcast("song_started", {"song_id": pick["song_id"], "session_id": session_id})
+            broadcast("song_started", {"song_id": pick["song_id"], "session_id": session_id, "elapsed_ms": 0})
         return {"status": "playing", "action": "new_song", "song_id": pick.get("song_id")}
 
     return {"status": "stopped", "action": "nothing_to_play"}
@@ -1846,6 +2224,52 @@ def set_volume(req: VolumeRequest):
     p = player_engine.get_player()
     p.set_volume(req.volume)
     return {"status": "volume_set", "volume": req.volume}
+
+
+@app.post("/api/play/volume-normalization")
+def toggle_volume_normalization(enabled: bool = Query(True)):
+    """Toggle volume normalization (ReplayGain-style)."""
+    p = player_engine.get_player()
+    p.set_normalization_enabled(enabled)
+    database.set_setting("volume_normalization", "true" if enabled else "false")
+    return {"status": "set", "enabled": enabled}
+
+
+@app.post("/api/play/eq")
+def set_eq(req: EqRequest):
+    """Set equalizer preset."""
+    p = player_engine.get_player()
+    p.set_eq_preset(req.preset)
+    database.set_setting("eq_preset", req.preset)
+    return {"status": "eq_set", "preset": req.preset}
+
+
+@app.get("/api/play/eq")
+def get_eq():
+    """Get current equalizer preset."""
+    p = player_engine.get_player()
+    return {"preset": p.get_eq_preset() or "off"}
+
+
+@app.get("/api/play/mode")
+def get_play_mode():
+    """Get current play mode (ai/shuffle/sequential)."""
+    mode = database.get_setting("play_mode") or "ai"
+    return {"mode": mode}
+
+
+@app.post("/api/play/mode")
+def set_play_mode(req: PlayModeRequest):
+    """Set play mode (ai/shuffle/sequential)."""
+    if req.mode not in ("ai", "shuffle", "sequential"):
+        return {"error": "Invalid mode. Must be 'ai', 'shuffle', or 'sequential'"}
+    database.set_setting("play_mode", req.mode)
+    # Clear queue so the next rebuild picks up the new mode
+    qm = _get_queue_manager()
+    with qm._condition:
+        qm._queue.clear()
+    broadcast("play_mode_changed", {"mode": req.mode})
+    return {"status": "set", "mode": req.mode}
 
 
 @app.post("/api/play/next")
@@ -1872,6 +2296,7 @@ def play_next():
             signal=signal,
             mood_state=msm.get_state(),
             completion_pct=pct,
+            skip_at_secs=elapsed_ms / 1000,
         )
         song = database.get_song(song_id)
         qm.record_action("skip", song_id, song, signal_type=signal)
@@ -1889,6 +2314,8 @@ def heart_current():
     song_id = p.get_current_song_id()
     session_id = p._current_session_id if hasattr(p, '_current_session_id') else _current_session_id
     if song_id:
+        if database.has_signal_since_last_play(song_id, "hearted"):
+            return {"status": "already_hearted", "song_id": song_id}
         database.record_play_event(
             song_id=song_id,
             session_id=session_id,
@@ -1909,6 +2336,8 @@ def thumbs_down_current():
     song_id = p.get_current_song_id()
     session_id = p._current_session_id if hasattr(p, '_current_session_id') else _current_session_id
     if song_id:
+        if database.has_signal_since_last_play(song_id, "thumbed_down"):
+            return {"status": "already_thumbed_down", "song_id": song_id}
         database.record_play_event(
             song_id=song_id,
             session_id=session_id,
@@ -1979,7 +2408,7 @@ def get_queue_status():
     """Return queue status including rebuilding state."""
     qm = _get_queue_manager()
     with qm._condition:
-        display_queue = qm._get_display_queue()
+        display_queue = qm._get_display_queue(_locked=True)
         return {
             "rebuilding": qm._rebuilding,
             "queue_size": len(display_queue),
@@ -2005,7 +2434,7 @@ def queue_peek_next():
     """Peek at the next song without removing it."""
     qm = _get_queue_manager()
     with qm._condition:
-        display_queue = qm._get_display_queue()
+        display_queue = qm._get_display_queue(_locked=True)
         if display_queue:
             return display_queue[0]
         return {"error": "Queue is empty"}
@@ -2025,6 +2454,7 @@ def queue_rebuild():
     """Force a queue rebuild in the background."""
     qm = _get_queue_manager()
     with qm._condition:
+        qm._queue.clear()
         qm._rebuilding = True
         qm._rebuild_gen += 1
     threading.Thread(target=qm._rebuild_queue, daemon=True).start()
@@ -2038,8 +2468,10 @@ def queue_add(song_id: int):
     if not song:
         return {"error": "Song not found"}
     qm = _get_queue_manager()
-    qm.add_manual([song_id])
-    return {"status": "added", "song_id": song_id}
+    res = qm.add_manual([song_id])
+    if res["added"]:
+        return {"status": "added", "song_id": song_id}
+    return {"status": "already_queued", "song_id": song_id}
 
 
 @app.delete("/api/queue/remove/{song_id:int}")
@@ -2109,6 +2541,7 @@ def queue_skip():
             signal=signal,
             mood_state=msm.get_state(),
             completion_pct=pct,
+            skip_at_secs=elapsed_ms / 1000,
         )
         # Track for potential undo
         song = database.get_song(song_id)
@@ -2161,7 +2594,7 @@ def queue_skip():
     response = {
         "status": "skipped",
         "skip_streak": qm._skip_streak,
-        "show_feedback": qm._skip_streak >= 3,
+        "show_feedback": qm._skip_streak >= 2,
         "undo": undo_state,
     }
     if mood_shifted:
@@ -2242,32 +2675,47 @@ def get_skip_streak():
 # ── Skip Feedback ───────────────────────────────────────────
 @app.post("/api/queue/skip-feedback")
 def submit_skip_feedback(body: SkipFeedbackRequest):
-    """Record skip feedback reason from the user."""
+    """Record skip feedback reason from the user.
+    
+    Supports temporal duration: "24h", "session", "permanent", or None (no suppression).
+    """
     qm = _get_queue_manager()
     session_id = _current_session_id
     if not session_id:
         return {"status": "no_session"}
-    database.record_skip_feedback(session_id, qm._skip_streak, body.reason)
+
+    song_id = qm._current_song_id
+
+    # Record feedback with duration
+    database.record_skip_feedback(session_id, qm._skip_streak, body.reason, body.duration)
+
+    # Apply temporal suppression based on duration
+    if song_id and body.duration:
+        if body.duration == "24h":
+            database.add_song_suppression(song_id, body.reason, hours=24)
+        elif body.duration == "session":
+            database.add_song_suppression(song_id, body.reason, session_id=session_id)
+        elif body.duration == "permanent":
+            database.blacklist_song(song_id, level="never_play", reason=body.reason or "user_skip")
 
     # Record audio embedding for mood-specific repulsion
     if config.MUQ_ENABLED and qm._mood.get_state() != "neutral":
-        current_song_id = qm._current_song_id
-        if current_song_id:
+        if song_id:
             try:
                 from llm.muq_engine import is_available
                 if is_available():
-                    song = database.get_song(current_song_id)
+                    song = database.get_song(song_id)
                     if song and song.get("filepath"):
-                        _, audio_emb = _fetch_song_embeddings(current_song_id)
+                        _, audio_emb = _fetch_song_embeddings(song_id)
                         if audio_emb:
                             database.record_mood_skip_repulsion(
                                 qm._mood.get_state(), body.reason,
-                                current_song_id, audio_emb,
+                                song_id, audio_emb,
                             )
             except Exception:
                 pass  # Best effort — don't fail the feedback submission
 
-    return {"status": "recorded", "reason": body.reason}
+    return {"status": "recorded", "reason": body.reason, "duration": body.duration}
 
 
 # ── Undo Actions ────────────────────────────────────────────
@@ -2454,9 +2902,9 @@ def stats_overview():
         unique_songs = conn.execute("SELECT COUNT(DISTINCT song_id) as cnt FROM play_events").fetchone()["cnt"]
         total_songs = conn.execute("SELECT COUNT(*) as cnt FROM songs").fetchone()["cnt"]
 
-        # Total listening time
+        # Total listening time (prorated by completion_pct)
         listen_row = conn.execute(
-            """SELECT COALESCE(SUM(s.duration_secs), 0) as secs FROM play_events pe
+            """SELECT COALESCE(SUM(s.duration_secs * COALESCE(pe.completion_pct, 100) / 100.0), 0) as secs FROM play_events pe
                JOIN songs s ON pe.song_id = s.id
                WHERE pe.signal IN ('completed', 'skip_early', 'skip_late')"""
         ).fetchone()
@@ -2622,9 +3070,10 @@ def daily_report():
         hearted = sum(1 for e in events if e["signal"] == "hearted")
         replayed = sum(1 for e in events if e["signal"] == "replayed")
 
-        # Listening time (sum of durations from played songs)
+        # Listening time (prorated by completion_pct)
         listen_secs = sum(
-            (e["duration_secs"] or 0) for e in events if e["signal"] in ("completed", "skip_early", "skip_late")
+            (e["duration_secs"] or 0) * (e["completion_pct"] or 0) / 100.0
+            for e in events if e["signal"] in ("completed", "skip_early", "skip_late")
         )
 
         # Unique songs
@@ -2742,7 +3191,7 @@ def similar_songs(song_id: int, limit: int = 10, source: str = "auto"):
         try:
             audio_collection = get_chroma_collection(config.MUQ_AUDIO_COLLECTION)
             audio_check = audio_collection.get(ids=[str(song_id)], include=["embeddings"])
-            if audio_check["embeddings"] and audio_check["embeddings"][0]:
+            if audio_check.get("embeddings") is not None and len(audio_check["embeddings"]) > 0 and audio_check["embeddings"][0] is not None:
                 use_audio = True
         except Exception:
             pass
@@ -2757,13 +3206,13 @@ def similar_songs(song_id: int, limit: int = 10, source: str = "auto"):
             ids=[str(song_id)],
             include=["embeddings"],
         )
-        if not results["embeddings"] or not results["embeddings"][0]:
+        if results.get("embeddings") is None or len(results["embeddings"]) == 0 or results["embeddings"][0] is None:
             # Fallback to the other collection
             fallback = get_chroma_collection("songs") if use_audio else None
             if fallback:
                 results = fallback.get(ids=[str(song_id)], include=["embeddings"])
                 collection = fallback
-            if not results["embeddings"] or not results["embeddings"][0]:
+        if results.get("embeddings") is None or len(results["embeddings"]) == 0 or results["embeddings"][0] is None:
                 return {"error": "Song has no embedding"}
         embedding = results["embeddings"][0]
 
@@ -2975,6 +3424,88 @@ def reset_recommendations():
 
     logger.info("Recommendations reset by user")
     return {"status": "reset", "message": "Recommendations reset. Restart to re-seed your taste."}
+
+
+@app.get("/api/settings/export")
+def export_settings():
+    """Export all settings, collections, and custom song metadata as JSON."""
+    settings = database.get_all_settings()
+    collections = database.get_collections_with_songs()
+    metadata = database.get_user_modified_songs()
+
+    return {
+        "exported_at": datetime.now().isoformat(),
+        "version": "2.4.1",
+        "settings": settings,
+        "collections": [
+            {
+                "name": c["name"],
+                "description": c.get("description", ""),
+                "song_ids": c.get("song_ids", []),
+            }
+            for c in collections
+        ],
+        "song_metadata": {
+            str(s["id"]): {
+                "user_tags": s.get("user_tags"),
+                "user_notes": s.get("user_notes"),
+                "dj_effect_eligible": s.get("dj_effect_eligible"),
+            }
+            for s in metadata
+        },
+    }
+
+
+@app.post("/api/settings/import")
+def import_settings(body: dict):
+    """Import settings from JSON export. Merges with existing data."""
+    data = body.get("data", body)
+    imported_settings = 0
+    imported_collections = 0
+    imported_metadata = 0
+
+    if "settings" in data:
+        for key, value in data["settings"].items():
+            database.set_setting(key, str(value))
+            imported_settings += 1
+
+    if "collections" in data:
+        for col in data["collections"]:
+            existing = database.get_collection_by_name(col.get("name", ""))
+            if existing:
+                continue
+            col_id = database.create_collection(
+                col.get("name", "Imported"),
+                col.get("description", ""),
+            )
+            for i, song_id in enumerate(col.get("song_ids", [])):
+                database.add_to_collection(col_id, song_id, position=i)
+            imported_collections += 1
+
+    if "song_metadata" in data:
+        for song_id_str, meta in data["song_metadata"].items():
+            try:
+                song_id = int(song_id_str)
+            except (ValueError, TypeError):
+                continue
+            updates = {}
+            if meta.get("user_tags") is not None:
+                updates["user_tags"] = meta["user_tags"]
+            if meta.get("user_notes") is not None:
+                updates["user_notes"] = meta["user_notes"]
+            if meta.get("dj_effect_eligible") is not None:
+                updates["dj_effect_eligible"] = int(meta["dj_effect_eligible"])
+            if updates:
+                database.update_song(song_id, **updates)
+                imported_metadata += 1
+
+    logger.info("Settings import: %d settings, %d collections, %d song metadata", imported_settings, imported_collections, imported_metadata)
+    return {
+        "status": "imported",
+        "settings_count": imported_settings,
+        "collections_count": imported_collections,
+        "song_metadata_count": imported_metadata,
+    }
 
 
 @app.post("/api/settings/wipe-db")
@@ -3384,6 +3915,7 @@ def get_talk_config():
         "talk_segment_cooldown": database.get_setting("talk_segment_cooldown") or "2",
         "talk_caller_heartbroken_enabled": database.get_setting("talk_caller_heartbroken_enabled") or "false",
         "talk_caller_melancholy_enabled": database.get_setting("talk_caller_melancholy_enabled") or "false",
+        "talk_volume": database.get_setting("talk_volume") or "100",
     }
 
 
@@ -3395,6 +3927,7 @@ def update_talk_config(body: dict):
         "talk_monologue_enabled", "talk_guest_takeover_enabled",
         "talk_frequency", "talk_guest_songs_per_set", "talk_segment_cooldown",
         "talk_caller_heartbroken_enabled", "talk_caller_melancholy_enabled",
+        "talk_volume",
     }
     for key, value in body.items():
         if key in allowed:
@@ -3625,8 +4158,14 @@ def _execute_command_actions(actions: list, explanation: str,
         if act_action == "add_to_queue":
             song_ids = act.get("song_ids", [])
             position = act.get("position", "back")
-            added = qm.add_manual(song_ids, position)
-            results.append({"action": "add_to_queue", "song_ids": added, "count": len(added)})
+            res = qm.add_manual(song_ids, position)
+            added_ids = res["added"]
+            skipped_ids = res["skipped"]
+            entry = {"action": "add_to_queue", "song_ids": added_ids, "count": len(added_ids)}
+            if skipped_ids:
+                entry["skipped"] = skipped_ids
+                entry["skipped_count"] = len(skipped_ids)
+            results.append(entry)
 
         elif act_action == "play_song":
             sid = act.get("song_id")
@@ -3703,6 +4242,10 @@ def _execute_command_actions(actions: list, explanation: str,
             st = _get_sleep_timer()
             st.start(minutes, fade_seconds=30, switch_to_chill=True)
             results.append({"action": "sleep_timer", "minutes": minutes})
+
+    total_skipped = sum(r.get("skipped_count", 0) for r in results)
+    if total_skipped > 0:
+        explanation += f" ({total_skipped} song{'s' if total_skipped > 1 else ''} already in queue)"
 
     return {
         "actions": results,

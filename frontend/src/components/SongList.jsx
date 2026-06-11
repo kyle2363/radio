@@ -36,7 +36,10 @@ function SongList({ addToast, currentSongId, onPlay }) {
     keyscale: "", timesignature: "", vocal_language: "", lyrics: "", caption: "",
   });
   const [savingMetadata, setSavingMetadata] = useState(false);
+  const [missingMetadata, setMissingMetadata] = useState(false);
+  const [missingCaption, setMissingCaption] = useState(false);
   const [openMenuId, setOpenMenuId] = useState(null);
+  const [flashedId, setFlashedId] = useState(null);
   const menuRef = useRef(null);
 
   useEffect(() => {
@@ -46,7 +49,7 @@ function SongList({ addToast, currentSongId, onPlay }) {
   useEffect(() => {
     if (tab === "library") fetchSongs();
     else if (tab === "recent") fetchRecentlyPlayed();
-  }, [tab, page, search, sortBy, sortDir]);
+  }, [tab, page, search, sortBy, sortDir, missingMetadata, missingCaption]);
 
   useEffect(() => {
     const handleClick = (e) => {
@@ -68,12 +71,12 @@ function SongList({ addToast, currentSongId, onPlay }) {
   const fetchSongs = useCallback(async () => {
     setLoading(true);
     try {
-      const data = await api.fetchSongs({ page: String(page), page_size: "50", search, sort_by: sortBy, sort_dir: sortDir });
+      const data = await api.fetchSongs({ page: String(page), page_size: "50", search, sort_by: sortBy, sort_dir: sortDir, missing_metadata: String(missingMetadata), missing_caption: String(missingCaption) });
       setSongs(data.items || []);
       setTotalPages(data.total_pages || 1);
     } catch (err) {}
     setLoading(false);
-  }, [page, search, sortBy, sortDir]);
+  }, [page, search, sortBy, sortDir, missingMetadata]);
 
   const fetchRecentlyPlayed = useCallback(async () => {
     setLoading(true);
@@ -109,6 +112,8 @@ function SongList({ addToast, currentSongId, onPlay }) {
     e.stopPropagation();
     try {
       await api.addToQueue(song.id);
+      setFlashedId(song.id);
+      setTimeout(() => setFlashedId(null), 1500);
       addToast?.(`Added to queue: ${song.title}`, "success");
     } catch (err) {
       addToast?.("Failed to add to queue", "error");
@@ -225,7 +230,7 @@ function SongList({ addToast, currentSongId, onPlay }) {
 
   const handleTabChange = (newTab) => {
     setTab(newTab);
-    if (newTab === "library") { setPage(1); setSearch(""); }
+    if (newTab === "library") { setPage(1); setSearch(""); setMissingMetadata(false); setMissingCaption(false); }
   };
 
   const displaySongs = tab === "recent" ? recentlyPlayed : songs;
@@ -268,13 +273,30 @@ function SongList({ addToast, currentSongId, onPlay }) {
             </svg>
             <input className="search-input" placeholder="Search songs, artists…" value={search}
               onChange={(e) => { setSearch(e.target.value); setPage(1); }} />
-            <select className="sort-sel" value={`${sortBy}-${sortDir}`}
-              onChange={(e) => { const [k, d] = e.target.value.split("-"); setSortBy(k); setSortDir(d); setPage(1); }}>
+            <select className="sort-sel" value={missingMetadata ? "__missing__" : missingCaption ? "__missing_caption__" : `${sortBy}-${sortDir}`}
+              onChange={(e) => {
+                setMissingMetadata(false);
+                setMissingCaption(false);
+                if (e.target.value === "__missing__") {
+                  setMissingMetadata(true);
+                } else if (e.target.value === "__missing_caption__") {
+                  setMissingCaption(true);
+                } else {
+                  const [k, d] = e.target.value.split("-");
+                  setSortBy(k);
+                  setSortDir(d);
+                }
+                setPage(1);
+              }}>
               <option value="title-asc">Title</option>
               <option value="artist-asc">Artist</option>
               <option value="bpm-asc">BPM</option>
               <option value="energy-desc">Energy</option>
               <option value="avg_completion-desc">Completion</option>
+              <option value="instrumental-asc">Instrumental</option>
+              <option disabled>──────────</option>
+              <option value="__missing__">Missing Metadata</option>
+              <option value="__missing_caption__">Missing Caption</option>
             </select>
           </div>
 
@@ -310,18 +332,19 @@ function SongList({ addToast, currentSongId, onPlay }) {
                   {search ? "\u{1F50D}" : "\u{1F4E6}"}
                 </div>
                 <p style={{ fontSize: "12px", color: "var(--text-muted)" }}>
-                  {search ? `No songs match "${search}"` : "No songs found"}
+                  {search ? `No songs match "${search}"` : missingMetadata ? "No songs with missing metadata" : missingCaption ? "No songs with missing captions" : "No songs found"}
                 </p>
-                {search && (
-                  <button onClick={() => setSearch("")}
+                {(search || missingMetadata || missingCaption) && (
+                  <button onClick={() => { setSearch(""); setMissingMetadata(false); setMissingCaption(false); }}
                     style={{ marginTop: "8px", fontSize: "11px", color: "var(--accent)", background: "var(--accent-muted)", padding: "4px 10px", borderRadius: "5px", border: "none", cursor: "pointer" }}>
-                    Clear search
+                    Clear filters
                   </button>
                 )}
               </div>
             ) : (
               displaySongs.map((song) => (
                 <SongRow key={song.id} song={song} isPlaying={currentSongId === song.id}
+                  flashed={flashedId === song.id}
                   onPlay={handlePlay} onAddToQueue={handleAddToQueue}
                   onBlacklist={handleBlacklist} onReprocess={handleReprocess}
                   onEditTags={handleEditTags} onEditMetadata={handleOpenMetadata} onHeart={handleHeart}
@@ -370,6 +393,7 @@ function SongList({ addToast, currentSongId, onPlay }) {
             ) : (
               displaySongs.map((song) => (
                 <SongRow key={song.id} song={song} isPlaying={currentSongId === song.id}
+                  flashed={flashedId === song.id}
                   onPlay={handlePlay} onAddToQueue={handleAddToQueue}
                   onBlacklist={handleBlacklist} onReprocess={handleReprocess}
                   onEditTags={handleEditTags} onEditMetadata={handleOpenMetadata} onHeart={handleHeart}
@@ -505,7 +529,7 @@ function SongList({ addToast, currentSongId, onPlay }) {
   );
 }
 
-const SongRow = React.memo(({ song, isPlaying, onPlay, onAddToQueue, onBlacklist, onReprocess, onEditTags, onEditMetadata, onHeart, openMenuId, setOpenMenuId, menuRef }) => {
+const SongRow = React.memo(({ song, isPlaying, flashed, onPlay, onAddToQueue, onBlacklist, onReprocess, onEditTags, onEditMetadata, onHeart, openMenuId, setOpenMenuId, menuRef }) => {
   const energyPct = Math.round((song.energy ?? 0.5) * 100);
   const valencePct = Math.round((song.valence ?? 0.5) * 100);
   const completionPct = Math.round(song.avg_completion ?? 0);
@@ -513,7 +537,7 @@ const SongRow = React.memo(({ song, isPlaying, onPlay, onAddToQueue, onBlacklist
   const isOpen = openMenuId === song.id;
 
   return (
-    <div className={`song-row ${isPlaying ? "playing" : ""}`} onClick={() => onPlay(song)}>
+    <div className={`song-row ${isPlaying ? "playing" : ""} ${flashed ? "add-flash" : ""}`} onClick={() => onPlay(song)}>
       <Music size={13} style={{ color: "var(--text-muted)" }} />
       <div style={{ minWidth: 0 }}>
         <div style={{ color: "var(--text-primary)", fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: "12px" }}>

@@ -256,6 +256,8 @@ CALLER_OPENINGS = [
     "already_talking",
     "raw_reaction",
     "quiet_reflection",
+    "none",
+    "standard",
 ]
 
 
@@ -337,20 +339,22 @@ Rules:
 - The reason they called shapes everything: their energy, what they lead with, what they leave unsaid
 - The opening style must be audible in the first line — it defines how the caller enters the conversation
 - Opening style '{caller_opening_style}' means:
-  * mid_thought: caller is already mid-sentence, continuing a thought ("...and that's when I realized")
+  * mid_thought: caller is already mid-sentence, continuing a thought (Example only: "...and that's when I realized")
   * nervous: caller is hesitant, says "um", "hey is this...", "sorry to bother you"
-  * already_talking: caller jumps in without introduction ("No no no, but listen—")
-  * raw_reaction: caller blurts out an emotional reaction ("Oh MAN, that track—")
-  * quiet_reflection: caller starts slow and thoughtful ("I've been sitting here thinking about...")
+  * already_talking: caller jumps in without introduction (Example only: "No no no, but listen—")
+  * raw_reaction: caller blurts out an emotional reaction (Example only: "Oh MAN, that track—")
+  * quiet_reflection: caller starts slow and thoughtful (Example only: "I've been sitting here thinking about...")
+  * none: your choice to decide how it starts!
+  * standard: start with a generic greeting then proceed
 - Caller MUST reference at least one actual song or artist from what's been playing
-- Caller should echo a specific lyric fragment naturally (not as a direct quote)
+- Caller can echo a specific lyric fragment naturally (not as a direct quote)
 - The DJ should respond in character — warm but not identical each time
 - Use filler words, restarts, and incomplete thoughts where natural
 - The caller_request should feel like something they arrived at, not something they planned to say
 - mood_shift: set to "energetic", "chill", "focus", "melancholy" or null
 - energy_direction: set to "up", "down" or null
 - If next song is provided, the dj_closer should tease it as if it's a natural response to the call
-- If no next song info, dj_closer should be generic ("Stay tuned" / "More great music ahead")
+- If no next song info, dj_closer should be generic (Example only: "Stay tuned" / "More great music ahead")
 - NO markdown, NO backticks, NO extra text — just the JSON object"""
 
 
@@ -573,7 +577,7 @@ Monologue type: {monologue_type}
 What this means: {monologue_instruction}
 Tone to aim for: {monologue_tone}
 
-Write a 60-90 second spoken monologue.
+Write a 45-90 second spoken monologue.
 
 Rules:
 - Write for one listener, not a crowd
@@ -760,7 +764,7 @@ Context:
 - Songs coming up in your set: {upcoming_songs_hint}
 - Next song specifically: {next_song_str}
 
-Write a 15-20 second spoken intro for your takeover.
+Write a 15-25 second spoken intro for your takeover.
 
 Rules:
 - Reference the transition from what just played — agree with it, contrast it, or riff off it
@@ -779,7 +783,7 @@ Context:
 - Main DJ: {dj_name}
 - How the set felt: {set_mood}
 
-Write a 10-15 second spoken handoff.
+Write a 10-20 second spoken handoff.
 - Reference at least one moment or track from your set
 - Feel like a natural ending, not a formal sign-off
 - Let your personality come through in the final seconds

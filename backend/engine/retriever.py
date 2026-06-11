@@ -45,8 +45,10 @@ def get_embedding_dimension(collection_name: str = "songs") -> int:
     try:
         collection = get_chroma_collection(collection_name)
         sample = collection.get(limit=1, include=["embeddings"])
-        if sample and sample.get("embeddings") and sample["embeddings"][0]:
-            return len(sample["embeddings"][0])
+        if sample and sample.get("embeddings") is not None:
+            emb = sample["embeddings"][0]
+            if emb is not None and hasattr(emb, "__len__"):
+                return len(emb)
     except Exception:
         pass
     return 1024
@@ -91,7 +93,12 @@ def search_by_vector(taste_vector, n=60, exclude_ids=None,
         exclude_ids = []
 
     collection = get_chroma_collection(collection_name)
-    jitter_setting = float(database._get_cached_setting("jitter_strength") or "0.12")
+    jitter_override = database._get_cached_setting("jitter_override")
+    if jitter_override:
+        jitter_setting = float(jitter_override)
+    else:
+        exploration = float(database._get_cached_setting("exploration_level") or "0.3")
+        jitter_setting = 0.03 + exploration * 0.13
     query_vector = _jitter_vector(taste_vector, strength=jitter_setting)
 
     where_clause = None
@@ -388,6 +395,13 @@ def build_candidate_list(text_taste_vector=None, audio_taste_vector=None,
     if cluster_blacklisted:
         cluster_song_ids = database.get_songs_by_clusters(list(cluster_blacklisted))
         blacklisted.update(cluster_song_ids)
+
+    # Filter out temporally suppressed songs (skip for 24h, session, etc.)
+    try:
+        suppressed = database.get_suppressed_song_ids()
+        exclude_ids |= suppressed
+    except Exception:
+        pass
 
     exclude_ids |= recently_played | blacklisted | mood_blacklisted
 

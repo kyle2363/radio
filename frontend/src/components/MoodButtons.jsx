@@ -20,7 +20,8 @@ const MoodButtons = React.memo(function MoodButtons({ activeMood, onMoodSet }) {
             key={mood.id}
             onClick={() => onMoodSet(isActive ? "neutral" : mood.id)}
             className={`mood-opt ${isActive ? "active" : ""}`}
-            title={mood.label}>
+            title={mood.label}
+            style={isActive ? { boxShadow: `0 0 14px ${mood.activeColor}25` } : undefined}>
             <Icon size={16} />
             <span>{mood.label}</span>
           </button>

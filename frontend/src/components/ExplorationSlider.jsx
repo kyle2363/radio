@@ -27,7 +27,7 @@ const ExplorationSlider = React.memo(function ExplorationSlider({ level, onChang
           className="absolute inset-0 w-full opacity-0 cursor-pointer" />
       </div>
       <span className="text-[10px] tabular-nums min-w-[24px] text-right" style={{ color: "var(--text-muted)" }}>{Math.round(value * 100)}%</span>
-      <span className="text-[10px] whitespace-nowrap" style={{ color: "var(--text-muted)" }}>Adv.</span>
+      <span className="text-[10px] whitespace-nowrap pr-2" style={{ color: "var(--text-muted)" }}>Adv.</span>
     </div>
   );
 });

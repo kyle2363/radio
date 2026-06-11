@@ -12,6 +12,9 @@ import struct
 import threading
 import wave
 
+import numpy as np
+import soundfile as sf
+
 import config
 from announcer.tts_engine import TTSEngine, AVAILABLE_ENGINES, PiperTTSEngine, run_with_timeout
 
@@ -130,6 +133,46 @@ def _fade_in_first_second(path: str) -> bool:
     except Exception as e:
         logger.warning(f"Failed to fade in {path}: {e}")
         return False
+
+
+def _concatenate_wavs(wav_paths):
+    """Concatenate multiple WAV files into a single WAV.
+
+    All WAVs must share the same sample rate and channel count.
+    Returns the path to the concatenated (and cached) file.
+    """
+    if len(wav_paths) <= 1:
+        return wav_paths[0] if wav_paths else None
+
+    key = hashlib.md5("|".join(sorted(wav_paths)).encode()).hexdigest()
+    out_path = os.path.join(TTS_CACHE_DIR, f"concat_{key}.wav")
+    if os.path.exists(out_path):
+        return out_path
+
+    segments = []
+    target_sr = None
+    target_channels = None
+    for path in wav_paths:
+        data, sr = sf.read(path)
+        if target_sr is None:
+            target_sr = sr
+        elif sr != target_sr:
+            logger.warning(f"_concatenate_wavs: sample rate mismatch {sr} != {target_sr}, resampling")
+            import librosa
+            data = librosa.resample(data, orig_sr=sr, target_sr=target_sr)
+        if data.ndim == 1:
+            channels = 1
+        else:
+            channels = data.shape[1]
+        if target_channels is None:
+            target_channels = channels
+        segments.append(data)
+
+    combined = np.concatenate(segments, axis=0) if len(segments) > 1 else segments[0]
+    sf.write(out_path, combined, target_sr)
+    logger.info("_concatenate_wavs: %d WAVs -> %s (%.1fs, %dHz, %dch)",
+                len(wav_paths), out_path, len(combined) / target_sr, target_sr, target_channels)
+    return out_path
 
 
 class VoiceManager:

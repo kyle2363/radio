@@ -1,26 +1,32 @@
 import React from "react";
 
-function Skeleton({ className = "", width, height }) {
+const shimmerStyle = {
+  background: "linear-gradient(90deg, var(--bg-elevated) 25%, var(--bg-surface) 50%, var(--bg-elevated) 75%)",
+  backgroundSize: "200px 100%",
+  animation: "skeleton-shimmer 1.5s ease-in-out infinite",
+};
+
+function Skeleton({ className = "", width, height, style: extraStyle }) {
   return (
     <div
-      className={`animate-pulse bg-gray-800 rounded ${className}`}
-      style={{ width, height }}
+      className={`rounded ${className}`}
+      style={{ width, height, ...shimmerStyle, ...extraStyle }}
     />
   );
 }
 
 export function SkeletonCard() {
   return (
-    <div className="rounded-xl border border-gray-800 bg-gray-900/50 p-6 space-y-4">
-      <div className="flex items-center gap-5">
-        <Skeleton className="w-24 h-24 rounded-lg flex-shrink-0" />
-        <div className="flex-1 space-y-3">
-          <Skeleton className="h-5 w-48" />
-          <Skeleton className="h-4 w-32" />
-          <div className="flex gap-2 mt-2">
-            <Skeleton className="h-5 w-16 rounded-md" />
-            <Skeleton className="h-5 w-16 rounded-md" />
-            <Skeleton className="h-5 w-16 rounded-md" />
+    <div style={{ borderRadius: 12, border: "1px solid var(--border)", background: "var(--bg-surface)", padding: 24, display: "flex", flexDirection: "column", gap: 16 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 20 }}>
+        <Skeleton className="rounded-lg" style={{ width: 96, height: 96, flexShrink: 0 }} />
+        <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 12 }}>
+          <Skeleton className="rounded" style={{ height: 20, width: 192 }} />
+          <Skeleton className="rounded" style={{ height: 16, width: 128 }} />
+          <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+            <Skeleton className="rounded-md" style={{ height: 20, width: 64 }} />
+            <Skeleton className="rounded-md" style={{ height: 20, width: 64 }} />
+            <Skeleton className="rounded-md" style={{ height: 20, width: 64 }} />
           </div>
         </div>
       </div>
@@ -30,13 +36,13 @@ export function SkeletonCard() {
 
 export function SkeletonQueue() {
   return (
-    <div className="bg-gray-900 rounded-xl p-5 border border-gray-800">
-      <Skeleton className="h-3 w-20 mb-4" />
-      <div className="space-y-3">
+    <div style={{ background: "var(--bg-surface)", borderRadius: 12, padding: 20, border: "1px solid var(--border)" }}>
+      <Skeleton className="rounded" style={{ height: 12, width: 80, marginBottom: 16 }} />
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
         {[1, 2, 3].map((i) => (
-          <div key={i} className="flex items-center justify-between">
-            <Skeleton className="h-4 w-48" />
-            <Skeleton className="h-3 w-16" />
+          <div key={i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <Skeleton className="rounded" style={{ height: 16, width: 192 }} />
+            <Skeleton className="rounded" style={{ height: 12, width: 64 }} />
           </div>
         ))}
       </div>
@@ -44,17 +50,23 @@ export function SkeletonQueue() {
   );
 }
 
-export function SkeletonRow({ count = 5 }) {
+export function SkeletonRow({ count = 8 }) {
   return (
-    <div className="rounded-xl border border-gray-800 bg-gray-900/50 overflow-hidden">
+    <div style={{ borderRadius: 12, border: "1px solid var(--border)", background: "var(--bg-surface)", overflow: "hidden" }}>
       {Array.from({ length: count }).map((_, i) => (
-        <div key={i} className="flex items-center gap-3 px-4 py-3 border-b border-gray-800 last:border-b-0">
-          <Skeleton className="w-4 h-4 rounded flex-shrink-0" />
-          <div className="flex-1 space-y-2">
-            <Skeleton className="h-3.5 w-40" />
-            <Skeleton className="h-3 w-28" />
+        <div key={i} style={{
+          display: "flex", alignItems: "center", gap: 12,
+          padding: "12px 16px",
+          borderBottom: i < count - 1 ? "1px solid var(--border-subtle)" : "none",
+        }}>
+          <Skeleton className="rounded" style={{ width: 16, height: 16, flexShrink: 0 }} />
+          <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 6 }}>
+            <Skeleton className="rounded" style={{ height: 14, width: `${50 + Math.random() * 30}%`, minWidth: 120 }} />
+            <Skeleton className="rounded" style={{ height: 11, width: `${35 + Math.random() * 20}%`, minWidth: 80 }} />
           </div>
-          <Skeleton className="h-3 w-10" />
+          <Skeleton className="rounded" style={{ height: 12, width: 40 }} />
+          <Skeleton className="rounded" style={{ height: 12, width: 40 }} />
+          <Skeleton className="rounded" style={{ height: 12, width: 40 }} />
         </div>
       ))}
     </div>
@@ -63,13 +75,13 @@ export function SkeletonRow({ count = 5 }) {
 
 export function SkeletonStats() {
   return (
-    <div className="bg-gray-900 rounded-xl p-5 border border-gray-800 space-y-4">
-      <Skeleton className="h-3 w-24" />
-      <div className="grid grid-cols-3 gap-3">
+    <div style={{ background: "var(--bg-surface)", borderRadius: 12, padding: 20, border: "1px solid var(--border)", display: "flex", flexDirection: "column", gap: 16 }}>
+      <Skeleton className="rounded" style={{ height: 12, width: 96 }} />
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
         {[1, 2, 3].map((i) => (
-          <div key={i} className="bg-gray-800 rounded-lg p-3 text-center space-y-2">
-            <Skeleton className="h-6 w-12 mx-auto" />
-            <Skeleton className="h-3 w-16 mx-auto" />
+          <div key={i} style={{ background: "var(--bg-elevated)", borderRadius: 8, padding: 12, display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
+            <Skeleton className="rounded" style={{ height: 24, width: 48 }} />
+            <Skeleton className="rounded" style={{ height: 12, width: 64 }} />
           </div>
         ))}
       </div>
@@ -81,7 +93,7 @@ export function SkeletonQueueCompact({ count = 5 }) {
   return (
     <div>
       {Array.from({ length: count }).map((_, i) => (
-        <div key={i} className="animate-pulse" style={{
+        <div key={i} style={{
           background: "var(--bg-elevated)",
           padding: "6px 8px",
           marginBottom: "3px",
@@ -91,16 +103,16 @@ export function SkeletonQueueCompact({ count = 5 }) {
           borderBottom: "1px solid var(--border-subtle)",
         }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 5, marginBottom: 2 }}>
-            <div className="bg-gray-800 rounded" style={{ height: 12, width: "60%", minWidth: 80 }} />
-            <div className="bg-gray-800 rounded" style={{ height: 12, width: 40, flexShrink: 0 }} />
+            <Skeleton className="rounded" style={{ height: 12, width: "60%", minWidth: 80 }} />
+            <Skeleton className="rounded" style={{ height: 12, width: 40, flexShrink: 0 }} />
           </div>
-          <div className="bg-gray-800 rounded" style={{ height: 8, width: "45%", marginBottom: 4 }} />
+          <Skeleton className="rounded" style={{ height: 8, width: "45%", marginBottom: 4 }} />
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <div className="bg-gray-800 rounded" style={{ height: 8, width: 12 }} />
-            <div className="bg-gray-800 rounded" style={{ height: 3, width: 34 }} />
-            <div className="bg-gray-800 rounded" style={{ height: 8, width: 12 }} />
-            <div className="bg-gray-800 rounded" style={{ height: 3, width: 34 }} />
-            <div className="bg-gray-800 rounded" style={{ height: 8, width: 40, marginLeft: "auto" }} />
+            <Skeleton className="rounded" style={{ height: 8, width: 12 }} />
+            <Skeleton className="rounded" style={{ height: 3, width: 34 }} />
+            <Skeleton className="rounded" style={{ height: 8, width: 12 }} />
+            <Skeleton className="rounded" style={{ height: 3, width: 34 }} />
+            <Skeleton className="rounded" style={{ height: 8, width: 40, marginLeft: "auto" }} />
           </div>
         </div>
       ))}

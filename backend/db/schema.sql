@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS songs (
     ingest_phase    TEXT DEFAULT 'raw',
     art_file        TEXT,
     dj_effect_eligible INTEGER DEFAULT 1,
+    gain_db         REAL DEFAULT 0.0,
     added_at        DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -148,19 +149,36 @@ INSERT OR IGNORE INTO settings (key, value) VALUES
     ('talk_segment_cooldown', '2'),
     ('talk_caller_heartbroken_enabled', 'false'),
     ('talk_caller_melancholy_enabled', 'false'),
+    ('talk_volume', '100'),
     ('radio_intro_frequency', '3'),
     ('right_rail_width', '255'),
     ('dj_effect_enabled', 'true'),
     ('dj_effect_preset', 'slowed_reverb'),
     ('folder_filter', ''),
     ('jitter_strength', '0.12'),
+    ('jitter_override', ''),
     ('recency_exclude_hours', '1'),
     ('vibe_lock_duration_minutes', '30'),
     ('vibe_lock_max_songs', '10'),
     ('dislike_decay_rate', '0.029'),
     ('dj_speech_speed', '0.90'),
     ('dj_intro_start_hour', '6'),
-    ('dj_intro_end_hour', '23');
+    ('dj_intro_end_hour', '23'),
+    ('play_mode', 'ai'),
+    ('notify_on_song_change', 'true'),
+    ('auto_pause_on_lock', 'true'),
+    ('auto_resume_on_unlock', 'true'),
+    ('alt_hotkeys_enabled', 'true'),
+    ('start_minimized', 'false'),
+    ('start_on_login', 'false'),
+    ('mini_player_enabled', 'true'),
+    ('widget_enabled', 'false'),
+    ('hotkey_bindings', '{"heart":"Alt+H","thumbs_down":"Alt+D","vibe_lock":"Alt+V","mood_chill":"Alt+1","mood_energetic":"Alt+2","mood_focus":"Alt+3","mood_melancholy":"Alt+4","mood_discovery":"Alt+5","volume_up":"Alt+Up","volume_down":"Alt+Down"}'),
+    ('accent_color', '#4eccc4'),
+    ('show_lyrics', 'true'),
+    ('eq_preset', 'off'),
+    ('command_response_timeout', '4'),
+    ('command_inactive_timeout', '6');
 
 -- skip_feedback — structured skip reason collection
 CREATE TABLE IF NOT EXISTS skip_feedback (
@@ -168,6 +186,7 @@ CREATE TABLE IF NOT EXISTS skip_feedback (
     session_id  INTEGER REFERENCES sessions(id),
     skip_streak INTEGER,
     reason      TEXT,        -- "too_intense", "too_slow", "too_samey", "wrong_mood", "just_skip"
+    duration    TEXT,        -- "24h", "session", "permanent", or NULL
     created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -211,3 +230,15 @@ CREATE TABLE IF NOT EXISTS mood_skip_repulsion (
     created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_mood_skip_repulsion_mood ON mood_skip_repulsion(mood_state);
+
+-- song_suppression — temporal skip suppression (skip for 24h, session, etc.)
+CREATE TABLE IF NOT EXISTS song_suppression (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    song_id     INTEGER REFERENCES songs(id),
+    reason      TEXT,
+    expires_at  DATETIME,
+    session_id  INTEGER REFERENCES sessions(id),
+    created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_song_suppression_song ON song_suppression(song_id);
+CREATE INDEX IF NOT EXISTS idx_song_suppression_expires ON song_suppression(expires_at);

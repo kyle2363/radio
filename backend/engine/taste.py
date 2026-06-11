@@ -80,8 +80,10 @@ class MemorySystem:
             client = _get_chroma_client()
             collection = client.get_collection(collection_name)
             result = collection.get(ids=[str(song_id)], include=["embeddings"])
-            if result and result["embeddings"]:
-                return result["embeddings"][0]
+            if result and result.get("embeddings") is not None and len(result["embeddings"]) > 0:
+                emb = result["embeddings"][0]
+                if emb is not None:
+                    return emb
         except Exception:
             pass
         return None
@@ -106,10 +108,11 @@ class MemorySystem:
             client = _get_chroma_client()
             collection = client.get_collection(collection_name)
             result = collection.get(ids=unique_ids, include=["embeddings"])
+            embs = result["embeddings"]
             return {
                 eid: emb
-                for eid, emb in zip(result["ids"], result["embeddings"])
-                if emb
+                for eid, emb in zip(result["ids"], embs)
+                if emb is not None
             }
         except Exception as e:
             logger.debug("Batch ChromaDB fetch failed for %d songs from %s: %s",
@@ -136,7 +139,7 @@ class MemorySystem:
         signals = []
         for ev in liked:
             embedding = embedding_map.get(str(ev['song_id']))
-            if embedding:
+            if embedding is not None:
                 signals.append({
                     'song_id': ev['song_id'],
                     'embedding': embedding,
@@ -328,7 +331,7 @@ class MemorySystem:
             decay_rate = 0.029
         for ev in signals:
             emb = embedding_map.get(str(ev['song_id']))
-            if not emb:
+            if emb is None:
                 continue
             # Compute time-based weight
             played_at = ev.get('played_at')

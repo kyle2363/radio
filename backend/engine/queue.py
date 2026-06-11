@@ -17,7 +17,7 @@ from engine.constellations import TasteConstellations
 from engine import player as player_engine
 from db import database
 from announcer import talk_segments
-from announcer.voice_manager import _fade_in_first_second
+from announcer.voice_manager import _fade_in_first_second, _concatenate_wavs
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +76,7 @@ class QueueManager:
         self._dj_effect_cache = {}
         self._dj_effect_cache_lock = threading.Lock()
         self._pending_talk_segments = []  # separate queue — survives song queue rebuilds
+        self._talk_segment_playing = False  # True while a talk segment TTS is playing
         self._manual_queue = []  # user/LLM additions — survives song queue rebuilds
         self._rebuild_gen = 0  # incremented each rebuild; used to discard stale results
         self._broadcast_gen = 0  # monotonically increasing counter for broadcast events
@@ -88,11 +89,15 @@ class QueueManager:
         self._preview_lock = threading.Lock()
         self._last_ended_song_id = None  # set by on_song_ended for preview validation
         self._tts_checker_stop = threading.Event()  # signals staleness checker to stop
+        self._preview_stop = threading.Event()  # signals preview watchdog to stop
         # Undo tracking (single-deep)
         self._last_action = None  # {"type": "skip"|"thumbs_down", "song_id": int, "timestamp": float}
         self._last_skipped_song = None  # song dict of most recently skipped song
         self._prev_mood_state = None  # previous mood state for MOOD_CHANGE trigger detection
         self._constellations = TasteConstellations()  # multi-centroid taste model
+        # Persistent preview watchdog — regenerates the preview batch
+        # whenever it diverges from the main queue.
+        self._start_preview_watchdog()
 
     def on_song_ended(self, song_id):
         """Called when a song ends. Updates state, does NOT rebuild.
@@ -105,9 +110,11 @@ class QueueManager:
             self._player._explicitly_stopped = False
             self._current_song_id = None
             return
-        # Save ended song ID for preview validation in pop_next()
+        # Keep _current_song_id set so the next on_song_started can
+        # detect that this is NOT the first play in session, enabling
+        # the preview consumption path.  pop_next() validates the preview
+        # against the just-ended song, not the next one.
         self._last_ended_song_id = song_id
-        self._current_song_id = None
         # Record transition
         if self._queue:
             next_song_id = self._queue[0].get("song_id")
@@ -122,6 +129,10 @@ class QueueManager:
 
     def on_song_started(self, song_id, session_id=None):
         """Called when a song starts playing."""
+        # Clear talk segment flag — if this on_song_started was triggered by
+        # pop_next() after a talk-only chain ended, we're now on a real song.
+        self._talk_segment_playing = False
+        prev_song_id = self._current_song_id  # save for first-play detection
         self._current_song_id = song_id
         if session_id:
             self._current_session_id = session_id
@@ -134,17 +145,45 @@ class QueueManager:
         with self._pregen_lock:
             self._pregen_cache.pop(song_id, None)
 
-        # Clear stale preview — it was built for the previous song.
+        # Check if preview cache is valid and seeded for THIS song.
+        # If valid: swap preview into main queue instantly (no rebuild wait).
+        # If stale/missing: clear main queue, fall back to normal rebuild.
+        preview_valid = False
         with self._preview_lock:
-            self._preview_queue = []
-            self._preview_song_id = None
+            logger.info("on_song_started: preview check prev_song_id=%s song_id=%s preview_song_id=%s preview_queue_len=%d",
+                        prev_song_id, song_id, self._preview_song_id, len(self._preview_queue))
+            if (prev_song_id is not None  # skip on first play in session
+                    and self._preview_queue
+                    and self._preview_song_id is not None
+                    and self._preview_song_id == song_id):
+                logger.info(f"on_song_started: using preview queue (seeded for song {song_id}, "
+                            f"{len(self._preview_queue)} items) queue_size_before=%d", len(self._queue))
+                self._queue = list(self._preview_queue)
+                self._preview_queue = []
+                self._preview_song_id = None
+                preview_valid = True
+                # If current song is at the front of the queue (manual play via
+                # play_song endpoint bypasses pop_next), remove it so it doesn't
+                # replay after the current one ends.
+                if self._queue and self._queue[0].get("song_id") == song_id:
+                    self._queue.pop(0)
+                    logger.info("on_song_started: popped front song %s from preview, queue now %d items",
+                                song_id, len(self._queue))
+
+        if not preview_valid:
+            logger.info(f"on_song_started: preview missing/stale for song {song_id}, "
+                        f"clearing queue (was %d items)", len(self._queue))
+            with self._condition:
+                self._queue.clear()
+
+        # Broadcast queue state so frontend shows it immediately
+        self._broadcast("queue_updated", {"queue": self._get_display_queue()})
 
         # Start queue rebuild in background
         with self._condition:
             self._rebuilding = True
             self._rebuild_gen += 1
-            self._queue.clear()  # discard stale AI queue so pop_next won't return old items
-        threading.Thread(target=self._rebuild_queue, daemon=True).start()
+        threading.Thread(target=self._rebuild_queue, kwargs={"advance_talk_counter": True}, daemon=True).start()
 
         # Save current mood state for MOOD_CHANGE detection on next song.
         # Placed at the end so it captures the mood after any shifts from
@@ -164,17 +203,14 @@ class QueueManager:
 
         # 1. Talk segments always have priority — they're pre-generated
         # All queues checked under the same lock for atomicity
+        # NOTE: Generation check removed — talk segments are pre-rendered
+        # audio that doesn't depend on queue state.  The old check caused
+        # valid segments to be silently discarded when the preview watchdog
+        # incremented _rebuild_gen between segment generation and pop_next.
         with self._condition:
             if self._pending_talk_segments:
                 pick = self._pending_talk_segments.pop(0)
-                seg_gen = pick.get("generation")
-                # If the segment was created by a stale rebuild, discard it
-                if seg_gen is not None and seg_gen != self._rebuild_gen:
-                    logger.info(f"pop_next: discarding stale talk segment (seg_gen={seg_gen}, "
-                                f"current_gen={self._rebuild_gen}, type={pick.get('segment_type')})")
-                    pick = None
-                else:
-                    logger.info(f"pop_next: returning pending talk segment ({pick.get('segment_type')})")
+                logger.info(f"pop_next: returning pending talk segment ({pick.get('segment_type')})")
 
             # 2. Manual queue (user/LLM additions — survives rebuilds)
             if pick is None and self._manual_queue:
@@ -183,18 +219,9 @@ class QueueManager:
 
             # 3. AI song queue
             if pick is None:
-                # Check preview cache — if it was built for the song that
-                # just ended, use it instantly (no rebuild wait).
-                with self._preview_lock:
-                    if (self._preview_queue
-                            and self._preview_song_id is not None
-                            and self._preview_song_id == self._last_ended_song_id):
-                        logger.info(f"pop_next: using preview queue (built for song {self._preview_song_id}, "
-                                    f"{len(self._preview_queue)} items)")
-                        self._queue = list(self._preview_queue)
-                        self._preview_queue = []
-                        self._preview_song_id = None
-
+                # Preview cache is handled by on_song_started() — it swaps
+                # the preview into _queue before pop_next ever runs.
+                # Just pop directly from _queue.
                 if not self._queue and not self._rebuilding:
                     self._rebuilding = True
                     self._rebuild_gen += 1
@@ -223,11 +250,14 @@ class QueueManager:
         # all other threads that need _condition — like /api/play/status)
         return self._get_single_recommendation()
 
-    def _get_display_queue(self):
+    def _get_display_queue(self, _locked=False):
         """Return merged view of all queue tiers for display.
 
         Order: talk segments → manual queue → AI song queue.
+        If _locked is True, caller already holds self._condition.
         """
+        if _locked:
+            return list(self._pending_talk_segments) + list(self._manual_queue) + list(self._queue)
         with self._condition:
             return list(self._pending_talk_segments) + list(self._manual_queue) + list(self._queue)
 
@@ -237,6 +267,8 @@ class QueueManager:
         Only reorders items within _queue (the AI recommendation queue).
         _manual_queue (explicitly added songs) is left untouched so it
         does not accumulate items from reorder operations.
+        On reorder, the stale preview is cleared and regenerated with the
+        new first item as the recommendation seed (full pipeline).
         """
         clean_order = [sid for sid in order if sid is not None]
         if not clean_order:
@@ -260,6 +292,22 @@ class QueueManager:
 
             remaining = [item for item in ai_items if item.get("song_id") not in seen]
             self._queue = ordered + remaining
+
+            # Clear stale preview — it was seeded for the old first item
+            with self._preview_lock:
+                self._preview_queue = []
+                self._preview_song_id = None
+
+            # Regenerate preview with new first item as seed (full pipeline)
+            if self._queue:
+                first_id = self._queue[0].get("song_id")
+                if first_id:
+                    threading.Thread(
+                        target=self._rebuild_queue,
+                        args=(first_id,),
+                        daemon=True,
+                    ).start()
+
             self._condition.notify_all()
 
             return list(self._pending_talk_segments) + list(self._manual_queue) + list(self._queue)
@@ -286,14 +334,36 @@ class QueueManager:
         except Exception as e:
             logger.warning("Failed to record queue history: %s", e)
 
-    def _rebuild_queue(self):
-        """Build the full recommendation queue (called in background thread)."""
+    def _rebuild_queue(self, seed_id=None, advance_talk_counter=False):
+        """Build the full recommendation queue (called in background thread).
+
+        Generates the PREVIEW queue — the next batch of 5 options that will
+        be shown after the current song's transition.
+
+        If seed_id is provided, uses that song as the "current song" context
+        for the recommendation pipeline (retriever → slots → reranker).
+        Otherwise, uses _queue[0] (the first queued option) as seed, falling
+        back to self._current_song_id if the queue is empty.
+
+        Stores the result in _preview_queue, tagged with the seed ID for
+        staleness validation in on_song_started(). If _queue is empty
+        (startup/fallback), also populates _queue directly.
+        """
         my_gen = self._rebuild_gen
-        # Snapshot the song that was current when this rebuild started —
-        # used to tag the preview queue for staleness validation.
-        preview_song_id = self._current_song_id
-        _log_step(f"=== REBUILD START (gen={my_gen}, preview_song={preview_song_id}) ===")
-        # Notify frontend that rebuilding has started
+        # Determine the context seed: explicit seed → first queue item → current song
+        if seed_id is None:
+            with self._condition:
+                if self._queue:
+                    seed_id = self._queue[0].get("song_id")
+        if seed_id is None:
+            seed_id = self._current_song_id
+        context_id = seed_id
+        _log_step(f"=== REBUILD START (gen={my_gen}, context_id={context_id}) ===")
+        # DEBUG: log queue state at rebuild start
+        with self._condition:
+            _queue_first = self._queue[0].get("song_id") if self._queue else "empty"
+            _log_step(f"Rebuild queue state: _queue={len(self._queue)} items, manual={len(self._manual_queue)}, talk={len(self._pending_talk_segments)}, first_id={_queue_first}")
+        # Notify frontend that background preview generation has started
         with self._condition:
             self._broadcast_gen += 1
             broadcast_gen = self._broadcast_gen
@@ -301,8 +371,8 @@ class QueueManager:
         _log_step("Broadcast queue_rebuilding=True")
 
         try:
-            current_song = self._db.get_song(self._current_song_id) if self._current_song_id else None
-            _log_step(f"Current song: {self._current_song_id}")
+            current_song = self._db.get_song(context_id) if context_id else None
+            _log_step(f"Context song: {context_id}")
 
             # --- Create frozen playback context snapshot ---
             # All async TTS/talk generation reads from this, never from live
@@ -405,7 +475,7 @@ class QueueManager:
             candidates = retriever.build_candidate_list(
                 text_taste_vector=taste_vector,
                 audio_taste_vector=taste_vectors["audio"],
-                current_song_id=self._current_song_id,
+                current_song_id=context_id,
                 exclude_ids=exclude_ids,
                 mood_energy_range=mood_energy,
                 mood_valence_range=mood_valence,
@@ -419,9 +489,9 @@ class QueueManager:
             _log_step(f"Candidates: {len(candidates)}")
 
             # Merge transition candidates into the pool
-            if self._current_song_id:
+            if context_id:
                 from engine import transitions
-                trans_candidates = transitions.get_transition_candidates(self._current_song_id, n=15)
+                trans_candidates = transitions.get_transition_candidates(context_id, n=15)
                 seen_ids = {c["song_id"] for c in candidates}
                 for tc in trans_candidates:
                     if tc["song_id"] not in seen_ids and tc["song_id"] not in exclude_ids:
@@ -447,10 +517,10 @@ class QueueManager:
                 _log_step(f"Folder filter on transitions: {len(candidates)} remaining")
 
             # Apply transition boost to candidates (batched)
-            if self._current_song_id and candidates:
+            if context_id and candidates:
                 from engine import transitions
                 candidate_ids = [c["song_id"] for c in candidates]
-                boost_map = transitions.get_transition_boosts(self._current_song_id, candidate_ids)
+                boost_map = transitions.get_transition_boosts(context_id, candidate_ids)
                 for c in candidates:
                     boost = boost_map.get(c["song_id"], 0.0)
                     if boost > 0:
@@ -504,9 +574,18 @@ class QueueManager:
             except Exception as e:
                 logger.debug("Constellation reweighting skipped: %s", e)
 
+            # Defensive: coerce None artist/title to "" — SQLite returns NULL for
+            # missing ID3 tags, and dict.get("artist","") returns None (not the
+            # default) when the key exists with value None.
+            for c in candidates:
+                if c.get("artist") is None:
+                    c["artist"] = ""
+                if c.get("title") is None:
+                    c["title"] = ""
+
             # Apply genre filter if set (batched)
             genre_filter = self._db.get_setting("genre_filter")
-            if genre_filter:
+            if genre_filter and genre_filter.strip().lower() not in ("none", ""):
                 _log_step(f"Applying genre filter: {genre_filter}")
                 candidate_ids = [c["song_id"] for c in candidates]
                 song_map = database.get_songs_by_ids(candidate_ids)
@@ -523,7 +602,7 @@ class QueueManager:
 
             # Apply artist filter if set
             artist_filter = self._db.get_setting("artist_filter")
-            if artist_filter:
+            if artist_filter and artist_filter.strip().lower() not in ("none", ""):
                 _log_step(f"Applying artist filter: {artist_filter}")
                 filtered = []
                 for c in candidates:
@@ -559,10 +638,30 @@ class QueueManager:
                     if cs and cs.get("lyrics"):
                         c["lyrics"] = cs["lyrics"]
 
-            # Check if in normal mode (skip LLM)
+            # Check play_mode (ai/shuffle/sequential) — bypasses full recommendation engine
             mode = self._db.get_setting("current_mode") or "radio"
-            _log_step(f"Mode: {mode}")
-            if mode == "normal":
+            play_mode = self._db.get_setting("play_mode") or "ai"
+            _log_step(f"Mode: {mode}, Play mode: {play_mode}")
+            if play_mode in ("shuffle", "sequential"):
+                _log_step(f"Play mode '{play_mode}' — building queue directly from library")
+                conn = self._db.get_connection()
+                try:
+                    exclude_sql = ""
+                    if self._current_song_id:
+                        exclude_sql = f"AND s.id != {self._current_song_id}"
+                    order_by = "RANDOM()" if play_mode == "shuffle" else "s.energy DESC"
+                    reason = "Random pick" if play_mode == "shuffle" else "Sequential order"
+                    rows = conn.execute(f"""
+                        SELECT s.id, s.artist, s.title, s.energy, s.valence, s.bpm
+                        FROM songs s LEFT JOIN blacklist b ON s.id = b.song_id
+                        WHERE s.ingest_phase = 'clustered' AND b.song_id IS NULL {exclude_sql}
+                        ORDER BY {order_by} LIMIT 5
+                    """).fetchall()
+                finally:
+                    conn.close()
+                picks = [{"id": r["id"], "slot": "manual", "reason": reason} for r in rows]
+                _log_step(f"Built {len(picks)} picks from {play_mode} mode")
+            elif mode == "normal":
                 _log_step("Normal mode - deterministic assignment")
                 picks = reranker.deterministic_assignment(candidates, slots_result)
             else:
@@ -639,17 +738,20 @@ class QueueManager:
                     return
 
             # --- Phase 2: Schedule talk segment (LLM calls, no lock held) ---
+            # Use the actual next-to-play song (first item of _queue), not the preview
             _next_song_for_talk = None
-            if new_queue:
-                first = new_queue[0]
-                if first.get("song_id"):
-                    _next_song_for_talk = {"artist": first.get("artist", ""), "title": first.get("title", "")}
-                    snapshot.next_song_id = first.get("song_id")
+            with self._condition:
+                if self._queue:
+                    first = self._queue[0]
+                    if first.get("song_id"):
+                        _next_song_for_talk = {"artist": first.get("artist", ""), "title": first.get("title", "")}
+                        snapshot.next_song_id = first.get("song_id")
             _log_step("Scheduling talk segment")
-            _talk_suppress = self._maybe_schedule_talk_segment(next_song=_next_song_for_talk, snapshot=snapshot)
+            _talk_suppress = self._maybe_schedule_talk_segment(next_song=_next_song_for_talk, snapshot=snapshot, advance_counter=advance_talk_counter)
 
-            # --- Phase 3: Write queue with second staleness check ---
-            _log_step("Setting queue and notifying")
+            # --- Phase 3: Write preview with second staleness check ---
+            _log_step("Setting preview queue and notifying")
+            was_empty = False
             with self._condition:
                 if self._rebuild_gen != my_gen:
                     _log_step(f"Stale rebuild (gen {my_gen} != {self._rebuild_gen}), discarding (post-talk)")
@@ -657,16 +759,32 @@ class QueueManager:
                     self._discard_stale_talk_segment(my_gen)
                     self._condition.notify_all()
                     return
-                self._queue = new_queue
-                # Cache as preview so pop_next can use it instantly when
-                # the current song ends (no rebuild needed).
+                # Store as preview, tagged with the seed it was generated for
                 with self._preview_lock:
-                    self._preview_queue = list(new_queue)
-                    self._preview_song_id = preview_song_id
+                    self._preview_queue = new_queue
+                    self._preview_song_id = context_id
+                # If main queue is empty (startup/fallback), populate it directly
+                was_empty = not self._queue
+                if was_empty:
+                    self._queue = list(new_queue)
+                    # Clear preview so the watchdog detects it as stale and
+                    # generates a distinct batch (preview != main queue).
+                    with self._preview_lock:
+                        self._preview_queue = []
+                # Ensure preview tag points to the first queued song so that
+                # on_song_started() validation succeeds when that song plays.
+                with self._preview_lock:
+                    if self._queue:
+                        _old_preview_id = self._preview_song_id
+                        self._preview_song_id = self._queue[0].get("song_id")
+                        logger.info("_rebuild_queue: overwrote preview_song_id from %s to %s (queue[0]=%s)",
+                                    _old_preview_id, self._preview_song_id, self._queue[0].get("song_id"))
                 self._rebuilding = False
                 self._condition.notify_all()
 
             # Notify frontend that rebuilding has finished
+            # Always broadcast so talk segments (appended during rebuild) and
+            # other changes are reflected in the frontend queue preview.
             _log_step("Broadcasting queue_updated")
             self._broadcast("queue_updated", {"queue": self._get_display_queue(), "gen": broadcast_gen})
             _log_step("Broadcasting queue_rebuilding=False")
@@ -680,8 +798,10 @@ class QueueManager:
             threading.Thread(target=self._pregen_tts_for_next_song, args=(snapshot, _talk_suppress), daemon=True).start()
 
             # Pre-generate DJ effects for upcoming songs (non-blocking, checks cache + spawns bg gen)
+            # Use _queue (actual upcoming songs), not new_queue (preview batch)
             _log_step("Starting DJ effect pre-gen thread")
-            threading.Thread(target=self._pregen_dj_effects, args=(new_queue, snapshot), daemon=True).start()
+            queue_for_dj = list(self._queue) if self._queue else new_queue
+            threading.Thread(target=self._pregen_dj_effects, args=(queue_for_dj, snapshot), daemon=True).start()
             _log_step("=== REBUILD DONE ===")
 
         except Exception as e:
@@ -691,7 +811,7 @@ class QueueManager:
                 if is_current_rebuild:
                     self._rebuilding = False
                 self._condition.notify_all()
-                display_queue = self._get_display_queue()
+                display_queue = self._get_display_queue(_locked=True)
             # Notify frontend that rebuilding has stopped only for the active
             # generation. Stale failures should not hide a newer rebuild.
             if is_current_rebuild:
@@ -845,16 +965,16 @@ class QueueManager:
             True if removed, False if not found.
         """
         with self._condition:
-            for i, item in enumerate(self._manual_queue):
-                if item.get("song_id") == song_id:
-                    self._manual_queue.pop(i)
-                    self._condition.notify_all()
-                    logger.info(f"remove_manual: song_id={song_id} manual_queue_size={len(self._manual_queue)}")
-                    self._broadcast("queue_updated", {"queue": self._get_display_queue(), "gen": self._broadcast_gen})
-                    return True
-            return False
+                for i, item in enumerate(self._manual_queue):
+                    if item.get("song_id") == song_id:
+                        self._manual_queue.pop(i)
+                        self._condition.notify_all()
+                        logger.info(f"remove_manual: song_id={song_id} manual_queue_size={len(self._manual_queue)}")
+                        self._broadcast("queue_updated", {"queue": self._get_display_queue(_locked=True), "gen": self._broadcast_gen})
+                        return True
+                return False
 
-    def add_manual(self, song_ids: list[int], position: str = "back") -> list[int]:
+    def add_manual(self, song_ids: list[int], position: str = "back") -> dict:
         """Add songs to the manual queue (survives AI rebuilds).
 
         Args:
@@ -862,12 +982,23 @@ class QueueManager:
             position: 'front' (play next) or 'back' (add to end).
 
         Returns:
-            List of successfully added song IDs.
+            Dict with 'added' (list of added IDs) and 'skipped' (list of skipped IDs).
         """
         added = []
+        skipped = []
         with self._condition:
+            existing = {e["song_id"] for e in self._manual_queue}
+            if self._current_song_id:
+                existing.add(self._current_song_id)
+            if len(self._manual_queue) <= 3:
+                existing |= {e["song_id"] for e in self._queue}
+
             ids = list(reversed(song_ids)) if position == "front" else song_ids
             for sid in ids:
+                if sid in existing:
+                    skipped.append(sid)
+                    logger.info(f"add_manual: skipping song_id={sid} (already in queue)")
+                    continue
                 song = self._db.get_song(sid)
                 if song:
                     entry = {
@@ -882,12 +1013,13 @@ class QueueManager:
                     else:
                         self._manual_queue.append(entry)
                     added.append(sid)
+                    existing.add(sid)
                     logger.info(f"add_manual: song_id={sid} artist={song.get('artist','')} title={song.get('title','')} position={position} manual_queue_size={len(self._manual_queue)}")
             self._condition.notify_all()
         if added:
             logger.info(f"add_manual: total added={len(added)} songs ({position}), manual_queue_size={len(self._manual_queue)}")
             self._broadcast("queue_updated", {"queue": self._get_display_queue(), "gen": self._broadcast_gen})
-        return added
+        return {"added": added, "skipped": skipped}
 
     def record_replay(self):
         """Record a replay signal - reset skip streak, boost taste."""
@@ -998,7 +1130,7 @@ class QueueManager:
         self._last_action = None
         return {"success": True, "song_id": song_id}
 
-    def _maybe_schedule_talk_segment(self, next_song: dict | None = None, snapshot: PlaybackContext | None = None):
+    def _maybe_schedule_talk_segment(self, next_song: dict | None = None, snapshot: PlaybackContext | None = None, advance_counter=True):
         """Schedule a talk segment if the counter triggers and none is pending.
 
         Uses a two-phase approach: saves talk_segments module-level state
@@ -1011,6 +1143,9 @@ class QueueManager:
                        new queue, so the talk segment can reference it.
             snapshot: PlaybackContext for staleness validation and pre-fetched
                       recent context.
+            advance_counter: If True, advance the talk song counter (should be
+                             True when triggered by on_song_started, False for
+                             pop_next-backed rebuilds to prevent double-counting).
         """
         # Already have one queued — don't duplicate
         if self._pending_talk_segments:
@@ -1039,7 +1174,8 @@ class QueueManager:
             # Advance talk counter for this song.  If the rebuild turns
             # stale, the saved state is restored below — so manual queue
             # refreshes and stale rebuilds never advance the schedule.
-            _ts_mod._song_counter += 1
+            if advance_counter:
+                _ts_mod._song_counter += 1
 
             # Build last_song context from current song
             last_song = None
@@ -1080,7 +1216,8 @@ class QueueManager:
                 if snapshot and self._rebuild_gen != snapshot.generation:
                     _log_step(f"Talk segment generated but rebuild is stale (gen {snapshot.generation} -> {self._rebuild_gen}), "
                               f"discarding and restoring counters")
-                    _ts_mod._song_counter = saved_counter
+                    if advance_counter:
+                        _ts_mod._song_counter = saved_counter
                     _ts_mod._current_guest_takeover = saved_guest
                     _ts_mod._recent_callers = saved_callers
                     _ts_mod._recent_guests = saved_guests
@@ -1389,7 +1526,7 @@ class QueueManager:
                         current_gen = self._rebuild_gen
                     staleness_snapshot = PlaybackContext(
                         generation=current_gen,
-                        current_song_id=self._current_song_id,
+                    current_song_id=self._current_song_id,
                         next_song_id=next_song_id,
                         mood_state=self._mood.get_state(),
                         session_id=self._current_session_id,
@@ -1546,7 +1683,11 @@ class QueueManager:
     def _play_talk_segment(self, pick: dict):
         """Play a talk segment (caller, monologue, guest takeover).
 
-        Chains talk WAV(s) with the following song in the queue.
+        Plays TTS WAV(s) as a talk-only chain (no song appended).
+        VLC's _on_end_reached detects the talk-only chain end and fires
+        synthetic song_ended(None), which triggers pop_next() →
+        the next real song from queue plays naturally.
+
         Applies mood_shift / energy_direction if present.
 
         On any failure, falls back to playing the next available song
@@ -1575,20 +1716,29 @@ class QueueManager:
             if valid_wavs:
                 _fade_in_first_second(valid_wavs[0])
 
-            p = player_engine.get_player()
-            session_id = self._current_session_id
+            # Concatenate multiple WAVs into one — VLC's media_list_player
+            # has trouble chaining 5+ items reliably.  A single concatenated
+            # WAV + song (2 items) always works.
+            if len(valid_wavs) > 1:
+                concat_path = _concatenate_wavs(valid_wavs)
+                if concat_path:
+                    logger.info("_play_talk_segment: concatenated %d WAVs -> %s", len(valid_wavs), concat_path)
+                    valid_wavs = [concat_path]
+                else:
+                    logger.warning("_play_talk_segment: concatenation failed, using %d individual WAVs", len(valid_wavs))
 
-            # Look ahead in queue for the next song
+            p = player_engine.get_player()
+            self._talk_segment_playing = True
+
+            # Look ahead in queue for the next song (peek only — don't pop,
+            # so on_song_started can handle the normal preview swap when the
+            # real song actually starts after TTS finishes).
             next_song_item = None
             with self._condition:
-                # Find first song in queue (talk segments may have been inserted)
-                song_idx = None
-                for i, item in enumerate(self._queue):
+                for item in self._queue:
                     if item.get("type") != "talk_segment":
-                        song_idx = i
+                        next_song_item = item
                         break
-                if song_idx is not None:
-                    next_song_item = self._queue.pop(song_idx)
 
             # Validate the target song matches what was teased
             if next_song_item:
@@ -1604,32 +1754,19 @@ class QueueManager:
                 song = self._db.get_song(song_id)
                 if song and song.get("filepath") and os.path.exists(song["filepath"]):
                     # Check for DJ effect modified version (only if guest takeover is active)
-                    fp = song["filepath"]
                     from announcer.talk_segments import get_active_dj_effect_preset
                     with self._dj_effect_cache_lock:
                         modified_fp = self._dj_effect_cache.get(song_id)
                         if modified_fp and os.path.exists(modified_fp):
                             if get_active_dj_effect_preset():
-                                fp = modified_fp
                                 logger.info(f"_play_talk_segment: using DJ effect version for song {song_id}")
                             else:
                                 self._dj_effect_cache.pop(song_id, None)
                                 logger.info(f"_play_talk_segment: DJ effect cache stale for song {song_id} (guest ended), removed")
-                    # Chain: talk WAVs + song back-to-back
-                    logger.info(f"_play_talk_segment: playing {len(valid_wavs)} WAVs + song chain ({len(valid_wavs) + 1} items)")
-                    items = []
-                    for w in valid_wavs:
-                        items.append({"filepath": w, "is_tts": True})
-                    items.append({
-                        "filepath": fp,
-                        "song_id": song_id,
-                        "is_tts": False,
-                    })
 
-                    # Apply mood_shift BEFORE play_chain/on_song_started so the
-                    # background rebuild uses the new mood when picking next songs.
+                    # Apply mood_shift BEFORE play_chain so the background
+                    # rebuild uses the new mood when picking next songs.
                     mood_shift = pick.get("mood_shift")
-                    energy_dir = pick.get("energy_direction")
                     if mood_shift:
                         try:
                             logger.info(f"Applying mood shift from talk segment: {mood_shift}")
@@ -1638,19 +1775,22 @@ class QueueManager:
                         except Exception as e:
                             logger.warning(f"Mood shift from talk segment failed: {e}")
 
-                    logger.info("_play_talk_segment: calling p.play_chain()...")
-                    p.play_chain(items)
-                    logger.info("_play_talk_segment: play_chain returned, calling on_song_started")
-                    self.on_song_started(song_id, session_id)
-                    logger.info("_play_talk_segment: on_song_started done")
-                else:
-                    # Song not available, try to play talk alone, then fallback
-                    logger.info(f"_play_talk_segment: no valid next song, playing {len(valid_wavs)} WAVs only")
-                    p.play_chain([{"filepath": w, "is_tts": True} for w in valid_wavs])
+                # Play TTS WAVs as a talk-only chain — VLC's media_list_player
+                # does NOT reliably fire transition events between items, so
+                # chaining TTS + song together never advances past the TTS.
+                # Instead: play TTS alone, let _on_end_reached detect talk-only
+                # chain end and fire synthetic song_ended(None), which triggers
+                # pop_next() → next real song from queue.
+                logger.info(f"_play_talk_segment: playing {len(valid_wavs)} TTS WAV(s) as talk-only chain")
+                p.play_chain([{"filepath": w, "is_tts": True} for w in valid_wavs])
+
             else:
-                # No song in queue at all — play talk alone, then fallback will trigger on end
+                # No song in queue at all — play talk alone; _on_end_reached
+                # fires synthetic song_ended(None), pop_next handles the rest.
+                self._talk_segment_playing = False
                 logger.info(f"_play_talk_segment: no next song item in queue, playing {len(valid_wavs)} WAVs only")
                 p.play_chain([{"filepath": w, "is_tts": True} for w in valid_wavs])
+
 
             # Broadcast talk segment start to frontend
             # Include next_song info so frontend knows what will play after
@@ -1671,6 +1811,7 @@ class QueueManager:
 
         except Exception as e:
             logger.error(f"_play_talk_segment failed: {e}", exc_info=True)
+            self._talk_segment_playing = False
             self._fallback_play_next_song()
 
     def _fallback_play_next_song(self):
@@ -1707,3 +1848,80 @@ class QueueManager:
 
         except Exception as e:
             logger.error(f"_fallback_play_next_song failed: {e}", exc_info=True)
+
+    def _start_preview_watchdog(self):
+        """Start a persistent daemon thread that checks if the preview queue
+        is stale (empty or diverged from the main queue).  Every ~3 s:
+
+          - Skip while a rebuild is already running.
+          - Skip if the main queue is empty (nothing to consume).
+          - If the preview queue is empty or its tag doesn't match the
+            first queued song, trigger a fresh rebuild to generate a
+            distinct "next-next" batch.
+
+        Dies on process exit (daemon thread).
+        """
+        self._preview_stop.set()   # stop any existing watchdog
+        self._preview_stop.clear()
+
+        def _watchdog():
+            logger.info("Preview watchdog started")
+            while not self._preview_stop.is_set():
+                try:
+                    self._preview_stop.wait(timeout=3.0)
+                    if self._preview_stop.is_set():
+                        break
+
+                    # Don't interfere with an active rebuild
+                    with self._condition:
+                        if self._rebuilding:
+                            continue
+                        if not self._queue:
+                            continue
+                        # Don't invalidate pending talk segments — they take
+                        # priority over the preview and a rebuild would
+                        # increment _rebuild_gen, making their generation
+                        # stale and causing pop_next() to discard them.
+                        if self._pending_talk_segments:
+                            continue
+                        # Skip while a talk segment is actively playing —
+                        # the deferred on_song_started hasn't fired yet,
+                        # so the preview is stale by design.
+                        if self._talk_segment_playing:
+                            continue
+                        first_song_id = self._queue[0].get("song_id")
+
+                    if not first_song_id:
+                        continue
+
+                    # Check if the preview is stale
+                    with self._preview_lock:
+                        preview_valid = bool(
+                            self._preview_queue
+                            and self._preview_song_id == first_song_id
+                        )
+
+                    if not preview_valid:
+                        logger.info(f"Preview watchdog: preview stale/missing for "
+                                    f"context={first_song_id}, triggering rebuild")
+                        with self._condition:
+                            # Re-check: a talk segment may have been appended
+                            # between our earlier check and this lock acquisition
+                            # (race window).  Don't invalidate pending talks.
+                            if self._pending_talk_segments:
+                                continue
+                            if self._talk_segment_playing:
+                                continue
+                            self._rebuilding = True
+                            self._rebuild_gen += 1
+                        threading.Thread(
+                            target=self._rebuild_queue,
+                            daemon=True,
+                        ).start()
+
+                except Exception as e:
+                    logger.debug(f"Preview watchdog error: {e}")
+
+        threading.Thread(
+            target=_watchdog, daemon=True, name="preview-watchdog"
+        ).start()

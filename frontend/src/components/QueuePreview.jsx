@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import { RefreshCw, Mic, X } from "lucide-react";
 import * as api from "../api";
 import { SkeletonQueueCompact } from "./Skeleton";
+import QueueContextMenu from "./QueueContextMenu";
 
 const SLOT_STYLES = {
   exploit: { cls: "exploit", label: "exploit" },
@@ -20,8 +21,9 @@ function moodMatchColor(pct) {
   return "#f87171";
 }
 
-const QueuePreview = React.memo(function QueuePreview({ queue, isRebuilding, onPromoteSong, onRemoveSong, onRebuild, compact = false, queueLoading = false }) {
+const QueuePreview = React.memo(function QueuePreview({ queue, isRebuilding, onPromoteSong, onRemoveSong, onRebuild, compact = false, queueLoading = false, onAddToCollection }) {
   const [rebuilding, setRebuilding] = useState(false);
+  const [contextMenu, setContextMenu] = useState(null);
 
   const handleRebuild = async () => {
     setRebuilding(true);
@@ -48,7 +50,7 @@ const QueuePreview = React.memo(function QueuePreview({ queue, isRebuilding, onP
     </div>
   );
 
-  if (isRebuilding || (queueLoading && count === 0)) {
+  if ((isRebuilding && count === 0) || (queueLoading && count === 0)) {
     if (compact) {
       return (
         <div>
@@ -92,13 +94,14 @@ const QueuePreview = React.memo(function QueuePreview({ queue, isRebuilding, onP
             guest_takeover_outro: "Handing back",
           };
           return (
-            <div key={`talk-${idx}`} style={{
+            <div key={`talk-${idx}`} className="queue-enter" style={{
               display: "flex", alignItems: "flex-start", gap: 6, padding: "6px 8px",
               borderLeft: "2px solid rgba(168,112,240,0.3)", opacity: 0.7,
               borderTop: compact ? "1px solid var(--border-subtle)" : "none",
               borderRight: compact ? "1px solid var(--border-subtle)" : "none",
               borderBottom: compact ? "1px solid var(--border-subtle)" : "none",
               borderRadius: compact ? 0 : 8,
+              animationDelay: `${idx * 40}ms`,
             }}>
               <Mic size={14} style={{ color: "var(--accent)", flexShrink: 0 }} />
               <div style={{ flex: 1, minWidth: 0 }}>
@@ -119,10 +122,11 @@ const QueuePreview = React.memo(function QueuePreview({ queue, isRebuilding, onP
           const slotColors = { exploit: "#2dd4a0", explore: "#5eadf5", wildcard: "#a78bfa", context: "#f59e0b", fallback: "var(--border-strong)", recovery: "#f09060", manual: "#4eccc4" };
           const slotBgs = { exploit: "#0a2418", explore: "#09142a", wildcard: "#100728", context: "#161008", fallback: "rgba(255,255,255,0.05)", recovery: "#2a1a0a", manual: "#0a2a28" };
           return (
-            <div key={item.song_id} onClick={() => onPromoteSong?.(item.song_id)} className="qc-compact" style={{
+            <div key={item.song_id} onClick={() => onPromoteSong?.(item.song_id)} onContextMenu={(e) => { e.preventDefault(); setContextMenu({ x: e.clientX, y: e.clientY, songId: item.song_id, songTitle: `${item.artist} – ${item.title}` }); }} className="qc-compact queue-enter" style={{
               borderLeftColor: slotColors[item.slot] || "var(--border-strong)",
               borderLeft: item.vibe_affected ? "3px solid rgba(168,112,240,0.5)" : undefined,
               cursor: "pointer",
+              animationDelay: `${idx * 40}ms`,
             }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 5, marginBottom: 2 }}>
                 <span style={{ fontSize: 11, fontWeight: 600, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>
@@ -165,13 +169,14 @@ const QueuePreview = React.memo(function QueuePreview({ queue, isRebuilding, onP
         }
 
         return (
-          <div key={item.song_id} onClick={() => onPromoteSong?.(item.song_id)}
-            className={`queue-card ${slot.cls}`}
+          <div key={item.song_id} onClick={() => onPromoteSong?.(item.song_id)} onContextMenu={(e) => { e.preventDefault(); setContextMenu({ x: e.clientX, y: e.clientY, songId: item.song_id, songTitle: `${item.artist} – ${item.title}` }); }}
+            className={`queue-card ${slot.cls} queue-enter`}
             style={{
               borderBottom: idx < Math.min(queue.length, 5) - 1 ? "1px solid var(--border-subtle)" : "none",
               borderLeft: item.vibe_affected ? "3px solid rgba(168,112,240,0.5)" : undefined,
               cursor: "pointer",
               marginBottom: "2px",
+              animationDelay: `${idx * 40}ms`,
             }}>
             <div className="flex items-center gap-2" style={{ marginBottom: "3px" }}>
               <div className="flex-1 min-w-0">
@@ -206,11 +211,23 @@ const QueuePreview = React.memo(function QueuePreview({ queue, isRebuilding, onP
     </div>
   ) : null;
 
+  const ctxMenu = contextMenu && (
+    <QueueContextMenu
+      x={contextMenu.x} y={contextMenu.y}
+      songId={contextMenu.songId} songTitle={contextMenu.songTitle}
+      onClose={() => setContextMenu(null)}
+      onAddToCollection={onAddToCollection}
+      onPromote={onPromoteSong}
+      onRemove={onRemoveSong}
+    />
+  );
+
   if (compact) {
     return (
       <div>
         {sectionHeader}
         {emptyState || queueCards}
+        {ctxMenu}
       </div>
     );
   }
@@ -219,6 +236,7 @@ const QueuePreview = React.memo(function QueuePreview({ queue, isRebuilding, onP
     <div className="rounded-xl p-5" style={{ background: "var(--bg-surface)" }}>
       {sectionHeader}
       {emptyState || queueCards}
+      {ctxMenu}
     </div>
   );
 });

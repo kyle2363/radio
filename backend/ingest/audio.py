@@ -9,6 +9,7 @@ import json
 import logging
 import librosa
 import numpy as np
+import pyloudnorm as pyln
 
 logger = logging.getLogger(__name__)
 
@@ -166,3 +167,31 @@ def normalize_all_songs(songs: list) -> list:
         })
 
     return results
+
+
+def measure_loudness(filepath: str, target_loudness: float = -14.0) -> float:
+    """Measure integrated loudness (LUFS) and compute gain to reach target.
+
+    Uses EBU R128 via pyloudnorm.  Target default -14 LUFS (Spotify level).
+
+    Returns gain_db (float): how much to boost/cut to reach target.
+    Positive = boost needed, Negative = cut needed.
+    Returns 0.0 if measurement fails.
+    """
+    try:
+        import soundfile as sf
+        data, rate = sf.read(filepath)
+        if data.ndim > 1:
+            data = data.mean(axis=1)  # mix to mono
+
+        meter = pyln.Meter(rate, block_size=0.400)
+        loudness = meter.integrated_loudness(data)
+
+        if loudness is None or loudness <= -80:
+            return 0.0
+
+        gain_db = target_loudness - loudness
+        return round(gain_db, 2)
+    except Exception as e:
+        logger.debug("measure_loudness failed for %s: %s", filepath, e)
+        return 0.0

@@ -120,6 +120,8 @@ def run_phase_analyze():
         _ingest_progress["processed"] = i + 1
         try:
             result = audio.analyze_audio(song["filepath"])
+            gain_db = audio.measure_loudness(song["filepath"])
+            result["gain_db"] = gain_db
             database.update_song(song["id"], **result)
             database.set_ingest_phase(song["id"], "analyzed")
             analyzed_ids.append(song["id"])
@@ -321,12 +323,71 @@ def run_phase_cluster():
     return {"clustered": len(clustered_ids)}
 
 
+def run_phase_lyrics_timing():
+    """Phase 6: Generate WhisperX lyrics timing for songs with lyrics."""
+    _reset_progress()
+    _ingest_progress["phase"] = "lyrics_timed"
+
+    print("Phase 6: Generating lyrics timing (WhisperX forced alignment)...")
+
+    conn = database.get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT id, filepath, lyrics, duration_secs FROM songs "
+            "WHERE lyrics IS NOT NULL AND lyrics != '' AND lyrics != 'lyrics not found' AND lyrics != 'TODO'"
+        ).fetchall()
+    finally:
+        conn.close()
+
+    targets = []
+    for r in rows:
+        sid = r["id"]
+        timing_path = os.path.join(config.LYRICS_TIMING_DIR, f"{sid}.json")
+        if not os.path.exists(timing_path):
+            targets.append(dict(r))
+
+    _ingest_progress["total"] = len(targets)
+    print(f"  Found {len(targets)} songs needing timing data")
+
+    if not targets:
+        _ingest_progress["running"] = False
+        return {"lyrics_timed": 0}
+
+    import sys
+    # Ensure project root is on path for batch_lyrics_timing imports
+    if config.BASE_DIR not in sys.path:
+        sys.path.insert(0, config.BASE_DIR)
+    from batch_lyrics_timing import process_song
+
+    done = 0
+    failed = 0
+    for i, song in enumerate(tqdm(targets, desc="Timing lyrics")):
+        _ingest_progress["current_song"] = f"{song.get('artist', '?')} - {song.get('title', '?')}"
+        _ingest_progress["processed"] = i + 1
+        try:
+            result = process_song(song["id"])
+            if result.get("status") == "done":
+                done += 1
+            else:
+                failed += 1
+                if failed <= 5:
+                    print(f"    Failed: Song {song['id']} - {result.get('message', '')}")
+        except Exception as e:
+            failed += 1
+            if failed <= 5:
+                print(f"    Error: Song {song['id']} - {e}")
+
+    _ingest_progress["running"] = False
+    print(f"Phase 6 complete! Timed: {done}, Failed: {failed}")
+    return {"lyrics_timed": done, "failed": failed}
+
+
 # ──────────────────────────────────────────────────────────
 # Full pipeline (calls phases sequentially)
 # ──────────────────────────────────────────────────────────
 
 def run_ingest():
-    """Run the full ingest pipeline: raw -> analyzed -> normalized -> described -> embedded -> clustered."""
+    """Run the full ingest pipeline: raw -> analyzed -> normalized -> described -> embedded -> clustered -> lyrics_timed."""
     phases = [
         ("raw", run_phase_raw),
         ("analyzed", run_phase_analyze),
@@ -335,6 +396,7 @@ def run_ingest():
         ("embedded", run_phase_embed),
         ("audio_embedded", run_phase_embed_audio),
         ("clustered", run_phase_cluster),
+        ("lyrics_timed", run_phase_lyrics_timing),
     ]
 
     _ingest_progress["running"] = True

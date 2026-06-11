@@ -1,13 +1,15 @@
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useRef, useEffect, useCallback } from "react";
 import { Terminal, Heart, ThumbsDown, SkipBack, Play, Pause, Volume2, RefreshCw, Moon, Zap, HelpCircle } from "lucide-react";
 import * as api from "../api";
 
 const COMMAND_HINTS = ['"more energetic"', '"chill vibes"', '"vibe lock"', '"what is next"', '"play more jazz"', '"heart this"', '"pause"', '"play 5 songs from Radiohead"', '"queue chill songs for studying"', '"play something upbeat"', '"sounds like midnight driving"', '"play dreamy reverb music"', '"help"'];
 const MAX_HISTORY = 10;
 
-function CommandBar({ onCommandSent, compact = false, onFocus, onClose }) {
+function CommandBar({ onCommandSent, compact = false, onFocus, onClose,
+  responseTimeout = 10, inactiveTimeout = 6, onUserActivity, lastCommandRef, onUndo,
+  nlResponse, nlResponseVisible, nlResponseTimerRef, nlPausedRef,
+  clearNlResponseTimer, startNlResponseTimer, setNlResponse, setNlResponseVisible }) {
   const [text, setText] = useState("");
-  const [response, setResponse] = useState(null);
   const [sending, setSending] = useState(false);
   const [history, setHistory] = useState([]);
   const [historyIdx, setHistoryIdx] = useState(-1);
@@ -25,26 +27,49 @@ function CommandBar({ onCommandSent, compact = false, onFocus, onClose }) {
     return () => window.removeEventListener("keydown", handler);
   }, []);
 
+  const handleActivity = useCallback(() => {
+    onUserActivity?.();
+    nlPausedRef.current = false;
+    if (nlResponse) {
+      if (nlResponseVisible) {
+        clearNlResponseTimer();
+        startNlResponseTimer();
+      }
+    }
+  }, [onUserActivity, nlResponse, nlResponseVisible, clearNlResponseTimer, startNlResponseTimer]);
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!text.trim() || sending) return;
-    setSending(true);
-    setResponse(null);
     const cmd = text.trim();
+    // Intercept "undo" for NL command undo (before hitting backend)
+    if (/^undo(\s+(last\s+)?(command|action|that)|)$/i.test(cmd) && onUndo) {
+      setText("");
+      onUndo();
+      handleActivity();
+      return;
+    }
+    setSending(true);
+    setNlResponse(null);
+    setNlResponseVisible(false);
     submittedCmdRef.current = cmd;
     setHistory((prev) => [cmd, ...prev].slice(0, MAX_HISTORY));
     setHistoryIdx(-1);
+    handleActivity();
     try {
       const data = await api.sendCommand(cmd);
-      setResponse(data);
+      setNlResponse(data);
+      setNlResponseVisible(true);
+      startNlResponseTimer();
       onCommandSent?.(data);
-      // Only clear input if user hasn't typed a new command while waiting
       const currentInput = inputRef.current?.value || "";
       if (currentInput.trim() === cmd) {
         setText("");
       }
     } catch (err) {
-      setResponse({ explanation: "Command failed. Is the server running?" });
+      setNlResponse({ explanation: "Command failed. Is the server running?" });
+      setNlResponseVisible(true);
+      startNlResponseTimer();
     } finally {
       submittedCmdRef.current = null;
       setSending(false);
@@ -64,21 +89,28 @@ function CommandBar({ onCommandSent, compact = false, onFocus, onClose }) {
       setHistoryIdx(historyIdx - 1);
       setText(history[historyIdx - 1]);
     }
+    handleActivity();
   };
+
+  const handleMouseEnter = () => { nlPausedRef.current = true; clearNlResponseTimer(); };
+  const handleMouseLeave = () => { nlPausedRef.current = false; if (nlResponse) startNlResponseTimer(); };
+
+  const handleInputChange = (e) => { setText(e.target.value); handleActivity(); };
 
   if (compact) {
     return (
-      <div className="rounded-lg px-3 py-1.5" style={{ background: "var(--bg-surface)" }}>
+      <div className="rounded-lg px-3 py-1.5" style={{ background: "var(--bg-surface)" }}
+        onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave}>
         <form onSubmit={handleSubmit} className="flex items-center gap-2">
           <Terminal size={12} style={{ color: "var(--text-muted)", flexShrink: 0 }} />
-          <input ref={inputRef} type="text" value={text} onChange={(e) => setText(e.target.value)} onKeyDown={handleKeyDown}
-            onFocus={onFocus}
+          <input ref={inputRef} type="text" value={text} onChange={handleInputChange} onKeyDown={handleKeyDown}
+            onFocus={(e) => { onFocus?.(e); handleActivity(); }}
             placeholder={sending ? "Thinking..." : `Ask something... (try ${COMMAND_HINTS[Math.floor(Math.random() * COMMAND_HINTS.length)]})`}
             className="flex-1 bg-transparent border-none outline-none text-[11px]"
             style={{ color: "var(--text-primary)" }}
             disabled={sending} />
-          {response && (
-            <span className="text-[10px] truncate max-w-[200px]" style={{ color: "var(--accent)" }}>{response.explanation}</span>
+          {nlResponse && (
+            <span className="text-[10px] truncate max-w-[200px]" style={{ color: "var(--accent)" }}>{nlResponse.explanation}</span>
           )}
         </form>
       </div>
@@ -86,16 +118,18 @@ function CommandBar({ onCommandSent, compact = false, onFocus, onClose }) {
   }
 
   return (
-    <div className="rounded-xl p-4" style={{ background: "var(--bg-surface)" }}>
+    <div className="rounded-xl p-4" style={{ background: "var(--bg-surface)" }}
+      onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave}>
       <form onSubmit={handleSubmit} className="flex items-center gap-1.5 rounded-lg px-4 py-2.5"
         style={{ background: "var(--bg-surface)" }}>
-        <input ref={inputRef} type="text" value={text} onChange={(e) => setText(e.target.value)} onKeyDown={handleKeyDown}
+        <input ref={inputRef} type="text" value={text} onChange={handleInputChange} onKeyDown={handleKeyDown}
+          onFocus={handleActivity}
           placeholder={sending ? "Thinking..." : `Say something... (try ${COMMAND_HINTS[Math.floor(Math.random() * COMMAND_HINTS.length)]})`}
           className="flex-1 bg-transparent border-none outline-none text-sm"
           style={{ color: "var(--text-primary)" }}
           disabled={sending} />
         {onClose && (
-          <button type="button" onClick={onClose} className="px-2 py-1 rounded text-xs transition hover:opacity-80"
+          <button type="button" onClick={() => { clearNlResponseTimer(); setNlResponse(null); setNlResponseVisible(false); onClose(); }} className="px-2 py-1 rounded text-xs transition hover:opacity-80"
             style={{ color: "var(--text-muted)" }}>✕</button>
         )}
         <button type="submit" disabled={sending || !text.trim()} className="px-5 py-2 rounded-md text-xs font-medium transition"
@@ -109,15 +143,20 @@ function CommandBar({ onCommandSent, compact = false, onFocus, onClose }) {
           ) : "Send"}
         </button>
       </form>
-      {response && (
-        <div className="mt-2 px-4 py-2.5 rounded-lg text-sm" style={{ background: "var(--bg-elevated)" }}>
-          <p className="font-medium" style={{ color: "var(--accent)" }}>{response.explanation}</p>
-          {response.songs && response.songs.length > 0 && (
+      {nlResponse && (
+        <div className="mt-2 px-4 py-2.5 rounded-lg text-sm transition-all duration-300"
+          style={{
+            background: "var(--bg-elevated)",
+            opacity: nlResponseVisible ? 1 : 0,
+            transform: nlResponseVisible ? "translateY(0)" : "translateY(-4px)",
+          }}>
+          <p className="font-medium" style={{ color: "var(--accent)" }}>{nlResponse.explanation}</p>
+          {nlResponse.songs && nlResponse.songs.length > 0 && (
             <div className="mt-2 space-y-1">
               <div className="text-[10px] font-semibold tracking-wide uppercase mb-1" style={{ color: "var(--text-muted)" }}>
                 Audio matches
               </div>
-              {response.songs.map((song, i) => (
+              {nlResponse.songs.map((song, i) => (
                 <div key={i} className="flex items-center justify-between py-1 px-2 rounded" style={{ background: "rgba(255,255,255,0.03)" }}>
                   <span className="text-xs truncate" style={{ color: "var(--text-primary)" }}>
                     {song.artist} — {song.title}
@@ -129,14 +168,14 @@ function CommandBar({ onCommandSent, compact = false, onFocus, onClose }) {
               ))}
             </div>
           )}
-          {response.commands && Array.isArray(response.commands) && (
+          {nlResponse.commands && Array.isArray(nlResponse.commands) && (
             <ul className="mt-1.5 space-y-0.5">
-              {response.commands.map((cmd, i) => <li key={i} className="text-xs font-mono" style={{ color: "var(--text-muted)" }}>{cmd}</li>)}
+              {nlResponse.commands.map((cmd, i) => <li key={i} className="text-xs font-mono" style={{ color: "var(--text-muted)" }}>{cmd}</li>)}
             </ul>
           )}
-          {response.commands && !Array.isArray(response.commands) && typeof response.commands === 'object' && (
+          {nlResponse.commands && !Array.isArray(nlResponse.commands) && typeof nlResponse.commands === 'object' && (
             <div className="mt-2 space-y-2.5">
-              {Object.entries(response.commands).map(([category, cmds]) => (
+              {Object.entries(nlResponse.commands).map(([category, cmds]) => (
                 <div key={category}>
                   <div className="text-xs font-bold tracking-wide mb-1" style={{ color: "var(--accent)" }}>{category}</div>
                   {Array.isArray(cmds) && cmds.map(([cmd, desc], i) => (

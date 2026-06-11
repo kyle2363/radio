@@ -45,32 +45,33 @@ function NowPlaying({ song, isPlaying, whyReason, queue = [], audioRms, talkSegm
   const [trajectory, setTrajectory] = useState(null);
   const [similar, setSimilar] = useState([]);
   const [showSimilar, setShowSimilar] = useState(false);
-  const [showLyrics, setShowLyrics] = useState(false);
   const [vizStyle, setVizStyle] = useState(0);
-  const [animId, setAnimId] = useState(0);
-  const lyricsRef = useRef(null);
-  const activeLineRef = useRef(null);
+  const [transitionPhase, setTransitionPhase] = useState("idle");
+  const prevSongRef = useRef(null);
+  const timerRef = useRef(null);
 
-  // Auto-scroll lyrics line based on playback position
-  useEffect(() => {
-    if (!showLyrics || !song?.lyrics || !durationMs) return;
-    const lines = song.lyrics.split("\n").filter(Boolean);
-    if (lines.length === 0) return;
-    const msPerLine = durationMs / lines.length;
-    const activeIndex = Math.min(
-      Math.floor(positionMs / msPerLine),
-      lines.length - 1
-    );
-    // Scroll active line into view
-    if (activeLineRef.current) {
-      activeLineRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
-    }
-  }, [positionMs, showLyrics, song?.lyrics, durationMs]);
-
+  // Song crossfade transition
   useEffect(() => {
     if (!song?.id) return;
     api.fetchEnergyTrajectory().then(setTrajectory).catch(() => {});
-    setAnimId((v) => v + 1);
+
+    const prevId = prevSongRef.current?.id;
+    if (!prevId || prevId === song.id) {
+      prevSongRef.current = song;
+      return;
+    }
+
+    // Song changed — start crossfade
+    setTransitionPhase("fading_out");
+    timerRef.current = setTimeout(() => {
+      setTransitionPhase("fading_in");
+      timerRef.current = setTimeout(() => {
+        setTransitionPhase("idle");
+        prevSongRef.current = song;
+      }, 200);
+    }, 200);
+
+    return () => { if (timerRef.current) clearTimeout(timerRef.current); };
   }, [song?.id]);
 
   const fetchSimilar = async () => {
@@ -99,9 +100,14 @@ function NowPlaying({ song, isPlaying, whyReason, queue = [], audioRms, talkSegm
       );
     }
     return (
-      <div className="rounded-xl border bg-surface/50 p-8 text-center" style={{ borderColor: "var(--border)" }}>
-        <div className="text-lg mb-2" style={{ color: "var(--text-muted)" }}>Nothing playing</div>
-        <div className="text-sm" style={{ color: "var(--text-muted)" }}>Scan your library to get started</div>
+      <div className="rounded-xl border bg-surface/50 p-8 text-center relative overflow-hidden" style={{ borderColor: "var(--border)" }}>
+        <div className="absolute inset-0 opacity-20 pointer-events-none">
+          <WaveformViz song={{ energy: 0.3, valence: 0.5, bpm: 40 }} styleIndex={vizStyle} audioRms={0.05} />
+        </div>
+        <div className="relative z-10">
+          <div className="text-lg mb-2" style={{ color: "var(--text-muted)" }}>Nothing playing</div>
+          <div className="text-sm" style={{ color: "var(--text-muted)" }}>Scan your library to get started</div>
+        </div>
       </div>
     );
   }
@@ -205,37 +211,6 @@ function NowPlaying({ song, isPlaying, whyReason, queue = [], audioRms, talkSegm
             <p className="text-xs leading-relaxed line-clamp-3" style={{ color: "var(--text-muted)" }}>{song.ai_description}</p>
           )}
 
-          {song.lyrics && (
-            <div>
-              <button onClick={() => setShowLyrics(!showLyrics)} className="text-xs flex items-center gap-1 transition" style={{ color: "var(--text-muted)" }}>
-                {showLyrics ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-                Lyrics
-              </button>
-              {showLyrics && (
-                <div ref={lyricsRef} className="mt-1.5 px-3 py-2 rounded-lg max-h-48 overflow-y-auto text-sm leading-relaxed" style={{ background: "var(--bg-elevated)", color: "var(--text-secondary)", border: "1px solid var(--border-subtle)" }}>
-                  {(() => {
-                    const lines = song.lyrics.split("\n").filter(Boolean);
-                    if (lines.length === 0) return <span className="text-xs italic">No lyrics available</span>;
-                    const msPerLine = durationMs > 0 ? durationMs / lines.length : 0;
-                    const currentLine = msPerLine > 0
-                      ? Math.min(Math.floor(positionMs / msPerLine), lines.length - 1)
-                      : -1;
-                    return lines.map((line, i) => (
-                      <div key={i} ref={i === currentLine ? activeLineRef : null}
-                        className="transition-colors duration-200"
-                        style={{
-                          color: i === currentLine ? "var(--accent)" : "var(--text-secondary)",
-                          fontWeight: i === currentLine ? 600 : 400,
-                        }}>
-                        {line}
-                      </div>
-                    ));
-                  })()}
-                </div>
-              )}
-            </div>
-          )}
-
           <button onClick={toggleSimilar} className="text-xs flex items-center gap-1 transition self-start link-accent">
             {showSimilar ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
             Similar songs
@@ -247,11 +222,15 @@ function NowPlaying({ song, isPlaying, whyReason, queue = [], audioRms, talkSegm
                 {showWhy ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
                 Why this song?
               </button>
-              {showWhy && (
+              <div style={{
+                maxHeight: showWhy ? 200 : 0, overflow: "hidden",
+                transition: "max-height 300ms ease-out, opacity 200ms ease-out",
+                opacity: showWhy ? 1 : 0,
+              }}>
                 <div className="mt-1.5 px-3 py-2 rounded-lg text-sm" style={{ background: "var(--bg-elevated)", color: "var(--text-secondary)", border: "1px solid var(--border-subtle)" }}>
                   {whyReason}
                 </div>
-              )}
+              </div>
             </div>
           )}
 
@@ -269,10 +248,21 @@ function NowPlaying({ song, isPlaying, whyReason, queue = [], audioRms, talkSegm
       </div>
     );
 
-  if (compact) return <>{innerGrid}</>;
+  const containerStyle = {
+    background: "var(--bg-surface)",
+    border: "1px solid var(--border)",
+    transition: "opacity 200ms ease-out",
+    opacity: transitionPhase === "fading_out" ? 0 : 1,
+  };
+
+  if (compact) return (
+    <div style={{ transition: "opacity 200ms ease-out", opacity: transitionPhase === "fading_out" ? 0 : 1 }}>
+      {innerGrid}
+    </div>
+  );
 
   return (
-    <div key={animId} className="rounded-xl p-5 song-enter song-enter-active relative overflow-hidden" style={{ background: "var(--bg-surface)", border: "1px solid var(--border)" }}>
+    <div className="rounded-xl p-5 relative overflow-hidden" style={containerStyle}>
       {innerGrid}
     </div>
   );

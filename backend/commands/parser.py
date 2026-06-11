@@ -628,9 +628,14 @@ def _match_direct(text: str) -> dict | None:
                 if genre_match:
                     result["genre"] = genre_match.group(1)
             if "artist" in result:
-                artist_match = re.search(r'\bplay more (\w+(?:[\s-]+\w+)*)\b', lower)
-                if artist_match:
-                    result["artist"] = artist_match.group(1)
+                captured = m.groups()
+                if len(captured) >= 2 and captured[1]:
+                    artist = captured[1].strip()
+                    artist = re.sub(r'\b(songs?|tracks?|music|please|now|for me)\b', '', artist, flags=re.IGNORECASE).strip()
+                    if artist:
+                        result["artist"] = artist
+                if result.get("artist") is None:
+                    return None  # Fall through to LLM tool-calling
             if "level" in result and result["level"] is None:
                 for g in m.groups():
                     if g and g.isdigit():

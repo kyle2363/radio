@@ -14,6 +14,8 @@ export default function MiniPlayer() {
   const [isPlaying, setIsPlaying] = useState(false);
   const [positionMs, setPositionMs] = useState(0);
   const [durationMs, setDurationMs] = useState(0);
+  const [heartedThisPlay, setHeartedThisPlay] = useState(false);
+  const [thumbedDownThisPlay, setThumbedDownThisPlay] = useState(false);
   const animRef = useRef(null);
 
   const fetchStatus = async () => {
@@ -23,6 +25,8 @@ export default function MiniPlayer() {
       setIsPlaying(status.is_playing || false);
       setPositionMs(status.position_ms || 0);
       setDurationMs(status.duration_ms || 0);
+      setHeartedThisPlay(!!status.hearted_this_play);
+      setThumbedDownThisPlay(!!status.thumbed_down_this_play);
     } catch (_) {}
   };
 
@@ -145,11 +149,19 @@ export default function MiniPlayer() {
           <button onClick={() => api.skipSong().catch(() => {})} className="mini-btn" title="Next">
             <SkipForward size={16} />
           </button>
-          <button onClick={() => api.heartSong().catch(() => {})} className="mini-btn" title="Heart">
-            <Heart size={14} />
+          <button onClick={() => {
+            if (heartedThisPlay) return;
+            api.heartSong().then(fetchStatus).catch(() => {});
+          }} className="mini-btn" title={heartedThisPlay ? "Already hearted" : "Heart"}
+            style={{ opacity: heartedThisPlay ? 0.45 : 1 }}>
+            <Heart size={14} fill={heartedThisPlay ? "#f472b6" : "none"} />
           </button>
-          <button onClick={() => api.thumbsDown().catch(() => {})} className="mini-btn" title="Thumbs down">
-            <ThumbsDown size={14} />
+          <button onClick={() => {
+            if (thumbedDownThisPlay) return;
+            api.thumbsDown().then(fetchStatus).catch(() => {});
+          }} className="mini-btn" title={thumbedDownThisPlay ? "Already thumbed down" : "Thumbs down"}
+            style={{ opacity: thumbedDownThisPlay ? 0.45 : 1 }}>
+            <ThumbsDown size={14} fill={thumbedDownThisPlay ? "currentColor" : "none"} />
           </button>
         </div>
 

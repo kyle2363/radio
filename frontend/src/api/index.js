@@ -47,7 +47,8 @@ export const heartSong = () => post("/api/play/heart");
 export const thumbsDown = () => post("/api/play/thumbs-down");
 export const seekTo = (ms) => post("/api/play/seek", { ms: Math.round(ms) });
 export const setVolume = (volume) => post("/api/play/volume", { volume });
-
+export const setEqPreset = (preset) => post("/api/play/eq", { preset });
+export const fetchEqPreset = () => get("/api/play/eq");
 // ── Queue ─────────────────────────────────────────────────
 export const fetchQueue = () => get("/api/queue");
 export const fetchQueueStatus = () => get("/api/queue/status");
@@ -85,6 +86,10 @@ export const fetchQueueHistory = (limit = 30) => get(`/api/queue/history?limit=$
 // ── Recommendations ───────────────────────────────────────
 export const fetchRecommendation = () => get("/api/recommend");
 
+// ── Play Mode ─────────────────────────────────────────────
+export const fetchPlayMode = () => get("/api/play/mode");
+export const setPlayMode = (mode) => post("/api/play/mode", { mode });
+
 // ── Mood ──────────────────────────────────────────────────
 export const setMood = (state) => post("/api/mood/set", { state });
 export const activateVibeLock = (song_id) => post("/api/mood/vibe-lock/activate", { song_id });
@@ -99,6 +104,8 @@ export const fetchSettings = () => get("/api/settings");
 export const updateSetting = (key, value) => put(`/api/settings/${key}`, { value });
 export const resetRecommendations = () => post("/api/settings/reset-recommendations");
 export const wipeDatabase = () => post("/api/settings/wipe-db");
+export const exportSettings = () => get("/api/settings/export");
+export const importSettings = (data) => post("/api/settings/import", { data });
 
 // ── Songs ─────────────────────────────────────────────────
 export const fetchSongs = (params) => {
@@ -117,6 +124,16 @@ export const fetchSongMetadataSource = (id) => get(`/api/songs/${id}/metadata-so
 export const updateSongMetadata = (id, data) => put(`/api/songs/${id}/metadata`, data);
 export const reprocessSong = (id) => post(`/api/ingest/reprocess-single/${id}`);
 export const fetchSongArt = (id) => `${BASE}/api/songs/${id}/art.jpg`;
+export const fetchLyricsTiming = (id) => get(`/api/songs/${id}/lyrics-timing`);
+export const fetchLyricsTimingStatus = () => get("/api/lyrics-timing/status");
+
+// ── Library Verify ────────────────────────────────────────
+export const verifyLibrary = () => get("/api/library/verify");
+export const autoMatchFiles = () => post("/api/library/auto-match");
+export const confirmMatch = (orphanId, filepath) => post("/api/library/confirm-match", { orphan_id: orphanId, filepath });
+export const deleteSong = (id) => del(`/api/songs/${id}`);
+export const addUnregisteredSong = (filepath) => post("/api/library/add-unregistered", { filepath });
+export const deleteAllOrphaned = () => post("/api/library/delete-all-orphaned");
 
 // ── Ingest ────────────────────────────────────────────────
 export const fetchIngestStatus = () => get("/api/ingest/status");
@@ -162,7 +179,7 @@ export const dismissGuest = () => post("/api/talk/guest-dismiss");
 export const fetchPersonas = () => get("/api/talk/personas");
 
 // ── Skip Feedback ─────────────────────────────────────────
-export const submitSkipFeedback = (reason) => post("/api/queue/skip-feedback", { reason });
+export const submitSkipFeedback = (reason, duration = null) => post("/api/queue/skip-feedback", { reason, duration });
 
 // ── Undo ───────────────────────────────────────────────────
 export const undoSkip = () => post("/api/queue/undo-skip");

@@ -74,25 +74,29 @@ function AppWithBoot() {
     return <BootScreen onError={error} onReady={() => setError(null)} initialProgress={bootProgress} />;
   }
 
-  if (!faded) {
-    return (
-      <React.StrictMode>
-        <ErrorBoundary>
-          <BootScreen className={fading ? "boot-fade" : ""} initialProgress={bootProgress} />
-          {fading && (
-            <div style={{ position: "absolute", inset: 0 }}>
-              <App />
-            </div>
-          )}
-        </ErrorBoundary>
-      </React.StrictMode>
-    );
-  }
-
   return (
     <React.StrictMode>
       <ErrorBoundary>
-        <App />
+        <div style={{ position: "relative", width: "100vw", height: "100vh" }}>
+          {/* Boot screen — fades out during transition */}
+          {!faded && (
+            <div style={{
+              position: "absolute", inset: 0, zIndex: 10,
+              opacity: fading ? 0 : 1,
+              transition: "opacity 400ms ease-in",
+              pointerEvents: fading ? "none" : "auto",
+            }}>
+              <BootScreen initialProgress={bootProgress} />
+            </div>
+          )}
+          {/* App — fades in during transition, fully visible after */}
+          <div style={{
+            opacity: fading ? 1 : 0,
+            transition: fading ? "opacity 400ms ease-out" : "none",
+          }}>
+            <App />
+          </div>
+        </div>
       </ErrorBoundary>
     </React.StrictMode>
   );
