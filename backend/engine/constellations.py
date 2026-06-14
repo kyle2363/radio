@@ -7,31 +7,18 @@ taste hopping.
 """
 
 import logging
-import os
 import random
 import math
+import threading
 from dataclasses import dataclass, field
 from time import time
 
 import config
 from db import database
+from db.chroma import get_chroma_client
 from engine.utils import cosine_similarity
 
 logger = logging.getLogger(__name__)
-
-# ChromaDB singleton
-_chroma_client = None
-
-
-def _get_chroma_client():
-    global _chroma_client
-    if _chroma_client is None:
-        os.environ["CHROMA_NO_ANALYTICS"] = "1"
-        os.environ["CHROMA_TELEMETRY_OFF"] = "1"
-        import chromadb
-        os.makedirs(config.CHROMA_PATH, exist_ok=True)
-        _chroma_client = chromadb.PersistentClient(path=config.CHROMA_PATH)
-    return _chroma_client
 
 
 @dataclass
@@ -56,6 +43,7 @@ class TasteConstellations:
     """
 
     def __init__(self):
+        self._lock = threading.RLock()
         self._pockets: list[TastePocket] = []
         self._active_pocket_idx: int | None = None
         self._pocket_similarity: list[list[float]] = []
@@ -64,17 +52,20 @@ class TasteConstellations:
 
     @property
     def pockets(self) -> list[TastePocket]:
-        return self._pockets
+        with self._lock:
+            return list(self._pockets)
 
     @property
     def is_active(self) -> bool:
         """True when constellations are computed and usable."""
-        return len(self._pockets) >= 2
+        with self._lock:
+            return len(self._pockets) >= 2
 
     @property
     def active_pocket(self) -> TastePocket | None:
-        if self._active_pocket_idx is not None and self._active_pocket_idx < len(self._pockets):
-            return self._pockets[self._active_pocket_idx]
+        with self._lock:
+            if self._active_pocket_idx is not None and self._active_pocket_idx < len(self._pockets):
+                return self._pockets[self._active_pocket_idx]
         return None
 
     def _batch_fetch_embeddings(self, song_ids: list[int], collection_name: str) -> dict:
@@ -90,7 +81,7 @@ class TasteConstellations:
                 seen.add(key)
                 unique_ids.append(key)
         try:
-            client = _get_chroma_client()
+            client = get_chroma_client()
             collection = client.get_collection(collection_name)
             result = collection.get(ids=unique_ids, include=["embeddings"])
             embs = result["embeddings"]
@@ -272,10 +263,11 @@ class TasteConstellations:
         """Build taste constellations from positive signals.
 
         Called during queue rebuild when signal count crosses threshold.
+        All shared state is updated atomically at the end.
         """
-        now = time()
-        if now - self._last_built < config.CONSTELLATION_CACHE_TTL:
-            return
+        with self._lock:
+            if time() - self._last_built < config.CONSTELLATION_CACHE_TTL:
+                return
 
         try:
             signals = database.get_recent_signals(
@@ -286,20 +278,24 @@ class TasteConstellations:
             logger.warning("Failed to fetch signals for constellations: %s", e)
             return
 
-        self._total_positive_signals = len(signals)
+        total_signals = len(signals)
 
-        if len(signals) < config.CONSTELLATION_MIN_SIGNALS:
+        if total_signals < config.CONSTELLATION_MIN_SIGNALS:
             logger.debug("Not enough signals for constellations (%d < %d)",
-                         len(signals), config.CONSTELLATION_MIN_SIGNALS)
-            self._pockets = []
-            self._last_built = now
+                         total_signals, config.CONSTELLATION_MIN_SIGNALS)
+            with self._lock:
+                self._pockets = []
+                self._total_positive_signals = total_signals
+                self._last_built = time()
             return
 
         # Collect unique song IDs
         song_ids = list(dict.fromkeys(s["song_id"] for s in signals))
         if not song_ids:
-            self._pockets = []
-            self._last_built = now
+            with self._lock:
+                self._pockets = []
+                self._total_positive_signals = total_signals
+                self._last_built = time()
             return
 
         # Fetch text embeddings
@@ -317,11 +313,13 @@ class TasteConstellations:
         aligned_ids = [sid for sid in song_ids if str(sid) in text_embeddings]
         if len(aligned_ids) < config.CONSTELLATION_MIN_CLUSTER_SIZE * 2:
             logger.debug("Not enough embedded songs for constellations (%d)", len(aligned_ids))
-            self._pockets = []
-            self._last_built = now
+            with self._lock:
+                self._pockets = []
+                self._total_positive_signals = total_signals
+                self._last_built = time()
             return
 
-        # Optional artist centroid blending (disabled when artist is prominent in embedding text)
+        # Optional artist centroid blending
         blended_embeddings = text_embeddings
         if config.CONSTELLATION_ARTIST_BLEND > 0:
             artists = self._fetch_song_artists(song_ids)
@@ -334,8 +332,10 @@ class TasteConstellations:
             import numpy as np
         except ImportError:
             logger.warning("numpy unavailable, cannot build constellations")
-            self._pockets = []
-            self._last_built = now
+            with self._lock:
+                self._pockets = []
+                self._total_positive_signals = total_signals
+                self._last_built = time()
             return
 
         text_matrix = np.array([blended_embeddings[str(sid)] for sid in aligned_ids])
@@ -345,8 +345,10 @@ class TasteConstellations:
         k = self._adaptive_k(len(aligned_ids))
         if k < 2:
             logger.debug("Adaptive K returned %d, skipping constellations", k)
-            self._pockets = []
-            self._last_built = now
+            with self._lock:
+                self._pockets = []
+                self._total_positive_signals = total_signals
+                self._last_built = time()
             return
 
         # Run KMeans
@@ -356,14 +358,14 @@ class TasteConstellations:
             labels = kmeans.fit_predict(text_matrix)
         except Exception as e:
             logger.warning("KMeans failed: %s", e)
-            self._pockets = []
-            self._last_built = now
+            with self._lock:
+                self._pockets = []
+                self._total_positive_signals = total_signals
+                self._last_built = time()
             return
 
         # Build pockets from clusters
         pockets = []
-        total_signals = len(signals)
-
         for cluster_id in range(k):
             mask = labels == cluster_id
             cluster_song_ids = [aligned_ids[i] for i in range(len(aligned_ids)) if mask[i]]
@@ -417,18 +419,20 @@ class TasteConstellations:
 
         if len(pockets) < 2:
             logger.debug("Only %d pockets after filtering, skipping constellations", len(pockets))
-            self._pockets = []
-            self._last_built = now
+            with self._lock:
+                self._pockets = []
+                self._total_positive_signals = total_signals
+                self._last_built = time()
             return
 
-        self._pockets = pockets
-
-        # Compute inter-pocket similarity matrix for taste hopping
-        self._compute_pocket_similarity()
-
-        self._last_built = now
-        logger.info("Built %d taste pockets from %d signals (K=%d)",
-                     len(self._pockets), total_signals, k)
+        # Atomic state update
+        with self._lock:
+            self._pockets = pockets
+            self._total_positive_signals = total_signals
+            self._compute_pocket_similarity()
+            self._last_built = time()
+            logger.info("Built %d taste pockets from %d signals (K=%d)",
+                         len(pockets), total_signals, k)
 
     def _compute_pocket_similarity(self):
         """Compute cosine similarity between all pocket centroids."""
@@ -448,48 +452,48 @@ class TasteConstellations:
 
         Returns the selected TastePocket or None.
         """
-        if not self._pockets:
-            return None
+        with self._lock:
+            if not self._pockets:
+                return None
 
-        # If current song exists, find which pocket it belongs to
-        if current_song:
-            current_cluster = current_song.get("cluster_id")
-            if current_cluster is not None:
-                # Find pocket containing this song's cluster_id
-                for i, pocket in enumerate(self._pockets):
-                    if current_cluster in pocket.song_ids:
-                        self._active_pocket_idx = i
-                        return pocket
+            # If current song exists, find which pocket it belongs to
+            if current_song:
+                song_id = current_song.get("id")
+                if song_id is not None:
+                    for i, pocket in enumerate(self._pockets):
+                        if song_id in pocket.song_ids:
+                            self._active_pocket_idx = i
+                            return pocket
 
-            # Fallback: find nearest pocket by centroid similarity
-            song_emb = current_song.get("embedding")
-            if song_emb:
-                best_idx = 0
-                best_sim = -1
-                for i, pocket in enumerate(self._pockets):
-                    if pocket.centroid_text:
-                        sim = cosine_similarity(song_emb, pocket.centroid_text)
-                        if sim > best_sim:
-                            best_sim = sim
-                            best_idx = i
-                self._active_pocket_idx = best_idx
-                return self._pockets[best_idx]
+                # Fallback: find nearest pocket by centroid similarity
+                song_emb = current_song.get("embedding")
+                if song_emb:
+                    best_idx = 0
+                    best_sim = -1
+                    for i, pocket in enumerate(self._pockets):
+                        if pocket.centroid_text:
+                            sim = cosine_similarity(song_emb, pocket.centroid_text)
+                            if sim > best_sim:
+                                best_sim = sim
+                                best_idx = i
+                    self._active_pocket_idx = best_idx
+                    return self._pockets[best_idx]
 
-        # No current song: select by mood alignment
-        best_idx = 0
-        best_score = -1
-        for i, pocket in enumerate(self._pockets):
-            score = pocket.weight  # base score = weight
-            # Mood alignment bonus
-            if pocket.primary_mood == mood_state:
-                score += 0.2
-            # Time-of-day bias: morning → higher energy, night → lower energy
-            hour_factor = math.sin((hour - 6) * math.pi / 12)  # peaks at noon, troughs at midnight
-            energy_diff = abs(pocket.energy_avg - (0.5 + 0.3 * hour_factor))
-            score -= energy_diff * 0.1
-            if score > best_score:
-                best_score = score
-                best_idx = i
+            # No current song: select by mood alignment
+            best_idx = 0
+            best_score = -1
+            for i, pocket in enumerate(self._pockets):
+                score = pocket.weight  # base score = weight
+                # Mood alignment bonus
+                if pocket.primary_mood == mood_state:
+                    score += 0.2
+                # Time-of-day bias: morning → higher energy, night → lower energy
+                hour_factor = math.sin((hour - 6) * math.pi / 12)  # peaks at noon, troughs at midnight
+                energy_diff = abs(pocket.energy_avg - (0.5 + 0.3 * hour_factor))
+                score -= energy_diff * 0.1
+                if score > best_score:
+                    best_score = score
+                    best_idx = i
 
         self._active_pocket_idx = best_idx
         return self._pockets[best_idx]
@@ -502,24 +506,31 @@ class TasteConstellations:
         if not active_pocket or not candidates:
             return candidates
 
+        with self._lock:
+            pocket_sets = {p.constellation_id: set(p.song_ids) for p in self._pockets}
+            active_set = pocket_sets.get(active_pocket.constellation_id, set())
+            neighbor_sims = {}
+            for i, pocket in enumerate(self._pockets):
+                if pocket.constellation_id == active_pocket.constellation_id:
+                    continue
+                sim = self._pocket_similarity[active_pocket.constellation_id][i] if (
+                    active_pocket.constellation_id < len(self._pocket_similarity)
+                    and i < len(self._pocket_similarity[active_pocket.constellation_id])
+                ) else 0.0
+                if sim > 0.7:
+                    neighbor_sims[pocket.constellation_id] = (sim, pocket.weight)
         for c in candidates:
-            candidate_cluster = c.get("cluster_id", -1)
             boost = 0.0
 
-            # Direct constellation match: candidate's cluster is in the active pocket
-            if candidate_cluster in active_pocket.song_ids:
+            # Direct constellation match: candidate song is in the active pocket
+            if c["song_id"] in active_set:
                 boost = config.CONSTELLATION_WEIGHT_BOOST * active_pocket.weight
             else:
                 # Check neighboring pockets (similarity > 0.7)
-                for i, pocket in enumerate(self._pockets):
-                    if pocket.constellation_id == active_pocket.constellation_id:
-                        continue
-                    sim = self._pocket_similarity[active_pocket.constellation_id][i] if (
-                        active_pocket.constellation_id < len(self._pocket_similarity)
-                        and i < len(self._pocket_similarity[active_pocket.constellation_id])
-                    ) else 0.0
-                    if sim > 0.7 and candidate_cluster in pocket.song_ids:
-                        boost = config.CONSTELLATION_WEIGHT_BOOST * 0.5 * pocket.weight
+                for cid, (sim, weight) in neighbor_sims.items():
+                    cid_set = pocket_sets.get(cid)
+                    if cid_set and c["song_id"] in cid_set:
+                        boost = config.CONSTELLATION_WEIGHT_BOOST * 0.5 * weight
                         break
 
             if boost > 0:
@@ -532,79 +543,82 @@ class TasteConstellations:
 
         Returns a TastePocket to hop to, or None.
         """
-        if not active_pocket or not self._pockets or len(self._pockets) < 2:
-            return None
+        with self._lock:
+            if not active_pocket or not self._pockets or len(self._pockets) < 2:
+                return None
 
-        hop_chance = config.CONSTELLATION_HOP_CHANCE * (1 + exploration_level * 0.5)
-        if random.random() > hop_chance:
-            return None
+            hop_chance = config.CONSTELLATION_HOP_CHANCE * (1 + exploration_level * 0.5)
+            if random.random() > hop_chance:
+                return None
 
-        # Find neighboring pockets (high similarity to active)
-        active_idx = active_pocket.constellation_id
-        neighbors = []
-        for i, pocket in enumerate(self._pockets):
-            if pocket.constellation_id == active_idx:
-                continue
-            sim = self._pocket_similarity[active_idx][i] if (
-                active_idx < len(self._pocket_similarity)
-                and i < len(self._pocket_similarity[active_idx])
-            ) else 0.0
-            if sim > 0.5:
-                neighbors.append((pocket, sim))
+            # Find neighboring pockets (high similarity to active)
+            active_idx = active_pocket.constellation_id
+            neighbors = []
+            for i, pocket in enumerate(self._pockets):
+                if pocket.constellation_id == active_idx:
+                    continue
+                sim = self._pocket_similarity[active_idx][i] if (
+                    active_idx < len(self._pocket_similarity)
+                    and i < len(self._pocket_similarity[active_idx])
+                ) else 0.0
+                if sim > 0.5:
+                    neighbors.append((pocket, sim))
 
-        if not neighbors:
-            return None
+            if not neighbors:
+                return None
 
-        # Weight by similarity
-        total_sim = sum(s for _, s in neighbors)
-        if total_sim <= 0:
-            return None
+            # Weight by similarity
+            total_sim = sum(s for _, s in neighbors)
+            if total_sim <= 0:
+                return None
 
-        r = random.random() * total_sim
-        cumulative = 0
-        for pocket, sim in neighbors:
-            cumulative += sim
-            if r <= cumulative:
-                return pocket
+            r = random.random() * total_sim
+            cumulative = 0
+            for pocket, sim in neighbors:
+                cumulative += sim
+                if r <= cumulative:
+                    return pocket
 
-        return neighbors[-1][0]
+            return neighbors[-1][0]
 
     def get_constellation_summary(self) -> dict:
         """Return constellation data for the API/debug view."""
-        if not self._pockets:
-            return {
-                "active": False,
-                "reason": "no_pockets",
-                "total_positive_signals": self._total_positive_signals,
-            }
-
-        return {
-            "active": self.is_active,
-            "influencing": self.active_pocket is not None,
-            "pocket_count": len(self._pockets),
-            "total_positive_signals": self._total_positive_signals,
-            "pockets": [
-                {
-                    "id": p.constellation_id,
-                    "weight": round(p.weight, 3),
-                    "signal_count": p.signal_count,
-                    "primary_mood": p.primary_mood,
-                    "energy_avg": round(p.energy_avg, 3),
-                    "valence_avg": round(p.valence_avg, 3),
-                    "song_count": len(p.song_ids),
-                    "song_ids": p.song_ids,
+        with self._lock:
+            if not self._pockets:
+                return {
+                    "active": False,
+                    "reason": "no_pockets",
+                    "total_positive_signals": self._total_positive_signals,
                 }
-                for p in self._pockets
-            ],
-            "active_pocket": self.active_pocket.constellation_id if self.active_pocket else None,
-            "similarity_matrix": [
-                [round(val, 3) for val in row]
-                for row in self._pocket_similarity
-            ],
-        }
+
+            return {
+                "active": self.is_active,
+                "influencing": self.active_pocket is not None,
+                "pocket_count": len(self._pockets),
+                "total_positive_signals": self._total_positive_signals,
+                "pockets": [
+                    {
+                        "id": p.constellation_id,
+                        "weight": round(p.weight, 3),
+                        "signal_count": p.signal_count,
+                        "primary_mood": p.primary_mood,
+                        "energy_avg": round(p.energy_avg, 3),
+                        "valence_avg": round(p.valence_avg, 3),
+                        "song_count": len(p.song_ids),
+                        "song_ids": p.song_ids,
+                    }
+                    for p in self._pockets
+                ],
+                "active_pocket": self.active_pocket.constellation_id if self.active_pocket else None,
+                "similarity_matrix": [
+                    [round(val, 3) for val in row]
+                    for row in self._pocket_similarity
+                ],
+            }
 
     def invalidate(self):
         """Force rebuild on next call."""
-        self._last_built = 0
-        self._pockets = []
-        self._active_pocket_idx = None
+        with self._lock:
+            self._last_built = 0
+            self._pockets = []
+            self._active_pocket_idx = None

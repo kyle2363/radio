@@ -122,7 +122,10 @@ const QueuePreview = React.memo(function QueuePreview({ queue, isRebuilding, onP
           const slotColors = { exploit: "#2dd4a0", explore: "#5eadf5", wildcard: "#a78bfa", context: "#f59e0b", fallback: "var(--border-strong)", recovery: "#f09060", manual: "#4eccc4" };
           const slotBgs = { exploit: "#0a2418", explore: "#09142a", wildcard: "#100728", context: "#161008", fallback: "rgba(255,255,255,0.05)", recovery: "#2a1a0a", manual: "#0a2a28" };
           return (
-            <div key={item.song_id} onClick={() => onPromoteSong?.(item.song_id)} onContextMenu={(e) => { e.preventDefault(); setContextMenu({ x: e.clientX, y: e.clientY, songId: item.song_id, songTitle: `${item.artist} – ${item.title}` }); }} className="qc-compact queue-enter" style={{
+            <div key={item.song_id} onClick={() => onPromoteSong?.(item.song_id)} onContextMenu={(e) => { e.preventDefault(); setContextMenu({ x: e.clientX, y: e.clientY, songId: item.song_id, songTitle: `${item.artist} – ${item.title}` }); }}
+              tabIndex={0} role="button"
+              onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onPromoteSong?.(item.song_id); }}}
+              className="qc-compact queue-enter" style={{
               borderLeftColor: slotColors[item.slot] || "var(--border-strong)",
               borderLeft: item.vibe_affected ? "3px solid rgba(168,112,240,0.5)" : undefined,
               cursor: "pointer",
@@ -170,6 +173,8 @@ const QueuePreview = React.memo(function QueuePreview({ queue, isRebuilding, onP
 
         return (
           <div key={item.song_id} onClick={() => onPromoteSong?.(item.song_id)} onContextMenu={(e) => { e.preventDefault(); setContextMenu({ x: e.clientX, y: e.clientY, songId: item.song_id, songTitle: `${item.artist} – ${item.title}` }); }}
+            tabIndex={0} role="button"
+            onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onPromoteSong?.(item.song_id); }}}
             className={`queue-card ${slot.cls} queue-enter`}
             style={{
               borderBottom: idx < Math.min(queue.length, 5) - 1 ? "1px solid var(--border-subtle)" : "none",
@@ -208,6 +213,14 @@ const QueuePreview = React.memo(function QueuePreview({ queue, isRebuilding, onP
           </div>
         );
       })}
+      {count > 5 && (
+        <div style={{
+          textAlign: "center", fontSize: 10, padding: "6px 0 2px",
+          color: "var(--text-muted)",
+        }}>
+          +{count - 5} more song{count - 5 !== 1 ? "s" : ""}
+        </div>
+      )}
     </div>
   ) : null;
 

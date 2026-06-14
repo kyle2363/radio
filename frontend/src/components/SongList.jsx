@@ -239,8 +239,7 @@ function SongList({ addToast, currentSongId, onPlay }) {
   const handleHeart = useCallback(async (e, song) => {
     e.stopPropagation();
     try {
-      await api.playSong(song.id);
-      await api.heartSong();
+      await api.heartSongById(song.id);
       addToast?.(`Hearted: ${song.title}`, "success");
     } catch (err) {
       addToast?.("Failed to heart song", "error");
@@ -380,8 +379,8 @@ function SongList({ addToast, currentSongId, onPlay }) {
                     style={{ marginTop: "8px", fontSize: "11px", color: "var(--accent)", background: "var(--accent-muted)", padding: "4px 10px", borderRadius: "5px", border: "none", cursor: "pointer" }}>
                     Clear filters
                   </button>
-                )}
-              </div>
+            )}
+            </div>
             ) : (
               displaySongs.map((song) => (
                 <SongRow key={song.id} song={song} isPlaying={currentSongId === song.id}
@@ -583,7 +582,11 @@ const SongRow = React.memo(({ song, isPlaying, flashed, onPlay, onAddToQueue, on
   const isOpen = openMenuId === song.id;
 
   return (
-    <div className={`song-row ${isPlaying ? "playing" : ""} ${flashed ? "add-flash" : ""}`} onClick={() => onPlay(song)}>
+    <div className={`song-row ${isPlaying ? "playing" : ""} ${flashed ? "add-flash" : ""}`}
+      onClick={() => onPlay(song)}
+      tabIndex={0} role="button"
+      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onPlay(song); } }}
+      aria-label={`Play ${song.title || "Unknown Title"}`}>
       <Music size={13} style={{ color: "var(--text-muted)" }} />
       <div style={{ minWidth: 0 }}>
         <div style={{ color: "var(--text-primary)", fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: "12px" }}>
@@ -606,40 +609,40 @@ const SongRow = React.memo(({ song, isPlaying, flashed, onPlay, onAddToQueue, on
       <div style={{ display: "flex", alignItems: "center", gap: "5px" }}>
         <span className={`pct-badge ${pctClass}`}>{completionPct}%</span>
         <div className="row-actions">
-          <div className="act-btn" title="Add to queue" onClick={(e) => onAddToQueue(e, song)}>
+          <button className="act-btn" title="Add to queue" onClick={(e) => onAddToQueue(e, song)} aria-label="Add to queue">
             <Plus size={11} />
-          </div>
-          <div className="act-btn" title="Heart" onClick={(e) => onHeart(e, song)}>
+          </button>
+          <button className="act-btn" title="Heart" onClick={(e) => onHeart(e, song)} aria-label="Heart">
             <Heart size={11} />
-          </div>
-          <div className="act-btn" title="More" onClick={(e) => { e.stopPropagation(); setOpenMenuId(isOpen ? null : song.id); }}
-            style={{ position: "relative" }}>
+          </button>
+          <button className="act-btn" title="More" onClick={(e) => { e.stopPropagation(); setOpenMenuId(isOpen ? null : song.id); }}
+            style={{ position: "relative" }} aria-label="More actions">
             <MoreHorizontal size={11} />
             {isOpen && (
               <div ref={menuRef}
                 style={{ position: "absolute", top: "100%", right: 0, marginTop: "4px", zIndex: 20,
                   background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: "6px",
                   padding: "4px", minWidth: "120px", boxShadow: "0 4px 12px rgba(0,0,0,0.3)" }}>
-                <div onClick={(e) => onEditTags(e, song)}
-                  style={{ display: "flex", alignItems: "center", gap: "6px", padding: "6px 8px", borderRadius: "4px", fontSize: "11px", color: "var(--text-secondary)", cursor: "pointer" }}>
+                <button onClick={(e) => onEditTags(e, song)}
+                  style={{ display: "flex", alignItems: "center", gap: "6px", padding: "6px 8px", borderRadius: "4px", fontSize: "11px", color: "var(--text-secondary)", cursor: "pointer", background: "none", border: "none", width: "100%", textAlign: "left" }}>
                   <Pencil size={11} /> Edit tags
-                </div>
-                <div onClick={(e) => onEditMetadata(e, song)}
-                  style={{ display: "flex", alignItems: "center", gap: "6px", padding: "6px 8px", borderRadius: "4px", fontSize: "11px", color: "var(--text-secondary)", cursor: "pointer" }}>
+                </button>
+                <button onClick={(e) => onEditMetadata(e, song)}
+                  style={{ display: "flex", alignItems: "center", gap: "6px", padding: "6px 8px", borderRadius: "4px", fontSize: "11px", color: "var(--text-secondary)", cursor: "pointer", background: "none", border: "none", width: "100%", textAlign: "left" }}>
                   <Edit3 size={11} /> Edit metadata
-                </div>
-                <div onClick={(e) => onReprocess(e, song)}
-                  style={{ display: "flex", alignItems: "center", gap: "6px", padding: "6px 8px", borderRadius: "4px", fontSize: "11px", color: "var(--text-secondary)", cursor: "pointer" }}>
+                </button>
+                <button onClick={(e) => onReprocess(e, song)}
+                  style={{ display: "flex", alignItems: "center", gap: "6px", padding: "6px 8px", borderRadius: "4px", fontSize: "11px", color: "var(--text-secondary)", cursor: "pointer", background: "none", border: "none", width: "100%", textAlign: "left" }}>
                   <RotateCcw size={11} /> Reprocess
-                </div>
+                </button>
                 <div style={{ borderTop: "1px solid var(--border-subtle)", margin: "2px 0" }} />
-                <div onClick={(e) => onBlacklist(e, song)}
-                  style={{ display: "flex", alignItems: "center", gap: "6px", padding: "6px 8px", borderRadius: "4px", fontSize: "11px", color: "var(--danger)", cursor: "pointer" }}>
+                <button onClick={(e) => onBlacklist(e, song)}
+                  style={{ display: "flex", alignItems: "center", gap: "6px", padding: "6px 8px", borderRadius: "4px", fontSize: "11px", color: "var(--danger)", cursor: "pointer", background: "none", border: "none", width: "100%", textAlign: "left" }}>
                   <XCircle size={11} /> Blacklist
-                </div>
+                </button>
               </div>
             )}
-          </div>
+          </button>
         </div>
       </div>
     </div>

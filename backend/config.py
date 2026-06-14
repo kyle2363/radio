@@ -53,7 +53,7 @@ TALK_GUEST_SONGS_PER_SET = 4
 TALK_VOLUME = 100  # percent of main volume for talk segments
 
 # Talk show debug logging (set True to log OmniVoice inputs + talk segment prompts/responses)
-TALK_SHOW_DEBUG = True
+TALK_SHOW_DEBUG = False
 TALK_DEBUG_LOG_PATH = os.path.join(BASE_DIR, "data", "talk_show_debug.log")
 
 # Song-end debug log

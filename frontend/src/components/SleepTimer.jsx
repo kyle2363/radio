@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
-import { Moon } from "lucide-react";
+import { Moon, Plus } from "lucide-react";
+import HeaderButton from "./HeaderButton";
 
 function formatTime(secs) {
   if (!secs || secs <= 0) return "—";
@@ -8,8 +9,47 @@ function formatTime(secs) {
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
+const PRESETS = [
+  { label: "15m", value: 15 },
+  { label: "30m", value: 30 },
+  { label: "60m", value: 60 },
+  { label: "90m", value: 90 },
+];
+
 function SleepTimer({ timer, onSet, onCancel }) {
-  if (!timer?.active) return null;
+  const [showSet, setShowSet] = useState(false);
+
+  if (!timer?.active) {
+    return (
+      <div className="flex items-center gap-1" style={{ position: "relative" }}>
+        <HeaderButton onClick={() => setShowSet(!showSet)} title="Set sleep timer">
+          <Moon size={18} />
+        </HeaderButton>
+        {showSet && (
+          <div style={{
+            position: "absolute", top: "100%", right: 0, marginTop: 4, zIndex: 30,
+            background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: 6,
+            padding: 4, display: "flex", gap: 2, boxShadow: "0 4px 12px rgba(0,0,0,0.3)",
+          }}>
+            {PRESETS.map((p) => (
+              <button key={p.value} onClick={() => { onSet?.(p.value); setShowSet(false); }}
+                style={{
+                  fontSize: 10, padding: "4px 8px", borderRadius: 4, cursor: "pointer",
+                  background: "var(--bg-elevated)", color: "var(--text-secondary)",
+                  border: "1px solid var(--border-subtle)", fontWeight: 500,
+                }}>
+                {p.label}
+              </button>
+            ))}
+            <button onClick={() => setShowSet(false)}
+              style={{ fontSize: 10, padding: "4px 8px", borderRadius: 4, cursor: "pointer", background: "none", border: "none", color: "var(--text-muted)" }}>
+              ✕
+            </button>
+          </div>
+        )}
+      </div>
+    );
+  }
 
   const remaining = timer.remaining_seconds || 0;
   const total = timer.total_seconds || 1;

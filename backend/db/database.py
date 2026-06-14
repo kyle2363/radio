@@ -41,6 +41,8 @@ def get_connection():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA busy_timeout=5000")
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
 
@@ -186,6 +188,22 @@ def add_missing_columns():
                 (key, val),
             )
 
+        # Ensure performance indexes exist
+        try:
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_play_events_song ON play_events(song_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_play_events_session ON play_events(session_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_play_events_song_signal ON play_events(song_id, signal)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_play_events_played_at ON play_events(played_at)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_songs_last_played ON songs(last_played)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_songs_recovery_score ON songs(recovery_score)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_songs_avg_completion ON songs(avg_completion)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_songs_artist ON songs(artist)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_transitions_from ON transitions(from_song_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_queue_history_session ON queue_history(session_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_queue_history_song ON queue_history(song_id)")
+        except Exception:
+            pass
+
         conn.commit()
     except Exception as e:
         import logging
@@ -284,26 +302,34 @@ def _extract_subfolder_from_path(filepath):
     return os.path.basename(os.path.dirname(filepath))
 
 
+def _natural_sort_key(s):
+    """Sort key that extracts trailing numbers for natural ordering (song 2 before song 10)."""
+    return [int(c) if c.isdigit() else c.lower() for c in re.split(r'(\d+)', s)]
+
+
 def get_subfolders():
-    """Get sorted list of unique subfolders that have songs."""
+    """Get naturally sorted list of unique subfolders that have songs."""
     conn = get_connection()
     try:
         rows = conn.execute(
-            "SELECT DISTINCT subfolder FROM songs WHERE subfolder IS NOT NULL AND subfolder != '' ORDER BY subfolder"
+            "SELECT DISTINCT subfolder FROM songs WHERE subfolder IS NOT NULL AND subfolder != ''"
         ).fetchall()
-        return [r["subfolder"] for r in rows]
+        subfolders = [r["subfolder"] for r in rows]
+        subfolders.sort(key=_natural_sort_key)
+        return subfolders
     finally:
         conn.close()
 
 
 def get_subfolder_song_counts():
-    """Get count of songs per subfolder."""
+    """Get count of songs per subfolder, naturally sorted."""
     conn = get_connection()
     try:
         rows = conn.execute(
-            "SELECT subfolder, COUNT(*) as cnt FROM songs WHERE subfolder IS NOT NULL AND subfolder != '' GROUP BY subfolder ORDER BY subfolder"
+            "SELECT subfolder, COUNT(*) as cnt FROM songs WHERE subfolder IS NOT NULL AND subfolder != '' GROUP BY subfolder"
         ).fetchall()
-        return {r["subfolder"]: r["cnt"] for r in rows}
+        result = {r["subfolder"]: r["cnt"] for r in rows}
+        return dict(sorted(result.items(), key=lambda kv: _natural_sort_key(kv[0])))
     finally:
         conn.close()
 

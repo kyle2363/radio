@@ -17,26 +17,33 @@ export default function useBootPoll() {
 
     const startTime = Date.now();
     let intervalId = null;
-    let timerId = null;
+    let cancelled = false;
 
     const poll = () => {
+      if (cancelled) return;
       if (Date.now() - startTime >= TIMEOUT_MS) {
         setError("Backend unreachable — check if server is running");
+        if (intervalId) clearInterval(intervalId);
+        intervalId = null;
         return;
       }
 
       fetch(HEALTH_URL, { signal: AbortSignal.timeout(3000) })
         .then((r) => {
+          if (cancelled) return;
           if (r.ok) {
             setReady(true);
             setProgress(100);
-            if (timerId) clearTimeout(timerId);
+            if (intervalId) clearInterval(intervalId);
+            intervalId = null;
           } else {
             throw new Error("not ready");
           }
         })
         .catch(() => {
-          setProgress(Math.min(90, ((Date.now() - startTime) / TIMEOUT_MS) * 90));
+          if (!cancelled) {
+            setProgress(Math.min(90, ((Date.now() - startTime) / TIMEOUT_MS) * 90));
+          }
         });
     };
 
@@ -44,8 +51,9 @@ export default function useBootPoll() {
     poll();
 
     return () => {
+      cancelled = true;
       if (intervalId) clearInterval(intervalId);
-      if (timerId) clearTimeout(timerId);
+      intervalId = null;
     };
   }, []);
 

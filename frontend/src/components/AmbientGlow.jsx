@@ -23,8 +23,10 @@ function AmbientGlow({ song, mood = "neutral" }) {
     [palette.bottom, intensity]
   );
 
+  const prefersReducedMotion = typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
   return (
-    <div className="fixed inset-0 pointer-events-none z-0" style={{ transition: "opacity 0.8s ease" }}>
+    <div className="fixed inset-0 pointer-events-none z-0" style={{ transition: prefersReducedMotion ? "none" : "opacity 0.8s ease" }}>
       <div className="absolute inset-0" style={{ background: topGrad }} />
       <div className="absolute inset-0" style={{ background: botGrad }} />
     </div>

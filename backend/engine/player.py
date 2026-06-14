@@ -16,11 +16,6 @@ _ch = logging.StreamHandler(sys.stdout)
 _ch.setLevel(logging.WARNING)
 _ch.setFormatter(logging.Formatter("[Playback] %(asctime)s.%(msecs)03d [%(threadName)s] %(message)s", datefmt="%H:%M:%S"))
 _song_logger.addHandler(_ch)
-# File handler (persistent log)
-_fh = logging.FileHandler(config.LOG_PATH, mode="a", encoding="utf-8")
-_fh.setLevel(logging.WARNING)
-_fh.setFormatter(logging.Formatter("%(asctime)s.%(msecs)03d [%(threadName)s] %(message)s", datefmt="%H:%M:%S"))
-_song_logger.addHandler(_fh)
 _song_logger.propagate = False
 
 
@@ -63,6 +58,7 @@ class Player:
 
     def __init__(self):
         self._lock = threading.Lock()
+        self._cb_lock = threading.Lock()
         self._state = "stopped"  # stopped, playing, paused
         self._current_song_id = None
         self._current_session_id = None
@@ -210,12 +206,14 @@ class Player:
                         _song_logger.debug("  -> restored volume to %d after talk segment", self._pre_talk_volume)
                         self._pre_talk_volume = None
                     # Fire registered callbacks (e.g. on_song_started deferred from talk segment)
-                    for cb in self._on_song_started_callbacks:
+                    with self._cb_lock:
+                        cbs = list(self._on_song_started_callbacks)
+                        self._on_song_started_callbacks.clear()
+                    for cb in cbs:
                         try:
                             cb(sid)
                         except Exception as e:
                             _song_logger.error("Error in on_song_started callback: %s", e)
-                    self._on_song_started_callbacks.clear()
         else:
             _song_logger.debug("  -> chain fully advanced (idx=%d >= len=%d), no more items",
                                self._current_chain_index, len(self._chain_items))
@@ -354,12 +352,14 @@ class Player:
 
     def _run_ended_callbacks(self, song_id):
         """Run song-ended callbacks in a background thread."""
-        _song_logger.debug("_run_ended_callbacks(song=%s) — %d callbacks registered", song_id, len(self._on_song_ended_callbacks))
+        with self._cb_lock:
+            cbs = list(self._on_song_ended_callbacks)
+        _song_logger.debug("_run_ended_callbacks(song=%s) — %d callbacks registered", song_id, len(cbs))
         # Skip DB-recording callbacks when song_id is None (talk-only chain ended)
-        for i, cb in enumerate(self._on_song_ended_callbacks):
+        for i, cb in enumerate(cbs):
             cb_name = getattr(cb, '__name__', repr(cb))
             try:
-                _song_logger.debug("  -> running callback %d/%d: %s", i + 1, len(self._on_song_ended_callbacks), cb_name)
+                _song_logger.debug("  -> running callback %d/%d: %s", i + 1, len(cbs), cb_name)
                 cb(song_id)
                 _song_logger.debug("  <- callback %s done", cb_name)
             except Exception as e:
@@ -534,7 +534,8 @@ class Player:
                 self._talk_only_chain = False
                 self._talk_total_ms = 0
                 self._tts_events_pending = 0
-                self._on_song_started_callbacks.clear()
+                with self._cb_lock:
+                    self._on_song_started_callbacks.clear()
                 _song_logger.debug("  -> play new media")
                 # HACK: VLC's media_list_player.play() can block indefinitely if
                 # the stop/play cycle happens too fast.  Run play() inside a
@@ -612,7 +613,8 @@ class Player:
                                         self._talk_total_ms += int(_frames / _rate * 1000)
                             except Exception:
                                 pass
-                self._on_song_started_callbacks.clear()
+                with self._cb_lock:
+                    self._on_song_started_callbacks.clear()
                 _song_logger.debug("  -> play new chain, talk_playing=%s, tts_pending=%d",
                                    self._talk_playing, self._tts_events_pending)
 
@@ -712,7 +714,8 @@ class Player:
         self._chain_items = []
         self._current_chain_index = 0
         self._tts_events_pending = 0
-        self._on_song_started_callbacks.clear()
+        with self._cb_lock:
+            self._on_song_started_callbacks.clear()
 
     def pause(self):
         """Pause playback."""
@@ -918,7 +921,8 @@ class Player:
 
     def on_song_ended(self, callback):
         """Register a callback for when a song ends."""
-        self._on_song_ended_callbacks.append(callback)
+        with self._cb_lock:
+            self._on_song_ended_callbacks.append(callback)
 
     def register_on_song_started(self, callback):
         """Register a callback fired when VLC advances TO a real song.
@@ -926,11 +930,13 @@ class Player:
         Used by talk segment playback to defer on_song_started until
         the actual song begins (after TTS WAVs finish).
         """
-        self._on_song_started_callbacks.append(callback)
+        with self._cb_lock:
+            self._on_song_started_callbacks.append(callback)
 
     def on_stopped(self, callback):
         """Register a callback for when playback stops."""
-        self._on_playback_stopped_callbacks.append(callback)
+        with self._cb_lock:
+            self._on_playback_stopped_callbacks.append(callback)
 
 
 # Global singleton

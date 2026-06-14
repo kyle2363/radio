@@ -10,7 +10,7 @@ import json
 import httpx
 
 import config
-from .base import ChatClient, EmbedClient, ChatResponse, ToolCall
+from .base import ChatClient, EmbedClient, ChatResponse, ToolCall, retry_http_call
 
 
 class OpenAIChatClient(ChatClient):
@@ -43,16 +43,21 @@ class OpenAIChatClient(ChatClient):
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
 
-        resp = httpx.post(
-            f"{self._base_url}/chat/completions",
-            json=payload,
-            headers={"Authorization": f"Bearer {self._api_key}"},
-            timeout=timeout or config.LLM_CHAT_TIMEOUT,
+        resp = retry_http_call(
+            lambda: httpx.post(
+                f"{self._base_url}/chat/completions",
+                json=payload,
+                headers={"Authorization": f"Bearer {self._api_key}"},
+                timeout=timeout or config.LLM_CHAT_TIMEOUT,
+            )
         )
         resp.raise_for_status()
         data = resp.json()
-        choice = data["choices"][0]
-        message = choice["message"]
+        choices = data.get("choices", [])
+        if not choices:
+            raise RuntimeError(f"OpenAI chat returned no choices: {data}")
+        choice = choices[0]
+        message = choice.get("message", {})
         content = message.get("content") or ""
         tool_calls_raw = message.get("tool_calls")
 
@@ -85,12 +90,17 @@ class OpenAIEmbedClient(EmbedClient):
             "model": embed_model,
             "input": input,
         }
-        resp = httpx.post(
-            f"{self._base_url}/embeddings",
-            json=payload,
-            headers={"Authorization": f"Bearer {self._api_key}"},
-            timeout=timeout or config.LLM_EMBED_TIMEOUT,
+        resp = retry_http_call(
+            lambda: httpx.post(
+                f"{self._base_url}/embeddings",
+                json=payload,
+                headers={"Authorization": f"Bearer {self._api_key}"},
+                timeout=timeout or config.LLM_EMBED_TIMEOUT,
+            )
         )
         resp.raise_for_status()
         data = resp.json()
-        return {"embeddings": [item["embedding"] for item in data["data"]]}
+        items = data.get("data", [])
+        if not items:
+            raise RuntimeError(f"OpenAI embed returned no data: {data}")
+        return {"embeddings": [item["embedding"] for item in items]}

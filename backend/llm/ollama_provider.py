@@ -10,7 +10,7 @@ import time
 import httpx
 
 import config
-from .base import ChatClient, EmbedClient, ChatResponse, ToolCall
+from .base import ChatClient, EmbedClient, ChatResponse, ToolCall, retry_http_call
 
 logger = logging.getLogger(__name__)
 
@@ -40,10 +40,12 @@ class OllamaChatClient(ChatClient):
 
         logger.debug(f"OllamaChatClient.chat: POST {self._base_url}/api/chat (timeout={config.LLM_CHAT_TIMEOUT}s)")
         t0 = time.time()
-        resp = httpx.post(
-            f"{self._base_url}/api/chat",
-            json=payload,
-            timeout=timeout or config.LLM_CHAT_TIMEOUT,
+        resp = retry_http_call(
+            lambda: httpx.post(
+                f"{self._base_url}/api/chat",
+                json=payload,
+                timeout=timeout or config.LLM_CHAT_TIMEOUT,
+            )
         )
         elapsed = time.time() - t0
         logger.debug(f"OllamaChatClient.chat: HTTP {resp.status_code} in {elapsed:.1f}s")
@@ -84,10 +86,12 @@ class OllamaEmbedClient(EmbedClient):
             "input": input,
         }
 
-        resp = httpx.post(
-            f"{self._base_url}/api/embed",
-            json=payload,
-            timeout=timeout or config.LLM_EMBED_TIMEOUT,
+        resp = retry_http_call(
+            lambda: httpx.post(
+                f"{self._base_url}/api/embed",
+                json=payload,
+                timeout=timeout or config.LLM_EMBED_TIMEOUT,
+            )
         )
         resp.raise_for_status()
         data = resp.json()

@@ -15,6 +15,8 @@ function CommandBar({ onCommandSent, compact = false, onFocus, onClose,
   const [historyIdx, setHistoryIdx] = useState(-1);
   const inputRef = useRef(null);
   const submittedCmdRef = useRef(null);
+  const [placeholder] = useState(() => `Ask something... (try ${COMMAND_HINTS[Math.floor(Math.random() * COMMAND_HINTS.length)]})`);
+  const [expandedPlaceholder] = useState(() => `Say something... (try ${COMMAND_HINTS[Math.floor(Math.random() * COMMAND_HINTS.length)]})`);
 
   useEffect(() => {
     const handler = (e) => {
@@ -105,7 +107,7 @@ function CommandBar({ onCommandSent, compact = false, onFocus, onClose,
           <Terminal size={12} style={{ color: "var(--text-muted)", flexShrink: 0 }} />
           <input ref={inputRef} type="text" value={text} onChange={handleInputChange} onKeyDown={handleKeyDown}
             onFocus={(e) => { onFocus?.(e); handleActivity(); }}
-            placeholder={sending ? "Thinking..." : `Ask something... (try ${COMMAND_HINTS[Math.floor(Math.random() * COMMAND_HINTS.length)]})`}
+            placeholder={sending ? "Thinking..." : placeholder}
             className="flex-1 bg-transparent border-none outline-none text-[11px]"
             style={{ color: "var(--text-primary)" }}
             disabled={sending} />
@@ -124,7 +126,7 @@ function CommandBar({ onCommandSent, compact = false, onFocus, onClose,
         style={{ background: "var(--bg-surface)" }}>
         <input ref={inputRef} type="text" value={text} onChange={handleInputChange} onKeyDown={handleKeyDown}
           onFocus={handleActivity}
-          placeholder={sending ? "Thinking..." : `Say something... (try ${COMMAND_HINTS[Math.floor(Math.random() * COMMAND_HINTS.length)]})`}
+          placeholder={sending ? "Thinking..." : expandedPlaceholder}
           className="flex-1 bg-transparent border-none outline-none text-sm"
           style={{ color: "var(--text-primary)" }}
           disabled={sending} />

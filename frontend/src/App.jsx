@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback, useRef, useLayoutEffect } from "react";
 import useTransition from "./hooks/useTransition";
 import * as api from "./api";
-import { Radio, Loader2, Mic, Filter, X, Sparkles } from "lucide-react";
+import { Radio, Loader2, Mic, Sparkles, Sun, Moon, Library, HelpCircle, Settings } from "lucide-react";
 
 import AmbientGlow from "./components/AmbientGlow";
 import MiniPlayer from "./components/MiniPlayer";
@@ -34,6 +34,8 @@ import ConstellationMap from "./components/ConstellationMap";
 import LyricsPanel from "./components/LyricsPanel";
 import QuickSearch from "./components/QuickSearch";
 import CommandPalette from "./components/CommandPalette";
+import HeaderButton from "./components/HeaderButton";
+import HeaderStatusPill from "./components/HeaderStatusPill";
 
 // Focused hooks
 import { RadioProvider, useSharedRadio, useFetchStatus, useWebSocket, useOnboarding } from "./hooks/useRadioState";
@@ -638,155 +640,103 @@ function AppInner() {
     <div className="min-h-screen bg-gray-950 text-gray-200 flex flex-col" data-theme={theme}>
       <AmbientGlow song={currentSong} mood={moodState} />
       <header className="py-3 sticky top-0 z-10" style={{ borderBottom: "1px solid var(--border-subtle)", background: "color-mix(in srgb, var(--bg-page) 85%, transparent)", backdropFilter: "blur(12px)" }}>
-        <div className="max-w-6xl mx-auto px-3 sm:px-5 flex items-center gap-3">
-          <h1 className="text-lg font-bold tracking-tight" style={{ color: "var(--text-primary)" }}>Radio</h1>
-          <span className="text-[11px] font-semibold px-3 py-1 rounded-full"
-            style={{ background: "rgba(72,187,120,0.12)", color: "#4ade80", border: "1px solid rgba(72,187,120,0.2)" }}>
-            {uiMode === "radio" ? "Radio" : "Normal"}
-          </span>
-
-          {uiMode === "normal" && (
-            <div className="flex items-center gap-0.5 rounded-full py-0.5 px-0.5" style={{ background: "var(--bg-elevated)", border: "1px solid var(--border-subtle)" }}>
-              {["ai", "shuffle", "sequential"].map((m) => (
-                <button key={m} onClick={() => handlePlayModeChange(m)}
-                  className="text-[10px] font-semibold px-2 py-1 rounded-full transition-all"
-                  style={{
-                    background: playMode === m ? "var(--accent-muted)" : "transparent",
-                    color: playMode === m ? "var(--accent)" : "var(--text-muted)",
-                    border: "none", cursor: "pointer", textTransform: "uppercase", letterSpacing: "0.05em",
-                  }}>
-                  {m === "ai" ? "AI" : m === "shuffle" ? "Shuffle" : "Seq"}
-                </button>
-              ))}
-            </div>
-          )}
-
-          <div className="flex items-center gap-2 ml-2">
-            <span style={{
-              width: 6, height: 6, borderRadius: "50%",
-              background: wsConnected ? "#4ade80" : "#f59e0b",
-              boxShadow: wsConnected ? "0 0 4px rgba(74,222,128,0.4)" : "0 0 4px rgba(245,158,11,0.4)",
-              animation: wsConnected ? "none" : "pulse 1s ease-in-out infinite",
-            }} title={wsConnected ? "Connected" : "Reconnecting..."} />
-            {uiMode === "radio" && <ArchetypeBadge archetype={archetype} />}
-            {uiMode === "radio" && <VibeLockBadge vibeLock={vibeLock} currentSong={currentSong} />}
-            {uiMode === "radio" && <SkipStreakIndicator skipStreak={skipStreak} />}
-            {uiMode === "radio" && hasActiveFilters && (
-              <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full text-[11px] font-medium cursor-pointer"
-                onClick={() => { setShowLibrary(true); setLibraryTab("library"); }}
-                style={{
-                  background: "rgba(99,153,34,0.1)",
-                  border: "1px solid rgba(99,153,34,0.25)",
-                  color: "#8bc34a",
-                }}>
-                <Filter size={10} />
-                {activeFilters.folders?.length > 0 && `${activeFilters.folders.length}f `}
-                {(activeFilters.mtime_min_days != null || activeFilters.mtime_max_days != null) && "age "}
-                {activeFilters.artist_mode && "artist"}
-              </span>
-            )}
-            {uiMode === "radio" && (
-              <>
-                {/* Talk show generating spinner */}
-                {talkGenerating && (
-                  <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full text-[11px] font-medium"
+        <div className="px-3 sm:px-5 flex items-center gap-3">
+          {/* LEFT: Brand */}
+          <div className="flex items-center gap-2 flex-shrink-0">
+            <h1 className="text-lg font-bold tracking-tight" style={{ color: "var(--text-primary)" }}>Radio</h1>
+            <span className="text-[11px] font-semibold px-3 py-1 rounded-full"
+              style={{ background: "rgba(72,187,120,0.12)", color: "#4ade80", border: "1px solid rgba(72,187,120,0.2)" }}>
+              {uiMode === "radio" ? "Radio" : "Normal"}
+            </span>
+            {uiMode === "normal" && (
+              <div className="flex items-center gap-0.5 rounded-full py-0.5 px-0.5" style={{ background: "var(--bg-elevated)", border: "1px solid var(--border-subtle)" }}>
+                {["ai", "shuffle", "sequential"].map((m) => (
+                  <button key={m} onClick={() => handlePlayModeChange(m)}
+                    className="text-[10px] font-semibold px-2 py-1 rounded-full transition-all"
                     style={{
-                      background: "rgba(168,85,247,0.1)",
-                      border: "1px solid rgba(168,85,247,0.25)",
-                      color: "#c084fc",
+                      background: playMode === m ? "var(--accent-muted)" : "transparent",
+                      color: playMode === m ? "var(--accent)" : "var(--text-muted)",
+                      border: "none", cursor: "pointer", textTransform: "uppercase", letterSpacing: "0.05em",
                     }}>
-                    <Loader2 size={10} className="animate-spin" />
-                    Talk
-                  </span>
-                )}
-                {/* Talk segment playing indicator */}
-                {talkSegmentActive && (
-                  <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full text-[11px] font-medium"
-                    style={{
-                      background: "rgba(96,165,250,0.1)",
-                      border: "1px solid rgba(96,165,250,0.25)",
-                      color: "#60a5fa",
-                    }}>
-                    <Mic size={10} />
-                    {talkSegmentActive.segment_type === "caller" ? "Caller"
-                      : talkSegmentActive.segment_type === "dj_monologue" ? "Monologue"
-                      : "Guest"}
-                  </span>
-                )}
-                {/* DJ badge: 3 states */}
-                <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full text-[11px] font-medium"
-                  style={{
-                    background: talkSegmentActive
-                      ? "rgba(96,165,250,0.1)"
-                      : ttsReady
-                        ? "rgba(72,187,120,0.1)"
-                        : "rgba(255,255,255,0.04)",
-                    border: `1px solid ${talkSegmentActive
-                      ? "rgba(96,165,250,0.25)"
-                      : ttsReady
-                        ? "rgba(72,187,120,0.25)"
-                        : "rgba(255,255,255,0.08)"}`,
-                    color: talkSegmentActive
-                      ? "#60a5fa"
-                      : ttsReady
-                        ? "#4ade80"
-                        : "rgba(255,255,255,0.3)",
-                  }}>
-                  <span style={{
-                    display: "inline-block",
-                    width: 6,
-                    height: 6,
-                    borderRadius: "50%",
-                    background: talkSegmentActive
-                      ? "#60a5fa"
-                      : ttsReady
-                        ? "#4ade80"
-                        : "rgba(255,255,255,0.15)",
-                    boxShadow: talkSegmentActive
-                      ? "0 0 6px rgba(96,165,250,0.5)"
-                      : ttsReady
-                        ? "0 0 6px rgba(72,187,120,0.5)"
-                        : "none",
-                    animation: talkSegmentActive ? "pulse 1.5s ease-in-out infinite" : "none",
-                  }} />
-                  DJ
-                </span>
-              </>
+                    {m === "ai" ? "AI" : m === "shuffle" ? "Shuffle" : "Seq"}
+                  </button>
+                ))}
+              </div>
             )}
           </div>
 
-          <div className="ml-auto flex items-center gap-2">
-            <button onClick={() => toggleTheme(theme, setTheme)} className="min-w-[84px] px-4 py-2.5 rounded-lg text-xs transition flex items-center justify-center gap-1.5 btn-muted"
+          {/* MIDDLE: Status pills (radio mode only) */}
+          {uiMode === "radio" && (
+            <>
+              <div style={{ width: "0.5px", height: 22, background: "rgba(255,255,255,0.12)", flexShrink: 0 }} />
+              <div className="flex items-center gap-[6px] flex-wrap overflow-hidden">
+                <ArchetypeBadge archetype={archetype} />
+                <VibeLockBadge vibeLock={vibeLock} currentSong={currentSong} />
+                <SkipStreakIndicator skipStreak={skipStreak} />
+
+                <HeaderStatusPill dotColor={
+                  talkSegmentActive ? "#60a5fa" : ttsReady ? "#4ade80" : "#5f6b7a"
+                }>
+                  DJ
+                </HeaderStatusPill>
+
+                {talkGenerating && (
+                  <HeaderStatusPill dotColor="#c084fc">
+                    <Loader2 size={11} className="animate-spin" />
+                    Talk
+                  </HeaderStatusPill>
+                )}
+                {talkSegmentActive && (
+                  <HeaderStatusPill dotColor="#60a5fa">
+                    <Mic size={11} />
+                    {talkSegmentActive.segment_type === "caller" ? "Caller"
+                      : talkSegmentActive.segment_type === "dj_monologue" ? "Monologue"
+                      : "Guest"}
+                  </HeaderStatusPill>
+                )}
+              </div>
+            </>
+          )}
+
+          {/* Spacer */}
+          <div className="flex-1" />
+
+          {/* RIGHT: Action buttons + session controls */}
+          <div className="flex items-center gap-[2px] flex-shrink-0">
+            <HeaderButton onClick={() => toggleTheme(theme, setTheme)}
               title={`Switch to ${theme === "dark" ? "light" : "dark"} theme`}>
-              {theme === "dark" ? "☀" : "☾"}
-            </button>
-            <button onClick={() => setShowLibrary(true)} className="min-w-[84px] px-4 py-2.5 rounded-lg text-xs transition flex items-center justify-center gap-1.5 btn-muted">
-              Library
-            </button>
+              {theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
+            </HeaderButton>
+            <HeaderButton onClick={() => setShowLibrary(true)} title="Library">
+              <Library size={18} />
+            </HeaderButton>
             {uiMode === "radio" && (
-              <button onClick={() => setShowConstellations(true)} className="min-w-[84px] px-4 py-2.5 rounded-lg text-xs transition flex items-center justify-center gap-1.5 btn-muted"
-                title="Taste Constellations">
-                <Sparkles size={14} />
+              <HeaderButton onClick={() => setShowConstellations(true)} title="Taste Constellations">
+                <Sparkles size={18} />
                 {constellationData?.active && (
                   <span style={{
-                    width: 6, height: 6, borderRadius: "50%", flexShrink: 0,
+                    position: "absolute", top: 5, right: 5,
+                    width: 6, height: 6, borderRadius: "50%",
                     background: constellationData?.influencing ? "#4ade80" : "#4a5a78",
-                    boxShadow: constellationData?.influencing ? "0 0 4px rgba(74,222,128,0.4)" : "none",
+                    border: "1.5px solid var(--bg-page)",
                   }} />
                 )}
-              </button>
+              </HeaderButton>
             )}
-            <button onClick={() => setShowShortcuts(true)} className="min-w-[84px] px-4 py-2.5 rounded-lg text-xs transition flex items-center justify-center btn-muted"
-              title="Keyboard shortcuts (?)">?</button>
-            <button onClick={() => { setShowLibrary(true); setLibraryTab("settings"); }} className="min-w-[84px] px-4 py-2.5 rounded-lg text-xs transition flex items-center justify-center gap-1.5 btn-muted">
-              Settings
-            </button>
+            <HeaderButton onClick={() => setShowShortcuts(true)} title="Keyboard shortcuts">
+              <HelpCircle size={18} />
+            </HeaderButton>
+            <HeaderButton onClick={() => { setShowLibrary(true); setLibraryTab("settings"); }} title="Settings">
+              <Settings size={18} />
+            </HeaderButton>
+
+            <div style={{ width: "0.5px", height: 22, background: "rgba(255,255,255,0.12)", flexShrink: 0, margin: "0 4px" }} />
+
             <SleepTimer timer={sleepTimer} onCancel={handleCancelSleepTimer} />
             {window.electron && miniPlayerEnabled && (
-              <button onClick={() => window.electron.toggleMiniPlayer()} className="min-w-[36px] px-3 py-2.5 rounded-lg text-xs transition flex items-center justify-center btn-muted"
-                title="Mini Player">
+              <HeaderButton onClick={() => window.electron.toggleMiniPlayer()} title="Mini Player">
                 &#9632;
-              </button>
+              </HeaderButton>
             )}
           </div>
         </div>

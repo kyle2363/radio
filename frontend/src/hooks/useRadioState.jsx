@@ -59,6 +59,7 @@ export function useWebSocket(fetchStatusCb) {
   const wsReconnectTimerRef = useRef(null);
   const wsMountedRef = useRef(true);
   const fetchStatusRef = useRef(fetchStatusCb);
+  const wsLastPongRef = useRef(Date.now());
 
   useEffect(() => {
     fetchStatusRef.current = fetchStatusCb;
@@ -89,6 +90,7 @@ export function useWebSocket(fetchStatusCb) {
     ws.onopen = () => {
       clearTimeout(wsConnectTimeout);
       wsRetryRef.current = 0;
+      wsLastPongRef.current = Date.now();
       setWsConnected(true);
       ws._pingInterval = setInterval(() => {
         if (ws.readyState === window.WebSocket.OPEN) {
@@ -96,10 +98,21 @@ export function useWebSocket(fetchStatusCb) {
           ws.send("ping");
         }
       }, 30000);
+      // Pong watchdog: verify we get a response within 35s
+      ws._pongWatchdog = setInterval(() => {
+        if (ws.readyState !== window.WebSocket.OPEN) return;
+        if (Date.now() - wsLastPongRef.current > 35000) {
+          console.warn("WebSocket pong timeout, reconnecting");
+          ws.close();
+        }
+      }, 5000);
     };
 
     ws.onmessage = (event) => {
-      if (event.data === "pong") return;
+      if (event.data === "pong") {
+        wsLastPongRef.current = Date.now();
+        return;
+      }
       try {
         const data = JSON.parse(event.data);
         if (data.event === "song_started") {
@@ -172,6 +185,7 @@ export function useWebSocket(fetchStatusCb) {
     ws.onclose = () => {
       clearTimeout(wsConnectTimeout);
       if (ws._pingInterval) clearInterval(ws._pingInterval);
+      if (ws._pongWatchdog) clearInterval(ws._pongWatchdog);
       setWsConnected(false);
       if (!wsMountedRef.current || window._ws !== ws) return;
       const delay = Math.min(30000, 1000 * Math.pow(2, wsRetryRef.current));

@@ -10,30 +10,16 @@ The retriever blends them using MUQ_AUDIO_BLEND.
 
 import logging
 import math
-import os
 from dataclasses import dataclass
 from datetime import datetime
 from time import time
 import config
 from db import database
+from db.chroma import get_chroma_client
 from engine.utils import cosine_similarity
 from engine import retriever
 
 logger = logging.getLogger(__name__)
-
-# ChromaDB singleton — avoids creating a new PersistentClient per call
-_chroma_client = None
-
-
-def _get_chroma_client():
-    global _chroma_client
-    if _chroma_client is None:
-        os.environ["CHROMA_NO_ANALYTICS"] = "1"
-        os.environ["CHROMA_TELEMETRY_OFF"] = "1"
-        import chromadb
-        os.makedirs(config.CHROMA_PATH, exist_ok=True)
-        _chroma_client = chromadb.PersistentClient(path=config.CHROMA_PATH)
-    return _chroma_client
 
 
 @dataclass
@@ -77,8 +63,7 @@ class MemorySystem:
     def _get_chroma_embedding(self, song_id: int, collection_name: str = "songs") -> list | None:
         """Fetch a song's embedding from ChromaDB."""
         try:
-            client = _get_chroma_client()
-            collection = client.get_collection(collection_name)
+            collection = get_chroma_client().get_collection(collection_name)
             result = collection.get(ids=[str(song_id)], include=["embeddings"])
             if result and result.get("embeddings") is not None and len(result["embeddings"]) > 0:
                 emb = result["embeddings"][0]
@@ -105,8 +90,7 @@ class MemorySystem:
                 seen.add(key)
                 unique_ids.append(key)
         try:
-            client = _get_chroma_client()
-            collection = client.get_collection(collection_name)
+            collection = get_chroma_client().get_collection(collection_name)
             result = collection.get(ids=unique_ids, include=["embeddings"])
             embs = result["embeddings"]
             return {

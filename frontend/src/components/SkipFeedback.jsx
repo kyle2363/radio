@@ -19,14 +19,26 @@ function SkipFeedback({ visible, onReason, onDismiss }) {
   const [showDuration, setShowDuration] = useState(false);
   const pausedRef = useRef(false);
   const timerRef = useRef(null);
+  const [countdownPct, setCountdownPct] = useState(100);
+  const countdownIntervalRef = useRef(null);
 
   const startTimer = useCallback(() => {
     clearTimeout(timerRef.current);
+    clearInterval(countdownIntervalRef.current);
+    setCountdownPct(100);
+    const totalMs = 10000;
+    const startTime = Date.now();
+    countdownIntervalRef.current = setInterval(() => {
+      const elapsed = Date.now() - startTime;
+      const remaining = Math.max(0, 1 - elapsed / totalMs);
+      setCountdownPct(remaining * 100);
+    }, 100);
     timerRef.current = setTimeout(() => {
       if (!pausedRef.current) {
+        clearInterval(countdownIntervalRef.current);
         onDismiss();
       }
-    }, 10000);
+    }, totalMs);
   }, [onDismiss]);
 
   useEffect(() => {
@@ -34,10 +46,15 @@ function SkipFeedback({ visible, onReason, onDismiss }) {
       startTimer();
     } else {
       clearTimeout(timerRef.current);
+      clearInterval(countdownIntervalRef.current);
       setSelectedReason(null);
       setShowDuration(false);
+      setCountdownPct(100);
     }
-    return () => clearTimeout(timerRef.current);
+    return () => {
+      clearTimeout(timerRef.current);
+      clearInterval(countdownIntervalRef.current);
+    };
   }, [visible, startTimer]);
 
   const handleMouseEnter = () => {
@@ -146,6 +163,16 @@ function SkipFeedback({ visible, onReason, onDismiss }) {
           </>
         )}
       </div>
+      {!showDuration && (
+        <div style={{ marginTop: 8, height: 2, borderRadius: 1, background: "var(--border)", overflow: "hidden" }}>
+          <div style={{
+            height: "100%", borderRadius: 1,
+            background: "var(--accent)",
+            width: `${countdownPct}%`,
+            transition: "width 100ms linear",
+          }} />
+        </div>
+      )}
     </div>
   );
 }

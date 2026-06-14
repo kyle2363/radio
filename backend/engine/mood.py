@@ -5,6 +5,7 @@ Each state has energy/valence ranges, emotional tags, and a centroid for blendin
 """
 
 import logging
+import threading
 import time
 import config
 from db import database
@@ -30,10 +31,10 @@ MOOD_STATES = {
         "tts_line": "Let's slow things down a bit.",
     },
     "neutral": {
-        "energy_range": (0.3, 0.75),
-        "valence_range": (0.4, 0.8),
-        "emotional_tags": ["balanced", "steady", "comfortable"],
-        "tts_line": None,
+        "energy_range": (0.0, 1.0),
+        "valence_range": (0.0, 1.0),
+        "emotional_tags": [],
+        "tts_line": "Back to a balanced mix.",
     },
     "energetic": {
         "energy_range": (0.55, 1.0),
@@ -66,6 +67,7 @@ class MoodStateMachine:
     """Manages mood state and vibe lock."""
 
     def __init__(self):
+        self._lock = threading.RLock()
         self._current_state = None
         self._vibe_lock = {
             "active": False,
@@ -99,9 +101,13 @@ class MoodStateMachine:
         """Load mood state from settings on startup."""
         active = database.get_setting("vibe_lock_active")
         if active and active.lower() == "true":
-            song_id = int(database.get_setting("vibe_lock_song_id") or 0)
+            raw_id = database.get_setting("vibe_lock_song_id")
+            if raw_id is None or raw_id == "" or raw_id.upper() == "NULL":
+                song_id = 0
+            else:
+                song_id = int(raw_id)
             expires = database.get_setting("vibe_lock_expires")
-            expires_at = float(expires) if expires else None
+            expires_at = float(expires) if (expires and expires.upper() != "NULL") else None
 
             # Vibe lock requires an embedding to function.  Embeddings are
             # in-memory only and never persisted to the settings table, so
@@ -165,14 +171,16 @@ class MoodStateMachine:
 
     def get_state(self):
         """Get current mood state dict or None."""
-        if self._current_state and self._current_state in MOOD_STATES:
-            return self._current_state
+        with self._lock:
+            if self._current_state and self._current_state in MOOD_STATES:
+                return self._current_state
         return "neutral"
 
     def set_state(self, state_name):
         """Set mood state explicitly (from mood button)."""
         if state_name in MOOD_STATES:
-            self._current_state = state_name
+            with self._lock:
+                self._current_state = state_name
             return True
         return False
 
@@ -181,8 +189,10 @@ class MoodStateMachine:
 
         Returns new state name if shift detected, else None.
         """
+        with self._lock:
+            vibe_active = self._vibe_lock["active"]
         # Vibe lock prevents auto-shift
-        if self._vibe_lock["active"]:
+        if vibe_active:
             return None
 
         # 3+ consecutive skips -> suggest energy shift
@@ -216,45 +226,50 @@ class MoodStateMachine:
             embedding: text embedding vector
             audio_embedding: optional MuQ-MuLan audio embedding vector
         """
-        self._vibe_lock["active"] = True
-        self._vibe_lock["song_id"] = song_id
-        self._vibe_lock["embedding"] = embedding
-        self._vibe_lock["audio_embedding"] = audio_embedding
-        self._vibe_lock["expires_at"] = time.time() + self._get_vibe_lock_duration_seconds()
-        self._vibe_lock["songs_remaining"] = self._get_vibe_lock_max_songs()
-        self._current_state = None  # Clear auto mood during vibe lock
+        with self._lock:
+            self._vibe_lock["active"] = True
+            self._vibe_lock["song_id"] = song_id
+            self._vibe_lock["embedding"] = embedding
+            self._vibe_lock["audio_embedding"] = audio_embedding
+            self._vibe_lock["expires_at"] = time.time() + self._get_vibe_lock_duration_seconds()
+            self._vibe_lock["songs_remaining"] = self._get_vibe_lock_max_songs()
+            self._current_state = None  # Clear auto mood during vibe lock
         self._save_state()
 
     def deactivate_vibe_lock(self):
         """Deactivate vibe lock."""
-        self._vibe_lock["active"] = False
-        self._vibe_lock["song_id"] = None
-        self._vibe_lock["embedding"] = None
-        self._vibe_lock["audio_embedding"] = None
-        self._vibe_lock["expires_at"] = None
-        self._vibe_lock["songs_remaining"] = 0
+        with self._lock:
+            self._vibe_lock["active"] = False
+            self._vibe_lock["song_id"] = None
+            self._vibe_lock["embedding"] = None
+            self._vibe_lock["audio_embedding"] = None
+            self._vibe_lock["expires_at"] = None
+            self._vibe_lock["songs_remaining"] = 0
         self._save_state()
 
     def tick_vibe_lock(self):
         """Call on each song boundary to decrement vibe lock counter."""
-        if not self._vibe_lock["active"]:
-            return
+        with self._lock:
+            if not self._vibe_lock["active"]:
+                return
 
-        # Check expiry
-        if self._vibe_lock["expires_at"] and time.time() > self._vibe_lock["expires_at"]:
-            self.deactivate_vibe_lock()
-            return
+            # Check expiry
+            if self._vibe_lock["expires_at"] and time.time() > self._vibe_lock["expires_at"]:
+                self.deactivate_vibe_lock()
+                return
 
-        # Decrement remaining songs
-        self._vibe_lock["songs_remaining"] -= 1
-        if self._vibe_lock["songs_remaining"] <= 0:
-            self.deactivate_vibe_lock()
+            # Decrement remaining songs
+            self._vibe_lock["songs_remaining"] -= 1
+            if self._vibe_lock["songs_remaining"] <= 0:
+                self.deactivate_vibe_lock()
 
     def is_vibe_lock_active(self):
-        return self._vibe_lock["active"]
+        with self._lock:
+            return self._vibe_lock["active"]
 
     def get_vibe_lock_info(self):
-        return dict(self._vibe_lock)
+        with self._lock:
+            return dict(self._vibe_lock)
 
     def get_mood_config(self, state_name):
         """Get config for a mood state."""
@@ -298,8 +313,8 @@ class MoodStateMachine:
             return None
 
         try:
-            import chromadb
-            client = chromadb.PersistentClient(path=app_config.CHROMA_PATH)
+            from db.chroma import get_chroma_client
+            client = get_chroma_client()
             audio_collection = client.get_collection(app_config.MUQ_AUDIO_COLLECTION)
             song_ids = [str(s["song_id"]) for s in songs]
             data = audio_collection.get(ids=song_ids, include=["embeddings"])

@@ -13,22 +13,24 @@ class EnergyTrajectory:
     """Tracks energy trends and computes targets."""
 
     def __init__(self):
+        self._lock = threading.Lock()
         self._recent_energies = []
         self._max_history = 5
         self._hourly_profile = None  # lazy-loaded
 
     def record_energy(self, song_id, energy):
         """Record a song's energy level."""
-        self._recent_energies.append({"song_id": song_id, "energy": energy})
-        if len(self._recent_energies) > self._max_history:
-            self._recent_energies.pop(0)
+        with self._lock:
+            self._recent_energies.append({"song_id": song_id, "energy": energy})
+            if len(self._recent_energies) > self._max_history:
+                self._recent_energies.pop(0)
 
     def get_direction(self):
         """Get energy direction: 'rising', 'falling', or 'stable'."""
-        if len(self._recent_energies) < 2:
-            return "stable"
-
-        energies = [e["energy"] for e in self._recent_energies]
+        with self._lock:
+            if len(self._recent_energies) < 2:
+                return "stable"
+            energies = [e["energy"] for e in self._recent_energies]
         # Compare first half vs second half
         mid = len(energies) // 2
         first_half = sum(energies[:mid]) / max(1, mid)
@@ -43,9 +45,10 @@ class EnergyTrajectory:
 
     def get_current_energy(self):
         """Get average energy of recent songs."""
-        if not self._recent_energies:
-            return 0.5
-        return sum(e["energy"] for e in self._recent_energies) / len(self._recent_energies)
+        with self._lock:
+            if not self._recent_energies:
+                return 0.5
+            return sum(e["energy"] for e in self._recent_energies) / len(self._recent_energies)
 
     def get_target_energy(self, mood_state=None, hour=None):
         """Compute target energy based on mood + time of day.
@@ -60,7 +63,6 @@ class EnergyTrajectory:
         mood_base = {
             "chill": 0.25,
             "focus": 0.3,
-            "neutral": 0.5,
             "melancholy": 0.2,
             "energetic": 0.75,
             "discovery": 0.5,
@@ -69,9 +71,10 @@ class EnergyTrajectory:
 
         # Personalized time of day bias from play history
         if hour is not None:
-            if self._hourly_profile is None:
-                self._hourly_profile = database.get_hourly_completion_profile()
-            completion = self._hourly_profile[hour] if 0 <= hour < 24 else 0.5
+            with self._lock:
+                if self._hourly_profile is None:
+                    self._hourly_profile = database.get_hourly_completion_profile()
+                completion = self._hourly_profile[hour] if 0 <= hour < 24 else 0.5
             # Map completion (0-1) to energy bias: high completion at this hour
             # means the user likes what they hear, so maintain energy direction.
             # Low completion means adjust.

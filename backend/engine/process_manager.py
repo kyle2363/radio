@@ -92,14 +92,7 @@ class ManagedProcess:
 
     def _log(self, message):
         line = f"[{datetime.now().strftime('%H:%M:%S')}] {message}"
-        logger.debug("pm[%s] %s", self.name, line)
         self.log_buffer.append(line)
-        if self.log_file and not self.log_file.closed:
-            try:
-                self.log_file.write(line + "\n")
-                self.log_file.flush()
-            except OSError:
-                pass
 
 
 # ── Process Manager ──
@@ -243,18 +236,6 @@ class ProcessManager:
     def _launch(self, proc):
         """Spawn the subprocess and wait for it to become healthy."""
         try:
-            log_path = os.path.join(
-                config.PROC_MGR_LOG_DIR,
-                f"pm_{proc.name}.log"
-            )
-            proc.log_path = log_path
-            log_file = open(log_path, "a", encoding="utf-8")
-            proc.log_file = log_file
-
-            header = f"{'='*60}\nStarted at {datetime.now().isoformat()}\n{'='*60}"
-            log_file.write(header + "\n")
-            log_file.flush()
-
             # Build Popen arguments
             full_args = [proc.exe_path] + proc.args
             proc._log(f"Launching: {' '.join(shlex.quote(a) for a in full_args)}")
@@ -403,8 +384,6 @@ class ProcessManager:
                     with proc._lock:
                         proc.state = "failed"
                         proc.process = None
-                        if proc.log_file and not proc.log_file.closed:
-                            proc.log_file.close()
 
                 # Check health endpoint
                 elif not self._is_healthy(proc):
@@ -473,9 +452,6 @@ class ProcessManager:
             proc.process = None
             proc.pid = None
             proc.started_at = None
-            if proc.log_file and not proc.log_file.closed:
-                proc.log_file.close()
-                proc.log_file = None
 
         proc._log("Stopped")
         return True

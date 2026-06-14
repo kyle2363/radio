@@ -62,7 +62,7 @@ def get_announcement(context: dict, trigger: AnnounceTrigger = AnnounceTrigger.R
 
     current_song = context.get("current_song", {})
     next_song = context.get("next_song", {})
-    mood_state = context.get("mood_state", "neutral")
+    mood_state = context.get("mood_state", "none")
     skip_streak = context.get("skip_streak", 0)
     hour = context.get("hour", datetime.now().hour)
     trigger_type = trigger.value

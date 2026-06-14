@@ -21,7 +21,7 @@ import threading
 import tempfile
 import time
 from datetime import datetime
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Form, Query
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Form, Query, HTTPException
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
@@ -40,18 +40,10 @@ from engine import energy as energy_engine
 from engine.sleep_timer import SleepTimer
 from engine.process_manager import get_process_manager
 
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.INFO)
 logging.getLogger("torio._extension.utils").setLevel(logging.ERROR)
 logger = logging.getLogger(__name__)
-
-# Song-end playback log (same file as player.py writes to)
-_playback_logger = logging.getLogger("radio.playback")
-if not _playback_logger.handlers:
-    _handler = logging.FileHandler(config.LOG_PATH, mode="a", encoding="utf-8")
-    _handler.setFormatter(logging.Formatter("%(asctime)s.%(msecs)03d [%(threadName)s] %(message)s", datefmt="%H:%M:%S"))
-    _playback_logger.addHandler(_handler)
-    _playback_logger.setLevel(logging.DEBUG)
-    _playback_logger.propagate = False
+_playback_logger = logging.getLogger(__name__ + ".playback")
 
 
 @asynccontextmanager
@@ -315,7 +307,7 @@ def _chromadb_health_check():
         finally:
             conn.close()
 
-        client = chromadb.PersistentClient(path=config.CHROMA_PATH)
+        client = get_chroma_client()
 
         # Check 'songs' collection
         try:
@@ -666,8 +658,7 @@ def _fetch_song_embeddings(song_id: int) -> tuple:
     audio_embedding = None
 
     try:
-        client = chromadb.PersistentClient(path=config.CHROMA_PATH)
-        collection = client.get_collection("songs")
+        collection = get_chroma_client().get_collection("songs")
         result = collection.get(ids=[str(song_id)], include=["embeddings"])
         text_embedding = result["embeddings"][0] if result.get("embeddings") is not None and len(result["embeddings"]) > 0 and result["embeddings"][0] is not None else None
     except Exception:
@@ -1250,10 +1241,7 @@ def list_clusters():
 def chroma_health():
     """Check ChromaDB collection for duplicate entries."""
     try:
-        os.environ["CHROMA_NO_ANALYTICS"] = "1"
-        os.environ["CHROMA_TELEMETRY_OFF"] = "1"
-        import chromadb
-        client = chromadb.PersistentClient(path=config.CHROMA_PATH)
+        client = get_chroma_client()
         collection = client.get_collection("songs")
         total = collection.count()
         all_data = collection.get(include=[])
@@ -1270,10 +1258,7 @@ def chroma_health():
 def chroma_dedup():
     """Remove duplicate entries from ChromaDB songs collection."""
     try:
-        os.environ["CHROMA_NO_ANALYTICS"] = "1"
-        os.environ["CHROMA_TELEMETRY_OFF"] = "1"
-        import chromadb
-        client = chromadb.PersistentClient(path=config.CHROMA_PATH)
+        client = get_chroma_client()
         collection = client.get_collection("songs")
         all_data = collection.get(include=["embeddings", "metadatas"])
         id_counts = {}
@@ -1624,17 +1609,17 @@ def library_confirm_match(req: dict):
     orphan_id = req.get("orphan_id")
     filepath = req.get("filepath")
     if not orphan_id or not filepath:
-        return {"error": "orphan_id and filepath required"}, 400
+        raise HTTPException(status_code=400, detail="orphan_id and filepath required")
     if not os.path.exists(filepath):
-        return {"error": f"File not found: {filepath}"}, 404
+        raise HTTPException(status_code=404, detail=f"File not found: {filepath}")
 
     song = database.get_song(orphan_id)
     if not song:
-        return {"error": f"Song {orphan_id} not found in database"}, 404
+        raise HTTPException(status_code=404, detail=f"Song {orphan_id} not found in database")
 
     existing = database.get_song_by_filepath(filepath)
     if existing and existing["id"] != orphan_id:
-        return {"error": f"Filepath already owned by song {existing['id']}"}, 409
+        raise HTTPException(status_code=409, detail=f"Filepath already owned by song {existing['id']}")
 
     from ingest.scanner import compute_file_hash
     new_hash = compute_file_hash(filepath)
@@ -1647,12 +1632,11 @@ def library_delete_song(song_id: int):
     """Delete a song from the database and ChromaDB."""
     deleted = database.delete_song(song_id)
     if not deleted:
-        return {"error": "Song not found"}, 404
+        raise HTTPException(status_code=404, detail="Song not found")
 
     # Remove from ChromaDB collections
     try:
-        os.environ["CHROMA_NO_ANALYTICS"] = "1"
-        client = chromadb.PersistentClient(path=config.CHROMA_PATH)
+        client = get_chroma_client()
         for col_name in ["songs", config.MUQ_AUDIO_COLLECTION]:
             try:
                 col = client.get_or_create_collection(col_name)
@@ -1674,14 +1658,14 @@ def library_add_unregistered(req: dict):
     """Add an unregistered MP3 file as a new song."""
     filepath = req.get("filepath")
     if not filepath:
-        return {"error": "filepath required"}, 400
+        raise HTTPException(status_code=400, detail="filepath required")
     if not os.path.exists(filepath):
-        return {"error": f"File not found: {filepath}"}, 404
+        raise HTTPException(status_code=404, detail=f"File not found: {filepath}")
 
     # Check if already in DB
     existing = database.get_song_by_filepath(filepath)
     if existing:
-        return {"error": "File already in database", "song_id": existing["id"]}, 409
+        raise HTTPException(status_code=409, detail=f"File already in database (song {existing['id']})")
 
     from ingest.scanner import compute_file_hash, parse_filename
     file_hash = compute_file_hash(filepath)
@@ -1722,8 +1706,7 @@ def library_delete_all_orphaned():
 
     # Remove from ChromaDB
     try:
-        os.environ["CHROMA_NO_ANALYTICS"] = "1"
-        client = chromadb.PersistentClient(path=config.CHROMA_PATH)
+        client = get_chroma_client()
         for col_name in ["songs", config.MUQ_AUDIO_COLLECTION]:
             try:
                 col = client.get_or_create_collection(col_name)
@@ -2391,6 +2374,26 @@ def heart_current():
     return {"status": "hearted", "song_id": song_id}
 
 
+@app.post("/api/songs/{song_id}/heart")
+def heart_song_by_id(song_id: int):
+    msm = _get_mood_state_machine()
+    session_id = _current_session_id
+    song = database.get_song(song_id)
+    if not song:
+        raise HTTPException(status_code=404, detail="Song not found")
+    if database.has_signal_since_last_play(song_id, "hearted"):
+        return {"status": "already_hearted", "song_id": song_id}
+    database.record_play_event(
+        song_id=song_id,
+        session_id=session_id,
+        signal="hearted",
+        mood_state=msm.get_state(),
+    )
+    database.increment_replay_count(song_id)
+    broadcast("song_hearted", {"song_id": song_id})
+    return {"status": "hearted", "song_id": song_id}
+
+
 @app.post("/api/play/thumbs-down")
 def thumbs_down_current():
     p = player_engine.get_player()
@@ -2443,8 +2446,7 @@ def get_queue():
                 if centroid:
                     song_ids = [str(item["song_id"]) for item in display_queue if "song_id" in item]
                     if song_ids:
-                        import chromadb
-                        client = chromadb.PersistentClient(path=config.CHROMA_PATH)
+                        client = get_chroma_client()
                         audio_collection = client.get_collection(config.MUQ_AUDIO_COLLECTION)
                         data = audio_collection.get(ids=song_ids, include=["embeddings"])
                         emb_map = {}
@@ -3586,8 +3588,8 @@ def reset_recommendations():
     database.set_setting("genre_filter", "")
     database.set_setting("artist_filter", "")
     database.set_setting("vibe_lock_active", "false")
-    database.set_setting("vibe_lock_song_id", "NULL")
-    database.set_setting("vibe_lock_expires", "NULL")
+    database.set_setting("vibe_lock_song_id", None)
+    database.set_setting("vibe_lock_expires", None)
     database.set_setting("onboarding_complete", "false")
 
     qm._recently_recommended_ids = set()

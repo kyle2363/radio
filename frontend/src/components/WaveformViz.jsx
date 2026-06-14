@@ -166,6 +166,8 @@ export default function WaveformViz({ song, styleIndex = 0, audioRms, size }) {
     canvas.height = geo.size * dpr;
     ctx.scale(dpr, dpr);
 
+    const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
     const draw = () => {
       const s = song || { energy: 0.5, valence: 0.5, bpm: 120, mood: "neutral" };
       const c = getColors(s);
@@ -175,7 +177,9 @@ export default function WaveformViz({ song, styleIndex = 0, audioRms, size }) {
       const instGeo = _instanceGeo.get(instanceId.current) || geo;
       DRAW_FNS[styleIndex](ctx, s, tickRef.current, c, audioRms, instGeo);
       tickRef.current += 0.016;
-      rafRef.current = requestAnimationFrame(draw);
+      if (!prefersReducedMotion) {
+        rafRef.current = requestAnimationFrame(draw);
+      }
     };
 
     draw();

@@ -12,6 +12,7 @@ Callers use llm_chat() and llm_embed() - no direct ollama imports needed.
 from __future__ import annotations
 
 import logging
+import threading
 import config
 from .base import ChatClient, EmbedClient
 
@@ -21,6 +22,7 @@ from .openai_provider import OpenAIChatClient, OpenAIEmbedClient
 
 _chat_instance: ChatClient | None = None
 _embed_instance: EmbedClient | None = None
+_registry_lock = threading.Lock()
 
 
 def _get_setting(key: str) -> str | None:
@@ -77,15 +79,18 @@ def llm_chat() -> ChatClient:
     global _chat_instance
     if _chat_instance is not None:
         return _chat_instance
-    for cls in _resolve_chat_order():
-        try:
-            client = cls()
-            # Short probe timeout (3s) — don't block 45s if provider is down
-            client.chat(None, [{"role": "user", "content": "hi"}], timeout=3)
-            _chat_instance = client
-            return client
-        except Exception as e:
-            print(f"[llm] {cls.__name__} failed: {e}")
+    with _registry_lock:
+        if _chat_instance is not None:
+            return _chat_instance
+        for cls in _resolve_chat_order():
+            try:
+                client = cls()
+                # Short probe timeout (3s) — don't block 45s if provider is down
+                client.chat(None, [{"role": "user", "content": "hi"}], timeout=3)
+                _chat_instance = client
+                return client
+            except Exception as e:
+                print(f"[llm] {cls.__name__} failed: {e}")
     raise RuntimeError("No chat provider available. Check chat_provider setting and OPENAI_BASE_URL_CHAT in config.")
 
 
@@ -94,26 +99,31 @@ def llm_embed() -> EmbedClient:
     global _embed_instance
     if _embed_instance is not None:
         return _embed_instance
-    for cls in _resolve_embed_order():
-        try:
-            client = cls()
-            client.embed(None, "test", timeout=3)
-            _embed_instance = client
-            return client
-        except Exception as e:
-            print(f"[llm] {cls.__name__} failed: {e}")
+    with _registry_lock:
+        if _embed_instance is not None:
+            return _embed_instance
+        for cls in _resolve_embed_order():
+            try:
+                client = cls()
+                client.embed(None, "test", timeout=3)
+                _embed_instance = client
+                return client
+            except Exception as e:
+                print(f"[llm] {cls.__name__} failed: {e}")
     raise RuntimeError("No embed provider available. Check embed_provider setting and OPENAI_BASE_URL_EMBED in config.")
 
 
 def reset_providers() -> None:
     """Force re-resolution. Call after changing provider settings at runtime."""
     global _chat_instance, _embed_instance
-    _chat_instance = None
-    _embed_instance = None
+    with _registry_lock:
+        _chat_instance = None
+        _embed_instance = None
 
 
 def get_active_provider_name() -> str:
     """Return name of currently active chat provider, or 'unknown'."""
-    if _chat_instance is None:
-        return "uninitialized"
-    return _chat_instance.__class__.__name__.replace("Client", "")
+    with _registry_lock:
+        if _chat_instance is None:
+            return "uninitialized"
+        return _chat_instance.__class__.__name__.replace("Client", "")

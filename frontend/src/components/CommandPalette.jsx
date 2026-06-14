@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useMemo } from "react";
 import { Terminal } from "lucide-react";
 import * as api from "../api";
 import { SLOT_GUIDE } from "../content/wiki";
+import useFocusTrap from "../hooks/useFocusTrap";
 
 const COMMAND_CATEGORIES = [
   {
@@ -135,8 +136,9 @@ function CommandPalette({ visible, onClose, addToast, onCommandSent }) {
   if (!visible) return null;
 
   let flatIdx = 0;
+  const trapRef = useFocusTrap(visible);
   return (
-    <div className="fixed inset-0 z-[200] flex items-start justify-center pt-[10vh]"
+    <div ref={trapRef} className="fixed inset-0 z-[200] flex items-start justify-center pt-[10vh]"
       style={{ animation: "backdropFadeIn 150ms ease" }}>
       <div className="fixed inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
       <div className="relative w-full max-w-lg mx-4 rounded-2xl overflow-hidden shadow-2xl"

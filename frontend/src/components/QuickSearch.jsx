@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { Search } from "lucide-react";
 import * as api from "../api";
+import useFocusTrap from "../hooks/useFocusTrap";
 
 export default function QuickSearch({ visible, onClose, addToast }) {
   const [query, setQuery] = useState("");
@@ -50,10 +51,12 @@ export default function QuickSearch({ visible, onClose, addToast }) {
     }
   };
 
+  const trapRef = useFocusTrap(visible);
+
   if (!visible) return null;
 
   return (
-    <div className="fixed inset-0 z-[200] flex items-start justify-center pt-[15vh]"
+    <div ref={trapRef} className="fixed inset-0 z-[200] flex items-start justify-center pt-[15vh]"
       style={{ animation: "backdropFadeIn 150ms ease" }}>
       <div className="fixed inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
       <div className="relative w-full max-w-lg mx-4 rounded-2xl overflow-hidden shadow-2xl"
@@ -89,7 +92,7 @@ export default function QuickSearch({ visible, onClose, addToast }) {
               }}
               onMouseEnter={() => setSelectedIndex(i)}
               style={{
-                background: i === selectedIndex ? "rgba(255,255,255,0.05)" : "transparent",
+                background: i === selectedIndex ? "var(--accent-muted)" : "transparent",
               }}>
               <div className="flex-1 min-w-0">
                 <div className="text-sm truncate" style={{ color: "var(--text-primary)" }}>

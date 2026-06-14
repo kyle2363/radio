@@ -10,34 +10,14 @@ Both searches run in parallel and scores are blended using MUQ_AUDIO_BLEND.
 import json
 import logging
 import math
-import os
 import random
 from datetime import datetime, timedelta
 import config
-import chromadb
+from db.chroma import get_chroma_collection, get_chroma_client
 from db import database
 from engine.utils import cosine_similarity
 
 logger = logging.getLogger(__name__)
-
-# ChromaDB singleton — avoids creating a new PersistentClient per call
-_chroma_client = None
-
-
-def _get_chroma_client():
-    global _chroma_client
-    if _chroma_client is None:
-        os.environ["CHROMA_NO_ANALYTICS"] = "1"
-        os.environ["CHROMA_TELEMETRY_OFF"] = "1"
-        os.makedirs(config.CHROMA_PATH, exist_ok=True)
-        _chroma_client = chromadb.PersistentClient(path=config.CHROMA_PATH)
-    return _chroma_client
-
-
-def get_chroma_collection(name="songs"):
-    """Get a ChromaDB collection by name."""
-    client = _get_chroma_client()
-    return client.get_collection(name)
 
 
 def get_embedding_dimension(collection_name: str = "songs") -> int:

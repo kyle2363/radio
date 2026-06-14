@@ -7,6 +7,7 @@ function MarqueeText({ text, className, style }) {
   const containerRef = useRef(null);
   const textRef = useRef(null);
   const [overflow, setOverflow] = useState(false);
+  const prefersReducedMotion = useRef(typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
 
   const checkOverflow = useCallback(() => {
     const c = containerRef.current, t = textRef.current;
@@ -16,15 +17,16 @@ function MarqueeText({ text, className, style }) {
   useEffect(() => { checkOverflow(); }, [text, checkOverflow]);
   useEffect(() => { window.addEventListener("resize", checkOverflow); return () => window.removeEventListener("resize", checkOverflow); }, [checkOverflow]);
 
-  const tx = overflow ? (() => {
+
+  const tx = overflow && !prefersReducedMotion.current ? (() => {
     const c = containerRef.current, t = textRef.current;
     if (!c || !t) return 0;
     const gap = 80;
     return -(t.scrollWidth - c.clientWidth + gap);
   })() : 0;
 
-  const anim = overflow
-    ? `marquee-slide ${Math.max(4, Math.abs(tx) / 35)}s linear 1s 2`
+  const anim = overflow && !prefersReducedMotion.current
+    ? `marquee-slide ${Math.max(4, Math.abs(tx) / 35)}s linear 1s infinite`
     : "none";
 
   return (
@@ -68,8 +70,8 @@ function NowPlaying({ song, isPlaying, whyReason, queue = [], audioRms, talkSegm
       timerRef.current = setTimeout(() => {
         setTransitionPhase("idle");
         prevSongRef.current = song;
-      }, 200);
-    }, 200);
+      }, 400);
+    }, 400);
 
     return () => { if (timerRef.current) clearTimeout(timerRef.current); };
   }, [song?.id]);

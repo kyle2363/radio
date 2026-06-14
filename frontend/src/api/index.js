@@ -44,6 +44,7 @@ export const playSong = (id) => post(`/api/play/${id}`);
 export const pauseSong = () => post("/api/play/pause");
 export const resumeSong = () => post("/api/play/resume");
 export const heartSong = () => post("/api/play/heart");
+export const heartSongById = (id) => post(`/api/songs/${id}/heart`);
 export const thumbsDown = () => post("/api/play/thumbs-down");
 export const seekTo = (ms) => post("/api/play/seek", { ms: Math.round(ms) });
 export const setVolume = (volume) => post("/api/play/volume", { volume });

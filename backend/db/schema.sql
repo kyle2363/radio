@@ -46,6 +46,10 @@ CREATE INDEX IF NOT EXISTS idx_songs_ingest_phase ON songs(ingest_phase);
 CREATE INDEX IF NOT EXISTS idx_songs_cluster ON songs(cluster_id);
 CREATE INDEX IF NOT EXISTS idx_songs_energy ON songs(energy);
 CREATE INDEX IF NOT EXISTS idx_songs_valence ON songs(valence);
+CREATE INDEX IF NOT EXISTS idx_songs_last_played ON songs(last_played);
+CREATE INDEX IF NOT EXISTS idx_songs_recovery_score ON songs(recovery_score);
+CREATE INDEX IF NOT EXISTS idx_songs_avg_completion ON songs(avg_completion);
+CREATE INDEX IF NOT EXISTS idx_songs_artist ON songs(artist);
 
 
 -- play_events
@@ -62,6 +66,10 @@ CREATE TABLE IF NOT EXISTS play_events (
     day_type        TEXT,
     signal          TEXT
 );
+CREATE INDEX IF NOT EXISTS idx_play_events_song ON play_events(song_id);
+CREATE INDEX IF NOT EXISTS idx_play_events_session ON play_events(session_id);
+CREATE INDEX IF NOT EXISTS idx_play_events_song_signal ON play_events(song_id, signal);
+CREATE INDEX IF NOT EXISTS idx_play_events_played_at ON play_events(played_at);
 
 -- sessions
 CREATE TABLE IF NOT EXISTS sessions (
@@ -84,6 +92,7 @@ CREATE TABLE IF NOT EXISTS transitions (
     score           REAL DEFAULT 0.5,
     UNIQUE(from_song_id, to_song_id)
 );
+CREATE INDEX IF NOT EXISTS idx_transitions_from ON transitions(from_song_id);
 
 -- blacklist
 CREATE TABLE IF NOT EXISTS blacklist (
@@ -107,6 +116,8 @@ CREATE TABLE IF NOT EXISTS queue_history (
     reason          TEXT,
     played_at       DATETIME DEFAULT CURRENT_TIMESTAMP
 );
+CREATE INDEX IF NOT EXISTS idx_queue_history_session ON queue_history(session_id);
+CREATE INDEX IF NOT EXISTS idx_queue_history_song ON queue_history(song_id);
 
 -- settings
 CREATE TABLE IF NOT EXISTS settings (

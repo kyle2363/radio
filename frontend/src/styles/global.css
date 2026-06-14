@@ -58,9 +58,9 @@
   --bg-sunken: #e8ecf2;
   --bg-muted: rgba(0, 0, 0, 0.03);
 
-  --accent: #2aa89e;
-  --accent-hover: #1a8a82;
-  --accent-muted: rgba(42, 168, 158, 0.1);
+  --accent: var(--user-accent, #2aa89e);
+  --accent-hover: var(--user-accent-hover, #1a8a82);
+  --accent-muted: var(--user-accent-muted, rgba(42, 168, 158, 0.1));
 }
 
 /* ── Tailwind v4 theme override ───────────────────────── */
@@ -391,7 +391,7 @@ body {
   border-radius: 7px;
   cursor: pointer;
   color: var(--text-muted);
-  font-size: 9px;
+  font-size: 11px;
   letter-spacing: 0.05em;
   transition: background 150ms ease, color 150ms ease;
   border: none;
@@ -609,7 +609,13 @@ body {
 }
 .song-row:hover { background: var(--bg-elevated); }
 .song-row.playing { border-left: 3px solid var(--accent); background: var(--accent-muted); }
-.song-row:hover .row-actions { opacity: 1; }
+@media (hover: hover) {
+  .song-row:hover .row-actions { opacity: 1; }
+  .song-row .row-actions { opacity: 0; }
+}
+@media (hover: none) {
+  .song-row .row-actions { opacity: 1; }
+}
 
 .row-actions {
   opacity: 0;
@@ -1118,12 +1124,12 @@ body {
   flex-shrink: 0;
 }
 .mood-time {
-  font-size: 8px;
+  font-size: 10px;
   color: var(--text-muted);
   margin-top: 1px;
 }
 .mood-label {
-  font-size: 8px;
+  font-size: 10px;
   color: var(--text-secondary);
 }
 .mood-connector {

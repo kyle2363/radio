@@ -1,7 +1,33 @@
 """Abstract base for LLM provider implementations."""
 
+import logging
+import time
 from abc import ABC, abstractmethod
 from typing import Any
+
+logger = logging.getLogger(__name__)
+
+
+def retry_http_call(fn, max_retries=2, base_delay=1.0):
+    """Call fn() with retry on transient failures (connection, timeout, 5xx).
+
+    Does NOT retry 4xx errors (client errors) or on success.
+    Returns fn() result, or raises the last exception on final failure.
+    """
+    last_exc = None
+    for attempt in range(max_retries + 1):
+        try:
+            return fn()
+        except Exception as e:
+            last_exc = e
+            status = getattr(e, "response", None) and e.response.status_code
+            if status and 400 <= status < 500:
+                raise  # Don't retry 4xx client errors
+            if attempt < max_retries:
+                delay = base_delay * (2 ** attempt)
+                logger.debug("Retry %d/%d after %.1fs: %s", attempt + 1, max_retries, delay, e)
+                time.sleep(delay)
+    raise last_exc
 
 
 class ToolCall:

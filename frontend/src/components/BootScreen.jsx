@@ -53,6 +53,7 @@ function getBuildNum() {
 
 /* ── Equalizer ─────────────────────────────────────────── */
 function Equalizer() {
+  const prefersReducedMotion = typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   const config = [
     [14,0.55,0.38],[22,0.12,0.45],[30,0.08,0.52],[26,0.20,0.31],[18,0.40,0.42],
     [38,0.06,0.37],[24,0.15,0.49],[34,0.09,0.44],[20,0.30,0.56],[40,0.07,0.36],
@@ -70,8 +71,9 @@ function Equalizer() {
           style={{
             height: h + "px",
             "--lo": lo,
-            "--d": d + "s",
-            "--delay": (Math.random() * 0.25).toFixed(3) + "s",
+            "--d": prefersReducedMotion ? "0s" : d + "s",
+            "--delay": prefersReducedMotion ? "0s" : (Math.random() * 0.25).toFixed(3) + "s",
+            animation: prefersReducedMotion ? "none" : undefined,
           }}
         />
       ))}
@@ -206,12 +208,31 @@ export default function BootScreen({ onReady, onError, initialProgress = 0 }) {
         onReady?.();
       }
     }, 4200);
+
+    const handleKey = (e) => {
+      if (e.key === "Escape" && !doneRef.current) {
+        doneRef.current = true;
+        clearTimeout(t1);
+        clearTimeout(t2);
+        onReady?.();
+      }
+    };
+    window.addEventListener("keydown", handleKey);
+
     return () => {
       clearTimeout(t1);
       clearTimeout(t2);
+      window.removeEventListener("keydown", handleKey);
       doneRef.current = true;
     };
   }, [onReady]);
+
+  const handleSkip = () => {
+    if (!doneRef.current) {
+      doneRef.current = true;
+      onReady?.();
+    }
+  };
 
   if (onError) {
     return (
@@ -220,7 +241,9 @@ export default function BootScreen({ onReady, onError, initialProgress = 0 }) {
   }
 
   return (
-    <div className="boot-screen">
+    <div className="boot-screen" onClick={handleSkip}
+      style={{ cursor: "pointer" }}
+      title="Click or press Esc to skip">
       <div className="glow-top" />
       <div className="glow-bottom" />
       <div className="scanlines" />

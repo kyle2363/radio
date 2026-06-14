@@ -53,9 +53,9 @@ function SongCard({ song, selected, onSelect }) {
         </div>
       </div>
       <div className="mt-2 flex items-center gap-2 text-xs">
-        <span className={energyColor}>Energy {song.energy?.toFixed(1)}</span>
-        <span className="text-gray-600">|</span>
-        <span className={valenceColor}>Mood {song.valence?.toFixed(1)}</span>
+        <span className={energyColor}>Energy {song.energy > 0.7 ? "High" : song.energy > 0.4 ? "Medium" : "Low"}</span>
+        <span className="text-gray-500 text-[11px]">·</span>
+        <span className={valenceColor}>Mood {song.valence > 0.6 ? "Bright" : song.valence > 0.4 ? "Neutral" : "Dark"}</span>
       </div>
     </button>
   );
@@ -156,7 +156,7 @@ export default function Onboarding({ onComplete, onSkip, addToast }) {
       <div className="max-w-2xl w-full max-h-[90vh] overflow-y-auto">
         <div className="text-center mb-8">
           <h2 className="text-2xl font-bold text-white mb-2">Seed Your Taste</h2>
-          <p className="text-gray-400 text-sm">Pick {selected.length}/5 songs you like to help us understand your style</p>
+          <p className="text-gray-400 text-sm">Pick 3–5 songs you like to help us understand your style</p>
         </div>
         <div className="flex justify-center gap-1.5 mb-6">
           {[...Array(5)].map((_, i) => (
@@ -179,14 +179,14 @@ export default function Onboarding({ onComplete, onSkip, addToast }) {
               <svg className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
               {refreshing ? "Shuffling..." : remaining > 0 ? "Shuffle" : "No more songs"}
             </button>
-            <button onClick={handleSubmit} disabled={selected.length === 0 || submitting} className="px-6 py-2.5 rounded-lg font-medium text-sm transition-all"
+            <button onClick={handleSubmit} disabled={selected.length < 3 || submitting} className="px-6 py-2.5 rounded-lg font-medium text-sm transition-all"
               style={{
-                background: selected.length > 0 && !submitting ? "var(--accent)" : "var(--bg-elevated)",
-                color: selected.length > 0 && !submitting ? "var(--text-inverse)" : "var(--text-muted)",
-                opacity: selected.length > 0 && !submitting ? 1 : 0.5,
-                cursor: selected.length > 0 && !submitting ? "pointer" : "not-allowed",
+                background: selected.length >= 3 && !submitting ? "var(--accent)" : "var(--bg-elevated)",
+                color: selected.length >= 3 && !submitting ? "var(--text-inverse)" : "var(--text-muted)",
+                opacity: selected.length >= 3 && !submitting ? 1 : 0.5,
+                cursor: selected.length >= 3 && !submitting ? "pointer" : "not-allowed",
               }}>
-              {submitting ? "Setting up..." : `Done (${selected.length}/5)`}
+              {submitting ? "Setting up..." : selected.length < 3 ? `Select ${3 - selected.length} more` : `Done (${selected.length}/5)`}
             </button>
           </div>
         </div>

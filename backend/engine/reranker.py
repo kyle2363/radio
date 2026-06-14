@@ -115,7 +115,7 @@ def rerank(candidates, current_song=None, mood_state=None, energy_trajectory="st
     prompt = RERANK_PROMPT.format(
         current_song=current_song_str,
         current_lyrics=current_lyrics,
-        mood_state=mood_state or "neutral",
+        mood_state="none" if mood_state == "neutral" else (mood_state or "none"),
         energy_trajectory=energy_trajectory,
         hour=hour or datetime.now().hour,
         skip_streak=skip_streak,

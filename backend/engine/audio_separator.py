@@ -3,10 +3,12 @@
 import hashlib
 import os
 import shutil
+import threading
 
 import config
 
 _SEPARATOR_INSTANCE = None
+_SEPARATOR_LOCK = threading.Lock()
 
 
 def _file_hash(filepath: str) -> str:
@@ -18,6 +20,9 @@ def _separator():
     """Lazy-loaded singleton separator instance."""
     global _SEPARATOR_INSTANCE
     if _SEPARATOR_INSTANCE is None:
+        with _SEPARATOR_LOCK:
+            if _SEPARATOR_INSTANCE is not None:
+                return _SEPARATOR_INSTANCE
         from audio_separator.separator import Separator
         os.makedirs(config.SEPARATOR_MODEL_DIR, exist_ok=True)
         os.makedirs(config.SEPARATOR_OUTPUT_DIR, exist_ok=True)

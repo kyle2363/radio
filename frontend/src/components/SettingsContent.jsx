@@ -5,6 +5,16 @@ import TalkSettings from "./TalkSettings";
 import IngestPanel from "./IngestPanel";
 import LibraryVerify from "./LibraryVerify";
 
+function Toggle({ checked, onChange, label }) {
+  return (
+    <div className={`tog ${checked ? "" : "off"}`} onClick={onChange}
+      tabIndex={0} role="switch" aria-checked={checked} aria-label={label}
+      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onChange?.(); } }}>
+      <div className="tog-dot" />
+    </div>
+  );
+}
+
 function SettingsContent({ addToast, sectionSpacing, onSectionSpacingChange, rightRailWidth, setRightRailWidth, explorationLevel, onExplorationChange }) {
   const [settings, setSettings] = useState({});
   const [sections, setSections] = useState({ playback: true, appearance: false, system: false, ai: false, talk: false, llm: false, library: false });
@@ -77,7 +87,7 @@ function SettingsContent({ addToast, sectionSpacing, onSectionSpacingChange, rig
       } catch (e) {}
     }, 5000);
     return () => { clearInterval(sleepPoll); };
-  }, [fetchSubfolders]);
+  }, []);
 
   const fetchSettings = async () => {
     let data;
@@ -190,18 +200,14 @@ function SettingsContent({ addToast, sectionSpacing, onSectionSpacingChange, rig
                 <div className="set-label">TTS announcements</div>
                 <div style={{ fontSize: "10px", color: "var(--text-muted)", marginTop: "1px" }}>DJ voice between songs</div>
               </div>
-              <div className={`tog ${ttsEnabled ? "" : "off"}`} onClick={() => { const next = !ttsEnabled; setTtsEnabled(next); save("tts_enabled", String(next), true); }}>
-                <div className="tog-dot" />
-              </div>
+              <Toggle checked={ttsEnabled} onChange={() => { const next = !ttsEnabled; setTtsEnabled(next); save("tts_enabled", String(next), true); }} label="TTS announcements" />
             </div>
             <div className="set-row">
               <div>
                 <div className="set-label">Lyrics</div>
                 <div style={{ fontSize: "10px", color: "var(--text-muted)", marginTop: "1px" }}>Karaoke-style lyrics panel</div>
               </div>
-              <div className={`tog ${showLyrics ? "" : "off"}`} onClick={() => { const next = !showLyrics; setShowLyrics(next); save("show_lyrics", String(next), true); }}>
-                <div className="tog-dot" />
-              </div>
+              <Toggle checked={showLyrics} onChange={() => { const next = !showLyrics; setShowLyrics(next); save("show_lyrics", String(next), true); }} label="Lyrics" />
             </div>
            <div className="set-row">
                <div className="set-label">Announcement interval</div>
@@ -217,16 +223,14 @@ function SettingsContent({ addToast, sectionSpacing, onSectionSpacingChange, rig
                   <div className="set-label">Volume normalization</div>
                   <div style={{ fontSize: "10px", color: "var(--text-muted)", marginTop: "1px" }}>ReplayGain-style per-song loudness offset</div>
                 </div>
-                <div className={`tog ${volNormEnabled ? "" : "off"}`} onClick={async () => {
+                <Toggle checked={volNormEnabled} onChange={async () => {
                   try {
-                    const data = await api.post(`/api/play/volume-normalization?enabled=${!volNormEnabled}`);
+                    await api.post(`/api/play/volume-normalization?enabled=${!volNormEnabled}`);
                     setVolNormEnabled(!volNormEnabled);
                   } catch (e) {
                     console.error("Failed to toggle volume normalization", e);
                   }
-                }}>
-                  <div className="tog-dot" />
-                </div>
+                }} label="Volume normalization" />
               </div>
 
                 <div className="set-row">
@@ -288,9 +292,7 @@ function SettingsContent({ addToast, sectionSpacing, onSectionSpacingChange, rig
               </div>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "8px" }}>
                 <span style={{ fontSize: "10px", color: "var(--text-muted)" }}>Switch to chill before sleep</span>
-                <div className={`tog ${sleepChill ? "" : "off"}`} onClick={() => setSleepChill(!sleepChill)}>
-                  <div className="tog-dot" />
-                </div>
+                <Toggle checked={sleepChill} onChange={() => setSleepChill(!sleepChill)} label="Sleep in chill mood" />
               </div>
               <button onClick={async () => {
                 try {
@@ -424,79 +426,56 @@ function SettingsContent({ addToast, sectionSpacing, onSectionSpacingChange, rig
                 <div className="set-label">Start minimized</div>
                 <div style={{ fontSize: "10px", color: "var(--text-muted)", marginTop: "1px" }}>Launch in system tray (no window)</div>
               </div>
-              <div className={`tog ${startMinimized ? "" : "off"}`} onClick={() => { const next = !startMinimized; setStartMinimized(next); save("start_minimized", String(next), true); }}>
-                <div className="tog-dot" />
-              </div>
+              <Toggle checked={startMinimized} onChange={() => { const next = !startMinimized; setStartMinimized(next); save("start_minimized", String(next), true); }} label="Start minimized" />
             </div>
             <div className="set-row">
               <div>
                 <div className="set-label">Mini player</div>
                 <div style={{ fontSize: "10px", color: "var(--text-muted)", marginTop: "1px" }}>Compact small-window mode</div>
               </div>
-              <div className={`tog ${miniPlayerEnabled ? "" : "off"}`} onClick={() => { const next = !miniPlayerEnabled; setMiniPlayerEnabled(next); save("mini_player_enabled", String(next), true); try { if (window.electron?.setSetting) window.electron.setSetting("mini_player_enabled", String(next)); } catch (_) {} }}>
-                <div className="tog-dot" />
-              </div>
+              <Toggle checked={miniPlayerEnabled} onChange={() => { const next = !miniPlayerEnabled; setMiniPlayerEnabled(next); save("mini_player_enabled", String(next), true); try { if (window.electron?.setSetting) window.electron.setSetting("mini_player_enabled", String(next)); } catch (_) {} }} label="Mini player" />
             </div>
             <div className="set-row">
               <div>
                 <div className="set-label">Now Playing widget</div>
                 <div style={{ fontSize: "10px", color: "var(--text-muted)", marginTop: "1px" }}>Floating overlay when main window is hidden</div>
               </div>
-              <div className={`tog ${widgetEnabled ? "" : "off"}`} onClick={() => { const next = !widgetEnabled; setWidgetEnabled(next); save("widget_enabled", String(next), true); try { if (window.electron?.setSetting) window.electron.setSetting("widget_enabled", String(next)); } catch (_) {} }}>
-                <div className="tog-dot" />
-              </div>
+              <Toggle checked={widgetEnabled} onChange={() => { const next = !widgetEnabled; setWidgetEnabled(next); save("widget_enabled", String(next), true); try { if (window.electron?.setSetting) window.electron.setSetting("widget_enabled", String(next)); } catch (_) {} }} label="Widget" />
             </div>
             <div className="set-row">
               <div>
                 <div className="set-label">Start on login</div>
                 <div style={{ fontSize: "10px", color: "var(--text-muted)", marginTop: "1px" }}>Auto-launch Radio when you log in to Windows</div>
               </div>
-              <div className={`tog ${startOnLogin ? "" : "off"}`} onClick={async () => {
-                const next = !startOnLogin;
-                setStartOnLogin(next);
-                if (window.electron?.setStartOnLogin) {
-                  window.electron.setStartOnLogin(next);
-                }
-                save("start_on_login", String(next));
-              }}>
-                <div className="tog-dot" />
-              </div>
+              <Toggle checked={startOnLogin} onChange={() => { const next = !startOnLogin; setStartOnLogin(next); if (window.electron?.setStartOnLogin) { window.electron.setStartOnLogin(next); } save("start_on_login", String(next)); }} label="Start on login" />
             </div>
             <div className="set-row">
               <div>
                 <div className="set-label">Song change notifications</div>
                 <div style={{ fontSize: "10px", color: "var(--text-muted)", marginTop: "1px" }}>Show notification when song changes</div>
               </div>
-              <div className={`tog ${notifyOnSongChange ? "" : "off"}`} onClick={() => { const next = !notifyOnSongChange; setNotifyOnSongChange(next); save("notify_on_song_change", String(next), true); window.electron?.setSetting("notify_on_song_change", String(next)); }}>
-                <div className="tog-dot" />
-              </div>
+              <Toggle checked={notifyOnSongChange} onChange={() => { const next = !notifyOnSongChange; setNotifyOnSongChange(next); save("notify_on_song_change", String(next), true); window.electron?.setSetting("notify_on_song_change", String(next)); }} label="Notify on song change" />
             </div>
             <div className="set-row">
               <div>
                 <div className="set-label">Pause on screen lock</div>
                 <div style={{ fontSize: "10px", color: "var(--text-muted)", marginTop: "1px" }}>Auto-pause when screen locks or system sleeps</div>
               </div>
-              <div className={`tog ${autoPauseOnLock ? "" : "off"}`} onClick={() => { const next = !autoPauseOnLock; setAutoPauseOnLock(next); save("auto_pause_on_lock", String(next), true); window.electron?.setSetting("auto_pause_on_lock", String(next)); }}>
-                <div className="tog-dot" />
-              </div>
+              <Toggle checked={autoPauseOnLock} onChange={() => { const next = !autoPauseOnLock; setAutoPauseOnLock(next); save("auto_pause_on_lock", String(next), true); window.electron?.setSetting("auto_pause_on_lock", String(next)); }} label="Auto-pause on lock" />
             </div>
             <div className="set-row">
               <div>
                 <div className="set-label">Resume on unlock</div>
                 <div style={{ fontSize: "10px", color: "var(--text-muted)", marginTop: "1px" }}>Resume playback when screen unlocks</div>
               </div>
-              <div className={`tog ${autoResumeOnUnlock ? "" : "off"}`} onClick={() => { const next = !autoResumeOnUnlock; setAutoResumeOnUnlock(next); save("auto_resume_on_unlock", String(next), true); window.electron?.setSetting("auto_resume_on_unlock", String(next)); }}>
-                <div className="tog-dot" />
-              </div>
+              <Toggle checked={autoResumeOnUnlock} onChange={() => { const next = !autoResumeOnUnlock; setAutoResumeOnUnlock(next); save("auto_resume_on_unlock", String(next), true); window.electron?.setSetting("auto_resume_on_unlock", String(next)); }} label="Auto-resume on unlock" />
             </div>
             <div className="set-row" style={{ borderBottom: "none" }}>
               <div>
                 <div className="set-label">Keyboard shortcuts</div>
                 <div style={{ fontSize: "10px", color: "var(--text-muted)", marginTop: "1px" }}>Alt+H heart, Alt+D dislike, Alt+V vibe lock, Alt+1-5 mood</div>
               </div>
-              <div className={`tog ${altHotkeysEnabled ? "" : "off"}`} onClick={() => { const next = !altHotkeysEnabled; setAltHotkeysEnabled(next); save("alt_hotkeys_enabled", String(next), true); }}>
-                <div className="tog-dot" />
-              </div>
+              <Toggle checked={altHotkeysEnabled} onChange={() => { const next = !altHotkeysEnabled; setAltHotkeysEnabled(next); save("alt_hotkeys_enabled", String(next), true); }} label="Alternative hotkeys" />
             </div>
             {/* Keyboard Shortcuts */}
             <div className="set-row" style={{ flexDirection: "column", alignItems: "stretch", borderBottom: "none" }}>
@@ -609,19 +588,7 @@ function SettingsContent({ addToast, sectionSpacing, onSectionSpacingChange, rig
                 <div className="set-label">Advanced diversity</div>
                 <div style={{ fontSize: "10px", color: "var(--text-muted)", marginTop: "1px" }}>Manually override per-cycle variety</div>
               </div>
-              <div className={`tog ${jitterOverride ? "" : "off"}`}
-                onClick={() => {
-                  if (jitterOverride) {
-                    setJitterOverride("");
-                    save("jitter_override", "", true);
-                  } else {
-                    const derived = 0.03 + explorationLevel * 0.13;
-                    setJitterOverride(String(derived));
-                    save("jitter_override", String(derived), true);
-                  }
-                }}>
-                <div className="tog-dot" />
-              </div>
+              <Toggle checked={!!jitterOverride} onChange={() => { if (jitterOverride) { setJitterOverride(""); save("jitter_override", "", true); } else { const derived = 0.03 + explorationLevel * 0.13; setJitterOverride(String(derived)); save("jitter_override", String(derived), true); } }} label="Jitter override" />
             </div>
             {jitterOverride && (
               <div className="set-row">
@@ -765,10 +732,7 @@ function SettingsContent({ addToast, sectionSpacing, onSectionSpacingChange, rig
                 <div className="set-label">Enable talk show</div>
                 <div style={{ fontSize: "10px", color: "var(--text-muted)", marginTop: "1px" }}>Caller segments, DJ monologues, guest takeovers</div>
               </div>
-              <div className={`tog ${talkSegmentsEnabled ? "" : "off"}`}
-                onClick={() => { const next = !talkSegmentsEnabled; setTalkSegmentsEnabled(next); save("talk_segments_enabled", String(next), true); }}>
-                <div className="tog-dot" />
-              </div>
+              <Toggle checked={talkSegmentsEnabled} onChange={() => { const next = !talkSegmentsEnabled; setTalkSegmentsEnabled(next); save("talk_segments_enabled", String(next), true); }} label="Talk segments" />
             </div>
             <TalkSettings addToast={addToast} masterEnabled={talkSegmentsEnabled} />
           </div>
@@ -964,15 +928,8 @@ function SettingsContent({ addToast, sectionSpacing, onSectionSpacingChange, rig
       </div>
 
       {/* Footer */}
-      <div style={{ display: "flex", justifyContent: "flex-end", gap: "8px", padding: "12px 16px", background: "var(--bg-sunken)", borderTop: "1px solid var(--border)" }}>
-        <button onClick={() => {}}
-          style={{ fontSize: "12px", padding: "7px 16px", borderRadius: "6px", background: "var(--bg-elevated)", border: "1px solid var(--border)", color: "var(--text-secondary)", cursor: "pointer" }}>
-          Cancel
-        </button>
-        <button onClick={() => { addToast?.("Settings saved", "success"); }}
-          style={{ fontSize: "12px", padding: "7px 16px", borderRadius: "6px", background: "var(--accent-muted)", border: "1px solid var(--border)", color: "var(--accent)", cursor: "pointer", fontWeight: 500 }}>
-          Save changes
-        </button>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "8px", padding: "12px 16px", background: "var(--bg-sunken)", borderTop: "1px solid var(--border)" }}>
+        <span style={{ fontSize: "11px", color: "var(--text-muted)" }}>Changes are saved automatically</span>
       </div>
     </div>
   );
