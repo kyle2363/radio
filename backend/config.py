@@ -1,4 +1,9 @@
 import os
+import shlex
+from dotenv import load_dotenv
+
+# Load .env from project root BEFORE reading any env vars
+load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env"))
 
 # Disable ChromaDB telemetry before any chromadb import
 os.environ["ANONYMIZED_TELEMETRY"] = "False"
@@ -30,6 +35,7 @@ LYRICS_CURRENT_WORDS = 60    # Words for "current song" in reranker prompt
 LYRICS_TALK_WORDS = 75       # Words in talk segment prompts
 LYRICS_TAG_WORDS = 200       # Words for LLM tag generation
 LYRICS_DISPLAY_WORDS = None  # None = full lyrics in UI, no truncation
+MIN_LYRIC_WORDS = 3          # Skip alignment if lyrics has fewer than N words
 
 # Embedding text fields (what goes into the embedding)
 AI_DESCRIPTION_MAX_CHARS = 850  # Max chars of ai_description in embedding text
@@ -53,7 +59,7 @@ TALK_DEBUG_LOG_PATH = os.path.join(BASE_DIR, "data", "talk_show_debug.log")
 # Song-end debug log
 LOG_PATH = os.path.join(BASE_DIR, "data", "playback.log")
 API_PORT = 8765
-N_CLUSTERS = 21
+N_CLUSTERS = 28
 
 # VLC stderr suppression (set True to hide libvlc init warnings, False to debug VLC issues)
 VLC_SUPPRESS_STDERR = False
@@ -131,3 +137,41 @@ CONSTELLATION_HOP_CHANCE = 0.20      # Probability of sampling from neighboring 
 CONSTELLATION_WEIGHT_BOOST = 0.15    # Max score boost for constellation-aligned candidates
 CONSTELLATION_CACHE_TTL = 300        # Seconds to cache constellation state (5 min)
 CONSTELLATION_ARTIST_BLEND = 0.0     # Disabled — artist is already prominent in embedding text
+
+# ── Process Manager ──
+
+def _parse_cmd(cmd_str):
+    """Parse a command string into (exe, args).
+
+    Uses ``posix=True`` so that double-quoted sub-strings (e.g. JSON in
+    ``--chat-template-kwargs``) are handled correctly with ``\\"`` escapes.
+    Forward slashes in paths are recommended (Windows accepts them too).
+    """
+    if not cmd_str or not cmd_str.strip():
+        return ("", [])
+    parts = shlex.split(cmd_str, posix=True)
+    return (parts[0], parts[1:])
+
+PROC_MGR_ENABLED = True
+PROC_MGR_LOG_DIR = os.path.join(DATA_DIR, "logs")
+
+# --- llama.cpp chat (port 8081) ---
+LLAMA_CHAT_CMD_STR = os.environ.get("LLAMA_CHAT_CMD", "")
+LLAMA_CHAT_EXE, LLAMA_CHAT_ARGS = _parse_cmd(LLAMA_CHAT_CMD_STR)
+LLAMA_CHAT_WORK_DIR = os.environ.get("LLAMA_CHAT_WORK_DIR", "")
+LLAMA_CHAT_HEALTH_URL = os.environ.get("LLAMA_CHAT_HEALTH_URL", "http://127.0.0.1:8081/v1/models")
+LLAMA_CHAT_AUTO_START = os.environ.get("LLAMA_CHAT_AUTO_START", "true").lower() in ("true", "1", "yes")
+
+# --- llama.cpp embeddings (port 8082) ---
+LLAMA_EMBED_CMD_STR = os.environ.get("LLAMA_EMBED_CMD", "")
+LLAMA_EMBED_EXE, LLAMA_EMBED_ARGS = _parse_cmd(LLAMA_EMBED_CMD_STR)
+LLAMA_EMBED_WORK_DIR = os.environ.get("LLAMA_EMBED_WORK_DIR", "")
+LLAMA_EMBED_HEALTH_URL = os.environ.get("LLAMA_EMBED_HEALTH_URL", "http://127.0.0.1:8082/v1/models")
+LLAMA_EMBED_AUTO_START = os.environ.get("LLAMA_EMBED_AUTO_START", "true").lower() in ("true", "1", "yes")
+
+# --- acestep (on-demand) ---
+ACESTEP_CMD_STR = os.environ.get("ACESTEP_CMD", "")
+ACESTEP_EXE, ACESTEP_ARGS = _parse_cmd(ACESTEP_CMD_STR)
+ACESTEP_WORK_DIR = os.environ.get("ACESTEP_WORK_DIR", "")
+ACESTEP_PORT = int(os.environ.get("ACESTEP_PORT", "8085"))
+ACESTEP_AUTO_START = os.environ.get("ACESTEP_AUTO_START", "false").lower() in ("true", "1", "yes")

@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { Plus, Heart, MoreHorizontal, Music, Play, Bolt, ChevronUp, ChevronDown, XCircle, RotateCcw, Pencil, Edit3 } from "lucide-react";
+import { Plus, Heart, MoreHorizontal, Music, Play, Bolt, ChevronUp, ChevronDown, XCircle, RotateCcw, Pencil, Edit3, Filter } from "lucide-react";
 import * as api from "../api";
 import { SkeletonRow } from "./Skeleton";
 import StatsDashboard from "./StatsDashboard";
 import SessionHistory from "./SessionHistory";
 import MoodTimeline from "./MoodTimeline";
+import FiltersPanel from "./FiltersPanel";
 
 const COLUMNS = [
   { key: null, label: "", sortable: false },
@@ -31,6 +32,10 @@ function SongList({ addToast, currentSongId, onPlay }) {
   const [editTags, setEditTags] = useState("");
   const [editNotes, setEditNotes] = useState("");
   const [editingMetadata, setEditingMetadata] = useState(null);
+  const [artistInclude, setArtistInclude] = useState(null);
+  const [artistExclude, setArtistExclude] = useState(null);
+  const [mtimeMinDays, setMtimeMinDays] = useState(null);
+  const [mtimeMaxDays, setMtimeMaxDays] = useState(null);
   const [metaForm, setMetaForm] = useState({
     artist: "", title: "", album: "", bpm: "",
     keyscale: "", timesignature: "", vocal_language: "", lyrics: "", caption: "",
@@ -44,12 +49,21 @@ function SongList({ addToast, currentSongId, onPlay }) {
 
   useEffect(() => {
     fetchStats();
+    api.fetchRecommendationFilters().then((f) => {
+      if (f.artist_mode === "include" && f.artists?.length > 0) {
+        setArtistInclude(f.artists.join(","));
+      } else if (f.artist_mode === "exclude" && f.artists?.length > 0) {
+        setArtistExclude(f.artists.join(","));
+      }
+      setMtimeMinDays(f.mtime_min_days);
+      setMtimeMaxDays(f.mtime_max_days);
+    }).catch(() => {});
   }, []);
 
   useEffect(() => {
     if (tab === "library") fetchSongs();
     else if (tab === "recent") fetchRecentlyPlayed();
-  }, [tab, page, search, sortBy, sortDir, missingMetadata, missingCaption]);
+  }, [tab, page, search, sortBy, sortDir, missingMetadata, missingCaption, artistInclude, artistExclude, mtimeMinDays, mtimeMaxDays]);
 
   useEffect(() => {
     const handleClick = (e) => {
@@ -71,12 +85,17 @@ function SongList({ addToast, currentSongId, onPlay }) {
   const fetchSongs = useCallback(async () => {
     setLoading(true);
     try {
-      const data = await api.fetchSongs({ page: String(page), page_size: "50", search, sort_by: sortBy, sort_dir: sortDir, missing_metadata: String(missingMetadata), missing_caption: String(missingCaption) });
+      const params = { page: String(page), page_size: "50", search, sort_by: sortBy, sort_dir: sortDir, missing_metadata: String(missingMetadata), missing_caption: String(missingCaption) };
+      if (artistInclude) params.artist_include = artistInclude;
+      if (artistExclude) params.artist_exclude = artistExclude;
+      if (mtimeMinDays != null) params.mtime_min_days = String(mtimeMinDays);
+      if (mtimeMaxDays != null) params.mtime_max_days = String(mtimeMaxDays);
+      const data = await api.fetchSongs(params);
       setSongs(data.items || []);
       setTotalPages(data.total_pages || 1);
     } catch (err) {}
     setLoading(false);
-  }, [page, search, sortBy, sortDir, missingMetadata]);
+  }, [page, search, sortBy, sortDir, missingMetadata, missingCaption, artistInclude, artistExclude, mtimeMinDays, mtimeMaxDays]);
 
   const fetchRecentlyPlayed = useCallback(async () => {
     setLoading(true);
@@ -233,7 +252,25 @@ function SongList({ addToast, currentSongId, onPlay }) {
     if (newTab === "library") { setPage(1); setSearch(""); setMissingMetadata(false); setMissingCaption(false); }
   };
 
+  const handleFiltersChange = useCallback((filters) => {
+    if (filters.artist_mode === "include" && filters.artists?.length > 0) {
+      setArtistInclude(filters.artists.join(","));
+      setArtistExclude(null);
+    } else if (filters.artist_mode === "exclude" && filters.artists?.length > 0) {
+      setArtistExclude(filters.artists.join(","));
+      setArtistInclude(null);
+    } else {
+      setArtistInclude(null);
+      setArtistExclude(null);
+    }
+    setMtimeMinDays(filters.mtime_min_days);
+    setMtimeMaxDays(filters.mtime_max_days);
+    setPage(1);
+  }, []);
+
   const displaySongs = tab === "recent" ? recentlyPlayed : songs;
+
+  const filtersActive = artistInclude != null || artistExclude != null || mtimeMinDays != null || mtimeMaxDays != null;
 
   return (
     <div>
@@ -241,6 +278,10 @@ function SongList({ addToast, currentSongId, onPlay }) {
       <div className="subtab-row">
         <div className={`subtab ${tab === "library" ? "on" : ""}`} onClick={() => handleTabChange("library")}>Library</div>
         <div className={`subtab ${tab === "recent" ? "on" : ""}`} onClick={() => handleTabChange("recent")}>Recently Played</div>
+        <div className={`subtab ${tab === "filters" ? "on" : ""}`} onClick={() => handleTabChange("filters")} style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+          <Filter size={10} /> Filters
+          {filtersActive && <span style={{ width: 5, height: 5, borderRadius: "50%", background: "#4ade80", display: "inline-block" }} />}
+        </div>
       </div>
 
       {/* Library tab */}
@@ -402,6 +443,11 @@ function SongList({ addToast, currentSongId, onPlay }) {
             )}
           </div>
         </div>
+      )}
+
+      {/* Filters tab */}
+      {tab === "filters" && (
+        <FiltersPanel addToast={addToast} onFiltersChange={handleFiltersChange} />
       )}
 
       {/* Stats tab */}

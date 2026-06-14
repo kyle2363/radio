@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
-import { Volume2, Brain, Cpu, Folder, ChevronDown, RefreshCw, Trash2, Moon, Filter, X, Radio, Download, Upload, Palette, Monitor } from "lucide-react";
+import { Volume2, Brain, Cpu, Folder, ChevronDown, RefreshCw, Trash2, Moon, Radio, Download, Upload, Palette, Monitor } from "lucide-react";
 import * as api from "../api";
 import TalkSettings from "./TalkSettings";
 import IngestPanel from "./IngestPanel";
@@ -29,9 +29,6 @@ function SettingsContent({ addToast, sectionSpacing, onSectionSpacingChange, rig
   const [vibeLockDuration, setVibeLockDuration] = useState(30);
   const [vibeLockMaxSongs, setVibeLockMaxSongs] = useState(10);
   const [dislikeDecayRate, setDislikeDecayRate] = useState(0.029);
-  const [subfolders, setSubfolders] = useState([]);
-  const [selectedFolders, setSelectedFolders] = useState([]);
-  const [showFolderFilter, setShowFolderFilter] = useState(false);
   const [notifyOnSongChange, setNotifyOnSongChange] = useState(true);
   const [autoPauseOnLock, setAutoPauseOnLock] = useState(true);
   const [autoResumeOnUnlock, setAutoResumeOnUnlock] = useState(true);
@@ -70,19 +67,9 @@ function SettingsContent({ addToast, sectionSpacing, onSectionSpacingChange, rig
   useEffect(() => { setLocalSpacing(sectionSpacing || "10"); }, [sectionSpacing]);
   useEffect(() => { setLocalRailWidth(rightRailWidth || 255); }, [rightRailWidth]);
 
-  const fetchSubfolders = useCallback(async () => {
-    try {
-      const data = await api.fetchSubfolders();
-      setSubfolders(data.subfolders || []);
-      const filter = await api.fetchFolderFilter();
-      setSelectedFolders(filter.folders || []);
-    } catch (e) {}
-  }, []);
-
   useEffect(() => {
     fetchSettings();
     fetchLlmStatus();
-    fetchSubfolders();
     const sleepPoll = setInterval(async () => {
       try {
         const data = await api.fetchSleepTimer();
@@ -880,68 +867,6 @@ function SettingsContent({ addToast, sectionSpacing, onSectionSpacingChange, rig
             <IngestPanel addToast={addToast} />
 
             <LibraryVerify addToast={addToast} />
-
-            {/* Folder filter */}
-            <div className="set-row" style={{ flexDirection: "column", alignItems: "stretch", borderBottom: "1px solid var(--border-subtle)" }}>
-              <div className="set-hdr" onClick={() => setShowFolderFilter(!showFolderFilter)} style={{ padding: "8px 0", cursor: "pointer", display: "flex", alignItems: "center", gap: "8px" }}>
-                <div className="icon-chip" style={{ background: "#0f1e10" }}>
-                  <Filter size={13} style={{ color: "#639922" }} />
-                </div>
-                <span style={{ color: "var(--text-primary)", fontSize: "12px", fontWeight: 500 }}>Folder filter (session)</span>
-                {selectedFolders.length > 0 && (
-                  <span style={{ fontSize: "10px", padding: "1px 6px", borderRadius: "4px", background: "rgba(72,187,120,0.15)", color: "#4ade80", marginLeft: "4px" }}>
-                    {selectedFolders.length} selected
-                  </span>
-                )}
-                <div style={{ flex: 1 }} />
-                <ChevronDown size={13} style={{ color: "var(--text-muted)", transform: showFolderFilter ? "rotate(0deg)" : "rotate(-90deg)", transition: "transform 0.2s" }} />
-              </div>
-              {showFolderFilter && (
-                <div style={{ paddingBottom: "10px" }}>
-                  <div style={{ fontSize: "10px", color: "var(--text-muted)", marginBottom: "8px" }}>
-                    Restrict recommendations to specific folders. Clears on restart.
-                  </div>
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: "4px", marginBottom: "8px", maxHeight: "200px", overflowY: "auto" }}>
-                    {subfolders.length === 0 && (
-                      <div style={{ fontSize: "11px", color: "var(--text-muted)", padding: "4px 0" }}>No subfolders found</div>
-                    )}
-                    {subfolders.map((sf) => {
-                      const isSelected = selectedFolders.includes(sf.name);
-                      return (
-                        <div key={sf.name}
-                          onClick={() => {
-                            const next = isSelected
-                              ? selectedFolders.filter((f) => f !== sf.name)
-                              : [...selectedFolders, sf.name];
-                            setSelectedFolders(next);
-                            api.setFolderFilter(next).catch(() => {});
-                          }}
-                          style={{
-                            display: "inline-flex", alignItems: "center", gap: "4px",
-                            padding: "4px 10px", borderRadius: "5px", fontSize: "11px", cursor: "pointer",
-                            background: isSelected ? "rgba(72,187,120,0.12)" : "var(--bg-elevated)",
-                            border: `1px solid ${isSelected ? "rgba(72,187,120,0.3)" : "var(--border)"}`,
-                            color: isSelected ? "#4ade80" : "var(--text-secondary)",
-                            transition: "all 0.15s",
-                          }}>
-                          {sf.name}
-                          <span style={{ fontSize: "9px", opacity: 0.6 }}>({sf.count})</span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                  {selectedFolders.length > 0 && (
-                    <button onClick={async () => {
-                      setSelectedFolders([]);
-                      try { await api.clearFolderFilter(); } catch (e) {}
-                    }}
-                      style={{ fontSize: "10px", padding: "4px 10px", borderRadius: "4px", background: "#1e0808", border: "1px solid #3a1010", color: "var(--danger)", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: "4px" }}>
-                      <X size={11} /> Clear filter
-                    </button>
-                  )}
-                </div>
-              )}
-            </div>
 
             <div style={{ paddingTop: "12px" }}>
               <div style={{ display: "flex", gap: "8px", marginBottom: "12px" }}>

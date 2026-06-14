@@ -109,6 +109,22 @@ def add_missing_columns():
         if "gain_db" not in columns:
             conn.execute("ALTER TABLE songs ADD COLUMN gain_db REAL DEFAULT 0.0")
 
+        # Migration: add file_mtime to songs
+        import os as _os
+        if "file_mtime" not in columns:
+            conn.execute("ALTER TABLE songs ADD COLUMN file_mtime REAL")
+            _backfill_file_mtimes(conn)
+        try:
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_songs_file_mtime ON songs(file_mtime)")
+        except Exception:
+            pass
+
+        # Ensure subfolder is populated for all songs (migration may have missed new ones)
+        if "subfolder" in columns:
+            rows = conn.execute("SELECT id, filepath FROM songs WHERE subfolder IS NULL OR subfolder = '' LIMIT 1").fetchall()
+            if rows:
+                _populate_subfolders(conn)
+
         # Migration: add undone column to play_events
         cursor = conn.execute("PRAGMA table_info(play_events)")
         pe_columns = {row[1] for row in cursor.fetchall()}
@@ -197,6 +213,57 @@ def _populate_subfolders(conn):
         logging.getLogger(__name__).error(f"Failed to populate subfolders: {e}")
 
 
+def _backfill_file_mtimes(conn):
+    """Populate file_mtime from os.stat for songs that have NULL file_mtime."""
+    import os as _os
+    try:
+        rows = conn.execute("SELECT id, filepath FROM songs WHERE file_mtime IS NULL").fetchall()
+        updated = 0
+        for row in rows:
+            try:
+                mtime = _os.path.getmtime(row["filepath"])
+                conn.execute("UPDATE songs SET file_mtime = ? WHERE id = ?", (mtime, row["id"]))
+                updated += 1
+            except (OSError, FileNotFoundError):
+                pass
+        if updated:
+            conn.commit()
+            import logging
+            logging.getLogger(__name__).info(f"Backfilled file_mtime for {updated} songs")
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Failed to backfill file_mtimes: {e}")
+
+
+def get_file_mtime_range():
+    """Return (min_mtime, max_mtime) for songs with non-null mtime, or (None, None)."""
+    conn = get_connection()
+    try:
+        row = conn.execute("SELECT MIN(file_mtime) as mn, MAX(file_mtime) as mx FROM songs WHERE file_mtime IS NOT NULL").fetchone()
+        if row and row["mn"] is not None:
+            return (row["mn"], row["mx"])
+        return (None, None)
+    finally:
+        conn.close()
+
+
+def get_song_ids_in_mtime_range(min_mtime, max_mtime):
+    """Get song IDs with file_mtime within [min_mtime, max_mtime]."""
+    conn = get_connection()
+    try:
+        if min_mtime is not None and max_mtime is not None:
+            rows = conn.execute("SELECT id FROM songs WHERE file_mtime IS NOT NULL AND file_mtime >= ? AND file_mtime <= ?", (min_mtime, max_mtime)).fetchall()
+        elif min_mtime is not None:
+            rows = conn.execute("SELECT id FROM songs WHERE file_mtime IS NOT NULL AND file_mtime >= ?", (min_mtime,)).fetchall()
+        elif max_mtime is not None:
+            rows = conn.execute("SELECT id FROM songs WHERE file_mtime IS NOT NULL AND file_mtime <= ?", (max_mtime,)).fetchall()
+        else:
+            return []
+        return [r["id"] for r in rows]
+    finally:
+        conn.close()
+
+
 def _extract_subfolder_from_path(filepath):
     """Extract the subfolder name relative to the music directory from a filepath.
 
@@ -263,13 +330,19 @@ def _row_to_dict(row):
     return dict(row)
 
 
-def add_song(filepath, file_hash):
+def add_song(filepath, file_hash, file_mtime=None):
     conn = get_connection()
     try:
-        conn.execute(
-            "INSERT OR IGNORE INTO songs (filepath, file_hash) VALUES (?, ?)",
-            (filepath, file_hash),
-        )
+        if file_mtime is not None:
+            conn.execute(
+                "INSERT OR IGNORE INTO songs (filepath, file_hash, file_mtime) VALUES (?, ?, ?)",
+                (filepath, file_hash, file_mtime),
+            )
+        else:
+            conn.execute(
+                "INSERT OR IGNORE INTO songs (filepath, file_hash) VALUES (?, ?)",
+                (filepath, file_hash),
+            )
         conn.commit()
     finally:
         conn.close()
@@ -286,7 +359,7 @@ _ALLOWED_SONG_COLUMNS = {
     "raw_rms", "crest_factor", "spectral_contrast",
     "spectral_rolloff", "spectral_flatness",
     "duration_secs", "rms_envelope", "dj_effect_eligible",
-    "subfolder", "cluster_id", "gain_db",
+    "subfolder", "cluster_id", "gain_db", "file_mtime",
 }
 
 

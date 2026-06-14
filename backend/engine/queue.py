@@ -450,14 +450,30 @@ class QueueManager:
                          self._mood.get_state(), mood_energy, type(mood_energy).__name__,
                          mood_valence, type(mood_valence).__name__)
 
-            # Parse folder filter once
+            # Parse recommendation filters (folders, mtime range, artist mode)
             subfolder_filter = None
-            folder_filter_raw = self._db.get_setting("folder_filter")
-            if folder_filter_raw and folder_filter_raw.strip():
+            mtime_min = None
+            mtime_max = None
+            artist_mode = None
+            artists = None
+            filters_raw = self._db.get_setting("recommendation_filters") or self._db.get_setting("folder_filter") or ""
+            if filters_raw and filters_raw.strip():
                 try:
-                    parsed = json.loads(folder_filter_raw)
-                    if parsed:
+                    parsed = json.loads(filters_raw)
+                    if isinstance(parsed, list):
                         subfolder_filter = parsed
+                    elif isinstance(parsed, dict):
+                        subfolder_filter = parsed.get("folders") or None
+                        raw_min = parsed.get("mtime_min_days")
+                        raw_max = parsed.get("mtime_max_days")
+                        if raw_min is not None:
+                            mtime_min = int(raw_min)
+                        if raw_max is not None:
+                            mtime_max = int(raw_max)
+                        am = parsed.get("artist_mode")
+                        if am in ("include", "exclude"):
+                            artist_mode = am
+                            artists = parsed.get("artists") or None
                 except (json.JSONDecodeError, TypeError):
                     pass
 
@@ -485,6 +501,8 @@ class QueueManager:
                 subfolder_filter=subfolder_filter,
                 vibe_lock=vibe_lock,
                 mood_state=self._mood.get_state(),
+                mtime_min=mtime_min, mtime_max=mtime_max,
+                artist_mode=artist_mode, artists=artists,
             )
             _log_step(f"Candidates: {len(candidates)}")
 
@@ -510,11 +528,48 @@ class QueueManager:
                             seen_ids.add(tc["song_id"])
                 _log_step(f"Transition candidates merged: {len(candidates)} total")
 
-            # Apply folder filter to transition candidates added post-hoc
-            if subfolder_filter:
-                allowed_ids = set(database.get_song_ids_in_subfolders(subfolder_filter))
-                candidates = [c for c in candidates if c["song_id"] in allowed_ids]
-                _log_step(f"Folder filter on transitions: {len(candidates)} remaining")
+            # Apply recommendation filters to transition candidates added post-hoc
+            import time as _time
+            now_ts = _time.time()
+            filtered_candidates = []
+            for c in candidates:
+                cid = c["song_id"]
+                if subfolder_filter:
+                    allowed_ids = set(database.get_song_ids_in_subfolders(subfolder_filter))
+                    if cid not in allowed_ids:
+                        continue
+                if mtime_min is not None or mtime_max is not None:
+                    song = database.get_song(cid)
+                    if song:
+                        m = song.get("file_mtime")
+                        if m is None:
+                            # Fallback: derive from subfolder
+                            subf = song.get("subfolder", "")
+                            all_subfolders = database.get_subfolders()
+                            if all_subfolders and len(all_subfolders) > 1:
+                                rank = all_subfolders.index(subf) if subf in all_subfolders else 0
+                                known_mtimes = database.get_file_mtime_range()
+                                min_known, max_known = known_mtimes if known_mtimes[0] else (0, 1)
+                                if max_known > min_known:
+                                    frac = rank / (len(all_subfolders) - 1)
+                                    m = min_known + frac * (max_known - min_known)
+                        if m is not None:
+                            age_days = (now_ts - m) / 86400.0
+                            if mtime_min is not None and age_days < mtime_min:
+                                continue
+                            if mtime_max is not None and age_days > mtime_max:
+                                continue
+                if artist_mode and artists:
+                    lower_artists = [a.lower() for a in artists if a.strip()]
+                    if lower_artists:
+                        c_artist = c.get("artist", "").lower()
+                        if artist_mode == "include" and not any(a in c_artist for a in lower_artists):
+                            continue
+                        if artist_mode == "exclude" and any(a in c_artist for a in lower_artists):
+                            continue
+                filtered_candidates.append(c)
+            candidates = filtered_candidates
+            _log_step(f"Recommendation filters applied: {len(candidates)} remaining")
 
             # Apply transition boost to candidates (batched)
             if context_id and candidates:
@@ -534,6 +589,8 @@ class QueueManager:
                     n=40,
                     exclude_ids=exclude_ids,
                     subfolder_filter=subfolder_filter,
+                    mtime_min=mtime_min, mtime_max=mtime_max,
+                    artist_mode=artist_mode, artists=artists,
                 )
 
             # --- Taste Constellations: reweight candidates + taste hopping ---
@@ -566,6 +623,8 @@ class QueueManager:
                                     n=10,
                                     exclude_ids=exclude_ids + [c["song_id"] for c in candidates],
                                     subfolder_filter=subfolder_filter,
+                                    mtime_min=mtime_min, mtime_max=mtime_max,
+                                    artist_mode=artist_mode, artists=artists,
                                 )
                                 for hc in hop_candidates:
                                     hc["source"] = "constellation_hop"
@@ -830,14 +889,30 @@ class QueueManager:
             )
             taste_vector = taste_vectors["text"]
 
-            # Parse folder filter
+            # Parse recommendation filters
             subfolder_filter = None
-            folder_filter_raw = self._db.get_setting("folder_filter")
-            if folder_filter_raw and folder_filter_raw.strip():
+            mtime_min = None
+            mtime_max = None
+            artist_mode = None
+            artists = None
+            filters_raw = self._db.get_setting("recommendation_filters") or self._db.get_setting("folder_filter") or ""
+            if filters_raw and filters_raw.strip():
                 try:
-                    parsed = json.loads(folder_filter_raw)
-                    if parsed:
+                    parsed = json.loads(filters_raw)
+                    if isinstance(parsed, list):
                         subfolder_filter = parsed
+                    elif isinstance(parsed, dict):
+                        subfolder_filter = parsed.get("folders") or None
+                        raw_min = parsed.get("mtime_min_days")
+                        raw_max = parsed.get("mtime_max_days")
+                        if raw_min is not None:
+                            mtime_min = int(raw_min)
+                        if raw_max is not None:
+                            mtime_max = int(raw_max)
+                        am = parsed.get("artist_mode")
+                        if am in ("include", "exclude"):
+                            artist_mode = am
+                            artists = parsed.get("artists") or None
                 except (json.JSONDecodeError, TypeError):
                     pass
 
@@ -847,6 +922,8 @@ class QueueManager:
                 current_song_id=self._current_song_id or 0,
                 exclude_ids=[],
                 subfolder_filter=subfolder_filter,
+                mtime_min=mtime_min, mtime_max=mtime_max,
+                artist_mode=artist_mode, artists=artists,
             )
 
             if candidates:

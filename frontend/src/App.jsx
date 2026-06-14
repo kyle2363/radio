@@ -343,13 +343,25 @@ function AppInner() {
     return () => clearInterval(id);
   }, [isElectron]);
 
-  // Folder filter
-  const [activeFolderFilter, setActiveFolderFilter] = useState([]);
+  // Recommendation filters
+  const [activeFilters, setActiveFilters] = useState({ folders: [], mtime_min_days: null, mtime_max_days: null, artist_mode: null, artists: [] });
+  const hasActiveFilters = activeFilters.folders?.length > 0 || activeFilters.mtime_min_days != null || activeFilters.mtime_max_days != null || activeFilters.artist_mode;
   useEffect(() => {
-    api.fetchFolderFilter().then((data) => {
-      setActiveFolderFilter(data.folders || []);
-    }).catch(() => {});
+    api.fetchRecommendationFilters().then((data) => {
+      setActiveFilters(data);
+    }).catch(() => {
+      api.fetchFolderFilter().then((data) => {
+        setActiveFilters(prev => ({ ...prev, folders: data.folders || [] }));
+      }).catch(() => {});
+    });
   }, []);
+  // Also listen for WS broadcast
+  useEffect(() => {
+    if (!window._ws) return;
+    const handler = (data) => setActiveFilters(data);
+    window._ws._recFilterHandler = handler;
+    return () => { if (window._ws) window._ws._recFilterHandler = null; };
+  }, [wsConnected]);
 
   // Library tab
   const [libraryTab, setLibraryTab] = useState("library");
@@ -659,17 +671,18 @@ function AppInner() {
             {uiMode === "radio" && <ArchetypeBadge archetype={archetype} />}
             {uiMode === "radio" && <VibeLockBadge vibeLock={vibeLock} currentSong={currentSong} />}
             {uiMode === "radio" && <SkipStreakIndicator skipStreak={skipStreak} />}
-            {uiMode === "radio" && activeFolderFilter.length > 0 && (
+            {uiMode === "radio" && hasActiveFilters && (
               <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full text-[11px] font-medium cursor-pointer"
-                onClick={() => { api.clearFolderFilter(); setActiveFolderFilter([]); addToast?.("Folder filter cleared", "success"); }}
+                onClick={() => { setShowLibrary(true); setLibraryTab("library"); }}
                 style={{
                   background: "rgba(99,153,34,0.1)",
                   border: "1px solid rgba(99,153,34,0.25)",
                   color: "#8bc34a",
                 }}>
                 <Filter size={10} />
-                {activeFolderFilter.length}f
-                <X size={10} style={{ opacity: 0.5 }} />
+                {activeFilters.folders?.length > 0 && `${activeFilters.folders.length}f `}
+                {(activeFilters.mtime_min_days != null || activeFilters.mtime_max_days != null) && "age "}
+                {activeFilters.artist_mode && "artist"}
               </span>
             )}
             {uiMode === "radio" && (

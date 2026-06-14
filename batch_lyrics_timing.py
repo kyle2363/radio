@@ -29,6 +29,22 @@ from db import database
 # ── Word-level matching ─────────────────────────────────────
 
 
+INSTRUMENTAL_MARKERS = {"instrumental"}
+
+def _count_lyric_words(lyrics_text: str) -> int:
+    """Count whitespace-separated word tokens."""
+    return len(lyrics_text.split())
+
+def should_skip_lyrics_alignment(lyrics_text: str) -> tuple[bool, str]:
+    """Return (skip, reason). Skip if instrumental or fewer than MIN_LYRIC_WORDS words."""
+    if not lyrics_text or not lyrics_text.strip():
+        return True, "No lyrics"
+    if lyrics_text.strip().lower() in INSTRUMENTAL_MARKERS:
+        return True, "Instrumental"
+    if _count_lyric_words(lyrics_text) < config.MIN_LYRIC_WORDS:
+        return True, f"Too few lyric words (<{config.MIN_LYRIC_WORDS})"
+    return False, ""
+
 def _normalize_word(w: str) -> str:
     """Normalize a word for fuzzy comparison."""
     return w.lower().strip(".,!?;:'\"()[]‹›«»-…”“").replace("'", "").replace("’", "").replace("`", "")
@@ -346,13 +362,17 @@ def process_song(song_id: int, dry_run: bool = False) -> dict:
         return {"song_id": song_id, "status": "skipped", "message": "Audio file not found"}
 
     lyrics_text = song.get("lyrics", "")
-    if not lyrics_text or lyrics_text in ("lyrics not found", "TODO"):
-        return {"song_id": song_id, "status": "skipped", "message": "No valid lyrics"}
+    skip, reason = should_skip_lyrics_alignment(lyrics_text)
+    if skip:
+        return {"song_id": song_id, "status": "skipped", "message": reason}
 
     duration_secs = song.get("duration_secs") or 0
     duration_ms = duration_secs * 1000
 
     if dry_run:
+        skip, reason = should_skip_lyrics_alignment(lyrics_text)
+        if skip:
+            return {"song_id": song_id, "status": "dry_run_skip", "message": reason}
         return {"song_id": song_id, "status": "dry_run", "message": f"Would process {len(lyrics_text.split(chr(10)))} lines"}
 
     # Get vocal language from metadata if available

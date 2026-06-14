@@ -1,7 +1,8 @@
 const { app, BrowserWindow, ipcMain, Tray, Menu, globalShortcut, nativeImage, Notification, powerMonitor, powerSaveBlocker } = require("electron");
 const path = require("path");
-const { spawn } = require("child_process");
+const { spawn, execSync } = require("child_process");
 const fs = require("fs");
+const http = require("http");
 
 let mainWindow;
 let uvicornProcess;
@@ -796,6 +797,32 @@ function stopPowerSave() {
   }
 }
 
+function shutdownBackend() {
+  if (!uvicornProcess) return;
+  const pid = uvicornProcess.pid;
+  // Best-effort graceful shutdown (fire-and-forget, might complete before exit)
+  try {
+    const req = http.request({
+      hostname: "127.0.0.1", port: 8765,
+      path: "/api/shutdown", method: "POST",
+      timeout: 1000,
+    });
+    req.on("error", () => {});
+    req.end();
+  } catch (_) {}
+  // Synchronously kill the entire process tree (Python + any children like llama.cpp)
+  try {
+    execSync(`taskkill /F /T /PID ${pid}`, { timeout: 5000, stdio: "ignore" });
+  } catch (_) {
+    try { uvicornProcess.kill(); } catch (_) {}
+  }
+  // Safety: kill any orphaned llama processes
+  try {
+    execSync("taskkill /F /IM llama-server.exe", { timeout: 3000, stdio: "ignore" });
+  } catch (_) {}
+  uvicornProcess = null;
+}
+
 // ── App Lifecycle ─────────────────────────────────────────────
 app.whenReady().then(() => {
   // Single instance lock
@@ -830,13 +857,13 @@ app.whenReady().then(() => {
 
 app.on("window-all-closed", () => {
   stopPowerSave();
-  if (uvicornProcess) uvicornProcess.kill();
+  shutdownBackend();
   globalShortcut.unregisterAll();
   if (process.platform !== "darwin") app.quit();
 });
 
 app.on("quit", () => {
   stopPowerSave();
-  if (uvicornProcess) uvicornProcess.kill();
+  shutdownBackend();
   globalShortcut.unregisterAll();
 });

@@ -138,7 +138,7 @@ def normalize_all_songs(songs: list) -> list:
     # Percentile-scale each, then combine.
     def p_scale(arr):
         """Percentile-based scaling to [0, 1]."""
-        lo, hi = np.percentile(arr, 2), np.percentile(arr, 98)
+        lo, hi = np.percentile(arr, 5), np.percentile(arr, 95)
         if hi - lo < 1e-10:
             return np.full_like(arr, 0.5)
         return np.clip((arr - lo) / (hi - lo), 0.0, 1.0)

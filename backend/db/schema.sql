@@ -38,13 +38,15 @@ CREATE TABLE IF NOT EXISTS songs (
     art_file        TEXT,
     dj_effect_eligible INTEGER DEFAULT 1,
     gain_db         REAL DEFAULT 0.0,
-    added_at        DATETIME DEFAULT CURRENT_TIMESTAMP
+    added_at        DATETIME DEFAULT CURRENT_TIMESTAMP,
+    file_mtime      REAL
 );
 
 CREATE INDEX IF NOT EXISTS idx_songs_ingest_phase ON songs(ingest_phase);
 CREATE INDEX IF NOT EXISTS idx_songs_cluster ON songs(cluster_id);
 CREATE INDEX IF NOT EXISTS idx_songs_energy ON songs(energy);
 CREATE INDEX IF NOT EXISTS idx_songs_valence ON songs(valence);
+
 
 -- play_events
 CREATE TABLE IF NOT EXISTS play_events (

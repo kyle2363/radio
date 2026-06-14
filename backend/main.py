@@ -38,6 +38,7 @@ from engine import mood as mood_engine
 from engine import archetype as archetype_engine
 from engine import energy as energy_engine
 from engine.sleep_timer import SleepTimer
+from engine.process_manager import get_process_manager
 
 logging.basicConfig(level=logging.DEBUG)
 logging.getLogger("torio._extension.utils").setLevel(logging.ERROR)
@@ -58,13 +59,37 @@ async def lifespan(app):
     database.init_db()
     database.close_stale_sessions()
     database.cleanup_old_mood_repulsion(days=30)
-    # Reset stale genre/artist/folder filters (session-only)
+    # Reset stale genre/artist filters (session-only)
     if database.get_setting("genre_filter") == "jazz":
         database.set_setting("genre_filter", "")
-    database.set_setting("folder_filter", "")
+    # Seed recommendation_filters if not present
+    if not database.get_setting("recommendation_filters"):
+        database.set_setting("recommendation_filters", json.dumps({
+            "folders": [],
+            "mtime_min_days": None,
+            "mtime_max_days": None,
+            "artist_mode": None,
+            "artists": [],
+        }))
     print(f"Database initialized at {config.DB_PATH}")
     print(f"Music directory: {config.MUSIC_DIR}")
     print(f"Acestep JSON directory: {config.ACESTEP_JSON_DIR}")
+
+    # Process manager: auto-start external services (llama.cpp, etc.)
+    # Skips already-running instances via health check.
+    if config.PROC_MGR_ENABLED:
+        pm = get_process_manager()
+        started = pm.start_all_auto()
+        for name, ok in started.items():
+            display = pm.get(name).display_name if pm.get(name) else name
+            if ok:
+                print(f"  Process started: {display}")
+            else:
+                status = pm.get_status(name)
+                if status["state"] == "running":
+                    print(f"  Process already running: {display}")
+                else:
+                    print(f"  Process not started: {display} (not configured or failed)")
 
     # ChromaDB health check (async, non-blocking)
     def _run_chroma_health():
@@ -236,6 +261,12 @@ async def lifespan(app):
     logger.info("Broadcast worker started")
 
     yield
+
+    # Gracefully shut down managed external processes
+    if config.PROC_MGR_ENABLED:
+        print("Shutting down managed processes...")
+        get_process_manager().stop_all()
+        print("Managed processes stopped.")
 
     # Cancel broadcast worker on shutdown
     app.state._broadcast_worker.cancel()
@@ -745,8 +776,8 @@ def ingest_run():
 # ──────────────────────────────────────────────────────────
 
 PHASE_PREREQUISITES = {
+    "understand": None,  # checks internally
     "raw": None,
-    "analyze": lambda: database.get_by_ingest_phase("raw"),
     "normalize": lambda: [
         row["id"] for row in database.get_connection().execute(
             "SELECT id FROM songs WHERE raw_rms IS NOT NULL"
@@ -762,6 +793,7 @@ PHASE_PREREQUISITES = {
 }
 
 PHASE_FUNCTIONS = {
+    "understand": pipeline.run_phase_understand,
     "raw": pipeline.run_phase_raw,
     "analyze": pipeline.run_phase_analyze,
     "normalize": pipeline.run_phase_normalize,
@@ -790,13 +822,18 @@ def ingest_run_phase(phase_name: str):
         result = prereq()
         ready_count = len(result) if result else 0
 
-    if ready_count == 0 and phase_name != "raw":
+    if ready_count == 0 and phase_name not in ("raw", "understand"):
         return {"status": "no_work", "phase": phase_name, "ready": 0}
 
     if phase_name == "raw":
         # Raw always has work if music dir has files
         from ingest import scanner
         ready_count = len(scanner.find_audio_files(config.MUSIC_DIR))
+    elif phase_name == "understand":
+        # Understand checks internally for MP3s without acestep JSONs
+        from ingest.pipeline import _find_unprocessed_mp3s
+        unprocessed = _find_unprocessed_mp3s()
+        ready_count = len(unprocessed)
 
     def _run():
         try:
@@ -998,6 +1035,10 @@ def list_songs(
     genre_tag: str | None = None,
     missing_metadata: bool = False,
     missing_caption: bool = False,
+    artist_include: str | None = None,
+    artist_exclude: str | None = None,
+    mtime_min_days: int | None = None,
+    mtime_max_days: int | None = None,
 ):
     """List songs with filtering, search, sorting, and pagination."""
     conn = database.get_connection()
@@ -1049,6 +1090,28 @@ def list_songs(
 
         if rediscover:
             clauses.append("(last_played IS NULL OR last_played < datetime('now', '-30 days'))")
+
+        if artist_include:
+            parts = [a.strip() for a in artist_include.split(",") if a.strip()]
+            if parts:
+                inclauses = " OR ".join("LOWER(artist) LIKE ?" for _ in parts)
+                clauses.append(f"({inclauses})")
+                params.extend([f"%{p.lower()}%" for p in parts])
+
+        if artist_exclude:
+            parts = [a.strip() for a in artist_exclude.split(",") if a.strip()]
+            if parts:
+                exclauses = " AND ".join("(LOWER(artist) NOT LIKE ?)" for _ in parts)
+                clauses.append(f"({exclauses})")
+                params.extend([f"%{p.lower()}%" for p in parts])
+
+        if mtime_min_days is not None:
+            clauses.append("(file_mtime IS NOT NULL AND file_mtime <= ?)")
+            params.append(time.time() - mtime_min_days * 86400)
+
+        if mtime_max_days is not None:
+            clauses.append("(file_mtime IS NOT NULL AND file_mtime >= ?)")
+            params.append(time.time() - mtime_max_days * 86400)
 
         if emotional_tag:
             clauses.append("emotional_tags LIKE ?")
@@ -3315,6 +3378,14 @@ class FolderFilterRequest(BaseModel):
     folders: list[str]
 
 
+class RecommendationFiltersRequest(BaseModel):
+    folders: list[str] = []
+    mtime_min_days: int | None = None
+    mtime_max_days: int | None = None
+    artist_mode: str | None = None
+    artists: list[str] = []
+
+
 @app.get("/api/songs/subfolders")
 def list_subfolders():
     """List all unique subfolders with song counts."""
@@ -3328,42 +3399,146 @@ def list_subfolders():
     }
 
 
+@app.get("/api/songs/folder-ticks")
+def folder_ticks():
+    """Get per-folder avg mtime data for tick marks on the recency slider."""
+    import math
+    import time as _time
+    now_ts = _time.time()
+    conn = database.get_connection()
+    try:
+        rows = conn.execute(
+            """SELECT subfolder, AVG(file_mtime) as avg_mtime, COUNT(*) as cnt,
+                      date(MIN(file_mtime), 'unixepoch') as earliest_date
+               FROM songs
+               WHERE file_mtime IS NOT NULL AND subfolder IS NOT NULL AND subfolder != ''
+               GROUP BY subfolder
+               ORDER BY subfolder"""
+        ).fetchall()
+    finally:
+        conn.close()
+
+    ticks = []
+    max_days_ago = 0
+    min_days_ago = float("inf")
+    for r in rows:
+        avg = r["avg_mtime"]
+        if avg is None:
+            continue
+        days_ago = (now_ts - avg) / 86400.0
+        ticks.append({
+            "folder": r["subfolder"],
+            "avg_mtime": round(avg),
+            "days_ago": round(days_ago, 1),
+            "song_count": r["cnt"],
+            "earliest_date": r["earliest_date"] or "",
+        })
+        if days_ago > max_days_ago:
+            max_days_ago = days_ago
+        if days_ago < min_days_ago:
+            min_days_ago = days_ago
+
+    slider_max = max(1825, math.ceil(max_days_ago / 100) * 100)
+    slider_max = min(3650, slider_max)
+
+    return {
+        "ticks": ticks,
+        "min_days_ago": round(min_days_ago, 1) if min_days_ago != float("inf") else 0,
+        "max_days_ago": round(max_days_ago, 1) if max_days_ago > 0 else 1825,
+        "slider_max_days": slider_max,
+    }
+
+
 @app.get("/api/filter/folder")
 def get_folder_filter():
-    """Get the current folder filter setting (JSON array of folder names)."""
-    val = database.get_setting("folder_filter") or ""
-    folders = json.loads(val) if val else []
-    return {"folders": folders}
+    """Get the current folder filter (proxy to recommendation_filters.folders)."""
+    data = _get_recommendation_filters()
+    return {"folders": data.get("folders", [])}
 
 
 @app.post("/api/filter/folder")
 def set_folder_filter(req: FolderFilterRequest):
-    """Set folder filter to restrict recommendations to specific folders.
+    """Set folder filter (shim: updates recommendation_filters.folders).
 
     Body: {"folders": ["song 40", "song 41", "song 42"]}
     """
-    database.set_setting("folder_filter", json.dumps(req.folders))
-    # Trigger queue rebuild unconditionally
-    qm = _get_queue_manager()
-    p = player_engine.get_player()
-    current_song_id = p.get_current_song_id()
-    session_id = _current_session_id
-    qm.on_song_started(current_song_id, session_id)
-    broadcast("folder_filter_changed", {"folders": req.folders})
+    data = _get_recommendation_filters()
+    data["folders"] = req.folders
+    database.set_setting("recommendation_filters", json.dumps(data))
+    _trigger_rebuild()
+    broadcast("recommendation_filters_changed", data)
     return {"status": "set", "folders": req.folders}
 
 
 @app.post("/api/filter/folder/clear")
 def clear_folder_filter():
-    """Clear the folder filter and rebuild queue."""
-    database.set_setting("folder_filter", "")
-    # Trigger queue rebuild unconditionally
+    """Clear folder filter (shim: updates recommendation_filters.folders)."""
+    data = _get_recommendation_filters()
+    data["folders"] = []
+    database.set_setting("recommendation_filters", json.dumps(data))
+    _trigger_rebuild()
+    broadcast("recommendation_filters_changed", data)
+    return {"status": "cleared"}
+
+
+# ── Recommendation Filters ──────────────────────────────
+
+
+def _get_recommendation_filters() -> dict:
+    """Parse the recommendation_filters setting into a dict."""
+    raw = database.get_setting("recommendation_filters") or ""
+    if raw and raw.strip():
+        try:
+            return json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            pass
+    return {
+        "folders": [],
+        "mtime_min_days": None,
+        "mtime_max_days": None,
+        "artist_mode": None,
+        "artists": [],
+    }
+
+
+def _trigger_rebuild():
+    """Helper: trigger a queue rebuild + broadcast."""
     qm = _get_queue_manager()
     p = player_engine.get_player()
     current_song_id = p.get_current_song_id()
     session_id = _current_session_id
     qm.on_song_started(current_song_id, session_id)
-    broadcast("folder_filter_changed", {"folders": []})
+
+
+@app.get("/api/filter/recommendation")
+def get_recommendation_filters():
+    """Get all active recommendation filters."""
+    return _get_recommendation_filters()
+
+
+@app.post("/api/filter/recommendation")
+def set_recommendation_filters(req: RecommendationFiltersRequest):
+    """Set recommendation filters (folder, mtime range, artist mode)."""
+    data = req.model_dump()
+    database.set_setting("recommendation_filters", json.dumps(data))
+    _trigger_rebuild()
+    broadcast("recommendation_filters_changed", data)
+    return {"status": "set", "filters": data}
+
+
+@app.post("/api/filter/recommendation/clear")
+def clear_recommendation_filters():
+    """Clear all recommendation filters."""
+    default = {
+        "folders": [],
+        "mtime_min_days": None,
+        "mtime_max_days": None,
+        "artist_mode": None,
+        "artists": [],
+    }
+    database.set_setting("recommendation_filters", json.dumps(default))
+    _trigger_rebuild()
+    broadcast("recommendation_filters_changed", default)
     return {"status": "cleared"}
 
 
@@ -3704,6 +3879,57 @@ def llm_status():
             result["active_embed"] = "ollama"
 
     return result
+
+
+# ============================================================
+# Process Manager Endpoints
+# ============================================================
+
+
+@app.get("/api/processes")
+def list_processes():
+    """List all managed processes and their current status."""
+    pm = get_process_manager()
+    return {"processes": pm.get_all_statuses()}
+
+
+class ProcessActionRequest(BaseModel):
+    name: str
+
+
+@app.post("/api/processes/start")
+def start_process(req: ProcessActionRequest):
+    """Start a managed process by name. Idempotent — no-op if already running."""
+    pm = get_process_manager()
+    proc = pm.get(req.name)
+    if not proc:
+        return {"status": "error", "error": f"Unknown process '{req.name}'"}
+    ok = pm.start(req.name)
+    status = pm.get_status(req.name)
+    if ok:
+        return {"status": "started" if status["state"] == "running" else "starting", **status}
+    return {"status": "failed", **status}
+
+
+@app.post("/api/processes/stop")
+def stop_process(req: ProcessActionRequest):
+    """Stop a managed process by name. Idempotent — no-op if already stopped."""
+    pm = get_process_manager()
+    proc = pm.get(req.name)
+    if not proc:
+        return {"status": "error", "error": f"Unknown process '{req.name}'"}
+    pm.stop(req.name)
+    return {"status": "stopped", **pm.get_status(req.name)}
+
+
+@app.get("/api/processes/{name}/logs")
+def process_logs(name: str, tail: int = 100):
+    """Return recent log output for a managed process."""
+    pm = get_process_manager()
+    proc = pm.get(name)
+    if not proc:
+        return {"status": "error", "error": f"Unknown process '{name}'"}
+    return {"name": name, "logs": pm.get_logs(name, tail=tail)}
 
 
 # ============================================================
@@ -4591,6 +4817,19 @@ def handle_command(req: CommandRequest):
             "action": action,
             "explanation": f"Unknown action: {action}. Try 'help' for available commands.",
         }
+
+
+@app.post("/api/shutdown")
+async def api_shutdown():
+    """Gracefully stop managed subprocesses before exit."""
+    logger.info("Received graceful shutdown request")
+    if config.PROC_MGR_ENABLED:
+        get_process_manager().stop_all()
+        logger.info("Managed processes stopped.")
+    player_engine.get_player().stop()
+    if hasattr(app.state, '_broadcast_worker'):
+        app.state._broadcast_worker.cancel()
+    return {"status": "shutting_down"}
 
 
 if __name__ == "__main__":

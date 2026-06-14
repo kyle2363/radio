@@ -8,6 +8,8 @@ Supports two embedding types:
 import json
 import os
 import logging
+import concurrent.futures
+from threading import Lock
 
 # Suppress ChromaDB telemetry noise
 os.environ["CHROMA_NO_ANALYTICS"] = "1"
@@ -180,14 +182,22 @@ def embed_described_songs(song_ids: list) -> list:
 
     to_embed = [sid for sid in song_ids if str(sid) not in embedded_in_chroma]
     embedded_ids = []
+    embed_lock = Lock()
 
-    for i, song_id in enumerate(to_embed):
+    def _embed_one(song_id):
         song = database.get_song(song_id)
         if song and embed_song(song_id, song):
             database.set_ingest_phase(song_id, "embedded")
-            embedded_ids.append(song_id)
-        else:
-            print(f"  Failed to embed song {song_id}, will retry on next run")
+            with embed_lock:
+                embedded_ids.append(song_id)
+            return True
+        print(f"  Failed to embed song {song_id}, will retry on next run")
+        return False
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        futures = {executor.submit(_embed_one, sid): sid for sid in to_embed}
+        for future in concurrent.futures.as_completed(futures):
+            pass
 
     return embedded_ids
 

@@ -1,15 +1,20 @@
-"""Batch lyrics timing with smart source selection.
+"""Batch lyrics timing with vocals-first strategy.
 
-For each song, runs WhisperX on both separated vocals and original audio,
-then picks whichever produces more word-level segments (better coverage).
+Default mode (vocals_only=True) runs WhisperX only on the separated vocal
+stem — faster and generally more accurate. Falls back to original audio if
+vocal separation fails.
+
+Legacy dual-transcribe mode (vocals_only=False) runs both vocals and
+original, then picks whichever produces more word-level segments.
 
 Usage:
-    python batch_lyrics_timing_smart.py                        # All songs
+    python batch_lyrics_timing_smart.py                        # All songs (vocals-only)
     python batch_lyrics_timing_smart.py --song-id 42           # Single song
     python batch_lyrics_timing_smart.py --limit 50             # First 50 songs
     python batch_lyrics_timing_smart.py --resume               # Skip already-timed
     python batch_lyrics_timing_smart.py --dry-run              # Preview only
     python batch_lyrics_timing_smart.py --force                # Re-process even if timed
+    python batch_lyrics_timing_smart.py --dual                 # Compare both sources
 """
 
 import argparse
@@ -33,6 +38,7 @@ from batch_lyrics_timing import (
     load_timing,
     save_timing,
     _build_stored_word_index,
+    should_skip_lyrics_alignment,
 )
 
 
@@ -86,8 +92,12 @@ def pick_best_source(result_vocals: list, result_original: list) -> tuple:
     return winning_words, winner, {"vocals": sv, "original": so}
 
 
-def process_song(song_id: int, dry_run: bool = False, force: bool = False) -> dict:
-    """Process a single song: run both sources, pick best, align, save.
+def process_song(song_id: int, dry_run: bool = False, force: bool = False, vocals_only: bool = True) -> dict:
+    """Process a single song: transcribe (vocals or both), align, save.
+
+    When vocals_only=True (default), runs WhisperX only on the separated
+    vocal stem. Falls back to original if separation fails.
+    When vocals_only=False, runs both sources and picks the best.
 
     Returns status dict.
     """
@@ -105,13 +115,17 @@ def process_song(song_id: int, dry_run: bool = False, force: bool = False) -> di
         return {"song_id": song_id, "status": "skipped", "message": "Audio file not found"}
 
     lyrics_text = song.get("lyrics", "")
-    if not lyrics_text or lyrics_text in ("lyrics not found", "TODO"):
-        return {"song_id": song_id, "status": "skipped", "message": "No valid lyrics"}
+    skip, reason = should_skip_lyrics_alignment(lyrics_text)
+    if skip:
+        return {"song_id": song_id, "status": "skipped", "message": reason}
 
     duration_secs = song.get("duration_secs") or 0
     duration_ms = duration_secs * 1000
 
     if dry_run:
+        skip, reason = should_skip_lyrics_alignment(lyrics_text)
+        if skip:
+            return {"song_id": song_id, "status": "dry_run_skip", "message": reason}
         return {"song_id": song_id, "status": "dry_run", "message": "Would process"}
 
     # Detect language
@@ -137,34 +151,43 @@ def process_song(song_id: int, dry_run: bool = False, force: bool = False) -> di
         has_vocals = False
         print(f"    Separation failed, will use original only: {e}")
 
-    # Step 2: Run WhisperX on original (always)
-    print(f"    Transcribing original...", end=" ", flush=True)
-    t0 = time.time()
-    result_original = run_whisperx_pipeline(filepath, language=language, separate_vocals=False)
-    t_orig = time.time() - t0
-    print(f"{len(result_original)} words ({t_orig:.1f}s)")
+    if vocals_only and has_vocals:
+        # Step 2: Run WhisperX on vocals only (faster, generally better)
+        print(f"    Transcribing vocals...", end=" ", flush=True)
+        t0 = time.time()
+        winning_words = run_whisperx_pipeline(vocals_path, language=language, separate_vocals=False)
+        t_tot = time.time() - t0
+        print(f"{len(winning_words)} words ({t_tot:.1f}s)")
+        source = "vocals"
+        scores = {"vocals": score_transcription(winning_words)}
+    elif has_vocals and not vocals_only:
+        # Step 2: Run WhisperX on original (always, for comparison)
+        print(f"    Transcribing original...", end=" ", flush=True)
+        t0 = time.time()
+        result_original = run_whisperx_pipeline(filepath, language=language, separate_vocals=False)
+        t_orig = time.time() - t0
+        print(f"{len(result_original)} words ({t_orig:.1f}s)")
 
-    # Step 3: Run WhisperX on vocals (if available)
-    result_vocals = []
-    t_vocals = 0
-    if has_vocals:
+        # Step 3: Run WhisperX on vocals
         print(f"    Transcribing vocals...", end=" ", flush=True)
         t0 = time.time()
         result_vocals = run_whisperx_pipeline(vocals_path, language=language, separate_vocals=False)
         t_vocals = time.time() - t0
         print(f"{len(result_vocals)} words ({t_vocals:.1f}s)")
-    else:
-        print(f"    No vocals to transcribe")
 
-    # Step 4: Pick best source
-    if result_vocals:
+        # Step 4: Pick best source
         winning_words, source, scores = pick_best_source(result_vocals, result_original)
         print(f"    Winner: {source} (vocals={scores['vocals']['word_count']}w, "
               f"original={scores['original']['word_count']}w)")
     else:
-        winning_words = result_original
+        # Fallback: run on original audio
+        print(f"    No vocals available, transcribing original...", end=" ", flush=True)
+        t0 = time.time()
+        winning_words = run_whisperx_pipeline(filepath, language=language, separate_vocals=False)
+        t_tot = time.time() - t0
+        print(f"{len(winning_words)} words ({t_tot:.1f}s)")
         source = "original"
-        scores = {"original": score_transcription(result_original)}
+        scores = {"original": score_transcription(winning_words)}
 
     # Step 5: Align against original lyrics
     timed_lines = align_lyrics(lyrics_text, winning_words, duration_ms)
@@ -186,12 +209,12 @@ def process_song(song_id: int, dry_run: bool = False, force: bool = False) -> di
             "message": f"Timed {len(timed_lines)} lines ({timed_count} with words), source={source}"}
 
 
-def run_batch(song_ids: list[int], force: bool = False):
+def run_batch(song_ids: list[int], force: bool = False, vocals_only: bool = True):
     """Process a batch of songs with a progress bar."""
     results = {"done": 0, "skipped": 0, "failed": 0, "details": [],
                "source_counts": {"vocals": 0, "original": 0}}
     for sid in tqdm(song_ids, desc="Smart timing"):
-        result = process_song(sid, force=force)
+        result = process_song(sid, force=force, vocals_only=vocals_only)
         results["details"].append(result)
         results[result["status"]] = results.get(result["status"], 0) + 1
         # Track which source was used
@@ -211,6 +234,7 @@ def main():
     parser.add_argument("--resume", action="store_true", help="Skip already-timed songs")
     parser.add_argument("--force", action="store_true", help="Re-process even if already timed")
     parser.add_argument("--dry-run", action="store_true", help="Show what would be processed")
+    parser.add_argument("--dual", action="store_true", help="Compare both vocals and original (default: vocals-only)")
     args = parser.parse_args()
 
     # Gather target songs
@@ -246,7 +270,9 @@ def main():
         print("No songs to process.")
         return
 
-    print(f"Processing {len(target_ids)} songs (smart select: separated vocals vs original)...")
+    vocals_only = not getattr(args, "dual", False)
+    mode = "vocals-only" if vocals_only else "dual (vocals vs original)"
+    print(f"Processing {len(target_ids)} songs ({mode})...")
 
     if args.dry_run:
         print("Would process:")
@@ -258,7 +284,7 @@ def main():
             print(f"  ... and {len(target_ids) - 20} more")
         return
 
-    results = run_batch(target_ids, force=args.force)
+    results = run_batch(target_ids, force=args.force, vocals_only=vocals_only)
     done = results.get("done", 0)
     skipped = results.get("skipped", 0)
     failed = results.get("failed", 0)

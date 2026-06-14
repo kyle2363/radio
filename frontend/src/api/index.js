@@ -210,11 +210,19 @@ export const fetchConstellations = () => get("/api/taste/constellations");
 export const fetchClusters = () => get("/api/clusters");
 export const fetchTags = () => get("/api/tags");
 
+// ── Folder Ticks ──────────────────────────────────────────
+export const fetchFolderTicks = () => get("/api/songs/folder-ticks");
+
 // ── Folder Filter ─────────────────────────────────────────
 export const fetchSubfolders = () => get("/api/songs/subfolders");
 export const fetchFolderFilter = () => get("/api/filter/folder");
 export const setFolderFilter = (folders) => post("/api/filter/folder", { folders });
 export const clearFolderFilter = () => post("/api/filter/folder/clear");
+
+// ── Recommendation Filters (folder + recency + artist) ────
+export const fetchRecommendationFilters = () => get("/api/filter/recommendation");
+export const setRecommendationFilters = (filters) => post("/api/filter/recommendation", filters);
+export const clearRecommendationFilters = () => post("/api/filter/recommendation/clear");
 
 // ── Commands ──────────────────────────────────────────────
 export const sendCommand = (text) => post("/api/command", { text }, 30000);

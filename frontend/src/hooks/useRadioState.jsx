@@ -159,6 +159,10 @@ export function useWebSocket(fetchStatusCb) {
           ws._sleepTimerHandler?.(null);
         } else if (data.event === "play_mode_changed") {
           ws._playModeHandler?.(data.mode);
+        } else if (data.event === "recommendation_filters_changed") {
+          ws._recFilterHandler?.(data);
+        } else if (data.event === "folder_filter_changed") {
+          ws._recFilterHandler?.(data);
         }
       } catch (e) {
         console.error("WebSocket message parse failed:", e);

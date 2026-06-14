@@ -35,8 +35,11 @@ def parse_filename(filepath: str) -> dict:
 
 
 def compute_file_hash(filepath: str) -> str:
-    """Compute SHA256 hash of the file path string (not content)."""
-    return hashlib.sha256(filepath.encode("utf-8")).hexdigest()
+    """Compute SHA256 hash of the file path string (not content).
+    Normalizes casing to prevent C: vs c: duplicates.
+    """
+    normalized = os.path.normpath(filepath).lower()
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
 def find_audio_files(folder: str) -> list[str]:

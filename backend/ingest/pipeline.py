@@ -70,7 +70,9 @@ def run_phase_raw():
         if existing:
             new_ids.append(existing["id"])
         else:
-            database.add_song(filepath, file_hash)
+            import os as _os
+            file_mtime = _os.path.getmtime(filepath)
+            database.add_song(filepath, file_hash, file_mtime=file_mtime)
             parsed = scanner.parse_filename(filepath)
             update = {"filepath": filepath}
             if parsed.get("artist"):
@@ -233,12 +235,45 @@ def run_phase_describe():
     return {"described": len(described_ids)}
 
 
+def _start_embed_server():
+    """Start the text embedding LLM server if configured and not already running."""
+    from engine.process_manager import get_process_manager
+    pm = get_process_manager()
+    embed = pm.get("llama_embed")
+    if embed:
+        ok = pm.start("llama_embed")
+        if ok:
+            print("  Text embedding server started")
+        else:
+            status = pm.get_status("llama_embed")
+            if status["state"] == "running":
+                print("  Text embedding server already running")
+            else:
+                print("  WARNING: text embedding server not available")
+                return False
+    return True
+
+
+def _stop_embed_server():
+    """Stop the text embedding LLM server to free VRAM."""
+    from engine.process_manager import get_process_manager
+    pm = get_process_manager()
+    embed = pm.get("llama_embed")
+    if embed and embed.is_running:
+        pm.stop("llama_embed")
+        print("  Text embedding server stopped")
+
+
 def run_phase_embed():
     """Phase 4: Embed ALL songs at 'described' phase (text embeddings)."""
     _reset_progress()
     _ingest_progress["phase"] = "embedded"
 
     print("Phase 4: Generating text embeddings...")
+
+    # Start the embedding server on-demand (not loaded at boot)
+    _start_embed_server()
+
     from ingest import embedder
 
     # Embed ALL songs at described phase (not just new ones — in case model changed)
@@ -248,10 +283,18 @@ def run_phase_embed():
 
     if described_ids:
         print(f"  Found {len(described_ids)} songs at described phase")
-        embedded_ids = embedder.embed_described_songs(described_ids)
-        print(f"  Embedded {len(embedded_ids)} songs")
+        try:
+            embedded_ids = embedder.embed_described_songs(described_ids)
+            print(f"  Embedded {len(embedded_ids)} songs")
+        except Exception as e:
+            print(f"  Embedding failed: {e}")
+            raise
+        finally:
+            # Free VRAM — stop embed server after ingest
+            _stop_embed_server()
     else:
         print("  No songs at described phase")
+        _stop_embed_server()
 
     _ingest_progress["running"] = False
     print("Phase 4 complete!")
@@ -330,6 +373,12 @@ def run_phase_lyrics_timing():
 
     print("Phase 6: Generating lyrics timing (WhisperX forced alignment)...")
 
+    import sys
+    # Ensure project root is on path for batch_lyrics_timing imports
+    if config.BASE_DIR not in sys.path:
+        sys.path.insert(0, config.BASE_DIR)
+    from batch_lyrics_timing_smart import process_song, should_skip_lyrics_alignment
+
     conn = database.get_connection()
     try:
         rows = conn.execute(
@@ -342,6 +391,10 @@ def run_phase_lyrics_timing():
     targets = []
     for r in rows:
         sid = r["id"]
+        lyrics_text = r["lyrics"] or ""
+        skip, reason = should_skip_lyrics_alignment(lyrics_text)
+        if skip:
+            continue
         timing_path = os.path.join(config.LYRICS_TIMING_DIR, f"{sid}.json")
         if not os.path.exists(timing_path):
             targets.append(dict(r))
@@ -353,19 +406,13 @@ def run_phase_lyrics_timing():
         _ingest_progress["running"] = False
         return {"lyrics_timed": 0}
 
-    import sys
-    # Ensure project root is on path for batch_lyrics_timing imports
-    if config.BASE_DIR not in sys.path:
-        sys.path.insert(0, config.BASE_DIR)
-    from batch_lyrics_timing import process_song
-
     done = 0
     failed = 0
     for i, song in enumerate(tqdm(targets, desc="Timing lyrics")):
         _ingest_progress["current_song"] = f"{song.get('artist', '?')} - {song.get('title', '?')}"
         _ingest_progress["processed"] = i + 1
         try:
-            result = process_song(song["id"])
+            result = process_song(song["id"], vocals_only=True)
             if result.get("status") == "done":
                 done += 1
             else:
@@ -380,6 +427,187 @@ def run_phase_lyrics_timing():
     _ingest_progress["running"] = False
     print(f"Phase 6 complete! Timed: {done}, Failed: {failed}")
     return {"lyrics_timed": done, "failed": failed}
+
+
+# ──────────────────────────────────────────────────────────
+# Phase 0: Understand — process new MP3s through acestep.cpp
+# ──────────────────────────────────────────────────────────
+
+
+def _find_unprocessed_mp3s():
+    """Return MP3 filepaths that don't have a matching acestep JSON."""
+    ace_index = metadata.build_json_index(config.ACESTEP_JSON_DIR)
+    all_files = scanner.find_audio_files(config.MUSIC_DIR)
+    dedup = scanner.deduplicate(all_files)
+    unprocessed = []
+    for fp in dedup["unique"]:
+        stem = os.path.splitext(os.path.basename(fp))[0]
+        normalized = metadata.normalize_filename(stem)
+        if normalized not in ace_index:
+            unprocessed.append(fp)
+    return unprocessed
+
+
+def run_phase_understand():
+    """Phase 0: Submit unprocessed MP3s to acestep.cpp for understanding.
+
+    Manual trigger only — not part of the auto pipeline.
+    Starts acestep, processes files sequentially, saves JSONs, stops acestep.
+    """
+    _reset_progress()
+    _ingest_progress["phase"] = "understand"
+
+    if not config.ACESTEP_EXE or not os.path.isfile(config.ACESTEP_EXE):
+        print("Phase 0: acestep not configured (ACESTEP_EXE not found)")
+        _ingest_progress["running"] = False
+        return {"error": "acestep not configured"}
+
+    # Find MP3s without acestep JSONs
+    unprocessed = _find_unprocessed_mp3s()
+    if not unprocessed:
+        print("Phase 0: All MP3s already have acestep JSONs — nothing to do")
+        _ingest_progress["running"] = False
+        return {"understand": 0, "skipped": 0, "failed": 0}
+
+    print(f"Phase 0: Found {len(unprocessed)} MP3s needing understanding")
+    print(f"  First: {os.path.basename(unprocessed[0])}")
+    print(f"  Last:  {os.path.basename(unprocessed[-1])}")
+
+    # Start acestep via process manager
+    from engine.process_manager import get_process_manager
+    pm = get_process_manager()
+    ace = pm.get("acestep")
+    if ace and ace.state == "stopped":
+        print("  Starting acestep server...")
+        ok = pm.start("acestep")
+        if not ok:
+            # Maybe it's already running on the port — check TCP
+            import socket as _socket
+            try:
+                sock = _socket.create_connection(("127.0.0.1", config.ACESTEP_PORT), timeout=3)
+                sock.close()
+                print("  acestep already running on port", config.ACESTEP_PORT)
+            except OSError:
+                print("  Failed to start acestep, aborting")
+                _ingest_progress["running"] = False
+                return {"error": "failed to start acestep"}
+    elif ace and ace.state == "running":
+        print("  acestep already running")
+
+    server_url = f"http://127.0.0.1:{config.ACESTEP_PORT}"
+
+    import httpx
+    import json
+    import time
+
+    succeeded = 0
+    failed = 0
+    total = len(unprocessed)
+    _ingest_progress["total"] = total
+
+    for i, filepath in enumerate(unprocessed):
+        _ingest_progress["current_song"] = os.path.basename(filepath)
+        _ingest_progress["processed"] = i + 1
+
+        try:
+            # Submit
+            with open(filepath, "rb") as f:
+                resp = httpx.post(
+                    f"{server_url}/understand",
+                    files={"audio": (os.path.basename(filepath), f, "audio/mpeg")},
+                    timeout=60,
+                )
+            if resp.status_code != 200:
+                print(f"  [{i+1}/{total}] Submit failed ({resp.status_code}): {os.path.basename(filepath)}")
+                failed += 1
+                continue
+
+            job_data = resp.json()
+            job_id = job_data.get("id")
+            if not job_id:
+                print(f"  [{i+1}/{total}] No job ID returned: {os.path.basename(filepath)}")
+                failed += 1
+                continue
+
+            # Poll until done
+            while True:
+                poll_resp = httpx.get(f"{server_url}/job?id={job_id}", timeout=10)
+                if poll_resp.status_code != 200:
+                    break
+                text = poll_resp.text.strip()
+                if not text:
+                    time.sleep(0.5)
+                    continue
+                poll_data = poll_resp.json()
+                status = poll_data.get("status")
+                if status == "done":
+                    break
+                if status in ("failed", "cancelled"):
+                    raise Exception(f"Job {status}")
+                time.sleep(0.5)
+
+            # Fetch result
+            result_resp = httpx.get(f"{server_url}/job?id={job_id}&result=1", timeout=30)
+            if result_resp.status_code != 200:
+                print(f"  [{i+1}/{total}] Fetch result failed: {os.path.basename(filepath)}")
+                failed += 1
+                continue
+
+            # Parse multipart response
+            content_type = result_resp.headers.get("Content-Type", "")
+            boundary = ""
+            if "boundary=" in content_type:
+                boundary = content_type.split("boundary=", 1)[1].strip()
+            body = result_resp.content
+            boundary_marker = f"--{boundary}".encode()
+            parts = body.split(boundary_marker)
+            json_part = None
+            for part in parts:
+                if not part.strip():
+                    continue
+                idx = part.find(b"\r\n\r\n")
+                if idx >= 0:
+                    candidate = part[idx + 4:].strip()
+                    if candidate and not candidate.startswith(b"--"):
+                        json_part = candidate
+                        break
+            if not json_part:
+                print(f"  [{i+1}/{total}] Could not parse result: {os.path.basename(filepath)}")
+                failed += 1
+                continue
+
+            result_data = json.loads(json_part.decode("utf-8"))
+            if isinstance(result_data, list):
+                for item in result_data:
+                    item.pop("audio_codes", None)
+                    if not item.get("lyrics"):
+                        item["lyrics"] = "TODO"
+                    if not item.get("vocal_language"):
+                        item["vocal_language"] = "en"
+            else:
+                result_data = [result_data]
+
+            # Save JSON
+            stem = os.path.splitext(os.path.basename(filepath))[0]
+            out_path = os.path.join(config.ACESTEP_JSON_DIR, f"{stem}.json")
+            with open(out_path, "w", encoding="utf-8") as f:
+                json.dump(result_data, f, indent=2, ensure_ascii=False)
+
+            succeeded += 1
+            print(f"  [{i+1}/{total}] OK: {stem}")
+
+        except Exception as e:
+            failed += 1
+            print(f"  [{i+1}/{total}] FAILED: {os.path.basename(filepath)} — {e}")
+
+    # Stop acestep
+    print("  Stopping acestep server...")
+    if ace:
+        pm.stop("acestep")
+
+    _ingest_progress["running"] = False
+    print(f"Phase 0 complete! Success: {succeeded}, Failed: {failed}")
+    return {"understand": succeeded, "skipped": total - succeeded - failed, "failed": failed}
 
 
 # ──────────────────────────────────────────────────────────

@@ -124,6 +124,101 @@ def build_genius_urls(artist, title):
     return urls
 
 
+LANG_PATTERN = re.compile(
+    r'^(português|español|türkçe|français|deutsch|italiano|'
+    r'svenska|magyar|polski|nederlands|čeština|slovenščina|'
+    r'bahasa indonesia|tiếng việt|srpski|العربية)\s*'
+    r'(\([^)]*\))?\s*$',
+    re.IGNORECASE
+)
+
+SECTION_RE = re.compile(
+    r'^\[(?:Verse|Chorus|Intro|Bridge|Outro|Pre[ -]Chorus|Drop|Instrumental|Post[ -]Chorus|Refrain)[^\]]*\]',
+    re.MULTILINE | re.IGNORECASE
+)
+
+
+def has_non_ascii_mostly(s):
+    if not s:
+        return False
+    stripped = re.sub(r'\s*\([^)]*\)\s*$', '', s)
+    non_ascii = sum(1 for c in stripped if ord(c) > 127)
+    return non_ascii > 0 and len(stripped) < 40
+
+
+def is_genius_junk_line(s):
+    if not s:
+        return True
+    if re.match(r'^\d+\s*Contributors?\s*$', s, re.IGNORECASE):
+        return True
+    if re.match(r'^Translations?\s*$', s, re.IGNORECASE):
+        return True
+    if re.match(r'^Embed\s*$', s, re.IGNORECASE):
+        return True
+    if re.match(r'^Read\s+More\s*$', s, re.IGNORECASE):
+        return True
+    if LANG_PATTERN.match(s.strip()):
+        return True
+    if has_non_ascii_mostly(s.strip()):
+        return True
+    if s.strip().lower() in ('english', 'česky', 'polski', 'magyar', 'svenska'):
+        return True
+    return False
+
+
+def clean_lyrics(text):
+    """Strip Genius metadata, descriptions, and translation junk from lyrics text."""
+    if not text or not text.strip():
+        return text
+
+    lines = text.split('\n')
+
+    # Phase 1: Strip unambiguous junk lines (contributors, embed, language headers, etc.)
+    filtered = []
+    for line in lines:
+        stripped = line.strip()
+        if is_genius_junk_line(stripped):
+            continue
+        filtered.append(line)
+
+    text = '\n'.join(filtered).strip()
+    if not text:
+        return text
+
+    # Phase 2: Strip standalone "Title Lyrics" header lines
+    lines = text.split('\n')
+    if len(lines) > 1:
+        first = lines[0].strip()
+        if re.match(r'^[\w\s\/\&\-\.\,\'\"\(\)\[\]\+]+Lyrics?\s*$', first, re.IGNORECASE):
+            lines = lines[1:]
+            text = '\n'.join(lines).strip()
+
+    if not text:
+        return text
+
+    # Phase 3: Strip description paragraphs before first section marker
+    match = SECTION_RE.search(text)
+    if match and match.start() > 0:
+        before = text[:match.start()].strip()
+        if before:
+            has_quoted = bool(re.search(r'["\u201c\u201d].+?["\u201d\u201c]', before))
+            has_artist_ref = bool(re.search(
+                r'(this\s+song)|(this\s+next\s+single)|'
+                r'(the\s+\w+\'s\s+(?:hit|single|song|track|debut|EP|album))|'
+                r'(Arguably|Widely\s+regarded|According\s+to|'
+                r'Inspired\s+by|describes\s+how|reflects\s+on|'
+                r'recalls|recollects|narrates|talks?\s+about|'
+                r'sings?\s+about|the\s+(?:track|song)\s+(?:is|was|features|finds|sees)|'
+                r'this\s+(?:ballad|anthem|track))',
+                before, re.IGNORECASE))
+            has_ellipsis = '...' in before or '\u2026' in before
+
+            if has_quoted or has_artist_ref or has_ellipsis:
+                text = text[match.start():]
+
+    return text.strip()
+
+
 def scrape_lyrics(url):
     """Scrape lyrics from a Genius song page."""
     try:
@@ -158,6 +253,7 @@ def scrape_lyrics(url):
         lyrics = re.sub(r'\n{3,}', '\n\n', lyrics)
         lyrics = lyrics.strip()
         lyrics = re.sub(r'\[.*?\]\(.*?\)', '', lyrics)
+        lyrics = clean_lyrics(lyrics)
 
         if len(lyrics) < 20:
             return None

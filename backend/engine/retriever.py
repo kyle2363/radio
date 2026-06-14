@@ -80,6 +80,8 @@ def search_by_vector(taste_vector, n=60, exclude_ids=None,
                      min_energy=None, max_energy=None,
                      min_valence=None, max_valence=None,
                      subfolder_filter=None,
+                     mtime_min=None, mtime_max=None,
+                     artist_mode=None, artists=None,
                      collection_name="songs"):
     """Search ChromaDB by embedding vector with optional filters.
 
@@ -167,6 +169,63 @@ def search_by_vector(taste_vector, n=60, exclude_ids=None,
             "artist": info.get("artist", meta.get("artist", "")),
             "title": info.get("title", meta.get("title", "")),
         })
+
+    # Apply mtime range post-filter (mtime not in ChromaDB metadata yet)
+    if mtime_min is not None or mtime_max is not None:
+        candidate_ids = [c["song_id"] for c in candidates]
+        if candidate_ids:
+            conn = database.get_connection()
+            try:
+                placeholders = ",".join("?" * len(candidate_ids))
+                rows = conn.execute(
+                    f"SELECT id, file_mtime FROM songs WHERE id IN ({placeholders})",
+                    candidate_ids,
+                ).fetchall()
+                mtime_map = {r["id"]: r["file_mtime"] for r in rows}
+            finally:
+                conn.close()
+
+            # Fallback: synthetic mtime from subfolder rank for songs without file_mtime
+            if any(mtime_map.get(sid) is None for sid in candidate_ids):
+                all_subfolders = database.get_subfolders()
+                folder_rank = {name: i for i, name in enumerate(all_subfolders)}
+                # Derive min/max mtime from known mtime range
+                known_mtimes = [m for m in mtime_map.values() if m is not None]
+                min_known = min(known_mtimes) if known_mtimes else 0
+                max_known = max(known_mtimes) if known_mtimes else 1
+                # Normalize: rank 0 -> min_known, rank N -> max_known
+                if len(all_subfolders) > 1 and max_known > min_known:
+                    for sid, c in zip(candidate_ids, candidates):
+                        if mtime_map.get(sid) is None:
+                            song_row = database.get_song(sid)
+                            if song_row:
+                                subf = song_row.get("subfolder", "")
+                                rank = folder_rank.get(subf, 0)
+                                frac = rank / (len(all_subfolders) - 1)
+                                mtime_map[sid] = min_known + frac * (max_known - min_known)
+
+            filtered = []
+            now_ts = datetime.now().timestamp()
+            for c in candidates:
+                m = mtime_map.get(c["song_id"])
+                if m is None:
+                    continue
+                song_age_days = (now_ts - m) / 86400.0
+                if mtime_min is not None and song_age_days < mtime_min:
+                    continue
+                if mtime_max is not None and song_age_days > mtime_max:
+                    continue
+                filtered.append(c)
+            candidates = filtered
+
+    # Apply artist mode filter (post-filter on artist field)
+    if artist_mode and artists:
+        lower_artists = [a.lower() for a in artists if a.strip()]
+        if lower_artists:
+            if artist_mode == "include":
+                candidates = [c for c in candidates if any(a in c.get("artist", "").lower() for a in lower_artists)]
+            elif artist_mode == "exclude":
+                candidates = [c for c in candidates if not any(a in c.get("artist", "").lower() for a in lower_artists)]
 
     # Apply cluster staleness bonus
     staleness = database.get_cluster_staleness()
@@ -309,6 +368,8 @@ def build_candidate_list(text_taste_vector=None, audio_taste_vector=None,
                          text_repulsion_vector=None, audio_repulsion_vector=None,
                          skip_feedback=None, subfolder_filter=None,
                          vibe_lock=None, mood_state=None,
+                         mtime_min=None, mtime_max=None,
+                         artist_mode=None, artists=None,
                          # Legacy params for backward compatibility
                          taste_vector=None, repulsion_vector=None):
     """Build a candidate list for slot allocation.
@@ -445,6 +506,8 @@ def build_candidate_list(text_taste_vector=None, audio_taste_vector=None,
             min_valence=mood_valence_range[0] if mood_valence_range else None,
             max_valence=mood_valence_range[1] if mood_valence_range else None,
             subfolder_filter=subfolder_filter,
+            mtime_min=mtime_min, mtime_max=mtime_max,
+            artist_mode=artist_mode, artists=artists,
             collection_name="songs",
         )
 
@@ -457,6 +520,8 @@ def build_candidate_list(text_taste_vector=None, audio_taste_vector=None,
                 min_valence=mood_valence_range[0] if mood_valence_range else None,
                 max_valence=mood_valence_range[1] if mood_valence_range else None,
                 subfolder_filter=subfolder_filter,
+                mtime_min=mtime_min, mtime_max=mtime_max,
+                artist_mode=artist_mode, artists=artists,
                 collection_name=config.MUQ_AUDIO_COLLECTION,
             )
         except Exception:
@@ -478,6 +543,8 @@ def build_candidate_list(text_taste_vector=None, audio_taste_vector=None,
                 min_valence=mood_valence_range[0] if mood_valence_range else None,
                 max_valence=mood_valence_range[1] if mood_valence_range else None,
                 subfolder_filter=subfolder_filter,
+                mtime_min=mtime_min, mtime_max=mtime_max,
+                artist_mode=artist_mode, artists=artists,
                 collection_name="songs",
             )
         else:
@@ -490,6 +557,8 @@ def build_candidate_list(text_taste_vector=None, audio_taste_vector=None,
                 min_valence=mood_valence_range[0] if mood_valence_range else None,
                 max_valence=mood_valence_range[1] if mood_valence_range else None,
                 subfolder_filter=subfolder_filter,
+                mtime_min=mtime_min, mtime_max=mtime_max,
+                artist_mode=artist_mode, artists=artists,
                 collection_name="songs",
             )
 
