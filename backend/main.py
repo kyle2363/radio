@@ -44,6 +44,7 @@ logging.basicConfig(level=logging.INFO)
 logging.getLogger("torio._extension.utils").setLevel(logging.ERROR)
 logger = logging.getLogger(__name__)
 _playback_logger = logging.getLogger(__name__ + ".playback")
+_server_ready = False
 
 
 @asynccontextmanager
@@ -252,6 +253,10 @@ async def lifespan(app):
     app.state._broadcast_worker = asyncio.create_task(_broadcast_worker())
     logger.info("Broadcast worker started")
 
+    global _server_ready
+    _server_ready = True
+    print("Server ready.")
+
     yield
 
     # Gracefully shut down managed external processes
@@ -283,12 +288,17 @@ app.add_middleware(
 def health():
     """Health check / readiness probe endpoint."""
     import os as _os
+    from fastapi.responses import JSONResponse
     db_ok = _os.path.exists(config.DB_PATH)
-    return {
-        "status": "ok",
-        "database": "connected" if db_ok else "missing",
-        "version": "0.1.0",
-    }
+    status_code = 200 if _server_ready else 503
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "status": "ok" if _server_ready else "starting",
+            "database": "connected" if db_ok else "missing",
+            "version": "0.1.0",
+        },
+    )
 
 
 def _chromadb_health_check():

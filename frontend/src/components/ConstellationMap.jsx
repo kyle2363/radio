@@ -283,21 +283,21 @@ export default function ConstellationMap({ constellations, onPlaySong, onAddToQu
           const pulse = Math.sin(now * 2.5) * 0.3 + 0.5;
           const glowR = s.radius + 10 + Math.sin(now * 2) * 6;
           const glow = ctx.createRadialGradient(cx, cy, s.radius * 0.5, cx, cy, glowR);
-          const h = MOOD_HUES[pocket.primary_mood] ?? 200;
-          glow.addColorStop(0, hsla(h, 75, 60, pulse * 0.35 * s.alpha));
-          glow.addColorStop(0.6, hsla(h, 70, 55, pulse * 0.12 * s.alpha));
-          glow.addColorStop(1, hsla(h, 65, 50, 0));
+          const hue = MOOD_HUES[pocket.primary_mood] ?? 200;
+          glow.addColorStop(0, hsla(hue, 75, 60, pulse * 0.35 * s.alpha));
+          glow.addColorStop(0.6, hsla(hue, 70, 55, pulse * 0.12 * s.alpha));
+          glow.addColorStop(1, hsla(hue, 65, 50, 0));
           ctx.beginPath();
           ctx.arc(cx, cy, glowR, 0, Math.PI * 2);
           ctx.fillStyle = glow;
           ctx.fill();
         }
 
-        const h = MOOD_HUES[pocket.primary_mood] ?? 200;
+        const hue = MOOD_HUES[pocket.primary_mood] ?? 200;
         const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, s.radius);
-        grad.addColorStop(0, hsla(h, 75, 65, 0.85 * s.alpha));
-        grad.addColorStop(0.5, hsla(h, 65, 58, 0.45 * s.alpha));
-        grad.addColorStop(1, hsla(h, 55, 50, 0));
+        grad.addColorStop(0, hsla(hue, 75, 65, 0.85 * s.alpha));
+        grad.addColorStop(0.5, hsla(hue, 65, 58, 0.45 * s.alpha));
+        grad.addColorStop(1, hsla(hue, 55, 50, 0));
         ctx.beginPath();
         ctx.arc(cx, cy, s.radius, 0, Math.PI * 2);
         ctx.fillStyle = grad;
@@ -305,23 +305,23 @@ export default function ConstellationMap({ constellations, onPlaySong, onAddToQu
 
         ctx.beginPath();
         ctx.arc(cx, cy, s.radius * 0.3, 0, Math.PI * 2);
-        ctx.fillStyle = hsla(h, 80, 75, 0.9 * s.alpha);
+        ctx.fillStyle = hsla(hue, 80, 75, 0.9 * s.alpha);
         ctx.fill();
 
         if (isActive) {
           ctx.beginPath();
           ctx.arc(cx, cy, s.radius * 0.3, 0, Math.PI * 2);
-          ctx.strokeStyle = hsla(h, 80, 80, 0.6 * s.alpha);
+          ctx.strokeStyle = hsla(hue, 80, 80, 0.6 * s.alpha);
           ctx.lineWidth = 1.5;
           ctx.stroke();
         }
 
         ctx.font = "600 10px 'DM Sans', sans-serif";
         ctx.textAlign = "center";
-        ctx.fillStyle = hsla(h, 65, 70, 0.9 * s.alpha);
+        ctx.fillStyle = hsla(hue, 65, 70, 0.9 * s.alpha);
         ctx.fillText(MOOD_LABELS[pocket.primary_mood] || pocket.primary_mood, cx, cy + s.radius + 14);
         ctx.font = "10px 'DM Sans', sans-serif";
-        ctx.fillStyle = hsla(h, 50, 60, 0.7 * s.alpha);
+        ctx.fillStyle = hsla(hue, 50, 60, 0.7 * s.alpha);
         ctx.fillText(`${pocket.song_count} songs`, cx, cy + s.radius + 26);
       }
 

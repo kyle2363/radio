@@ -37,6 +37,7 @@ function AppWithBoot() {
             setReady(true);
             setBootProgress(100);
             clearInterval(interval);
+            clearInterval(pollTimer);
             setTimeout(() => {
               setFading(true);
               setTimeout(() => {
@@ -48,8 +49,10 @@ function AppWithBoot() {
           }
         })
         .catch(() => {
-          if (Date.now() - startTime < TIMEOUT_MS && shouldPoll.current) {
+          if (Date.now() - startTime >= TIMEOUT_MS) {
+            setError("Backend unreachable — check if server is running");
             clearInterval(interval);
+            clearInterval(pollTimer);
           }
         });
     };
@@ -78,7 +81,6 @@ function AppWithBoot() {
     <React.StrictMode>
       <ErrorBoundary>
         <div style={{ position: "relative", width: "100vw", height: "100vh" }}>
-          {/* Boot screen — fades out during transition */}
           {!faded && (
             <div style={{
               position: "absolute", inset: 0, zIndex: 10,
@@ -89,13 +91,11 @@ function AppWithBoot() {
               <BootScreen initialProgress={bootProgress} />
             </div>
           )}
-          {/* App — fades in during transition, fully visible after */}
-          <div style={{
-            opacity: fading ? 1 : 0,
-            transition: fading ? "opacity 400ms ease-out" : "none",
-          }}>
-            <App />
-          </div>
+          {faded && (
+            <div className="fade-in" style={{ width: "100%", height: "100%" }}>
+              <App />
+            </div>
+          )}
         </div>
       </ErrorBoundary>
     </React.StrictMode>
