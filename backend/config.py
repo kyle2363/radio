@@ -131,12 +131,15 @@ MUQ_AUDIO_COLLECTION = "songs_audio"  # ChromaDB collection name for audio embed
 
 # --- Taste Constellations (multi-centroid taste model) ---
 CONSTELLATION_MIN_SIGNALS = 50       # Minimum positive signals to activate constellations
-CONSTELLATION_MIN_CLUSTER_SIZE = 5   # Min songs per taste cluster
-CONSTELLATION_MAX_CLUSTERS = 8       # Upper bound for adaptive KMeans
+CONSTELLATION_MIN_CLUSTER_SIZE = 3   # Min songs per taste cluster (lower = tighter pockets)
+CONSTELLATION_MAX_CLUSTERS = 6       # Upper bound for adaptive KMeans
 CONSTELLATION_HOP_CHANCE = 0.20      # Probability of sampling from neighboring cluster
 CONSTELLATION_WEIGHT_BOOST = 0.15    # Max score boost for constellation-aligned candidates
 CONSTELLATION_CACHE_TTL = 300        # Seconds to cache constellation state (5 min)
-CONSTELLATION_ARTIST_BLEND = 0.0     # Disabled — artist is already prominent in embedding text
+CONSTELLATION_ARTIST_BLEND = 0.4     # Artist centroid pull — strong; user listens to clustered artists
+CONSTELLATION_MUQ_AUDIO_WEIGHT = 0.7  # 0.0=text only, 1.0=audio only — blend for clustering
+CONSTELLATION_NEIGHBOR_THRESHOLD = 0.85  # Min sim between pockets to qualify as neighbor
+CONSTELLATION_TIME_WEIGHT = 0.25     # Time-of-day energy bias weight in active pocket selection
 
 # ── Process Manager ──
 

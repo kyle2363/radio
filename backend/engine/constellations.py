@@ -49,6 +49,11 @@ class TasteConstellations:
         self._pocket_similarity: list[list[float]] = []
         self._last_built: float = 0
         self._total_positive_signals: int = 0
+        self._last_silhouette: float | None = None
+        self._last_k: int | None = None
+        self._n_pca_components: int | None = None
+        self._global_energy_mean: float = 0.5
+        self._global_valence_mean: float = 0.5
 
     @property
     def pockets(self) -> list[TastePocket]:
@@ -338,8 +343,43 @@ class TasteConstellations:
                 self._last_built = time()
             return
 
-        text_matrix = np.array([blended_embeddings[str(sid)] for sid in aligned_ids])
-        self._feature_matrix = text_matrix
+        # --- Audio-primary feature construction ---
+        # For songs with audio embeddings, use audio as the primary signal (512-dim).
+        # For songs without audio, fall back to text embeddings (1024-dim).
+        # PCA reduces both to a common low-dim space.
+        feature_rows = []
+        audio_centric_ids = []
+        text_fallback_ids = []
+        for sid in aligned_ids:
+            sk = str(sid)
+            audio_emb = audio_embeddings.get(sk) if config.MUQ_ENABLED else None
+            if audio_emb is not None:
+                feature_rows.append(audio_emb)
+                audio_centric_ids.append(sid)
+            else:
+                feature_rows.append(blended_embeddings[sk])
+                text_fallback_ids.append(sid)
+
+        feature_matrix = np.array(feature_rows)
+        self._feature_matrix = feature_matrix
+
+        # --- PCA dimensionality reduction (20 components) ---
+        try:
+            from sklearn.decomposition import PCA
+            n_comp = min(20, len(feature_matrix) - 1)
+            if n_comp >= 2 and feature_matrix.shape[1] > n_comp:
+                pca = PCA(n_components=n_comp, random_state=42)
+                feature_matrix = pca.fit_transform(feature_matrix)
+            self._n_pca_components = n_comp
+        except Exception as e:
+            logger.debug("PCA failed, using raw features: %s", e)
+            self._n_pca_components = feature_matrix.shape[1]
+
+        # --- Global energy/valence mean for diversity filter ---
+        all_energies = [context.get(sid, {}).get("energy", 0.5) for sid in aligned_ids]
+        self._global_energy_mean = sum(all_energies) / len(all_energies) if all_energies else 0.5
+        all_valences = [context.get(sid, {}).get("valence", 0.5) for sid in aligned_ids]
+        self._global_valence_mean = sum(all_valences) / len(all_valences) if all_valences else 0.5
 
         # Adaptive K selection
         k = self._adaptive_k(len(aligned_ids))
@@ -354,18 +394,26 @@ class TasteConstellations:
         # Run KMeans
         try:
             from sklearn.cluster import KMeans
+            from sklearn.metrics import silhouette_score
             kmeans = KMeans(n_clusters=k, random_state=42, n_init=10, max_iter=300)
-            labels = kmeans.fit_predict(text_matrix)
+            labels = kmeans.fit_predict(feature_matrix)
+            if len(set(labels)) >= 2:
+                self._last_silhouette = float(silhouette_score(feature_matrix, labels, sample_size=min(500, len(feature_matrix))))
+            else:
+                self._last_silhouette = None
         except Exception as e:
             logger.warning("KMeans failed: %s", e)
+            self._last_silhouette = None
             with self._lock:
                 self._pockets = []
                 self._total_positive_signals = total_signals
                 self._last_built = time()
             return
 
+        self._last_k = k
+
         # Build pockets from clusters
-        pockets = []
+        raw_pockets = []
         for cluster_id in range(k):
             mask = labels == cluster_id
             cluster_song_ids = [aligned_ids[i] for i in range(len(aligned_ids)) if mask[i]]
@@ -376,10 +424,10 @@ class TasteConstellations:
             if cluster_signal_count < config.CONSTELLATION_MIN_CLUSTER_SIZE:
                 continue
 
-            # Text centroid (from KMeans)
+            # Text centroid (from KMeans — in PCA-reduced space)
             centroid_text = kmeans.cluster_centers_[cluster_id].tolist()
 
-            # Audio centroid (mean of audio embeddings in this cluster)
+            # Audio centroid (mean of raw audio embeddings in this cluster)
             centroid_audio = None
             if audio_embeddings:
                 audio_vecs = [
@@ -405,7 +453,7 @@ class TasteConstellations:
             moods = [context.get(sid, {}).get("mood_state", "neutral") for sid in cluster_song_ids]
             primary_mood = max(set(moods), key=moods.count) if moods else "neutral"
 
-            pockets.append(TastePocket(
+            raw_pockets.append(TastePocket(
                 constellation_id=cluster_id,
                 centroid_text=centroid_text,
                 centroid_audio=centroid_audio,
@@ -417,8 +465,27 @@ class TasteConstellations:
                 valence_avg=valence_avg,
             ))
 
+        # --- Diversity filter: drop energy-similar low-weight pockets ---
+        pockets = []
+        for p in raw_pockets:
+            energy_diff = abs(p.energy_avg - self._global_energy_mean)
+            is_energy_similar = energy_diff < 0.05
+            is_low_weight = p.weight < 0.15
+            if is_energy_similar and is_low_weight:
+                logger.debug("Dropping pocket %d (energy=%.3f, weight=%.3f) — too similar to global mean",
+                             p.constellation_id, p.energy_avg, p.weight)
+                continue
+            pockets.append(p)
+
+        # Fallback: if filter depletes us below 2, keep top-2 by weight
+        if len(pockets) < 2 and raw_pockets:
+            pockets = sorted(raw_pockets, key=lambda p: p.weight, reverse=True)[:2]
+            # Reassign constellation_ids to be sequential
+            for i, p in enumerate(pockets):
+                p.constellation_id = i
+
         if len(pockets) < 2:
-            logger.debug("Only %d pockets after filtering, skipping constellations", len(pockets))
+            logger.debug("Only %d pockets after diversity filter, skipping constellations", len(pockets))
             with self._lock:
                 self._pockets = []
                 self._total_positive_signals = total_signals
@@ -431,8 +498,13 @@ class TasteConstellations:
             self._total_positive_signals = total_signals
             self._compute_pocket_similarity()
             self._last_built = time()
-            logger.info("Built %d taste pockets from %d signals (K=%d)",
-                         len(pockets), total_signals, k)
+            _summary_parts = [
+                f"Built {len(pockets)} pockets from {total_signals} signals (K={k})",
+                f"silhouette={self._last_silhouette:.3f}" if self._last_silhouette is not None else "silhouette=N/A",
+                f"PCA={self._n_pca_components}",
+                f"energies=[{','.join(f'{p.energy_avg:.2f}' for p in pockets)}]",
+            ]
+            logger.info("Constellation: %s", " | ".join(_summary_parts))
 
     def _compute_pocket_similarity(self):
         """Compute cosine similarity between all pocket centroids."""
@@ -490,7 +562,7 @@ class TasteConstellations:
                 # Time-of-day bias: morning → higher energy, night → lower energy
                 hour_factor = math.sin((hour - 6) * math.pi / 12)  # peaks at noon, troughs at midnight
                 energy_diff = abs(pocket.energy_avg - (0.5 + 0.3 * hour_factor))
-                score -= energy_diff * 0.1
+                score -= energy_diff * config.CONSTELLATION_TIME_WEIGHT
                 if score > best_score:
                     best_score = score
                     best_idx = i
@@ -501,14 +573,23 @@ class TasteConstellations:
     def reweight_candidates(self, candidates, active_pocket=None):
         """Boost candidates aligned with the active constellation.
 
+        Energy-aware: only boosts candidates whose energy is within ±0.15
+        of the active pocket's energy average.  This prevents uniform
+        boosting of every pocket-aligned song regardless of energy context.
+
         Returns the reweighted candidates (mutates in place).
         """
         if not active_pocket or not candidates:
             return candidates
 
+        pocket_energy = active_pocket.energy_avg
+        energy_low = pocket_energy - 0.15
+        energy_high = pocket_energy + 0.15
+
         with self._lock:
             pocket_sets = {p.constellation_id: set(p.song_ids) for p in self._pockets}
             active_set = pocket_sets.get(active_pocket.constellation_id, set())
+            neighbor_threshold = config.CONSTELLATION_NEIGHBOR_THRESHOLD
             neighbor_sims = {}
             for i, pocket in enumerate(self._pockets):
                 if pocket.constellation_id == active_pocket.constellation_id:
@@ -517,16 +598,20 @@ class TasteConstellations:
                     active_pocket.constellation_id < len(self._pocket_similarity)
                     and i < len(self._pocket_similarity[active_pocket.constellation_id])
                 ) else 0.0
-                if sim > 0.7:
+                if sim > neighbor_threshold:
                     neighbor_sims[pocket.constellation_id] = (sim, pocket.weight)
         for c in candidates:
+            c_energy = c.get("energy", 0.5)
+            if c_energy < energy_low or c_energy > energy_high:
+                continue  # energy mismatch — no boost
+
             boost = 0.0
 
             # Direct constellation match: candidate song is in the active pocket
             if c["song_id"] in active_set:
                 boost = config.CONSTELLATION_WEIGHT_BOOST * active_pocket.weight
             else:
-                # Check neighboring pockets (similarity > 0.7)
+                # Check neighboring pockets
                 for cid, (sim, weight) in neighbor_sims.items():
                     cid_set = pocket_sets.get(cid)
                     if cid_set and c["song_id"] in cid_set:
@@ -616,9 +701,111 @@ class TasteConstellations:
                 ],
             }
 
+    def get_diagnostics(self) -> dict:
+        """Return detailed diagnostics about constellation health.
+
+        Computes per-pocket completion/skip/heart rates from play_events,
+        plus overall silhouette score from the last build.
+        """
+        import statistics
+        with self._lock:
+            if not self._pockets:
+                return {
+                    "active": False,
+                    "total_positive_signals": self._total_positive_signals,
+                    "silhouette": None,
+                    "pockets": [],
+                }
+
+            # Determine which songs belong to which pocket
+            pocket_of_song = {}
+            for p in self._pockets:
+                for sid in p.song_ids:
+                    pocket_of_song[sid] = p.constellation_id
+
+            try:
+                all_song_ids = list(pocket_of_song.keys())
+                conn = database.get_connection()
+                try:
+                    placeholders = ",".join("?" for _ in all_song_ids)
+                    rows = conn.execute(
+                        f"""SELECT song_id, signal FROM play_events
+                            WHERE song_id IN ({placeholders})
+                              AND signal IN ('completed','skip_early','skip_late','hearted','thumbed_down')""",
+                        all_song_ids,
+                    ).fetchall()
+                finally:
+                    conn.close()
+
+                # Per-pocket signal tallies
+                tally: dict[int, dict[str, int]] = {}
+                for p in self._pockets:
+                    tally[p.constellation_id] = {
+                        "completed": 0, "skip_early": 0, "skip_late": 0,
+                        "hearted": 0, "thumbed_down": 0, "total": 0,
+                    }
+                for r in rows:
+                    pid = pocket_of_song.get(r["song_id"])
+                    if pid is not None and r["signal"] in tally.get(pid, {}):
+                        tally[pid][r["signal"]] += 1
+                        tally[pid]["total"] += 1
+
+                pocket_diagnostics = []
+                for p in self._pockets:
+                    t = tally[p.constellation_id]
+                    total = t["total"] or 1
+                    pocket_diagnostics.append({
+                        "id": p.constellation_id,
+                        "song_count": len(p.song_ids),
+                        "signal_count": p.signal_count,
+                        "weight": round(p.weight, 3),
+                        "completion_rate": round(t["completed"] / total, 3),
+                        "skip_early_rate": round(t["skip_early"] / total, 3),
+                        "skip_late_rate": round(t["skip_late"] / total, 3),
+                        "heart_rate": round(t["hearted"] / max(1, t["completed"]), 3),
+                        "thumbed_down_count": t["thumbed_down"],
+                        "energy_avg": round(p.energy_avg, 3),
+                        "valence_avg": round(p.valence_avg, 3),
+                        "primary_mood": p.primary_mood,
+                    })
+
+                # Overall silhouette
+                silhouette = self._last_silhouette
+                if silhouette is not None:
+                    silhouette = round(silhouette, 4)
+
+                # Mean pairwise similarity between pockets (lower = more distinct)
+                mean_sim = 0.0
+                sim_count = 0
+                for i in range(len(self._pockets)):
+                    for j in range(i + 1, len(self._pockets)):
+                        mean_sim += self._pocket_similarity[i][j]
+                        sim_count += 1
+                mean_sim = round(mean_sim / max(1, sim_count), 4)
+
+                return {
+                    "active": self.is_active,
+                    "total_positive_signals": self._total_positive_signals,
+                    "pocket_count": len(self._pockets),
+                    "silhouette": silhouette,
+                    "mean_pocket_similarity": mean_sim,
+                    "k": self._last_k,
+                    "pca_components": self._n_pca_components,
+                    "global_energy_mean": round(self._global_energy_mean, 3),
+                    "global_valence_mean": round(self._global_valence_mean, 3),
+                    "pockets": pocket_diagnostics,
+                }
+
+            except Exception as e:
+                logger.debug("Constellation diagnostics failed: %s", e)
+                return {"error": str(e)}
+
     def invalidate(self):
         """Force rebuild on next call."""
         with self._lock:
             self._last_built = 0
             self._pockets = []
             self._active_pocket_idx = None
+            self._last_silhouette = None
+            self._last_k = None
+            self._n_pca_components = None

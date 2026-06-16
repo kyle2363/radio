@@ -3785,6 +3785,19 @@ def get_constellations():
     return qm._constellations.get_constellation_summary()
 
 
+@app.get("/api/taste/constellations/diagnostics")
+def get_constellation_diagnostics():
+    """Return detailed constellation health diagnostics.
+
+    Includes per-pocket completion/skip/heart rates, silhouette score,
+    mean pairwise similarity, etc.
+    """
+    qm = _get_queue_manager()
+    if not hasattr(qm, '_constellations') or not qm._constellations:
+        return {"active": False, "reason": "not_initialized"}
+    return qm._constellations.get_diagnostics()
+
+
 # ============================================================
 # LLM Status
 # ============================================================
