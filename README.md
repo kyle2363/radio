@@ -84,8 +84,9 @@ npm install
 # From frontend/ — starts Vite + Electron (Electron spawns the FastAPI backend automatically)
 npm run dev
 ```
+Electron app should auto start with 'npm run dev'
 
-Open `http://localhost:3000` in your browser. The backend runs on `http://localhost:8765`.
+For browser verions open `http://localhost:3000` in your browser. The backend runs on `http://localhost:8765`.
 
 ## Configuration
 
@@ -175,6 +176,8 @@ python batch_fill_genius.py --resume
 
 # Alternative: general web scrape
 python batch_scrape_lyrics.py --resume
+
+# Alternative: Use a ai agent like opencode to scrape the web for you
 
 # Step 3 — Re-run describe phase (pulls updated lyrics + tags into DB)
 # From backend/ — edit ingest.py to call run_phase_describe(), then:
