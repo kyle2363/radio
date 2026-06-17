@@ -1367,3 +1367,95 @@ body {
 .ctrl-main .icon-wrap.flipping {
   animation: iconFlip 300ms ease-out;
 }
+
+/* ══════════════════════════════════════════════════════
+   Website Electron-like layout override
+   Mirrors .electron-layout so the website (browser)
+   matches the Electron desktop GUI's look.
+   Activated only when isElectron=false via "website-*"
+   classes assigned in App.jsx.
+   ══════════════════════════════════════════════════════ */
+
+.website-layout {
+  flex: 1 !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) var(--right-rail-width, 255px) !important;
+  max-width: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+.website-left-col {
+  border-right: 1px solid var(--border-subtle) !important;
+  overflow: hidden !important;
+}
+
+.website-npc-section {
+  flex: 1 !important;
+  padding: 12px !important;
+  gap: var(--section-gap, 10px) !important;
+  overflow: hidden !important;
+}
+
+.website-npc-section .now-playing-grid {
+  display: grid;
+  grid-template-columns: 168px minmax(0, 1fr);
+  gap: 12px;
+  flex-shrink: 0;
+}
+
+.website-rcb-section {
+  flex-shrink: 0 !important;
+  padding: 12px 16px !important;
+  border-top: 1px solid var(--border) !important;
+  background: var(--bg-sunken) !important;
+  gap: var(--section-gap, 10px) !important;
+  border-radius: 0 !important;
+}
+
+.website-right-rail {
+  display: flex !important;
+  flex-direction: column !important;
+  overflow: hidden !important;
+  flex: 0 0 var(--right-rail-width, 255px) !important;
+  width: var(--right-rail-width, 255px) !important;
+  max-width: var(--right-rail-width, 255px) !important;
+}
+
+.website-right-rail-inner {
+  position: static !important;
+  max-height: none !important;
+  overflow: hidden !important;
+  flex: 1 !important;
+  height: 100% !important;
+  min-height: 0 !important;
+}
+
+.website-right-rail-inner > div {
+  flex: 1 !important;
+  display: flex !important;
+  flex-direction: column !important;
+  overflow: hidden !important;
+}
+
+.website-queue-section {
+  flex: 1 !important;
+  overflow-y: auto !important;
+  min-height: 0 !important;
+  padding: 10px !important;
+}
+
+.website-prior-section {
+  flex-shrink: 0 !important;
+  padding: 10px !important;
+  border-top: 1px solid var(--border-subtle) !important;
+}
+
+.website-context-section {
+  flex-shrink: 0 !important;
+  border-top: 1px solid var(--border) !important;
+  background: var(--bg-sunken) !important;
+  border-radius: 0 !important;
+}

@@ -759,18 +759,18 @@ function AppInner() {
         </div>
       </header>
 
-      <main className={`${isElectron ? '' : 'max-w-6xl mx-auto px-3 sm:px-6 py-8'} flex flex-col lg:flex-row gap-0 ${isElectron ? 'electron-layout' : ''}`}>
+      <main className={`${isElectron ? '' : 'max-w-6xl mx-auto px-3 sm:px-6 py-8'} flex flex-col lg:flex-row gap-0 ${isElectron ? 'electron-layout' : 'website-layout'}`}>
         {/* Left column: player + controls */}
-        <div className={`flex-1 min-w-0 flex flex-col ${isElectron ? 'left-col' : ''}`} style={{ gap: "var(--section-gap)" }}>
-          <div className={isElectron ? 'npc-section' : ''} style={!isElectron ? { display: "flex", flexDirection: "column", gap: "var(--section-gap)" } : {}}>
-            <section><NowPlaying compact={isElectron} song={currentSong} isPlaying={isPlaying} whyReason={whyReason} queue={queue} audioRms={audioRms} talkSegmentActive={talkSegmentActive} positionMs={positionMs} durationMs={durationMs} /></section>
-            <section><PlayerControls compact={isElectron} isPlaying={isPlaying} onPlay={wrappedHandlePlay} onPause={handlePause} onNext={handleNext} onHeart={handleHeart} onThumbsDown={handleThumbsDown} onReplay={handleReplay} onClearQueue={handleClearQueue} positionMs={positionMs} durationMs={durationMs} onSeek={handleSeek} vibeLock={vibeLock} onVibeLockToggle={handleVibeLockToggle} audioRms={audioRms} isHearted={heartedThisPlay} isThumbedDown={thumbedDownThisPlay} /></section>
+        <div className={`flex-1 min-w-0 flex flex-col ${isElectron ? 'left-col' : 'website-left-col'}`} style={{ gap: "var(--section-gap)" }}>
+          <div className={isElectron ? 'npc-section' : 'website-npc-section'} style={!isElectron ? { display: "flex", flexDirection: "column", gap: "var(--section-gap)" } : {}}>
+            <section><NowPlaying compact song={currentSong} isPlaying={isPlaying} whyReason={whyReason} queue={queue} audioRms={audioRms} talkSegmentActive={talkSegmentActive} positionMs={positionMs} durationMs={durationMs} /></section>
+            <section><PlayerControls compact isPlaying={isPlaying} onPlay={wrappedHandlePlay} onPause={handlePause} onNext={handleNext} onHeart={handleHeart} onThumbsDown={handleThumbsDown} onReplay={handleReplay} onClearQueue={handleClearQueue} positionMs={positionMs} durationMs={durationMs} onSeek={handleSeek} vibeLock={vibeLock} onVibeLockToggle={handleVibeLockToggle} audioRms={audioRms} isHearted={heartedThisPlay} isThumbedDown={thumbedDownThisPlay} /></section>
             {currentSong && showLyrics && (
               <section><LyricsPanel song={currentSong} positionMs={positionMs} durationMs={durationMs} isPlaying={isPlaying} /></section>
             )}
           </div>
           {uiMode === "radio" && (
-            <div className={isElectron ? 'rcb-section' : ''} style={!isElectron ? { display: "flex", flexDirection: "column", gap: "var(--section-gap)", background: "var(--bg-sunken)", padding: "12px", borderRadius: "12px" } : undefined}>
+            <div className={isElectron ? 'rcb-section' : 'website-rcb-section'} style={!isElectron ? { display: "flex", flexDirection: "column", gap: "var(--section-gap)", background: "var(--bg-sunken)" } : undefined}>
               {!commandExpanded && <section><CommandBar onCommandSent={wrappedHandleCommandSent} compact onFocus={() => setCommandExpanded(true)} responseTimeout={commandResponseTimeout} inactiveTimeout={commandInactiveTimeout} onUserActivity={handleUserActivity} lastCommandRef={lastNlActionRef} onUndo={handleUndoNlCommand} nlResponse={nlResponse} nlResponseVisible={nlResponseVisible} nlResponseTimerRef={nlResponseTimerRef} nlPausedRef={nlPausedRef} clearNlResponseTimer={clearNlResponseTimer} startNlResponseTimer={startNlResponseTimer} setNlResponse={setNlResponse} setNlResponseVisible={setNlResponseVisible} /></section>}
               {commandExpanded && (
                 <section><CommandBar onCommandSent={wrappedHandleCommandSent} onClose={() => setCommandExpanded(false)} responseTimeout={commandResponseTimeout} inactiveTimeout={commandInactiveTimeout} onUserActivity={handleUserActivity} lastCommandRef={lastNlActionRef} onUndo={handleUndoNlCommand} nlResponse={nlResponse} nlResponseVisible={nlResponseVisible} nlResponseTimerRef={nlResponseTimerRef} nlPausedRef={nlPausedRef} clearNlResponseTimer={clearNlResponseTimer} startNlResponseTimer={startNlResponseTimer} setNlResponse={setNlResponse} setNlResponseVisible={setNlResponseVisible} /></section>
@@ -784,7 +784,7 @@ function AppInner() {
             </div>
           )}
           {uiMode === "normal" && (
-            <div className={`text-center py-8 text-gray-500 text-sm ${isElectron ? 'rcb-section' : ''}`}>
+            <div className={`text-center py-8 text-gray-500 text-sm ${isElectron ? 'rcb-section' : 'website-rcb-section'}`}>
               <p>Normal mode — no AI features.</p>
               <p className="mt-1">Play songs manually or switch to Radio mode for AI recommendations.</p>
             </div>
@@ -793,13 +793,13 @@ function AppInner() {
 
         {/* Right column: queue + prior songs + session context (sticky on desktop) */}
         {uiMode === "radio" && (
-          <div className={`${isElectron ? '' : 'w-full lg:w-80 xl:w-96'} flex-shrink-0 ${isElectron ? 'right-rail' : ''}`} style={isElectron ? { width: rightRailWidth } : undefined}>
-            <div className={isElectron ? '' : 'lg:sticky lg:top-20 lg:max-h-[calc(100vh-6rem)] lg:overflow-y-auto'} style={isElectron ? { display: "flex", flexDirection: "column", flex: 1, overflow: "hidden", minHeight: 0, height: "100%" } : { display: "flex", flexDirection: "column" }}>
+          <div className={`${isElectron ? '' : 'w-full lg:w-80 xl:w-96'} flex-shrink-0 ${isElectron ? 'right-rail' : 'website-right-rail'}`} style={isElectron ? { width: rightRailWidth } : undefined}>
+            <div className={isElectron ? '' : 'website-right-rail-inner'} style={{ display: "flex", flexDirection: "column", flex: 1, overflow: "hidden", minHeight: 0, height: "100%" }}>
               <div style={{ display: "flex", flexDirection: "column", gap: "6px", flex: 1, overflow: "hidden" }}>
-                <section className={isElectron ? 'queue-section' : ''}><QueuePreview queue={queue} isRebuilding={queueRebuilding} onPromoteSong={handlePromoteSong} onRemoveSong={handleRemoveFromQueue} onRebuild={handleRebuild} compact={isElectron} queueLoading={queueLoading} onAddToCollection={handleAddToCollection} /></section>
-                <section className={isElectron ? 'prior-section' : ''}><PriorSongs currentSongId={currentSong?.id} compact={isElectron} /></section>
+                <section className={isElectron ? 'queue-section' : 'website-queue-section'}><QueuePreview queue={queue} isRebuilding={queueRebuilding} onPromoteSong={handlePromoteSong} onRemoveSong={handleRemoveFromQueue} onRebuild={handleRebuild} compact queueLoading={queueLoading} onAddToCollection={handleAddToCollection} /></section>
+                <section className={isElectron ? 'prior-section' : 'website-prior-section'}><PriorSongs currentSongId={currentSong?.id} compact /></section>
               </div>
-              <section className={isElectron ? 'context-section' : ''} style={{ background: "var(--bg-sunken)", borderTop: "1px solid var(--border)", padding: isElectron ? "8px 10px" : "8px 20px", borderRadius: isElectron ? 0 : "0 0 12px 12px" }}>
+              <section className={isElectron ? 'context-section' : 'website-context-section'} style={{ background: "var(--bg-sunken)", borderTop: "1px solid var(--border)", padding: "8px 10px", borderRadius: 0 }}>
                 <div className="flex items-center justify-between gap-2 flex-wrap w-full">
                   {moodState && <span className="badge b-teal">{moodState}</span>}
                   {archetype && <span className="badge b-blue">{archetype}</span>}
