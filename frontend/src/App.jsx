@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback, useRef, useLayoutEffect } from "react";
 import useTransition from "./hooks/useTransition";
 import * as api from "./api";
-import { Radio, Loader2, Mic, Sparkles, Sun, Moon, Library, HelpCircle, Settings } from "lucide-react";
+import { Loader2, Mic, Sparkles, Sun, Moon, Library, HelpCircle, Settings } from "lucide-react";
 
 import AmbientGlow from "./components/AmbientGlow";
 import MiniPlayer from "./components/MiniPlayer";
@@ -19,6 +19,7 @@ import SettingsContent from "./components/SettingsContent";
 import VolumeControl from "./components/VolumeControl";
 import Onboarding from "./components/Onboarding";
 import SongList from "./components/SongList";
+
 import ToastContainer from "./components/Toast";
 import SessionHistory from "./components/SessionHistory";
 import StatsDashboard from "./components/StatsDashboard";
@@ -36,6 +37,7 @@ import QuickSearch from "./components/QuickSearch";
 import CommandPalette from "./components/CommandPalette";
 import HeaderButton from "./components/HeaderButton";
 import HeaderStatusPill from "./components/HeaderStatusPill";
+import { BrandIcon, DEFAULT_ICON_STYLE } from "./components/BrandIcons";
 
 // Focused hooks
 import { RadioProvider, useSharedRadio, useFetchStatus, useWebSocket, useOnboarding } from "./hooks/useRadioState";
@@ -293,6 +295,8 @@ function AppInner() {
   const [miniPlayerEnabled, setMiniPlayerEnabled] = useState(true);
   const [showLyrics, setShowLyrics] = useState(true);
   const [isElectron, setIsElectron] = useState(false);
+  const [constellationsEnabled, setConstellationsEnabled] = useState(true);
+  const [iconStyle, setIconStyle] = useState(DEFAULT_ICON_STYLE);
   useEffect(() => {
     checkOnboarding();
     let cancelled = false;
@@ -306,12 +310,20 @@ function AppInner() {
         }
         setMiniPlayerEnabled(d.mini_player_enabled !== "false");
         if (d.show_lyrics != null) setShowLyrics(d.show_lyrics !== "false");
+        if (d.constellations_enabled != null) setConstellationsEnabled(d.constellations_enabled !== "false");
+        if (d.app_icon_style) setIconStyle(d.app_icon_style);
       }).catch(() => {
         if (!cancelled) setTimeout(doFetch, 500);
       });
     };
     doFetch();
-    return () => { cancelled = true; };
+    // Listen for icon-style changes from settings panel
+    const onStyleChange = (e) => {
+      const s = e.detail;
+      if (s) setIconStyle(s);
+    };
+    window.addEventListener("app-icon-style-changed", onStyleChange);
+    return () => { cancelled = true; window.removeEventListener("app-icon-style-changed", onStyleChange); };
   }, []);
 
   useEffect(() => {
@@ -528,6 +540,11 @@ function AppInner() {
   const [showConstellations, setShowConstellations] = useState(false);
   const [constellationData, setConstellationData] = useState(null);
   useEffect(() => {
+    if (!constellationsEnabled) {
+      setConstellationData(null);
+      setShowConstellations(false);
+      return;
+    }
     if (uiMode !== "radio") return;
     const fetch = async () => {
       try {
@@ -538,7 +555,7 @@ function AppInner() {
     fetch();
     const id = setInterval(fetch, 30000);
     return () => clearInterval(id);
-  }, [uiMode]);
+  }, [uiMode, constellationsEnabled]);
   useEffect(() => {
     if (!showConstellations) return;
     const id = setInterval(async () => {
@@ -643,7 +660,7 @@ function AppInner() {
         <div className="px-3 sm:px-5 flex items-center gap-3">
           {/* LEFT: Brand */}
           <div className="flex items-center gap-2 flex-shrink-0">
-            <h1 className="text-lg font-bold tracking-tight" style={{ color: "var(--text-primary)" }}>Radio</h1>
+            <BrandIcon style={iconStyle} size={26} />
             <span className="text-[11px] font-semibold px-3 py-1 rounded-full"
               style={{ background: "rgba(72,187,120,0.12)", color: "#4ade80", border: "1px solid rgba(72,187,120,0.2)" }}>
               {uiMode === "radio" ? "Radio" : "Normal"}
@@ -710,7 +727,7 @@ function AppInner() {
             <HeaderButton onClick={() => setShowLibrary(true)} title="Library">
               <Library size={18} />
             </HeaderButton>
-            {uiMode === "radio" && (
+            {uiMode === "radio" && constellationsEnabled && (
               <HeaderButton onClick={() => setShowConstellations(true)} title="Taste Constellations">
                 <Sparkles size={18} />
                 {constellationData?.active && (
@@ -827,6 +844,7 @@ function AppInner() {
             {[
               { id: "library", label: "Library" },
               { id: "collections", label: "Collections" },
+
               { id: "settings", label: "Settings" },
               { id: "wiki", label: "Wiki" },
               { id: "stats", label: "Stats" },
@@ -848,6 +866,7 @@ function AppInner() {
                 ? <CollectionDetail collection={selectedCollection} onBack={() => setSelectedCollection(null)} addToast={addToast} />
                 : <CollectionsList onSelect={(c) => setSelectedCollection(c)} />
             )}
+
             {libraryTab === "settings" && <SettingsContent addToast={addToast} sectionSpacing={sectionSpacing} onSectionSpacingChange={setSectionSpacing} rightRailWidth={rightRailWidth} setRightRailWidth={setRightRailWidth} explorationLevel={explorationLevel} onExplorationChange={handleExplorationChange} />}
             {libraryTab === "wiki" && <WikiPage />}
             {libraryTab === "stats" && <div className="px-1 sm:px-2"><StatsDashboard /></div>}

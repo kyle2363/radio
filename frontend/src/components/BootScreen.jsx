@@ -113,7 +113,7 @@ function BootTerminal() {
       idx++;
 
       if (idx < BOOT_MSGS.length) {
-        timerRef.current = setTimeout(step, isLast ? 540 : 430);
+        timerRef.current = setTimeout(step, isLast ? 540 : 602);
       }
     };
 
@@ -157,7 +157,7 @@ function ProgressBar() {
       }
       idx++;
       if (idx < BOOT_MSGS.length) {
-        timerRef.current = setTimeout(tick, idx === BOOT_MSGS.length - 1 ? 540 : 430);
+        timerRef.current = setTimeout(tick, idx === BOOT_MSGS.length - 1 ? 540 : 602);
       }
     };
     const startTimer = setTimeout(tick, 800);

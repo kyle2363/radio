@@ -44,4 +44,7 @@ contextBridge.exposeInMainWorld("electron", {
 
   // Settings sync to main process (power monitor, notifications, etc.)
   setSetting: (key, value) => ipcRenderer.invoke("set-setting", key, value),
+
+  // App icon style (drift/orbit/pulse/spectrum) — updates tray + window icon
+  setAppIconStyle: (style) => ipcRenderer.invoke("set-app-icon-style", style),
 });

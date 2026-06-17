@@ -276,14 +276,18 @@ class MemorySystem:
         Used for cold start when no taste signals exist.
         """
         try:
-            conn = database.get_connection()
-            try:
-                row = conn.execute(
-                    "SELECT AVG(energy) as ae, AVG(valence) as av "
-                    "FROM songs WHERE ingest_phase = 'clustered'"
-                ).fetchone()
-            finally:
-                conn.close()
+            collection = get_chroma_client().get_or_create_collection("songs")
+            count = collection.count()
+            n = min(200, count)
+            sample = collection.get(limit=n, include=["embeddings"])
+            embs = [e for e in sample["embeddings"] if e is not None]
+            if embs:
+                dim = len(embs[0])
+                centroid = [0.0] * dim
+                for emb in embs:
+                    for d in range(dim):
+                        centroid[d] += emb[d]
+                return [v / len(embs) for v in centroid]
         except Exception:
             pass
         return [0.0] * retriever.get_embedding_dimension()

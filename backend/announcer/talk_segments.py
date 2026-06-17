@@ -1086,8 +1086,8 @@ def get_next_talk_segment(
                 "talk_caller_enabled": database.get_setting("talk_caller_enabled") or "true",
                 "talk_monologue_enabled": database.get_setting("talk_monologue_enabled") or "true",
                 "talk_guest_takeover_enabled": database.get_setting("talk_guest_takeover_enabled") or "true",
-                "talk_frequency": int(database.get_setting("talk_frequency") or "4"),
-                "talk_segment_cooldown": int(database.get_setting("talk_segment_cooldown") or str(DEFAULT_CALLER_COOLDOWN)),
+                "talk_frequency": database.get_setting_int("talk_frequency", 4),
+                "talk_segment_cooldown": database.get_setting_int("talk_segment_cooldown", DEFAULT_CALLER_COOLDOWN),
             }
         except Exception as e:
             print(f"talk_segments: can't read settings: {e}")
@@ -1184,7 +1184,7 @@ def get_next_talk_segment(
         with _talk_lock:
             try:
                 from db import database
-                songs_per_set = int(database.get_setting("talk_guest_songs_per_set") or "4")
+                songs_per_set = database.get_setting_int("talk_guest_songs_per_set", 4)
             except Exception:
                 songs_per_set = 4
             _current_guest_takeover = {

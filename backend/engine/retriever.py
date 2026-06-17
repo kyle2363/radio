@@ -117,6 +117,14 @@ def search_by_vector(taste_vector, n=60, exclude_ids=None,
         finally:
             conn.close()
 
+    # Fetch effective energies (blends base + user_energy into one score)
+    effective_map = {}
+    if song_ids:
+        try:
+            effective_map = database.get_effective_energy_batch(song_ids)
+        except Exception:
+            pass
+
     candidates = []
     for i in range(len(ids_row)):
         song_id = int(ids_row[i])
@@ -127,7 +135,7 @@ def search_by_vector(taste_vector, n=60, exclude_ids=None,
         distance = results["distances"][0][i]
         score = 1.0 - distance
 
-        energy = float(meta.get("energy", 0.5))
+        energy = effective_map.get(song_id, float(meta.get("energy", 0.5)))
         valence = float(meta.get("valence", 0.5))
 
         if min_energy is not None and energy < min_energy:
@@ -612,7 +620,7 @@ def _apply_vibe_lock_boost(candidates, vibe_lock, exclude_ids):
                         candidates.append({
                             "song_id": sid,
                             "score": vibe_score * 0.85,
-                            "energy": float((meta or {}).get("energy", 0.5)),
+                            "energy": database.get_effective_energy(sid),
                             "valence": float((meta or {}).get("valence", 0.5)),
                             "cluster_id": int((meta or {}).get("cluster_id", -1)),
                             "artist": song_info.get("artist", ""),

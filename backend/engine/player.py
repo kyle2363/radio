@@ -5,7 +5,16 @@ import os
 import sys
 import threading
 import time
-import vlc
+try:
+    import vlc
+except ImportError as _vlc_err:
+    raise ImportError(
+        "VLC media player not found.\n\n"
+        "The Radio Station requires VLC for gapless audio playback.\n"
+        "Please install VLC from https://videolan.org, then reinstall\n"
+        "the Python binding:\n"
+        "  pip install python-vlc"
+    ) from _vlc_err
 import config
 from db import database
 
@@ -586,23 +595,25 @@ class Player:
                 self._stop_gen = -1
                 self._media_list = self._vlc_instance.media_list_new([])
                 self._list_player.set_media_list(self._media_list)
+                successful_items = []
                 for item in items:
                     media = self._vlc_instance.media_new(item["filepath"])
                     if not media:
                         _song_logger.error("  -> VLC media_new FAILED for: %s", item["filepath"])
                         continue
                     self._media_list.add_media(media)
-                _song_logger.debug("  -> built media list with %d items", self._media_list.count())
-                self._chain_items = items
+                    successful_items.append(item)
+                _song_logger.debug("  -> built media list with %d/%d items", len(successful_items), len(items))
+                self._chain_items = successful_items
                 self._current_chain_index = 0
                 # Determine if this chain contains TTS (talk) items
-                self._talk_playing = any(it.get("is_tts") for it in items)
-                self._tts_events_pending = sum(1 for it in items if it.get("is_tts"))
-                self._talk_only_chain = self._talk_playing and all(it.get("is_tts") for it in items)
+                self._talk_playing = any(it.get("is_tts") for it in successful_items)
+                self._tts_events_pending = sum(1 for it in successful_items if it.get("is_tts"))
+                self._talk_only_chain = self._talk_playing and all(it.get("is_tts") for it in successful_items)
                 self._talk_total_ms = 0
                 if self._talk_playing:
                     import wave as _wave
-                    for _w_item in items:
+                    for _w_item in successful_items:
                         _w_path = _w_item.get("filepath")
                         if _w_item.get("is_tts") and _w_path:
                             try:
@@ -621,7 +632,7 @@ class Player:
                 # Apply talk volume boost if chain has TTS items
                 if self._talk_playing:
                     try:
-                        talk_vol_pct = int(database.get_setting("talk_volume") or "100")
+                        talk_vol_pct = database.get_setting_int("talk_volume", 100)
                     except Exception:
                         talk_vol_pct = 100
                     if talk_vol_pct != 100:

@@ -122,6 +122,10 @@ WHISPERX_SMART_SELECT = True             # run both separated & original, pick b
 SEPARATOR_MODEL_DIR = os.path.join(DATA_DIR, "separator_models")
 SEPARATOR_OUTPUT_DIR = os.path.join(DATA_DIR, "separator_output")
 
+# --- Energy formula version ---
+ENERGY_FORMULA_VERSION = "v2"
+ENERGY_BPM_CONFIDENCE_FLOOR = 0.5   # onset_density threshold for full BPM weight
+
 # --- MuQ-MuLan audio embedding settings ---
 MUQ_ENABLED = os.environ.get("MUQ_ENABLED", "true").lower() == "true"
 MUQ_MODEL_NAME = os.environ.get("MUQ_MODEL_NAME", "OpenMuQ/MuQ-MuLan-large")

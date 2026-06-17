@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useState, useCallback, useMemo } from "react";
-import { Play, Plus, X, Sparkles } from "lucide-react";
+import { Play, Plus, X, Sparkles, RotateCcw } from "lucide-react";
 import * as api from "../api";
 
 const MOOD_HUES = { energetic: 28, melancholy: 215, chill: 168, focus: 275, neutral: 210, discovery: 140 };
@@ -39,7 +39,7 @@ function PocketTooltip({ pocket, x, y }) {
   );
 }
 
-function SongListPanel({ pocket, songs, loading, onPlaySong, onAddToQueue, onClose }) {
+const SongListPanel = React.memo(function SongListPanel({ pocket, songs, loading, onPlaySong, onAddToQueue, onClose }) {
   if (!pocket) return null;
   return (
     <div style={{
@@ -118,7 +118,7 @@ function SongListPanel({ pocket, songs, loading, onPlaySong, onAddToQueue, onClo
       </div>
     </div>
   );
-}
+});
 
 export default function ConstellationMap({ constellations, onPlaySong, onAddToQueue, onClose }) {
   const canvasRef = useRef(null);
@@ -126,6 +126,12 @@ export default function ConstellationMap({ constellations, onPlaySong, onAddToQu
   const rafRef = useRef(null);
   const animStateRef = useRef(new Map());
   const mouseRef = useRef({ x: 0, y: 0 });
+  const viewRef = useRef({ panX: 0, panY: 0, zoom: 1 });
+  const isDraggingRef = useRef(false);
+  const didDragRef = useRef(false);
+  const dragStartRef = useRef({ panX: 0, panY: 0, pointerX: 0, pointerY: 0 });
+  const hoveredPocketRef = useRef(null);
+  const rafResumerRef = useRef(() => {});
   const [hoveredPocket, setHoveredPocket] = useState(null);
   const [tooltipPos, setTooltipPos] = useState({ x: 0, y: 0 });
   const [selectedPocket, setSelectedPocket] = useState(null);
@@ -192,10 +198,9 @@ export default function ConstellationMap({ constellations, onPlaySong, onAddToQu
     }
     setSongsLoading(true);
     try {
-      const results = await Promise.all(
-        pocket.song_ids.slice(0, 50).map((id) => api.fetchSong(id).catch(() => null))
-      );
-      setSelectedSongs(results.filter(Boolean));
+      const ids = pocket.song_ids.slice(0, 50);
+      const data = await api.fetchSongsByIds(ids);
+      setSelectedSongs(data.songs || []);
     } catch {
       setSelectedSongs([]);
     }
@@ -207,6 +212,11 @@ export default function ConstellationMap({ constellations, onPlaySong, onAddToQu
     loadPocketSongs(pocket);
   }, [loadPocketSongs]);
 
+  const handleSidebarClose = useCallback(() => {
+    setSelectedPocket(null);
+    setSelectedSongs([]);
+  }, []);
+
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -217,7 +227,6 @@ export default function ConstellationMap({ constellations, onPlaySong, onAddToQu
       const rect = canvas.parentElement.getBoundingClientRect();
       canvas.width = rect.width * dpr;
       canvas.height = rect.height * dpr;
-      ctx.scale(dpr, dpr);
       canvas.style.width = rect.width + "px";
       canvas.style.height = rect.height + "px";
     };
@@ -226,12 +235,18 @@ export default function ConstellationMap({ constellations, onPlaySong, onAddToQu
 
     const draw = () => {
       const state = animStateRef.current;
-      const w = canvas.width / (window.devicePixelRatio || 1);
-      const h = canvas.height / (window.devicePixelRatio || 1);
-      ctx.clearRect(0, 0, w, h);
+      const dpr = window.devicePixelRatio || 1;
+      const w = canvas.width / dpr;
+      const h = canvas.height / dpr;
+      const { panX, panY, zoom } = viewRef.current;
 
+      // Fill background at identity
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.fillStyle = "var(--bg-page)";
-      ctx.fillRect(0, 0, w, h);
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      // Apply pan/zoom/dpr transform
+      ctx.setTransform(dpr * zoom, 0, 0, dpr * zoom, panX * dpr, panY * dpr);
 
       for (const [id, s] of state) {
         s.x = lerp(s.x, s.targetX, 0.06);
@@ -240,111 +255,205 @@ export default function ConstellationMap({ constellations, onPlaySong, onAddToQu
         s.radius = lerp(s.radius, s.targetRadius, 0.06);
       }
 
-      ctx.lineWidth = 1;
-      for (let i = 0; i < pockets.length; i++) {
-        for (let j = i + 1; j < pockets.length; j++) {
-          const sim = similarityMatrix[i]?.[j] ?? 0;
-          if (sim < EDGE_THRESHOLD) continue;
-          const si = state.get(pockets[i].id);
-          const sj = state.get(pockets[j].id);
-          if (!si || !sj) continue;
-          const edgeAlpha = ((sim - EDGE_THRESHOLD) / (1 - EDGE_THRESHOLD)) * 0.35;
-          const edgeWidth = 1 + sim * 1.5;
-          const ci = MOOD_HUES[pockets[i].primary_mood] ?? 200;
-          const cj = MOOD_HUES[pockets[j].primary_mood] ?? 200;
-          const blendH = (ci + cj) / 2;
-          ctx.strokeStyle = hsla(blendH, 60, 55, edgeAlpha * Math.min(si.alpha, sj.alpha));
-          ctx.lineWidth = edgeWidth;
-          ctx.beginPath();
-          ctx.moveTo(si.x * w, si.y * h);
-          ctx.lineTo(sj.x * w, sj.y * h);
-          ctx.stroke();
+      // Check if settled
+      let settled = !isDraggingRef.current;
+      if (settled) {
+        for (const [, s] of state) {
+          if (Math.abs(s.x - s.targetX) > 0.001 ||
+              Math.abs(s.y - s.targetY) > 0.001 ||
+              Math.abs(s.alpha - s.targetAlpha) > 0.001 ||
+              Math.abs(s.radius - s.targetRadius) > 0.001) {
+            settled = false;
+            break;
+          }
         }
       }
 
-      const now = tickRef.current;
-      const mouse = mouseRef.current;
-      let newHovered = null;
-
-      for (const pocket of pockets) {
-        const s = state.get(pocket.id);
-        if (!s || s.alpha < 0.01) continue;
-        const cx = s.x * w;
-        const cy = s.y * h;
-        const isActive = pocket.id === activePocketId;
-
-        const dx = mouse.x - cx;
-        const dy = mouse.y - cy;
-        if (dx * dx + dy * dy < s.radius * s.radius) {
-          newHovered = pocket;
+      if (!settled) {
+        ctx.lineWidth = 1;
+        for (let i = 0; i < pockets.length; i++) {
+          for (let j = i + 1; j < pockets.length; j++) {
+            const sim = similarityMatrix[i]?.[j] ?? 0;
+            if (sim < EDGE_THRESHOLD) continue;
+            const si = state.get(pockets[i].id);
+            const sj = state.get(pockets[j].id);
+            if (!si || !sj) continue;
+            const edgeAlpha = ((sim - EDGE_THRESHOLD) / (1 - EDGE_THRESHOLD)) * 0.35;
+            const edgeWidth = 1 + sim * 1.5;
+            const ci = MOOD_HUES[pockets[i].primary_mood] ?? 200;
+            const cj = MOOD_HUES[pockets[j].primary_mood] ?? 200;
+            const blendH = (ci + cj) / 2;
+            ctx.strokeStyle = hsla(blendH, 60, 55, edgeAlpha * Math.min(si.alpha, sj.alpha));
+            ctx.lineWidth = edgeWidth;
+            ctx.beginPath();
+            ctx.moveTo(si.x * w, si.y * h);
+            ctx.lineTo(sj.x * w, sj.y * h);
+            ctx.stroke();
+          }
         }
 
-        if (isActive) {
-          const pulse = Math.sin(now * 2.5) * 0.3 + 0.5;
-          const glowR = s.radius + 10 + Math.sin(now * 2) * 6;
-          const glow = ctx.createRadialGradient(cx, cy, s.radius * 0.5, cx, cy, glowR);
+        const now = tickRef.current;
+        for (const pocket of pockets) {
+          const s = state.get(pocket.id);
+          if (!s || s.alpha < 0.01) continue;
+          const cx = s.x * w;
+          const cy = s.y * h;
+          const isActive = pocket.id === activePocketId;
+
+          if (isActive) {
+            const pulse = Math.sin(now * 2.5) * 0.3 + 0.5;
+            const glowR = s.radius + 10 + Math.sin(now * 2) * 6;
+            const glow = ctx.createRadialGradient(cx, cy, s.radius * 0.5, cx, cy, glowR);
+            const hue = MOOD_HUES[pocket.primary_mood] ?? 200;
+            glow.addColorStop(0, hsla(hue, 75, 60, pulse * 0.35 * s.alpha));
+            glow.addColorStop(0.6, hsla(hue, 70, 55, pulse * 0.12 * s.alpha));
+            glow.addColorStop(1, hsla(hue, 65, 50, 0));
+            ctx.beginPath();
+            ctx.arc(cx, cy, glowR, 0, Math.PI * 2);
+            ctx.fillStyle = glow;
+            ctx.fill();
+          }
+
           const hue = MOOD_HUES[pocket.primary_mood] ?? 200;
-          glow.addColorStop(0, hsla(hue, 75, 60, pulse * 0.35 * s.alpha));
-          glow.addColorStop(0.6, hsla(hue, 70, 55, pulse * 0.12 * s.alpha));
-          glow.addColorStop(1, hsla(hue, 65, 50, 0));
+          const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, s.radius);
+          grad.addColorStop(0, hsla(hue, 75, 65, 0.85 * s.alpha));
+          grad.addColorStop(0.5, hsla(hue, 65, 58, 0.45 * s.alpha));
+          grad.addColorStop(1, hsla(hue, 55, 50, 0));
           ctx.beginPath();
-          ctx.arc(cx, cy, glowR, 0, Math.PI * 2);
-          ctx.fillStyle = glow;
+          ctx.arc(cx, cy, s.radius, 0, Math.PI * 2);
+          ctx.fillStyle = grad;
           ctx.fill();
-        }
 
-        const hue = MOOD_HUES[pocket.primary_mood] ?? 200;
-        const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, s.radius);
-        grad.addColorStop(0, hsla(hue, 75, 65, 0.85 * s.alpha));
-        grad.addColorStop(0.5, hsla(hue, 65, 58, 0.45 * s.alpha));
-        grad.addColorStop(1, hsla(hue, 55, 50, 0));
-        ctx.beginPath();
-        ctx.arc(cx, cy, s.radius, 0, Math.PI * 2);
-        ctx.fillStyle = grad;
-        ctx.fill();
-
-        ctx.beginPath();
-        ctx.arc(cx, cy, s.radius * 0.3, 0, Math.PI * 2);
-        ctx.fillStyle = hsla(hue, 80, 75, 0.9 * s.alpha);
-        ctx.fill();
-
-        if (isActive) {
           ctx.beginPath();
           ctx.arc(cx, cy, s.radius * 0.3, 0, Math.PI * 2);
-          ctx.strokeStyle = hsla(hue, 80, 80, 0.6 * s.alpha);
-          ctx.lineWidth = 1.5;
-          ctx.stroke();
+          ctx.fillStyle = hsla(hue, 80, 75, 0.9 * s.alpha);
+          ctx.fill();
+
+          if (isActive) {
+            ctx.beginPath();
+            ctx.arc(cx, cy, s.radius * 0.3, 0, Math.PI * 2);
+            ctx.strokeStyle = hsla(hue, 80, 80, 0.6 * s.alpha);
+            ctx.lineWidth = 1.5;
+            ctx.stroke();
+          }
+
+          ctx.font = "600 10px 'DM Sans', sans-serif";
+          ctx.textAlign = "center";
+          ctx.fillStyle = hsla(hue, 65, 70, 0.9 * s.alpha);
+          ctx.fillText(MOOD_LABELS[pocket.primary_mood] || pocket.primary_mood, cx, cy + s.radius + 14);
+          ctx.font = "10px 'DM Sans', sans-serif";
+          ctx.fillStyle = hsla(hue, 50, 60, 0.7 * s.alpha);
+          ctx.fillText(`${pocket.song_count} songs`, cx, cy + s.radius + 26);
         }
 
-        ctx.font = "600 10px 'DM Sans', sans-serif";
-        ctx.textAlign = "center";
-        ctx.fillStyle = hsla(hue, 65, 70, 0.9 * s.alpha);
-        ctx.fillText(MOOD_LABELS[pocket.primary_mood] || pocket.primary_mood, cx, cy + s.radius + 14);
-        ctx.font = "10px 'DM Sans', sans-serif";
-        ctx.fillStyle = hsla(hue, 50, 60, 0.7 * s.alpha);
-        ctx.fillText(`${pocket.song_count} songs`, cx, cy + s.radius + 26);
+        tickRef.current += 0.016;
       }
 
-      setHoveredPocket(newHovered);
-      tickRef.current += 0.016;
-      rafRef.current = requestAnimationFrame(draw);
+      rafRef.current = settled ? null : requestAnimationFrame(draw);
     };
 
-    rafRef.current = requestAnimationFrame(draw);
+    rafResumerRef.current = () => {
+      if (rafRef.current || !canvas) return;
+      rafRef.current = requestAnimationFrame(draw);
+    };
+    rafResumerRef.current();
 
     return () => {
       window.removeEventListener("resize", resize);
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
     };
   }, [pockets, similarityMatrix, activePocketId]);
 
-  const handleMouseMove = useCallback((e) => {
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const onWheel = (e) => {
+      e.preventDefault();
+      const rect = canvas.getBoundingClientRect();
+      const mx = e.clientX - rect.left;
+      const my = e.clientY - rect.top;
+      const oldZoom = viewRef.current.zoom;
+      const delta = -e.deltaY * 0.0015;
+      const newZoom = Math.min(4, Math.max(0.4, oldZoom * (1 + delta)));
+      viewRef.current.zoom = newZoom;
+      viewRef.current.panX = mx - (mx - viewRef.current.panX) * (newZoom / oldZoom);
+      viewRef.current.panY = my - (my - viewRef.current.panY) * (newZoom / oldZoom);
+      rafResumerRef.current?.();
+    };
+    canvas.addEventListener("wheel", onWheel, { passive: false });
+    return () => canvas.removeEventListener("wheel", onWheel);
+  }, []);
+
+  const handlePointerDown = useCallback((e) => {
+    if (hoveredPocket) return;
+    isDraggingRef.current = true;
+    didDragRef.current = false;
+    rafResumerRef.current?.();
     const rect = e.currentTarget.getBoundingClientRect();
-    mouseRef.current = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    dragStartRef.current = {
+      panX: viewRef.current.panX,
+      panY: viewRef.current.panY,
+      pointerX: e.clientX - rect.left,
+      pointerY: e.clientY - rect.top,
+    };
+    e.currentTarget.setPointerCapture(e.pointerId);
+    e.currentTarget.style.cursor = "grabbing";
+  }, [hoveredPocket]);
+
+  const handlePointerMove = useCallback((e) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+    const { panX, panY, zoom } = viewRef.current;
+
+    if (isDraggingRef.current) {
+      const ds = dragStartRef.current;
+      const dx = mx - ds.pointerX;
+      const dy = my - ds.pointerY;
+      if (dx * dx + dy * dy > 9) {
+        didDragRef.current = true;
+      }
+      viewRef.current.panX = ds.panX + dx;
+      viewRef.current.panY = ds.panY + dy;
+      rafResumerRef.current?.();
+      e.currentTarget.style.cursor = "grabbing";
+      return;
+    }
+
+    mouseRef.current = { x: mx, y: my };
     setTooltipPos({ x: e.clientX, y: e.clientY });
+
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const dpr = window.devicePixelRatio || 1;
+    const w = canvas.width / dpr;
+    const h = canvas.height / dpr;
+    const worldX = (mx - panX) / zoom;
+    const worldY = (my - panY) / zoom;
+    let newHovered = null;
+    const state = animStateRef.current;
+    for (const pocket of pockets) {
+      const s = state.get(pocket.id);
+      if (!s || s.alpha < 0.01) continue;
+      const cx = s.x * w, cy = s.y * h;
+      const dx = worldX - cx, dy = worldY - cy;
+      if (dx * dx + dy * dy < s.radius * s.radius) {
+        newHovered = pocket;
+        break;
+      }
+    }
+    hoveredPocketRef.current = newHovered;
+    setHoveredPocket((prev) => (prev === newHovered ? prev : newHovered));
+    canvas.style.cursor = newHovered ? "pointer" : "grab";
+  }, [pockets]);
+
+  const handlePointerUp = useCallback(() => {
+    isDraggingRef.current = false;
   }, []);
 
   const handleClick = useCallback((e) => {
+    if (didDragRef.current) return;
     if (hoveredPocket) {
       handlePocketClick(hoveredPocket);
     } else {
@@ -352,6 +461,12 @@ export default function ConstellationMap({ constellations, onPlaySong, onAddToQu
       setSelectedSongs([]);
     }
   }, [hoveredPocket, handlePocketClick]);
+
+  const resetView = useCallback(() => {
+    viewRef.current = { panX: 0, panY: 0, zoom: 1 };
+  }, []);
+
+
 
   return (
     <div style={{ display: "flex", height: "100%", width: "100%" }}>
@@ -368,19 +483,30 @@ export default function ConstellationMap({ constellations, onPlaySong, onAddToQu
             {pockets.length} pocket{pockets.length !== 1 ? "s" : ""}
           </span>
         </div>
-        <button onClick={onClose} style={{
-          position: "absolute", top: 12, right: 16, zIndex: 2,
-          background: "var(--bg-elevated)", border: "1px solid var(--border)",
-          borderRadius: 6, padding: "4px 8px", cursor: "pointer",
-          color: "var(--text-muted)", fontSize: 12, display: "flex", alignItems: "center", gap: 4,
-        }}>
-          <X size={14} />
-        </button>
+        <div style={{ position: "absolute", top: 12, right: 16, zIndex: 2, display: "flex", gap: 6 }}>
+          <button onClick={resetView} title="Reset view" style={{
+            background: "var(--bg-elevated)", border: "1px solid var(--border)",
+            borderRadius: 6, padding: "4px 8px", cursor: "pointer",
+            color: "var(--text-muted)", fontSize: 12, display: "flex", alignItems: "center", gap: 4,
+          }}>
+            <RotateCcw size={14} />
+          </button>
+          <button onClick={onClose} style={{
+            background: "var(--bg-elevated)", border: "1px solid var(--border)",
+            borderRadius: 6, padding: "4px 8px", cursor: "pointer",
+            color: "var(--text-muted)", fontSize: 12, display: "flex", alignItems: "center", gap: 4,
+          }}>
+            <X size={14} />
+          </button>
+        </div>
         <canvas
           ref={canvasRef}
-          onMouseMove={handleMouseMove}
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={handlePointerUp}
+          onPointerLeave={handlePointerUp}
           onClick={handleClick}
-          style={{ display: "block", width: "100%", height: "100%", cursor: hoveredPocket ? "pointer" : "default" }}
+          style={{ display: "block", width: "100%", height: "100%", touchAction: "none" }}
         />
         {hoveredPocket && (
           <PocketTooltip pocket={hoveredPocket} x={tooltipPos.x} y={tooltipPos.y} />
@@ -413,7 +539,7 @@ export default function ConstellationMap({ constellations, onPlaySong, onAddToQu
         loading={songsLoading}
         onPlaySong={onPlaySong}
         onAddToQueue={onAddToQueue}
-        onClose={() => { setSelectedPocket(null); setSelectedSongs([]); }}
+        onClose={handleSidebarClose}
       />
     </div>
   );

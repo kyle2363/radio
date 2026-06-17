@@ -156,6 +156,20 @@ def add_missing_columns():
         if "duration" not in sf_columns:
             conn.execute("ALTER TABLE skip_feedback ADD COLUMN duration TEXT")
 
+        # Migration: add v2 energy feature columns
+        for col in ["onset_density", "spectral_flux", "spectral_centroid",
+                     "rms_envelope_variance"]:
+            if col not in columns:
+                conn.execute(f"ALTER TABLE songs ADD COLUMN {col} REAL")
+        if "lufs" not in columns:
+            conn.execute("ALTER TABLE songs ADD COLUMN lufs REAL DEFAULT -25.0")
+
+        # Migration: add user_energy columns
+        if "user_energy" not in columns:
+            conn.execute("ALTER TABLE songs ADD COLUMN user_energy REAL")
+            conn.execute("ALTER TABLE songs ADD COLUMN user_energy_count INTEGER DEFAULT 0")
+            conn.execute("ALTER TABLE songs ADD COLUMN user_energy_updated_at REAL")
+
         # Ensure song_suppression table exists (in case schema.sql wasn't re-run)
         conn.execute(
             """CREATE TABLE IF NOT EXISTS song_suppression (
@@ -386,6 +400,9 @@ _ALLOWED_SONG_COLUMNS = {
     "spectral_rolloff", "spectral_flatness",
     "duration_secs", "rms_envelope", "dj_effect_eligible",
     "subfolder", "cluster_id", "gain_db", "file_mtime",
+    "onset_density", "spectral_flux", "spectral_centroid",
+    "rms_envelope_variance", "lufs",
+    "user_energy", "user_energy_count", "user_energy_updated_at",
 }
 
 
@@ -443,6 +460,40 @@ def get_all_song_ids():
     try:
         rows = conn.execute("SELECT id FROM songs ORDER BY id").fetchall()
         return [r["id"] for r in rows]
+    finally:
+        conn.close()
+
+
+def get_all_songs_filepaths():
+    """Return all songs with id, filepath, artist, title for reprocessing."""
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT id, filepath, artist, title FROM songs ORDER BY id"
+        ).fetchall()
+        return [_row_to_dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def get_all_raw_features():
+    """Return all songs with their raw audio features for normalization.
+
+    Includes both v1 features (raw_rms, crest_factor, ...) and
+    v2 features (onset_density, spectral_flux, ..., bpm).
+    """
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """SELECT id, raw_rms, crest_factor, spectral_contrast,
+                      spectral_rolloff, spectral_flatness,
+                      onset_density, spectral_flux, spectral_centroid,
+                      lufs, rms_envelope_variance, bpm
+               FROM songs
+               WHERE raw_rms IS NOT NULL
+               ORDER BY id"""
+        ).fetchall()
+        return [_row_to_dict(r) for r in rows]
     finally:
         conn.close()
 
@@ -1211,6 +1262,24 @@ def set_setting(key, value):
         conn.close()
 
 
+def get_setting_int(key: str, default: int = 0) -> int:
+    """Read a setting and safely coerce to int with a fallback default."""
+    try:
+        raw = get_setting(key)
+        return int(raw) if raw is not None and raw.strip() else default
+    except (ValueError, TypeError):
+        return default
+
+
+def get_setting_float(key: str, default: float = 0.0) -> float:
+    """Read a setting and safely coerce to float with a fallback default."""
+    try:
+        raw = get_setting(key)
+        return float(raw) if raw is not None and raw.strip() else default
+    except (ValueError, TypeError):
+        return default
+
+
 def get_all_settings():
     conn = get_connection()
     try:
@@ -1415,12 +1484,12 @@ def calculate_recovery_score(song_id):
 
     Formula: 0.7 * behavioral + 0.3 * prior
       behavioral = (complete / total) * log(play_count + 1)
-      prior = (1 - energy) * valence  (calm + pleasant = good recovery)
+      prior = (1 - effective_energy) * valence  (calm + pleasant = good recovery)
     """
     conn = get_connection()
     try:
         row = conn.execute(
-            "SELECT complete_count, skip_count, play_count, energy, valence FROM songs WHERE id = ?",
+            "SELECT complete_count, skip_count, play_count, energy, valence, user_energy, user_energy_count FROM songs WHERE id = ?",
             (song_id,),
         ).fetchone()
         if not row:
@@ -1430,13 +1499,16 @@ def calculate_recovery_score(song_id):
         plays = row["play_count"]
         energy = row["energy"] or 0.5
         valence = row["valence"] or 0.5
+        user_energy = row["user_energy"]
+        user_count = row["user_energy_count"] or 0
+        effective_energy = round(0.7 * energy + 0.3 * user_energy, 4) if user_count > 0 and user_energy is not None else energy
         total = complete + skip
         if total == 0:
             behavioral = 0.5
         else:
             behavioral = (complete / total) * math.log(plays + 1)
-        # Prior: calm (low energy) + pleasant (high valence) = good recovery
-        prior = (1 - energy) * valence
+        # Prior: calm (low effective_energy) + pleasant (high valence) = good recovery
+        prior = (1 - effective_energy) * valence
         score = 0.7 * behavioral + 0.3 * prior
         score = min(1.0, score)
         conn.execute(
@@ -1520,6 +1592,69 @@ def get_cluster_staleness():
         for r in rows:
             result[r["cluster_id"]] = r["hours_ago"] if r["hours_ago"] is not None else 24.0
         return result
+    finally:
+        conn.close()
+
+
+def get_rating_candidates(n_cluster=20, n_extremes=10):
+    """Return candidate songs for energy rating.
+
+    20 cluster-median songs (one per cluster, sorted by energy) +
+    up to 10 extreme songs (user-pinned via 'rating_extreme_song_ids'
+    setting, or 5 lowest + 5 highest by energy).
+
+    Returns list of dicts with id, artist, title, energy, cluster_id, source.
+    """
+    conn = get_connection()
+    try:
+        cluster_rows = conn.execute("""
+            WITH ranked AS (
+                SELECT id, artist, title, cluster_id, energy,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY cluster_id
+                        ORDER BY ABS(energy - 0.5)
+                    ) AS rn
+                FROM songs
+                WHERE ingest_phase = 'clustered'
+            )
+            SELECT id, artist, title, energy, cluster_id, 'cluster_median' AS source
+            FROM ranked WHERE rn = 1
+            ORDER BY energy
+            LIMIT ?
+        """, (n_cluster,)).fetchall()
+
+        pinned = get_setting("rating_extreme_song_ids")
+        extreme_rows = []
+        if pinned:
+            try:
+                ids = json.loads(pinned)
+                if isinstance(ids, list) and ids:
+                    placeholders = ",".join("?" * len(ids))
+                    extreme_rows = conn.execute(
+                        f"""SELECT id, artist, title, energy, cluster_id, 'user_picked' AS source
+                            FROM songs WHERE id IN ({placeholders})""",
+                        ids,
+                    ).fetchall()
+            except (json.JSONDecodeError, TypeError):
+                pass
+        if len(extreme_rows) < n_extremes:
+            existing_ids = {r["id"] for r in extreme_rows}
+            low = conn.execute("""
+                SELECT id, artist, title, energy, cluster_id, 'energy_extreme' AS source
+                FROM songs WHERE ingest_phase = 'clustered'
+                ORDER BY energy ASC LIMIT ?
+            """, (n_extremes // 2 + 1,)).fetchall()
+            high = conn.execute("""
+                SELECT id, artist, title, energy, cluster_id, 'energy_extreme' AS source
+                FROM songs WHERE ingest_phase = 'clustered'
+                ORDER BY energy DESC LIMIT ?
+            """, (n_extremes // 2 + 1,)).fetchall()
+            for r in low + high:
+                if r["id"] not in existing_ids and len(extreme_rows) < n_extremes:
+                    extreme_rows.append(r)
+                    existing_ids.add(r["id"])
+
+        return [_row_to_dict(r) for r in cluster_rows] + [_row_to_dict(r) for r in extreme_rows]
     finally:
         conn.close()
 
@@ -1674,5 +1809,167 @@ def cleanup_expired_suppressions():
     try:
         conn.execute("DELETE FROM song_suppression WHERE expires_at IS NOT NULL AND expires_at < datetime('now')")
         conn.commit()
+    finally:
+        conn.close()
+
+
+# ── User energy correction layer (PR 3) ──
+
+def set_user_energy(song_id, value):
+    """Record a user energy rating as running mean.
+
+    Args:
+        song_id: int
+        value: float 0.0-1.0
+    """
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT user_energy, user_energy_count FROM songs WHERE id = ?",
+            (song_id,),
+        ).fetchone()
+        n = row["user_energy_count"] or 0 if row else 0
+        prev = row["user_energy"] or 0.0 if row else 0.0
+        new_value = (prev * n + value) / (n + 1)
+        conn.execute(
+            "UPDATE songs SET user_energy = ?, user_energy_count = ?, user_energy_updated_at = ? WHERE id = ?",
+            (round(new_value, 4), n + 1, time.time(), song_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def clear_user_energy(song_id):
+    """Remove the user rating for a song (hard delete)."""
+    conn = get_connection()
+    try:
+        conn.execute(
+            "UPDATE songs SET user_energy = NULL, user_energy_count = 0, user_energy_updated_at = NULL WHERE id = ?",
+            (song_id,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_effective_energy(song_id):
+    """Return effective energy for a song: 0.7 * base + 0.3 * user_energy.
+
+    Falls back to base energy if no user rating exists.
+    Returns 0.5 if song not found.
+    """
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT energy, user_energy, user_energy_count FROM songs WHERE id = ?",
+            (song_id,),
+        ).fetchone()
+        if not row:
+            return 0.5
+        base = row["energy"] or 0.5
+        n = row["user_energy_count"] or 0
+        if n == 0 or row["user_energy"] is None:
+            return base
+        return round(0.7 * base + 0.3 * row["user_energy"], 4)
+    finally:
+        conn.close()
+
+
+def get_effective_energy_batch(song_ids):
+    """Return {song_id: effective_energy} for a list of song IDs.
+
+    Single SQL query — batch lookups without N+1.
+    """
+    if not song_ids:
+        return {}
+    conn = get_connection()
+    try:
+        placeholders = ",".join("?" for _ in song_ids)
+        rows = conn.execute(
+            f"SELECT id, energy, user_energy, user_energy_count FROM songs WHERE id IN ({placeholders})",
+            song_ids,
+        ).fetchall()
+        result = {}
+        for r in rows:
+            base = r["energy"] or 0.5
+            n = r["user_energy_count"] or 0
+            if n == 0 or r["user_energy"] is None:
+                result[r["id"]] = base
+            else:
+                result[r["id"]] = round(0.7 * base + 0.3 * r["user_energy"], 4)
+        return result
+    finally:
+        conn.close()
+
+
+def get_calibration_sample(n=20):
+    """Pick n random clusters from the library, return one song per cluster.
+
+    Each session picks a different random subset.  Songs already rated by
+    the user are marked with 'rated': True.
+
+    Returns list of dicts with id, artist, title, energy, user_energy,
+    user_energy_count, cluster_id, rated.
+    """
+    import random as _random
+    conn = get_connection()
+    try:
+        cluster_ids = [
+            r["cluster_id"] for r in conn.execute(
+                "SELECT DISTINCT cluster_id FROM songs WHERE cluster_id >= 0 AND ingest_phase = 'clustered'"
+            ).fetchall()
+        ]
+        n = min(n, len(cluster_ids))
+        chosen = _random.sample(cluster_ids, n)
+        result = []
+        for cid in chosen:
+            row = conn.execute("""
+                SELECT id, artist, title, energy, user_energy, user_energy_count
+                FROM songs
+                WHERE cluster_id = ? AND ingest_phase = 'clustered'
+                ORDER BY ABS(energy - 0.5)
+                LIMIT 1
+            """, (cid,)).fetchone()
+            if row:
+                d = _row_to_dict(row)
+                d["cluster_id"] = cid
+                d["rated"] = (d.get("user_energy_count") or 0) > 0
+                result.append(d)
+        return result
+    finally:
+        conn.close()
+
+
+def get_top_anchors_for_energy(band_lo, band_hi, k=3):
+    """Return up to k songs whose user_energy is in [band_lo, band_hi).
+
+    Sorted by user_energy_count DESC (most confident first).
+    Falls back to library songs in the band if no user-rated songs.
+    """
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """SELECT id, artist, title, energy, user_energy, user_energy_count
+               FROM songs
+               WHERE user_energy IS NOT NULL AND user_energy_count > 0
+                 AND user_energy >= ? AND user_energy < ?
+               ORDER BY user_energy_count DESC
+               LIMIT ?""",
+            (band_lo, band_hi, k),
+        ).fetchall()
+        if len(rows) >= k:
+            return [_row_to_dict(r) for r in rows]
+        existing_ids = {r["id"] for r in rows}
+        fallback = conn.execute(
+            """SELECT id, artist, title, energy, user_energy, user_energy_count
+               FROM songs
+               WHERE id NOT IN ({})
+                 AND energy >= ? AND energy < ?
+               ORDER BY RANDOM()
+               LIMIT ?""".format(",".join("?" for _ in existing_ids) if existing_ids else "0"),
+            list(existing_ids) + [band_lo, band_hi, k - len(rows)] if existing_ids else [band_lo, band_hi, k],
+        ).fetchall()
+        return [_row_to_dict(r) for r in rows] + [_row_to_dict(r) for r in fallback]
     finally:
         conn.close()

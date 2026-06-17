@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import * as api from "../api";
 
 const PHASES = [
@@ -21,6 +21,12 @@ const PHASE_PROGRESS_MAP = {
   audio_embedded: "audio_embed",
   clustered: "cluster",
   lyrics_timed: "lyrics_timing",
+  "reprocess:analyze": "reprocess",
+  "reprocess:normalize": "reprocess",
+  "reprocess:recovery": "reprocess",
+  "reprocess:embed": "reprocess",
+  "reprocess:cluster": "reprocess",
+  "reprocess:done": "reprocess",
 };
 
 function IngestPanel({ addToast }) {
@@ -34,6 +40,11 @@ function IngestPanel({ addToast }) {
   const [failures, setFailures] = useState([]);
   const [showFailures, setShowFailures] = useState(false);
   const [reembedding, setReembedding] = useState(false);
+  const [reprocessing, setReprocessing] = useState(false);
+  const [reprocReembed, setReprocReembed] = useState(true);
+  const [reprocRecluster, setReprocRecluster] = useState(true);
+  const [showReprocessConfirm, setShowReprocessConfirm] = useState(false);
+  const wasRunningRef = useRef(false);
 
   const total = phaseStatus ? Object.values(phaseStatus).reduce((a, b) => a + b, 0) : 0;
 
@@ -49,9 +60,15 @@ function IngestPanel({ addToast }) {
       if (progressData?.running && progressData?.phase) {
         const phaseKey = PHASE_PROGRESS_MAP[progressData.phase] || null;
         setRunningPhase(phaseKey);
+        wasRunningRef.current = true;
       } else {
         setRunningPhase(null);
         setRunningAll(false);
+        if (wasRunningRef.current && reprocessing) {
+          setReprocessing(false);
+          addToast?.("Reprocess complete!", "success");
+        }
+        wasRunningRef.current = false;
       }
     } catch (e) {}
   }, []);
@@ -111,6 +128,20 @@ function IngestPanel({ addToast }) {
     }
   }
 
+  async function handleReprocess() {
+    setReprocessing(true);
+    setShowReprocessConfirm(false);
+    wasRunningRef.current = false;
+    try {
+      await api.reprocessEnergy(reprocReembed, reprocRecluster);
+      addToast?.("Reprocess started (∼30-60 min) — progress shown below", "success");
+      fetchData();
+    } catch (e) {
+      addToast?.("Reprocess failed: " + (e.message || "unknown error"), "error");
+      setReprocessing(false);
+    }
+  }
+
   async function handleRunPhase(apiPhase) {
     try {
       const data = await api.runIngestPhase(apiPhase);
@@ -128,12 +159,12 @@ function IngestPanel({ addToast }) {
     }
   }
 
-  const isRunning = runningPhase || runningAll || reembedding;
+  const isRunning = runningPhase || runningAll || reembedding || reprocessing;
 
   return (
     <div>
       {/* Action buttons */}
-      <div style={{ display: "flex", gap: "8px", marginBottom: "10px" }}>
+      <div style={{ display: "flex", gap: "8px", marginBottom: "10px", flexWrap: "wrap" }}>
         <button onClick={handleScan} disabled={isRunning}
           style={{ fontSize: "11px", padding: "5px 12px", borderRadius: "5px", background: "var(--bg-elevated)", border: "1px solid var(--border)", color: "var(--text-secondary)", cursor: isRunning ? "default" : "pointer", opacity: isRunning ? 0.4 : 1, display: "flex", alignItems: "center", gap: "4px" }}>
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
@@ -149,7 +180,46 @@ function IngestPanel({ addToast }) {
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="1 4 1 10 7 10"/><polyline points="23 20 23 14 17 14"/><path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15"/></svg>
           {reembedding ? "Re-embedding..." : "Re-embed all"}
         </button>
+        <button onClick={() => setShowReprocessConfirm(true)} disabled={isRunning}
+          style={{ fontSize: "11px", padding: "5px 12px", borderRadius: "5px", background: reprocessing ? "var(--accent-muted)" : "var(--bg-elevated)", border: `1px solid ${reprocessing ? "var(--accent)" : "var(--border)"}`, color: reprocessing ? "var(--accent)" : "var(--text-secondary)", cursor: isRunning ? "default" : "pointer", opacity: isRunning ? 0.4 : 1, display: "flex", alignItems: "center", gap: "4px", fontWeight: reprocessing ? 500 : 400 }}>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/></svg>
+          {reprocessing ? "Reprocessing..." : "Reprocess Energy"}
+        </button>
       </div>
+
+      {/* Reprocess confirmation dialog */}
+      {showReprocessConfirm && (
+        <div style={{ marginBottom: "10px", padding: "10px 14px", borderRadius: "8px", background: "rgba(226,75,74,0.08)", border: "1px solid rgba(226,75,74,0.25)" }}>
+          <div style={{ fontSize: "12px", color: "var(--text)", marginBottom: "8px", lineHeight: 1.4 }}>
+            <b>Reprocess Energy for all songs?</b>
+            <br />
+            <span style={{ color: "var(--text-muted)", fontSize: "11px" }}>
+              This will re-analyze all 1809 songs to extract improved energy features (∼30–60 min).
+              LLM tagging and WhisperX are not run.
+            </span>
+          </div>
+          <div style={{ display: "flex", gap: "12px", marginBottom: "10px", fontSize: "12px" }}>
+            <label style={{ display: "flex", alignItems: "center", gap: "4px", cursor: "pointer", color: "var(--text-secondary)" }}>
+              <input type="checkbox" checked={reprocReembed} onChange={(e) => setReprocReembed(e.target.checked)} />
+              Re-embed
+            </label>
+            <label style={{ display: "flex", alignItems: "center", gap: "4px", cursor: "pointer", color: "var(--text-secondary)" }}>
+              <input type="checkbox" checked={reprocRecluster} onChange={(e) => setReprocRecluster(e.target.checked)} />
+              Re-cluster
+            </label>
+          </div>
+          <div style={{ display: "flex", gap: "6px" }}>
+            <button onClick={handleReprocess}
+              style={{ padding: "5px 14px", borderRadius: "5px", fontSize: "11px", background: "var(--danger)", border: "none", color: "#fff", cursor: "pointer", fontWeight: 500 }}>
+              Start Reprocess
+            </button>
+            <button onClick={() => setShowReprocessConfirm(false)}
+              style={{ padding: "5px 14px", borderRadius: "5px", fontSize: "11px", background: "transparent", border: "1px solid var(--border)", color: "var(--text-muted)", cursor: "pointer" }}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Phase rows */}
       <div style={{ display: "flex", flexDirection: "column", gap: "1px" }}>

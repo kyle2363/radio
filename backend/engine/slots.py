@@ -170,7 +170,7 @@ def allocate_slots(candidates, current_song, vibe_lock=None, exploration_level=0
         for c in sorted_candidates:
             sid = _get_song_id(c)
             if sid not in assigned_ids and c.get("cluster_id") != current_cluster:
-                if c.get("cluster_id") in active_pocket.song_ids:
+                if sid in active_pocket.song_ids:
                     c["_explore_weight"] = c.get("score", 0.5) * 1.2  # soft boost
 
     explore_sorted = sorted(
@@ -218,7 +218,7 @@ def allocate_slots(candidates, current_song, vibe_lock=None, exploration_level=0
         for c in sorted_candidates:
             sid = _get_song_id(c)
             if sid not in assigned_ids and c.get("cluster_id") != current_cluster:
-                if c.get("cluster_id") in hop_pocket.song_ids:
+                if sid in hop_pocket.song_ids:
                     c["_wildcard_weight"] = c.get("score", 0.5) * 1.3  # strong hop boost
 
     wildcard_sorted = sorted(
@@ -261,6 +261,12 @@ def allocate_slots(candidates, current_song, vibe_lock=None, exploration_level=0
     # Context: matches energy trajectory, not already assigned
     if current_song:
         target_energy = current_song.get("energy", 0.5)
+        if current_song.get("id"):
+            try:
+                from db import database as _db
+                target_energy = _db.get_effective_energy(current_song["id"])
+            except Exception:
+                pass
         for c in sorted_candidates:
             sid = _get_song_id(c)
             if sid not in assigned_ids:

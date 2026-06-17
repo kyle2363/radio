@@ -26,14 +26,13 @@ _ingest_progress = {
 
 def _reset_progress():
     global _ingest_progress
-    _ingest_progress = {
-        "running": False,
-        "phase": None,
-        "current_song": None,
-        "total": 0,
-        "processed": 0,
-        "results": None,
-    }
+    _ingest_progress.clear()
+    _ingest_progress["running"] = False
+    _ingest_progress["phase"] = None
+    _ingest_progress["current_song"] = None
+    _ingest_progress["total"] = 0
+    _ingest_progress["processed"] = 0
+    _ingest_progress["results"] = None
 
 
 def get_ingest_progress():

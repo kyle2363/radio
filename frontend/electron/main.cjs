@@ -24,6 +24,28 @@ let registeredHotkeys = [];
 let powerSaveBlockerId = null;
 let notifyOnSongChange = false;
 let widgetEnabled = false;
+let appIconStyle = "drift";
+
+const ICONS_DIR = path.join(__dirname, "icons");
+function currentOsMode() {
+  try { return nativeTheme.shouldUseDarkColors ? "dark" : "light"; } catch (_) { return "dark"; }
+}
+function iconPathFor(style, variant = "tray", mode) {
+  const safe = ["drift", "orbit", "pulse", "spectrum"].includes(style) ? style : "drift";
+  const m = mode || currentOsMode();
+  const file = variant === "tray" ? `${safe}-${m}-tray.png` : `${safe}-${m}.png`;
+  return path.join(ICONS_DIR, file);
+}
+
+async function loadAppIconStyle() {
+  try {
+    const resp = await fetch(`${API_URL}/api/settings/app_icon_style`);
+    if (resp.ok) {
+      const data = await resp.json();
+      appIconStyle = ["drift", "orbit", "pulse", "spectrum"].includes(data.value) ? data.value : "drift";
+    }
+  } catch (_) {}
+}
 
 // ── Window State Persistence ─────────────────────────────────
 function getWindowStatePath() {
@@ -70,6 +92,7 @@ function createWindow() {
     height: screenHeight,
     minWidth: 440,
     minHeight: 110,
+    title: "Radio",
     frame: true,
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
@@ -134,10 +157,10 @@ function createWindow() {
 
 // ── Tray ──────────────────────────────────────────────────────
 function createTray() {
-  const iconPath = path.join(__dirname, "tray-icon.png");
+  const iconPath = iconPathFor(appIconStyle, "tray");
   let icon;
   if (fs.existsSync(iconPath)) {
-    icon = iconPath;
+    icon = nativeImage.createFromPath(iconPath);
   } else {
     const size = 16;
     const canvas = Buffer.alloc(size * size * 4);
@@ -168,6 +191,28 @@ function createTray() {
     mainWindow.show();
     mainWindow.focus();
   });
+}
+
+function updateTrayIcon(style) {
+  if (!["drift", "orbit", "pulse", "spectrum"].includes(style)) return;
+  appIconStyle = style;
+  refreshTrayIcon();
+  refreshWindowIcon();
+}
+
+function refreshTrayIcon() {
+  if (!tray) return;
+  const iconPath = iconPathFor(appIconStyle, "tray");
+  if (!fs.existsSync(iconPath)) return;
+  tray.setImage(nativeImage.createFromPath(iconPath));
+}
+
+function refreshWindowIcon() {
+  if (!mainWindow) return;
+  const iconPath = iconPathFor(appIconStyle, "full");
+  if (fs.existsSync(iconPath)) {
+    mainWindow.setIcon(nativeImage.createFromPath(iconPath));
+  }
 }
 
 function rebuildTrayMenu() {
@@ -393,6 +438,16 @@ function registerAllHotkeys(overrides) {
 }
 
 // ── System Events (Power Monitor) ─────────────────────────────
+function setupNativeThemeWatcher() {
+  // Swap tray + window icon when Windows theme changes
+  try {
+    nativeTheme.on("updated", () => {
+      refreshTrayIcon();
+      refreshWindowIcon();
+    });
+  } catch (_) {}
+}
+
 function setupPowerMonitor() {
   // Pause on screen lock
   powerMonitor.on("lock-screen", async () => {
@@ -468,7 +523,9 @@ function sendSongNotification(artist, title) {
     title: "Now Playing",
     body: `${artist || "Unknown"} — ${title || "Unknown"}`,
     silent: true,
-    icon: path.join(__dirname, "tray-icon.png"),
+    icon: fs.existsSync(iconPathFor(appIconStyle, "full"))
+      ? iconPathFor(appIconStyle, "full")
+      : path.join(__dirname, "tray-icon.png"),
   });
 
   notification.show();
@@ -562,6 +619,13 @@ function destroyWidget() {
     widgetWindow.close();
     widgetWindow = null;
   }
+}
+
+function updateWindowTitle(artist, title) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  mainWindow.setTitle(
+    title ? `${artist || "Unknown"} — ${title} • Radio` : "Radio"
+  );
 }
 
 function updateWidget(artist, title) {
@@ -679,6 +743,7 @@ function setupIPC() {
   ipcMain.handle("update-tray-song", (_event, artist, title) => {
     currentSong = { artist, title };
     rebuildTrayMenu();
+    updateWindowTitle(artist, title);
   });
 
   ipcMain.handle("update-tray-mood", (_event, mood) => {
@@ -754,6 +819,11 @@ function setupIPC() {
     else if (key === "mini_player_enabled") miniPlayerEnabled = value === "true";
     else if (key === "widget_enabled") widgetEnabled = value === "true";
   });
+
+  // App icon style (drift/orbit/pulse/spectrum) — live update
+  ipcMain.handle("set-app-icon-style", (_event, style) => {
+    updateTrayIcon(style);
+  });
 }
 
 // ── Backend Process ───────────────────────────────────────────
@@ -816,10 +886,7 @@ function shutdownBackend() {
   } catch (_) {
     try { uvicornProcess.kill(); } catch (_) {}
   }
-  // Safety: kill any orphaned llama processes
-  try {
-    execSync("taskkill /F /IM llama-server.exe", { timeout: 3000, stdio: "ignore" });
-  } catch (_) {}
+  // PID-based /T flag above already kills the process tree; avoid IM kill (affects unrelated processes)
   uvicornProcess = null;
 }
 
@@ -842,11 +909,14 @@ app.whenReady().then(() => {
   });
 
   startBackend();
+  // Load persisted app icon style after backend is up so the API call succeeds
+  setTimeout(() => { loadAppIconStyle().then(() => { if (mainWindow) updateTrayIcon(appIconStyle); }); }, 1500);
   createWindow();
   createTray();
   registerAllHotkeys();
   setupIPC();
   setupPowerMonitor();
+  setupNativeThemeWatcher();
   setupJumpList();
   setupThumbnailToolbar();
 

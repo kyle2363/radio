@@ -21,7 +21,9 @@ import threading
 import tempfile
 import time
 from datetime import datetime
+from typing import List
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Form, Query, HTTPException
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
@@ -96,6 +98,13 @@ async def lifespan(app):
     from engine.dj_effects import cleanup_cache as cleanup_dj_cache
     cleanup_dj_cache(max_age_hours=24)
 
+    # Clear stale audio separator output on startup
+    try:
+        from engine.audio_separator import cleanup as cleanup_separator
+        cleanup_separator()
+    except Exception as e:
+        logger.warning("Audio separator cleanup failed: %s", e)
+
     # Clear stale TTS cache files on startup
     tts_cache_dir = config.TTS_CACHE_DIR
     if os.path.isdir(tts_cache_dir):
@@ -169,6 +178,18 @@ async def lifespan(app):
                     _playback_logger.debug("  <- play_next done")
             else:
                 _playback_logger.warning("  -> qm.pop_next() returned None — nothing to play!")
+                total = database.get_total_song_count()
+                if total == 0:
+                    _playback_logger.warning("Library is empty — no songs to play")
+                    broadcast("error", {"message": "Library is empty. Add music files and run ingest."})
+                else:
+                    try:
+                        blacklisted = database.get_blacklisted()
+                        if len(blacklisted) >= total:
+                            _playback_logger.warning("All songs are blacklisted")
+                            broadcast("error", {"message": "All songs are blacklisted. Remove some from the blacklist to resume playback."})
+                    except Exception as e:
+                        _playback_logger.error("Failed to check blacklist: %s", e)
         except Exception as e:
             _playback_logger.error("=== main._on_song_ended FAILED: %s", e, exc_info=True)
             # Stop playback to avoid stuck state; next user action will rebuild queue
@@ -274,7 +295,7 @@ app = FastAPI(title="Radio", version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000", "file://"],
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -465,6 +486,10 @@ class MetadataUpdateRequest(BaseModel):
 
 class DjEffectEligibleRequest(BaseModel):
     eligible: bool
+
+
+class SongsByIdsRequest(BaseModel):
+    song_ids: List[int]
 
 
 class ReorderRequest(BaseModel):
@@ -1165,6 +1190,36 @@ def get_song(song_id: int):
     return song
 
 
+@app.post("/api/songs/by-ids")
+def get_songs_by_ids(req: SongsByIdsRequest):
+    """Batch fetch song summaries (minimal fields) for the constellation sidebar."""
+    if not req.song_ids:
+        return {"songs": []}
+    ids = req.song_ids[:200]
+    conn = database.get_connection()
+    try:
+        placeholders = ",".join("?" * len(ids))
+        rows = conn.execute(
+            f"SELECT id, title, artist, energy, valence FROM songs WHERE id IN ({placeholders})",
+            ids,
+        ).fetchall()
+        songs = [
+            {
+                "id": r["id"],
+                "title": r["title"],
+                "artist": r["artist"],
+                "energy": r["energy"],
+                "valence": r["valence"],
+            }
+            for r in rows
+        ]
+        order = {sid: i for i, sid in enumerate(ids)}
+        songs.sort(key=lambda s: order.get(s["id"], 1_000_000))
+        return {"songs": songs}
+    finally:
+        conn.close()
+
+
 # ── Lyrics Timing ─────────────────────────────────────────
 
 
@@ -1613,6 +1668,15 @@ def library_auto_match():
     }
 
 
+def _validate_filepath_in_music_dir(filepath: str) -> str:
+    """Resolve and validate that a filepath is within MUSIC_DIR. Returns the resolved path."""
+    resolved = os.path.realpath(filepath)
+    music_dir = os.path.realpath(config.MUSIC_DIR)
+    if not resolved.startswith(music_dir):
+        raise HTTPException(status_code=403, detail="Filepath is outside the music directory")
+    return resolved
+
+
 @app.post("/api/library/confirm-match")
 def library_confirm_match(req: dict):
     """Manually confirm a match: pair an orphaned DB entry with an unregistered file."""
@@ -1620,21 +1684,22 @@ def library_confirm_match(req: dict):
     filepath = req.get("filepath")
     if not orphan_id or not filepath:
         raise HTTPException(status_code=400, detail="orphan_id and filepath required")
-    if not os.path.exists(filepath):
-        raise HTTPException(status_code=404, detail=f"File not found: {filepath}")
+    resolved = _validate_filepath_in_music_dir(filepath)
+    if not os.path.exists(resolved):
+        raise HTTPException(status_code=404, detail=f"File not found: {resolved}")
 
     song = database.get_song(orphan_id)
     if not song:
         raise HTTPException(status_code=404, detail=f"Song {orphan_id} not found in database")
 
-    existing = database.get_song_by_filepath(filepath)
+    existing = database.get_song_by_filepath(resolved)
     if existing and existing["id"] != orphan_id:
         raise HTTPException(status_code=409, detail=f"Filepath already owned by song {existing['id']}")
 
     from ingest.scanner import compute_file_hash
-    new_hash = compute_file_hash(filepath)
-    database.update_song(orphan_id, filepath=filepath, file_hash=new_hash)
-    return {"status": "matched", "song_id": orphan_id, "new_filepath": filepath}
+    new_hash = compute_file_hash(resolved)
+    database.update_song(orphan_id, filepath=resolved, file_hash=new_hash)
+    return {"status": "matched", "song_id": orphan_id, "new_filepath": resolved}
 
 
 @app.delete("/api/songs/{song_id:int}")
@@ -1669,21 +1734,22 @@ def library_add_unregistered(req: dict):
     filepath = req.get("filepath")
     if not filepath:
         raise HTTPException(status_code=400, detail="filepath required")
-    if not os.path.exists(filepath):
-        raise HTTPException(status_code=404, detail=f"File not found: {filepath}")
+    resolved = _validate_filepath_in_music_dir(filepath)
+    if not os.path.exists(resolved):
+        raise HTTPException(status_code=404, detail=f"File not found: {resolved}")
 
     # Check if already in DB
-    existing = database.get_song_by_filepath(filepath)
+    existing = database.get_song_by_filepath(resolved)
     if existing:
         raise HTTPException(status_code=409, detail=f"File already in database (song {existing['id']})")
 
     from ingest.scanner import compute_file_hash, parse_filename
-    file_hash = compute_file_hash(filepath)
-    parsed = parse_filename(filepath)
+    file_hash = compute_file_hash(resolved)
+    parsed = parse_filename(resolved)
 
-    database.add_song(filepath, file_hash)
+    database.add_song(resolved, file_hash)
     # Fetch the newly added song to get its ID
-    new_song = database.get_song_by_filepath(filepath)
+    new_song = database.get_song_by_filepath(resolved)
     if new_song:
         database.update_song(
             new_song["id"],
@@ -2456,8 +2522,7 @@ def get_queue():
                 if centroid:
                     song_ids = [str(item["song_id"]) for item in display_queue if "song_id" in item]
                     if song_ids:
-                        client = get_chroma_client()
-                        audio_collection = client.get_collection(config.MUQ_AUDIO_COLLECTION)
+                        audio_collection = get_chroma_client().get_collection(config.MUQ_AUDIO_COLLECTION)
                         data = audio_collection.get(ids=song_ids, include=["embeddings"])
                         emb_map = {}
                         if data and data.get("ids"):
@@ -4842,6 +4907,133 @@ def handle_command(req: CommandRequest):
             "action": action,
             "explanation": f"Unknown action: {action}. Try 'help' for available commands.",
         }
+
+
+# ── Energy Rating Page (PR 0: calibration fixture helper) ──
+
+RATINGS_FILE = os.path.join(config.DATA_DIR, "test_fixtures", "energy_ratings.json")
+
+def _load_ratings():
+    try:
+        with open(RATINGS_FILE, encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+
+def _save_ratings(payload):
+    os.makedirs(os.path.dirname(RATINGS_FILE), exist_ok=True)
+    with open(RATINGS_FILE, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, ensure_ascii=False)
+
+RATING_HTML_PATH = os.path.join(os.path.dirname(__file__), "templates", "rate_songs.html")
+
+with open(RATING_HTML_PATH, encoding="utf-8") as _f:
+    _RATING_HTML_TEMPLATE = _f.read()
+
+@app.get("/api/admin/rate-songs", response_class=HTMLResponse)
+async def rating_page():
+    """Render the energy rating form for the calibration fixture."""
+    return HTMLResponse(_RATING_HTML_TEMPLATE)
+
+@app.get("/api/admin/rating-candidates")
+async def rating_candidates():
+    """Return 30 candidate songs for rating."""
+    songs = database.get_rating_candidates()
+    existing = _load_ratings()
+    return {"songs": songs, "existing": existing}
+
+@app.post("/api/admin/save-ratings")
+async def save_ratings(payload: dict):
+    """Save energy ratings JSON to data/test_fixtures/energy_ratings.json."""
+    if "ratings" not in payload:
+        raise HTTPException(400, "Missing 'ratings' key in payload")
+    existing = _load_ratings() or {"_meta": {}, "ratings": {}}
+    existing["ratings"].update(payload["ratings"])
+    existing["_meta"]["updated_at"] = datetime.now().isoformat()
+    existing["_meta"]["count"] = len(existing["ratings"])
+    _save_ratings(existing)
+    return {"ok": True, "path": RATINGS_FILE, "count": len(existing["ratings"])}
+
+@app.post("/api/admin/clear-ratings")
+async def clear_ratings():
+    """Delete the ratings fixture file."""
+    if os.path.exists(RATINGS_FILE):
+        os.remove(RATINGS_FILE)
+    return {"ok": True}
+
+
+class ReprocessRequest(BaseModel):
+    reembed: bool = False
+    recluster: bool = False
+
+
+@app.post("/api/admin/reprocess-energy")
+def api_reprocess_energy(payload: ReprocessRequest):
+    """Re-analyze audio features, re-normalize energy across all songs.
+
+    Runs in a background daemon thread. Progress visible at GET /api/ingest/progress.
+    Skips LLM tagging, acestep, and WhisperX — pure CPU + DB.
+    """
+    from ingest.reprocess_energy import reprocess_energy
+
+    progress = pipeline.get_ingest_progress()
+    if progress["running"]:
+        return {"status": "already_running", "phase": progress["phase"]}
+
+    def _run():
+        try:
+            result = reprocess_energy(reembed=payload.reembed, recluster=payload.recluster)
+            logger.info("Reprocess energy complete: %s", result)
+        except Exception as e:
+            logger.error("Reprocess energy failed: %s", e)
+
+    threading.Thread(target=_run, daemon=True).start()
+    return {"status": "started", "reembed": payload.reembed, "recluster": payload.recluster}
+
+
+@app.get("/api/admin/reprocess-status")
+async def api_reprocess_status():
+    """Get current reprocess progress (polls from IngestPanel)."""
+    return pipeline.get_ingest_progress()
+
+
+# ── User energy correction endpoints (PR 3) ──
+
+
+class UserEnergyRequest(BaseModel):
+    value: float
+
+
+@app.post("/api/songs/{song_id}/user-energy")
+def api_set_user_energy(song_id: int, payload: UserEnergyRequest):
+    """Set the user's energy rating for a song (0.0-1.0)."""
+    value = max(0.0, min(1.0, payload.value))
+    database.set_user_energy(song_id, value)
+    return {"ok": True, "effective_energy": database.get_effective_energy(song_id)}
+
+
+@app.delete("/api/songs/{song_id}/user-energy")
+def api_clear_user_energy(song_id: int):
+    """Clear the user's energy rating for a song."""
+    database.clear_user_energy(song_id)
+    return {"ok": True, "effective_energy": database.get_effective_energy(song_id)}
+
+
+@app.get("/api/calibration/sample")
+async def calibration_sample(n: int = 20):
+    """Get n diverse songs for the calibration panel."""
+    return {"songs": database.get_calibration_sample(n)}
+
+
+@app.get("/api/calibration/anchors")
+async def calibration_anchors():
+    """Get example songs per energy band for calibration panel anchors."""
+    return {
+        "hot": database.get_top_anchors_for_energy(0.75, 1.0, 3),
+        "warm": database.get_top_anchors_for_energy(0.5, 0.75, 3),
+        "mellow": database.get_top_anchors_for_energy(0.25, 0.5, 3),
+        "cold": database.get_top_anchors_for_energy(0.0, 0.25, 3),
+    }
 
 
 @app.post("/api/shutdown")

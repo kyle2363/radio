@@ -194,7 +194,7 @@ def embed_described_songs(song_ids: list) -> list:
         print(f"  Failed to embed song {song_id}, will retry on next run")
         return False
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
         futures = {executor.submit(_embed_one, sid): sid for sid in to_embed}
         for future in concurrent.futures.as_completed(futures):
             pass

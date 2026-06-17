@@ -34,7 +34,7 @@ async function request(method, path, body, timeout = 5000, externalSignal) {
 }
 
 const get = (path, signal) => request("GET", path, undefined, undefined, signal);
-const post = (path, body, timeout, signal) => request("POST", path, body, timeout, signal);
+export const post = (path, body, timeout, signal) => request("POST", path, body, timeout, signal);
 const put = (path, body, signal) => request("PUT", path, body, undefined, signal);
 const del = (path, signal) => request("DELETE", path, undefined, undefined, signal);
 
@@ -114,6 +114,7 @@ export const fetchSongs = (params) => {
   return get(`/api/songs?${qs}`);
 };
 export const fetchSong = (id) => get(`/api/songs/${id}`);
+export const fetchSongsByIds = (ids) => post("/api/songs/by-ids", { song_ids: ids });
 export const fetchRecentlyPlayed = (limit = 30) => get(`/api/songs/recently-played?limit=${limit}`);
 export const fetchPriorSongs = () => get("/api/songs/prior");
 export const fetchSimilarSongs = (id, limit = 5) => get(`/api/songs/${id}/similar?limit=${limit}`);
@@ -146,6 +147,8 @@ export const retryIngestFailures = () => post("/api/ingest/retry-failures");
 export const runIngestPhase = (phase) => post("/api/ingest/run-phase/" + phase);
 export const fetchIngestPhaseStatus = () => get("/api/ingest/phase-status");
 export const reembedAll = () => post("/api/ingest/reembed-all");
+export const reprocessEnergy = (reembed, recluster) => post("/api/admin/reprocess-energy", { reembed, recluster });
+export const fetchReprocessStatus = () => get("/api/admin/reprocess-status");
 
 // ── Onboarding ────────────────────────────────────────────
 export const fetchOnboardingSongs = () => get("/api/onboarding/songs");
@@ -233,3 +236,9 @@ export const updateDjEffectEligible = (id, eligible) => put(`/api/songs/${id}/dj
 export const fetchDjEffectPresets = () => get("/api/dj-effects/presets");
 export const fetchDjEffectCacheInfo = () => get("/api/dj-effects/cache-info");
 export const generateDjEffect = (id, preset) => post(`/api/dj-effects/generate/${id}`, { preset });
+
+// ── Calibration (PR 4) ─────────────────────────────────────
+export const fetchCalibrationSample = (n = 20) => get(`/api/calibration/sample?n=${n}`);
+export const fetchCalibrationAnchors = () => get("/api/calibration/anchors");
+export const setUserEnergy = (songId, value) => post(`/api/songs/${songId}/user-energy`, { value });
+export const clearUserEnergy = (songId) => del(`/api/songs/${songId}/user-energy`);

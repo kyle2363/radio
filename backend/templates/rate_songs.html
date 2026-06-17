@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Energy Rating</title>
+<style>
+:root {
+  --bg: #121212; --surface: #1a1a2e; --card: #16213e;
+  --text: #e0e0e0; --text-muted: #888; --accent: #7c5cfc;
+  --accent-dim: rgba(124, 92, 252, 0.15); --border: #2a2a4a;
+  --success: #4ade80; --danger: #f87171; --warn: #fbbf24;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: var(--bg); color: var(--text); padding: 20px; max-width: 800px; margin: 0 auto;
+  font-size: 14px; line-height: 1.5;
+}
+h1 { font-size: 20px; font-weight: 600; margin-bottom: 4px; }
+.header { margin-bottom: 16px; }
+.header .meta { color: var(--text-muted); font-size: 13px; }
+.scale-bar {
+  display: flex; gap: 0; border-radius: 6px; overflow: hidden;
+  margin: 10px 0; font-size: 11px; text-align: center;
+}
+.scale-bar div { flex: 1; padding: 4px 0; color: #fff; font-weight: 500; }
+.scale-0 { background: #1a5276; }
+.scale-25 { background: #2e86c1; }
+.scale-5 { background: #7c5cfc; }
+.scale-75 { background: #e67e22; }
+.scale-100 { background: #e74c3c; }
+.toolbar {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 12px; gap: 10px; flex-wrap: wrap;
+}
+.progress {
+  font-size: 14px; color: var(--text-muted);
+}
+.progress b { color: var(--text); }
+.btn {
+  border: none; border-radius: 6px; padding: 8px 16px; cursor: pointer;
+  font-size: 13px; font-weight: 500; transition: opacity 0.15s;
+}
+.btn:hover { opacity: 0.85; }
+.btn-save { background: var(--accent); color: #fff; }
+.btn-warn { background: var(--danger); color: #fff; }
+.btn:disabled { opacity: 0.4; cursor: default; }
+.song-card {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: 8px; padding: 10px 14px; margin-bottom: 6px;
+  display: flex; flex-direction: column; gap: 6px;
+}
+.song-card.skipped { opacity: 0.45; }
+.song-card.rated { border-color: var(--accent); }
+.song-card.rated .rate-btns .selected { background: var(--accent); color: #fff; border-color: var(--accent); }
+.song-row {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+}
+.song-info { flex: 1; min-width: 0; }
+.song-info .title { font-weight: 500; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.song-info .meta { color: var(--text-muted); font-size: 12px; }
+.song-current-energy {
+  font-size: 12px; color: var(--text-muted); background: var(--surface);
+  padding: 2px 8px; border-radius: 4px; white-space: nowrap;
+}
+.play-btn {
+  border: 1px solid var(--accent); background: transparent; color: var(--accent);
+  padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 12px;
+  white-space: nowrap; transition: background 0.15s;
+}
+.play-btn:hover { background: var(--accent-dim); }
+.rate-section { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.rate-btns { display: flex; gap: 4px; }
+.rate-btns button {
+  border: 1px solid var(--border); background: transparent; color: var(--text-muted);
+  padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 12px;
+  transition: all 0.12s; min-width: 44px;
+}
+.rate-btns button:hover { border-color: var(--accent); color: var(--text); background: var(--accent-dim); }
+.rate-btns button.selected { background: var(--accent); color: #fff; border-color: var(--accent); }
+.skip-label { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text-muted); cursor: pointer; }
+.skip-label input { cursor: pointer; }
+.custom-input {
+  width: 52px; background: var(--surface); border: 1px solid var(--border);
+  color: var(--text); padding: 3px 6px; border-radius: 4px; font-size: 12px; text-align: center;
+}
+.custom-input:focus { outline: none; border-color: var(--accent); }
+.code { font-family: 'Consolas', monospace; font-size: 11px; color: var(--text-muted); }
+.source-label {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px;
+  padding: 1px 6px; border-radius: 3px; background: var(--surface); color: var(--text-muted);
+}
+.source-extreme { background: #3b1f2e; color: #f87171; }
+.source-cluster { background: #1a2e3b; color: #60a5fa; }
+.toast {
+  position: fixed; bottom: 20px; right: 20px;
+  background: var(--card); border: 1px solid var(--accent); border-radius: 8px;
+  padding: 10px 16px; font-size: 13px; color: var(--text);
+  box-shadow: 0 4px 20px rgba(0,0,0,0.5); z-index: 100;
+  opacity: 0; transition: opacity 0.3s;
+}
+.toast.show { opacity: 1; }
+.empty { color: var(--text-muted); padding: 40px; text-align: center; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>Song Energy Rating</h1>
+  <div class="meta" id="subtitle">Loading candidates...</div>
+</div>
+
+<div class="toolbar">
+  <div class="progress" id="progressBar">0 of <b id="totalCount">0</b> rated</div>
+  <div style="display:flex;gap:6px">
+    <button class="btn btn-save" id="saveBtn" onclick="saveRatings()">Save Ratings</button>
+    <button class="btn btn-warn" onclick="clearAndReload()">Clear</button>
+  </div>
+</div>
+
+<div class="scale-bar" id="scaleBar" style="display:none">
+  <div class="scale-0">0.0<br>Sleep</div>
+  <div class="scale-25">0.25<br>Mellow</div>
+  <div class="scale-5">0.50<br>Mid</div>
+  <div class="scale-75">0.75<br>Bright</div>
+  <div class="scale-100">1.0<br>Banger</div>
+</div>
+
+<div id="songList"></div>
+<div id="toast" class="toast"></div>
+
+<script>
+let songs = [];
+let ratings = {};   // {songId: number}
+let skipped = {};   // {songId: true}
+
+function fetchCandidates() {
+  fetch('/api/admin/rating-candidates')
+    .then(r => r.json())
+    .then(data => {
+      songs = data.songs || [];
+      if (data.existing && data.existing.ratings) {
+        ratings = { ...data.existing.ratings };
+      }
+      if (data.existing && data.existing.skipped) {
+        data.existing.skipped.forEach(id => { skipped[id] = true; });
+      }
+      renderSongs();
+      updateProgress();
+      document.getElementById('subtitle').textContent =
+        songs.length + ' songs from ' +
+        new Set(songs.filter(s => s.source === 'group').map(s => s.cluster_id)).size + ' clusters + extremes';
+      document.getElementById('scaleBar').style.display = 'flex';
+    })
+    .catch(err => {
+      document.getElementById('songList').innerHTML =
+        '<div class="empty">Failed to load candidates: ' + err.message + '</div>';
+    });
+}
+
+function renderSongs() {
+  const container = document.getElementById('songList');
+  container.innerHTML = '';
+  songs.forEach(s => {
+    const card = document.createElement('div');
+    card.className = 'song-card';
+    card.id = 'song-' + s.id;
+
+    const ratedVal = ratings[String(s.id)];
+    const isSkipped = skipped[String(s.id)];
+
+    if (isSkipped) card.classList.add('skipped');
+    if (ratedVal !== undefined) card.classList.add('rated');
+
+    const sourceClass = s.source === 'energy_extreme' || s.source === 'user_picked'
+      ? 'source-extreme' : 'source-cluster';
+    const sourceLabel = s.source === 'cluster_median' ? 'cluster median'
+      : s.source === 'user_picked' ? 'picked' : 'energy extreme';
+
+    card.innerHTML = `
+      <div class="song-row">
+        <span class="source-label ${sourceClass}">${sourceLabel}</span>
+        <div class="song-info">
+          <div class="title">${esc(s.artist || '?')} — ${esc(s.title || '?')}</div>
+          <div class="meta">cluster ${s.cluster_id} ${s.bpm ? '· BPM ' + s.bpm : ''}</div>
+        </div>
+        <span class="song-current-energy">v1: ${typeof s.energy === 'number' ? s.energy.toFixed(3) : '—'}</span>
+        <button class="play-btn" data-id="${s.id}" data-title="${esc(s.artist || '')} — ${esc(s.title || '')}">▶ Play</button>
+      </div>
+      <div class="rate-section">
+        <div class="rate-btns" data-id="${s.id}">
+          ${['0.0','0.25','0.5','0.75','1.0'].map(v => {
+            const sel = ratedVal === parseFloat(v) ? ' selected' : '';
+            const label = {0.0:'Sleep',0.25:'Mellow',0.5:'Mid',0.75:'Bright',1.0:'Banger'}[parseFloat(v)];
+            return `<button class="rate-btn${sel}" data-value="${v}" title="${label}">${v}</button>`;
+          }).join('')}
+        </div>
+        <input type="text" class="custom-input" placeholder="—" data-id="${s.id}"
+          value="${ratedVal !== undefined ? ratedVal : ''}"
+          title="Type a custom 0.0–1.0 value (overrides buttons)">
+        <label class="skip-label">
+          <input type="checkbox" data-id="${s.id}" ${isSkipped ? 'checked' : ''}> skip
+        </label>
+      </div>
+    `;
+
+    // Play button
+    card.querySelector('.play-btn').addEventListener('click', function() {
+      fetch('/api/play/' + this.dataset.id, {method:'POST'}).catch(() => {});
+      showToast('Playing: ' + this.dataset.title);
+    });
+
+    // Rating buttons
+    card.querySelectorAll('.rate-btn').forEach(btn => {
+      btn.addEventListener('click', function() {
+        const id = parseInt(this.parentElement.dataset.id);
+        const value = parseFloat(this.dataset.value);
+        recordRating(id, value);
+        this.parentElement.querySelectorAll('.rate-btn').forEach(b => b.classList.remove('selected'));
+        this.classList.add('selected');
+        card.querySelector('.custom-input').value = value;
+        card.classList.add('rated');
+        card.classList.remove('skipped');
+        skipped[String(id)] = false;
+        card.querySelector('[data-id="'+id+'"]').checked = false;
+        updateProgress();
+      });
+    });
+
+    // Custom input
+    card.querySelector('.custom-input').addEventListener('change', function() {
+      const id = parseInt(this.dataset.id);
+      const v = parseFloat(this.value);
+      if (!isNaN(v) && v >= 0 && v <= 1) {
+        recordRating(id, v);
+        card.classList.add('rated');
+        card.classList.remove('skipped');
+        skipped[String(id)] = false;
+        card.querySelector('[data-id="'+id+'"]').checked = false;
+        // Clear button selection
+        card.querySelectorAll('.rate-btn').forEach(b => b.classList.remove('selected'));
+        const rounded = Math.round(v * 4) / 4;
+        card.querySelectorAll('.rate-btn').forEach(b => {
+          if (parseFloat(b.dataset.value) === rounded) b.classList.add('selected');
+        });
+        updateProgress();
+      }
+    });
+
+    // Skip checkbox
+    card.querySelector('[data-id="'+s.id+'"]').addEventListener('change', function() {
+      const id = parseInt(this.dataset.id);
+      if (this.checked) {
+        skipped[String(id)] = true;
+        delete ratings[String(id)];
+        card.classList.add('skipped');
+        card.classList.remove('rated');
+        card.querySelectorAll('.rate-btn').forEach(b => b.classList.remove('selected'));
+        card.querySelector('.custom-input').value = '';
+        updateProgress();
+      }
+    });
+
+    container.appendChild(card);
+  });
+}
+
+function recordRating(id, value) {
+  ratings[String(id)] = Math.max(0, Math.min(1, value));
+  delete skipped[String(id)];
+}
+
+function updateProgress() {
+  const total = songs.length;
+  const rated = Object.keys(ratings).length;
+  document.getElementById('progressBar').innerHTML =
+    rated + ' of <b>' + total + '</b> rated' +
+    (Object.keys(skipped).length > 0 ? ' (' + Object.keys(skipped).length + ' skipped)' : '');
+}
+
+function saveRatings() {
+  const btn = document.getElementById('saveBtn');
+  btn.disabled = true;
+  btn.textContent = 'Saving...';
+  fetch('/api/admin/save-ratings', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      ratings: ratings,
+      skipped: Object.keys(skipped).filter(k => skipped[k]).map(Number),
+      _meta: {
+        rated_at: new Date().toISOString(),
+        scale_anchors: {
+          "0.0": "ambient drone, no rhythm",
+          "0.25": "slow ballad, sparse",
+          "0.50": "mid-tempo pop, walking pace",
+          "0.75": "driving rock/hip-hop",
+          "1.0": "high-BPM dance/punk, physical"
+        }
+      }
+    })
+  })
+  .then(r => r.json())
+  .then(data => {
+    showToast('Saved ' + data.count + ' ratings');
+    btn.disabled = false;
+    btn.textContent = 'Save Ratings';
+  })
+  .catch(err => {
+    showToast('Save failed: ' + err.message, true);
+    btn.disabled = false;
+    btn.textContent = 'Save Ratings';
+  });
+}
+
+function clearAndReload() {
+  if (!confirm('Clear all ratings and start over?')) return;
+  fetch('/api/admin/clear-ratings', {method:'POST'})
+    .then(() => { ratings = {}; skipped = {}; fetchCandidates(); })
+    .catch(() => {});
+}
+
+function showToast(msg, isError) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.style.borderColor = isError ? 'var(--danger)' : 'var(--accent)';
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 3000);
+}
+
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+fetchCandidates();
+</script>
+</body>
+</html>

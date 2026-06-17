@@ -39,7 +39,11 @@ CREATE TABLE IF NOT EXISTS songs (
     dj_effect_eligible INTEGER DEFAULT 1,
     gain_db         REAL DEFAULT 0.0,
     added_at        DATETIME DEFAULT CURRENT_TIMESTAMP,
-    file_mtime      REAL
+    file_mtime      REAL,
+
+    user_energy     REAL,
+    user_energy_count INTEGER DEFAULT 0,
+    user_energy_updated_at REAL
 );
 
 CREATE INDEX IF NOT EXISTS idx_songs_ingest_phase ON songs(ingest_phase);
@@ -146,6 +150,8 @@ INSERT OR IGNORE INTO settings (key, value) VALUES
     ('music_dir', ''),
     ('genre_filter', ''),
     ('artist_filter', ''),
+    ('constellations_enabled', 'true'),
+    ('app_icon_style', 'drift'),
     ('theme', 'dark'),
     ('waveform_mode', 'orbit'),
     ('announcement_interval', '30'),

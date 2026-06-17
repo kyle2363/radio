@@ -89,14 +89,17 @@ def _prepend_silence(path: str, seconds: float = TTS_SILENCE_PADDING_SECS) -> bo
         return False
 
 
-def _fade_in_first_second(path: str) -> bool:
+def _fade_in_first_second(path: str) -> str | None:
     """Apply a 1-second linear fade-in at the start of a WAV file.
 
     Ramps volume from 0 to 100% over the first second for a smooth entrance.
     Used on the first WAV of a talk show segment.
 
-    Returns True on success, False on failure.
+    Writes to a temp file alongside the original so the cached original is left intact.
+
+    Returns the path to the faded copy on success, None on failure.
     """
+    faded_path = path + ".faded.wav"
     try:
         with wave.open(path, "rb") as wf:
             channels = wf.getnchannels()
@@ -106,7 +109,6 @@ def _fade_in_first_second(path: str) -> bool:
             raw = bytearray(wf.readframes(nframes))
 
         fade_frames = min(framerate, nframes)
-        fade_bytes = channels * sampwidth * fade_frames
 
         for i in range(fade_frames):
             gain = i / fade_frames
@@ -122,17 +124,23 @@ def _fade_in_first_second(path: str) -> bool:
                     sample = int(sample * gain)
                     struct.pack_into('<h', raw, sample_offset, max(-32768, min(32767, sample)))
 
-        with wave.open(path, "wb") as wf:
+        with wave.open(faded_path, "wb") as wf:
             wf.setnchannels(channels)
             wf.setsampwidth(sampwidth)
             wf.setframerate(framerate)
             wf.writeframes(bytes(raw))
 
-        logger.info(f"_fade_in_first_second: faded 1s on {path}")
-        return True
+        logger.info(f"_fade_in_first_second: faded 1s on {path} -> {faded_path}")
+        return faded_path
     except Exception as e:
         logger.warning(f"Failed to fade in {path}: {e}")
-        return False
+        # Clean up partial output if any
+        try:
+            if os.path.exists(faded_path):
+                os.remove(faded_path)
+        except Exception:
+            pass
+        return None
 
 
 def _concatenate_wavs(wav_paths):

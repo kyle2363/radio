@@ -6,6 +6,7 @@ import StatsDashboard from "./StatsDashboard";
 import SessionHistory from "./SessionHistory";
 import MoodTimeline from "./MoodTimeline";
 import FiltersPanel from "./FiltersPanel";
+import CalibrationPanel from "./CalibrationPanel";
 
 const COLUMNS = [
   { key: null, label: "", sortable: false },
@@ -281,6 +282,7 @@ function SongList({ addToast, currentSongId, onPlay }) {
           <Filter size={10} /> Filters
           {filtersActive && <span style={{ width: 5, height: 5, borderRadius: "50%", background: "#4ade80", display: "inline-block" }} />}
         </div>
+        <div className={`subtab ${tab === "calibration" ? "on" : ""}`} onClick={() => handleTabChange("calibration")}>Calibration</div>
       </div>
 
       {/* Library tab */}
@@ -447,6 +449,11 @@ function SongList({ addToast, currentSongId, onPlay }) {
       {/* Filters tab */}
       {tab === "filters" && (
         <FiltersPanel addToast={addToast} onFiltersChange={handleFiltersChange} />
+      )}
+
+      {/* Calibration tab */}
+      {tab === "calibration" && (
+        <CalibrationPanel addToast={addToast} />
       )}
 
       {/* Stats tab */}

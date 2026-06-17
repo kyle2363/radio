@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
-import { Volume2, Brain, Cpu, Folder, ChevronDown, RefreshCw, Trash2, Moon, Radio, Download, Upload, Palette, Monitor } from "lucide-react";
+import { Volume2, Brain, Cpu, Folder, ChevronDown, RefreshCw, Trash2, Moon, Radio, Download, Upload, Palette, Monitor, Sparkles } from "lucide-react";
 import * as api from "../api";
 import TalkSettings from "./TalkSettings";
 import IngestPanel from "./IngestPanel";
 import LibraryVerify from "./LibraryVerify";
+import { ICON_STYLES, BRAND_ICONS } from "./BrandIcons";
 
 function Toggle({ checked, onChange, label }) {
   return (
@@ -33,7 +34,9 @@ function SettingsContent({ addToast, sectionSpacing, onSectionSpacingChange, rig
   const [resetting, setResetting] = useState(false);
   const [wiping, setWiping] = useState(false);
   const [talkSegmentsEnabled, setTalkSegmentsEnabled] = useState(false);
+  const [constellationsEnabled, setConstellationsEnabled] = useState(true);
   const [waveformMode, setWaveformMode] = useState("orbit");
+  const [iconStyle, setIconStyle] = useState("drift");
   const [jitterOverride, setJitterOverride] = useState("");
   const [recencyExcludeHours, setRecencyExcludeHours] = useState("1");
   const [vibeLockDuration, setVibeLockDuration] = useState(30);
@@ -117,7 +120,9 @@ function SettingsContent({ addToast, sectionSpacing, onSectionSpacingChange, rig
     setTtsEnabled(data.tts_enabled !== "false");
     setMusicDir(data.music_dir || "");
     setTalkSegmentsEnabled(data.talk_segments_enabled === "true");
+    setConstellationsEnabled(data.constellations_enabled !== "false");
     setWaveformMode(data.waveform_mode || "orbit");
+    setIconStyle(data.app_icon_style || "drift");
     setJitterOverride(data.jitter_override || "");
     setRecencyExcludeHours(data.recency_exclude_hours || "1");
     setVibeLockDuration(parseInt(data.vibe_lock_duration_minutes) || 30);
@@ -364,6 +369,33 @@ function SettingsContent({ addToast, sectionSpacing, onSectionSpacingChange, rig
                     {opt.charAt(0).toUpperCase() + opt.slice(1)}
                   </div>
                 ))}
+              </div>
+            </div>
+            <div className="set-row">
+              <div>
+                <div className="set-label">App icon</div>
+                <div style={{ fontSize: "10px", color: "var(--text-muted)", marginTop: "1px" }}>Header brand mark and system tray</div>
+              </div>
+              <div style={{ display: "flex", gap: "8px" }}>
+                {ICON_STYLES.map((s) => {
+                  const Icon = BRAND_ICONS[s.id];
+                  const isSelected = iconStyle === s.id;
+                  return (
+                    <div key={s.id}
+                      onClick={() => { setIconStyle(s.id); save("app_icon_style", s.id, true); try { window.electron?.setAppIconStyle?.(s.id); } catch (_) {} try { window.dispatchEvent(new CustomEvent("app-icon-style-changed", { detail: s.id })); } catch (_) {} }}
+                      title={`${s.label} — ${s.desc}`}
+                      style={{
+                        width: "36px", height: "36px", borderRadius: "7px", overflow: "hidden",
+                        cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
+                        border: isSelected ? "2px solid var(--accent)" : "2px solid var(--border)",
+                        outline: isSelected ? "1px solid var(--accent-hover)" : "none",
+                        transition: "all 0.15s",
+                      }}
+                    >
+                      <Icon size={32} />
+                    </div>
+                  );
+                })}
               </div>
             </div>
             <div className="set-row">
@@ -735,6 +767,29 @@ function SettingsContent({ addToast, sectionSpacing, onSectionSpacingChange, rig
               <Toggle checked={talkSegmentsEnabled} onChange={() => { const next = !talkSegmentsEnabled; setTalkSegmentsEnabled(next); save("talk_segments_enabled", String(next), true); }} label="Talk segments" />
             </div>
             <TalkSettings addToast={addToast} masterEnabled={talkSegmentsEnabled} />
+          </div>
+        )}
+      </div>
+
+      {/* Taste Constellations */}
+      <div className="set-sec">
+        <div className="set-hdr" onClick={() => toggleSection("constellations")}>
+          <div className="icon-chip" style={{ background: "#0f2240" }}>
+            <Sparkles size={13} style={{ color: "#4eccc4" }} />
+          </div>
+          <span style={{ color: "var(--text-primary)", fontSize: "13px", fontWeight: 500 }}>Taste Constellations</span>
+          <div style={{ flex: 1 }} />
+          <ChevronDown size={14} style={{ color: "var(--text-muted)", transform: sections.constellations ? "rotate(0deg)" : "rotate(-90deg)", transition: "transform 0.2s" }} />
+        </div>
+        {sections.constellations && (
+          <div className="set-body">
+            <div className="set-row">
+              <div>
+                <div className="set-label">Enable constellations</div>
+                <div style={{ fontSize: "10px", color: "var(--text-muted)", marginTop: "1px" }}>Multi-pocket taste model — affects queue and provides the constellation map view</div>
+              </div>
+              <Toggle checked={constellationsEnabled} onChange={() => { const next = !constellationsEnabled; setConstellationsEnabled(next); save("constellations_enabled", String(next), true); }} label="Constellations" />
+            </div>
           </div>
         )}
       </div>

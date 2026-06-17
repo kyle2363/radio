@@ -60,6 +60,7 @@ export function useWebSocket(fetchStatusCb) {
   const wsMountedRef = useRef(true);
   const fetchStatusRef = useRef(fetchStatusCb);
   const wsLastPongRef = useRef(Date.now());
+  const { addToast } = useSharedRadio();
 
   useEffect(() => {
     fetchStatusRef.current = fetchStatusCb;
@@ -92,6 +93,7 @@ export function useWebSocket(fetchStatusCb) {
       wsRetryRef.current = 0;
       wsLastPongRef.current = Date.now();
       setWsConnected(true);
+      fetchStatusRef.current?.();
       ws._pingInterval = setInterval(() => {
         if (ws.readyState === window.WebSocket.OPEN) {
           setWsConnected(true);
@@ -176,6 +178,8 @@ export function useWebSocket(fetchStatusCb) {
           ws._recFilterHandler?.(data);
         } else if (data.event === "folder_filter_changed") {
           ws._recFilterHandler?.(data);
+        } else if (data.event === "error") {
+          if (data.message) addToast(data.message, "error");
         }
       } catch (e) {
         console.error("WebSocket message parse failed:", e);

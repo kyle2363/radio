@@ -13,6 +13,14 @@ import config
 from dataclasses import dataclass, field
 from datetime import datetime
 from engine import taste, retriever, slots, reranker, transitions, mood, energy, recovery
+
+
+def _song_effective_energy(song):
+    """Compute effective energy from a song dict (avoids extra DB query)."""
+    base = song.get("energy", 0.5)
+    user = song.get("user_energy")
+    n = song.get("user_energy_count", 0) or 0
+    return round(0.7 * base + 0.3 * user, 4) if n > 0 and user is not None else base
 from engine.constellations import TasteConstellations
 from engine import player as player_engine
 from db import database
@@ -518,7 +526,7 @@ class QueueManager:
                             candidates.append({
                                 "song_id": tc["song_id"],
                                 "score": tc["score"] * 0.8,
-                                "energy": song.get("energy", 0.5),
+                                "energy": _song_effective_energy(song),
                                 "valence": song.get("valence", 0.5),
                                 "cluster_id": song.get("cluster_id", -1),
                                 "artist": song.get("artist", ""),
@@ -595,43 +603,44 @@ class QueueManager:
 
             # --- Taste Constellations: reweight candidates + taste hopping ---
             hop_pocket = None
-            try:
-                self._constellations.build()
-                if self._constellations.is_active:
-                    active_pocket = self._constellations.select_active_pocket(
-                        current_song=current_song,
-                        mood_state=self._mood.get_state(),
-                        hour=datetime.now().hour,
-                    )
-                    if active_pocket:
-                        candidates = self._constellations.reweight_candidates(
-                            candidates, active_pocket
+            if (self._db.get_setting("constellations_enabled") or "true") == "true":
+                try:
+                    self._constellations.build()
+                    if self._constellations.is_active:
+                        active_pocket = self._constellations.select_active_pocket(
+                            current_song=current_song,
+                            mood_state=self._mood.get_state(),
+                            hour=datetime.now().hour,
                         )
-                        _log_step(f"Constellation reweighted: active_pocket={active_pocket.constellation_id} "
-                                  f"(mood={active_pocket.primary_mood}, weight={active_pocket.weight:.2f})")
+                        if active_pocket:
+                            candidates = self._constellations.reweight_candidates(
+                                candidates, active_pocket
+                            )
+                            _log_step(f"Constellation reweighted: active_pocket={active_pocket.constellation_id} "
+                                      f"(mood={active_pocket.primary_mood}, weight={active_pocket.weight:.2f})")
 
-                        # Taste hopping: occasionally inject candidates from neighboring pocket
-                        exploration_level_val = float(self._db.get_setting("exploration_level") or "0.3")
-                        hop_pocket = self._constellations.should_hop(
-                            active_pocket, exploration_level_val
-                        )
-                        if hop_pocket:
-                            hop_emb = hop_pocket.centroid_text
-                            if hop_emb:
-                                hop_candidates = retriever.search_by_vector(
-                                    taste_vector=hop_emb,
-                                    n=10,
-                                    exclude_ids=exclude_ids + [c["song_id"] for c in candidates],
-                                    subfolder_filter=subfolder_filter,
-                                    mtime_min=mtime_min, mtime_max=mtime_max,
-                                    artist_mode=artist_mode, artists=artists,
-                                )
-                                for hc in hop_candidates:
-                                    hc["source"] = "constellation_hop"
-                                candidates.extend(hop_candidates)
-                                _log_step(f"Taste hop: {len(hop_candidates)} candidates from pocket {hop_pocket.constellation_id}")
-            except Exception as e:
-                logger.debug("Constellation reweighting skipped: %s", e)
+                            # Taste hopping: occasionally inject candidates from neighboring pocket
+                            exploration_level_val = self._db.get_setting_float("exploration_level", 0.3)
+                            hop_pocket = self._constellations.should_hop(
+                                active_pocket, exploration_level_val
+                            )
+                            if hop_pocket:
+                                hop_emb = hop_pocket.centroid_text
+                                if hop_emb:
+                                    hop_candidates = retriever.search_by_vector(
+                                        taste_vector=hop_emb,
+                                        n=10,
+                                        exclude_ids=exclude_ids + [c["song_id"] for c in candidates],
+                                        subfolder_filter=subfolder_filter,
+                                        mtime_min=mtime_min, mtime_max=mtime_max,
+                                        artist_mode=artist_mode, artists=artists,
+                                    )
+                                    for hc in hop_candidates:
+                                        hc["source"] = "constellation_hop"
+                                    candidates.extend(hop_candidates)
+                                    _log_step(f"Taste hop: {len(hop_candidates)} candidates from pocket {hop_pocket.constellation_id}")
+                except Exception as e:
+                    logger.debug("Constellation reweighting skipped: %s", e)
 
             # Defensive: coerce None artist/title to "" — SQLite returns NULL for
             # missing ID3 tags, and dict.get("artist","") returns None (not the
@@ -673,7 +682,7 @@ class QueueManager:
                     _log_step(f"Artist filter: {len(candidates)} remaining")
 
             # Allocate slots (with optional guest persona slot bias)
-            exploration_level = float(self._db.get_setting("exploration_level") or "0.3")
+            exploration_level = self._db.get_setting_float("exploration_level", 0.3)
             from engine import archetype as archetype_engine
             archetype_name, _ = archetype_engine.detect_archetype()
             guest_bias = talk_segments.get_active_guest_slot_bias()
@@ -708,10 +717,11 @@ class QueueManager:
                     exclude_sql = ""
                     if self._current_song_id:
                         exclude_sql = f"AND s.id != {self._current_song_id}"
-                    order_by = "RANDOM()" if play_mode == "shuffle" else "s.energy DESC"
+                    eff_expr = "(0.7 * s.energy + 0.3 * COALESCE(s.user_energy, s.energy))"
+                    order_by = "RANDOM()" if play_mode == "shuffle" else f"{eff_expr} DESC"
                     reason = "Random pick" if play_mode == "shuffle" else "Sequential order"
                     rows = conn.execute(f"""
-                        SELECT s.id, s.artist, s.title, s.energy, s.valence, s.bpm
+                        SELECT s.id, s.artist, s.title, {eff_expr} as energy, s.valence, s.bpm
                         FROM songs s LEFT JOIN blacklist b ON s.id = b.song_id
                         WHERE s.ingest_phase = 'clustered' AND b.song_id IS NULL {exclude_sql}
                         ORDER BY {order_by} LIMIT 5
@@ -759,7 +769,7 @@ class QueueManager:
                         "reason": pick.get("reason", ""),
                         "artist": song.get("artist", ""),
                         "title": song.get("title", ""),
-                        "energy": song.get("energy", 0.5),
+                        "energy": _song_effective_energy(song),
                         "valence": song.get("valence", 0.5),
                         "bpm": song.get("bpm", 0),
                         "vibe_affected": is_vibe_affect,
@@ -784,7 +794,7 @@ class QueueManager:
                             "reason": "Recommended for you.",
                             "artist": song.get("artist", ""),
                             "title": song.get("title", ""),
-                            "energy": song.get("energy", 0.5),
+                            "energy": _song_effective_energy(song),
                             "valence": song.get("valence", 0.5),
                             "bpm": song.get("bpm", 0),
                         })
@@ -1791,7 +1801,9 @@ class QueueManager:
 
             # Fade in the first WAV for a smooth talk segment entrance
             if valid_wavs:
-                _fade_in_first_second(valid_wavs[0])
+                faded = _fade_in_first_second(valid_wavs[0])
+                if faded:
+                    valid_wavs[0] = faded
 
             # Concatenate multiple WAVs into one — VLC's media_list_player
             # has trouble chaining 5+ items reliably.  A single concatenated

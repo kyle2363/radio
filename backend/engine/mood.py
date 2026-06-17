@@ -14,13 +14,11 @@ logger = logging.getLogger(__name__)
 
 
 def _get_song_energy(song_id):
-    """Look up a song's energy from the database."""
+    """Look up a song's effective energy (base + user blend) from the database."""
     try:
-        song = database.get_song(song_id)
-        if song:
-            return song.get("energy", 0.5)
+        return database.get_effective_energy(song_id)
     except Exception as e:
-        logger.debug("Could not get energy for song %s: %s", song_id, e)
+        logger.debug("Could not get effective energy for song %s: %s", song_id, e)
     return 0.5
 
 MOOD_STATES = {

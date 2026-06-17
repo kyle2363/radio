@@ -109,7 +109,8 @@ class TasteConstellations:
                 placeholders = ",".join("?" for _ in song_ids)
                 rows = conn.execute(
                     f"""SELECT song_id, mood_state,
-                               AVG(s.energy) as energy, AVG(s.valence) as valence
+                               AVG(0.7 * s.energy + 0.3 * COALESCE(s.user_energy, s.energy)) as energy,
+                               AVG(s.valence) as valence
                         FROM play_events pe
                         LEFT JOIN songs s ON s.id = pe.song_id
                         WHERE pe.song_id IN ({placeholders})
@@ -274,6 +275,13 @@ class TasteConstellations:
             if time() - self._last_built < config.CONSTELLATION_CACHE_TTL:
                 return
 
+        if (database.get_setting("constellations_enabled") or "true") == "false":
+            with self._lock:
+                self._pockets = []
+                self._total_positive_signals = 0
+                self._last_built = time()
+            return
+
         try:
             signals = database.get_recent_signals(
                 signal_types=["completed", "hearted", "replayed"],
@@ -424,8 +432,20 @@ class TasteConstellations:
             if cluster_signal_count < config.CONSTELLATION_MIN_CLUSTER_SIZE:
                 continue
 
-            # Text centroid (from KMeans — in PCA-reduced space)
-            centroid_text = kmeans.cluster_centers_[cluster_id].tolist()
+            # Text centroid (from original embedding space — not PCA-reduced)
+            cluster_text_embs = [
+                blended_embeddings[str(sid)]
+                for sid in cluster_song_ids
+                if str(sid) in blended_embeddings
+            ]
+            centroid_text = []
+            if cluster_text_embs:
+                dim = len(cluster_text_embs[0])
+                centroid_text = [0.0] * dim
+                for emb in cluster_text_embs:
+                    for d in range(dim):
+                        centroid_text[d] += emb[d]
+                centroid_text = [v / len(cluster_text_embs) for v in centroid_text]
 
             # Audio centroid (mean of raw audio embeddings in this cluster)
             centroid_audio = None
@@ -668,6 +688,12 @@ class TasteConstellations:
 
     def get_constellation_summary(self) -> dict:
         """Return constellation data for the API/debug view."""
+        if (database.get_setting("constellations_enabled") or "true") == "false":
+            return {
+                "active": False,
+                "reason": "disabled_by_setting",
+                "total_positive_signals": 0,
+            }
         with self._lock:
             if not self._pockets:
                 return {
@@ -707,6 +733,14 @@ class TasteConstellations:
         Computes per-pocket completion/skip/heart rates from play_events,
         plus overall silhouette score from the last build.
         """
+        if (database.get_setting("constellations_enabled") or "true") == "false":
+            return {
+                "active": False,
+                "reason": "disabled_by_setting",
+                "total_positive_signals": 0,
+                "silhouette": None,
+                "pockets": [],
+            }
         import statistics
         with self._lock:
             if not self._pockets:
