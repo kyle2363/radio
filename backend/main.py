@@ -278,17 +278,11 @@ async def lifespan(app):
     _server_ready = True
     print("Server ready.")
 
-    yield
-
-    # Gracefully shut down managed external processes
-    if config.PROC_MGR_ENABLED:
-        print("Shutting down managed processes...")
-        get_process_manager().stop_all()
-        print("Managed processes stopped.")
-
-    # Cancel broadcast worker on shutdown
-    app.state._broadcast_worker.cancel()
-    player_engine.get_player().stop()
+    try:
+        yield
+    finally:
+        _server_ready = False
+        await _shutdown_runtime()
 
 
 app = FastAPI(title="Radio", version="0.1.0", lifespan=lifespan)
@@ -684,30 +678,7 @@ def _get_mood_state_machine():
     return _mood_state_machine
 
 
-def _fetch_song_embeddings(song_id: int) -> tuple:
-    """Fetch both text and audio embeddings for a song from ChromaDB.
-
-    Returns (text_embedding, audio_embedding) tuple.
-    """
-    text_embedding = None
-    audio_embedding = None
-
-    try:
-        collection = get_chroma_client().get_collection("songs")
-        result = collection.get(ids=[str(song_id)], include=["embeddings"])
-        text_embedding = result["embeddings"][0] if result.get("embeddings") is not None and len(result["embeddings"]) > 0 and result["embeddings"][0] is not None else None
-    except Exception:
-        pass
-
-    if config.MUQ_ENABLED:
-        try:
-            audio_collection = client.get_collection(config.MUQ_AUDIO_COLLECTION)
-            audio_result = audio_collection.get(ids=[str(song_id)], include=["embeddings"])
-            audio_embedding = audio_result["embeddings"][0] if audio_result.get("embeddings") is not None and len(audio_result["embeddings"]) > 0 and audio_result["embeddings"][0] is not None else None
-        except Exception:
-            pass
-
-    return text_embedding, audio_embedding
+from engine.song_embeddings import fetch_song_embeddings as _fetch_song_embeddings
 
 
 _sleep_timer = None
@@ -2595,9 +2566,7 @@ def queue_rebuild():
     qm = _get_queue_manager()
     with qm._condition:
         qm._queue.clear()
-        qm._rebuilding = True
-        qm._rebuild_gen += 1
-    threading.Thread(target=qm._rebuild_queue, daemon=True).start()
+        qm.request_rebuild()
     return {"status": "rebuild_started"}
 
 
@@ -5040,13 +5009,21 @@ async def calibration_anchors():
 async def api_shutdown():
     """Gracefully stop managed subprocesses before exit."""
     logger.info("Received graceful shutdown request")
-    if config.PROC_MGR_ENABLED:
-        get_process_manager().stop_all()
-        logger.info("Managed processes stopped.")
-    player_engine.get_player().stop()
-    if hasattr(app.state, '_broadcast_worker'):
-        app.state._broadcast_worker.cancel()
+    await _shutdown_runtime()
     return {"status": "shutting_down"}
+
+
+async def _shutdown_runtime():
+    """Stop producers before optional services and the broadcast consumer."""
+    global _server_ready
+    _server_ready = False
+    from engine.lifecycle import shutdown_runtime
+    await shutdown_runtime(
+        queue=_queue_manager,
+        player=player_engine.get_player(),
+        processes=get_process_manager() if config.PROC_MGR_ENABLED else None,
+        broadcaster=getattr(app.state, "_broadcast_worker", None),
+    )
 
 
 if __name__ == "__main__":
