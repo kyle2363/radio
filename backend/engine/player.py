@@ -5,6 +5,9 @@ import os
 import sys
 import threading
 import time
+import queue
+from dataclasses import dataclass
+from engine.vlc_transport import VLCTransport
 try:
     import vlc
 except ImportError as _vlc_err:
@@ -62,6 +65,14 @@ def _restore_stderr(saved):
             pass
 
 
+@dataclass(frozen=True)
+class _PlaybackEnd:
+    generation: int
+    session_id: int | None
+    item_index: int
+    song_id: int | None
+
+
 class Player:
     """Wraps libvlc MediaListPlayer for true gapless playback."""
 
@@ -79,6 +90,8 @@ class Player:
 
         # Generation counter to distinguish stale VLC events from current ones
         self._play_gen = 0
+        self._completion_gen = 0
+        self._completed_items = set()
         self._stop_gen = -1
         self._play_started_at = 0.0  # time.time() when the current play started
         # Generation at which to ignore the next MediaListPlayerNextItemSet
@@ -98,9 +111,12 @@ class Player:
             )
         except Exception:
             pass
-        self._media_list = self._vlc_instance.media_list_new([])
-        self._list_player = self._vlc_instance.media_list_player_new()
-        self._list_player.set_media_list(self._media_list)
+        self._command_lock = threading.RLock()
+        self._transport = None
+        self._list_player = None
+        self._media_list = None
+        self._native_events = queue.SimpleQueue()
+        self._closed = False
 
         # Track chain items and current position
         self._chain_items = []
@@ -137,153 +153,90 @@ class Player:
         self._current_eq = None
         self._last_eq_preset = None
 
-        # Internal MediaPlayer end-reached handler is re-attached each play()
-        self._mp_event_manager = None
+        self._event_worker = threading.Thread(target=self._dispatch_native_events,
+                                              daemon=True, name="vlc-events")
+        self._event_worker.start()
 
-        # Event manager for list-level events
-        self._event_manager = self._list_player.event_manager()
-        self._event_manager.event_attach(
-            vlc.EventType.MediaListPlayerNextItemSet,
-            self._on_next_item,
-            None,
-        )
-        self._event_manager.event_attach(
-            vlc.EventType.MediaPlayerEndReached,
-            self._on_end_reached,
-            None,
-        )
-        self._event_manager.event_attach(
-            vlc.EventType.MediaListPlayerStopped,
-            self._on_stopped,
-            None,
-        )
+    def _enqueue_native_event(self, handler, generation):
+        self._native_events.put((handler, generation))
+
+    def _dispatch_native_events(self):
+        while True:
+            item = self._native_events.get()
+            if item is None:
+                return
+            handler, generation = item
+            try:
+                if generation == self._play_gen:
+                    handler(None, generation)
+            except Exception:
+                _song_logger.exception("Native playback observation failed: gen=%s", generation)
 
     def _on_next_item(self, event, user_data):
-        """Called when MediaListPlayer advances to next item.
-
-        VLC fires MediaListPlayerNextItemSet BOTH at play-start (setting
-        the first item) AND when advancing from one item to the next.
-        We skip the play-start event using a generation flag so that
-        _current_chain_index only advances on real transitions — this
-        is critical for _on_media_end_reached to correctly identify
-        TTS items.
-
-        When this is a real advancement, fires song_ended for the
-        previous item if it was a non-TTS song.  Also updates
-        _current_song_id when advancing TO a real song.
-        """
-        _song_logger.debug("VLC_EVENT MediaListPlayerNextItemSet  index=%d  chain_len=%d  state=%s  gen=%d  first_next_gen=%d",
-                           self._current_chain_index, len(self._chain_items), self._state, self._play_gen,
-                           self._first_next_gen)
-
-        # Skip play-start event (VLC fires this once when the first item starts)
-        if self._current_chain_index == 0 and self._first_next_gen == self._play_gen:
-            self._first_next_gen = -1
-            _song_logger.debug("  -> first next item (play start) — ignored")
+        """Apply an item-advance observation outside the native callback thread."""
+        generation = user_data if isinstance(user_data, int) else self._play_gen
+        # Direct native-stop callback compatibility: never wait on a state lock
+        # while the native caller is stopping. Production callbacks enqueue.
+        if self._explicitly_stopped or self._stop_in_progress:
             return
-
-        # Real advancement: fire callback for the item we're leaving
-        if self._current_chain_index >= 0 and self._current_chain_index < len(self._chain_items):
-            item = self._chain_items[self._current_chain_index]
-            if not item.get("is_tts"):
-                song_id = item.get("song_id")
-                if song_id:
-                    _song_logger.debug("  -> firing ended for song %s", song_id)
-                    self._fire_song_ended(song_id)
-            else:
-                _song_logger.debug("  -> skipped (TTS item)")
-
-        self._current_chain_index += 1
-
-        # Clear talk-playing when we advance from TTS to the real song
-        if self._current_chain_index < len(self._chain_items):
-            cur = self._chain_items[self._current_chain_index]
-            _song_logger.debug("  -> advanced to chain[%d]: is_tts=%s song_id=%s filepath=%s",
-                               self._current_chain_index, cur.get("is_tts"), cur.get("song_id"),
-                               os.path.basename(cur.get("filepath", "")))
-            if not cur.get("is_tts"):
-                sid = cur.get("song_id")
-                if sid:
-                    self._current_song_id = sid
-                    _song_logger.debug("  -> updated current_song_id=%s from chain", sid)
+        completion, started_song, callbacks, restore_volume = None, None, [], False
+        with self._lock:
+            if generation != self._play_gen or self._explicitly_stopped or self._stop_in_progress:
+                return
+            if self._current_chain_index == 0 and self._first_next_gen == generation:
+                self._first_next_gen = -1
+                return
+            index = self._current_chain_index
+            if index < 0 or index + 1 >= len(self._chain_items):
+                return  # The final item is completed by its MediaPlayer end event.
+            item = self._chain_items[index]
+            if not item.get("is_tts") and item.get("song_id"):
+                completion = _PlaybackEnd(generation, self._current_session_id, index, item["song_id"])
+            self._current_chain_index += 1
+            current = self._chain_items[self._current_chain_index]
+            if not current.get("is_tts"):
+                self._current_song_id = current.get("song_id")
                 if self._talk_playing:
                     self._talk_playing = False
-                    _song_logger.debug("  -> talk ended (chain advanced to real song)")
-                    # Restore volume after talk segment
                     if self._pre_talk_volume is not None:
-                        self.set_volume(self._pre_talk_volume)
-                        _song_logger.debug("  -> restored volume to %d after talk segment", self._pre_talk_volume)
+                        self._base_volume = self._pre_talk_volume
                         self._pre_talk_volume = None
-                    # Fire registered callbacks (e.g. on_song_started deferred from talk segment)
+                        restore_volume = True
+                    started_song = self._current_song_id
                     with self._cb_lock:
-                        cbs = list(self._on_song_started_callbacks)
+                        callbacks = list(self._on_song_started_callbacks)
                         self._on_song_started_callbacks.clear()
-                    for cb in cbs:
-                        try:
-                            cb(sid)
-                        except Exception as e:
-                            _song_logger.error("Error in on_song_started callback: %s", e)
-        else:
-            _song_logger.debug("  -> chain fully advanced (idx=%d >= len=%d), no more items",
-                               self._current_chain_index, len(self._chain_items))
+        if restore_volume:
+            self._apply_effective_volume()
+        if completion is not None:
+            self._fire_song_ended(completion.song_id, completion)
+        for callback in callbacks:
+            if generation != self._play_gen:
+                break
+            try:
+                callback(started_song)
+            except Exception:
+                _song_logger.exception("Deferred song-start callback failed")
 
     def _on_end_reached(self, event, user_data):
-        """Called when the entire media list playback is done.
-
-        Safety net cleanup.  Also handles the case where a talk-only chain
-        (no real song) ends — fires a synthetic song_ended with None so the
-        queue manager can advance to the next item.
-
-        IMPORTANT: For normal (non-talk-only) chains, we do NOT clear
-        _state, _current_song_id, _chain_items, or _current_chain_index
-        here.  Those fields are managed by _on_media_end_reached (the
-        primary end handler) and play_song/play_chain.  Clearing them
-        here races with _on_media_end_reached — if _on_end_reached fires
-        first (which VLC can do), it sets _state="stopped" and
-        _current_song_id=None, which causes _on_media_end_reached's
-        guard (if state=="playing") to bail, silently dropping the
-        song_ended notification and freezing playback.
-        """
-        saved_gen = self._play_gen
-        had_talk_only = (
-            self._chain_items
-            and all(it.get("is_tts") for it in self._chain_items)
-        )
-        _song_logger.debug("VLC_EVENT MediaPlayerEndReached  chain_len=%d  state=%s  stopped=%s  gen=%d"
-                           "  chain_idx=%d/%d  talk_only=%s  — cleanup",
-                           len(self._chain_items), self._state, self._explicitly_stopped, saved_gen,
-                           self._current_chain_index, len(self._chain_items), had_talk_only)
-        # Reset boolean flags unconditionally (safe for any ordering)
-        self._explicitly_stopped = False
-        self._stop_in_progress = False
-        # Restore volume if talk segment was playing when chain ended
-        if self._pre_talk_volume is not None:
-            self.set_volume(self._pre_talk_volume)
-            _song_logger.debug("  -> restored volume to %d after talk segment (end_reached)", self._pre_talk_volume)
-            self._pre_talk_volume = None
-
-        if had_talk_only:
-            # Talk-only chain: safe to clear state — there is no real song
-            # that _on_media_end_reached needs to process.
-            self._state = "stopped"
-            self._current_song_id = None
-            self._talk_playing = False
-            self._talk_only_chain = False
-            self._tts_events_pending = 0
-            self._chain_items = []
-            self._current_chain_index = 0
-            _song_logger.debug("  -> talk-only chain ended, firing synthetic song_ended to advance queue")
-            threading.Thread(
-                target=self._run_ended_callbacks, args=(None,), daemon=True,
-                name="talk-chain-ended-cb"
-            ).start()
-        else:
-            # Normal chain: leave _state, _current_song_id, _chain_items,
-            # _current_chain_index untouched — _on_media_end_reached (or
-            # stop()/play_song()) will clear them when it processes the
-            # song end.  This prevents _on_end_reached from racing ahead
-            # and suppressing the song_ended callback.
-            _song_logger.debug("  -> normal chain end, skipping state clear (deferred to _on_media_end_reached)")
+        """Handle list-level talk completion without racing playback commands."""
+        generation = user_data if isinstance(user_data, int) else self._play_gen
+        completion = None
+        with self._lock:
+            if (generation != self._play_gen or self._explicitly_stopped
+                    or self._stop_in_progress):
+                return
+            if self._chain_items and all(it.get("is_tts") for it in self._chain_items):
+                completion = _PlaybackEnd(generation, self._current_session_id, -1, None)
+                self._state = "stopped"
+                self._current_song_id = None
+                self._talk_playing = False
+                self._talk_only_chain = False
+                self._tts_events_pending = 0
+                self._chain_items = []
+                self._current_chain_index = 0
+        if completion is not None:
+            self._fire_song_ended(None, completion)
 
     def _on_stopped(self, event, user_data):
         """Called when the media list player stops.
@@ -302,6 +255,8 @@ class Player:
         fired by _on_media_end_reached (attached directly on the internal
         MediaPlayer) and/or _on_end_reached (MediaListPlayer fallback).
         """
+        if isinstance(user_data, int) and user_data != self._play_gen:
+            return
         _song_logger.debug("VLC_EVENT MediaListPlayerStopped  state=%s  stopped=%s  stop_in_prog=%s  "
                            "stop_gen=%d  play_gen=%d  song_id=%s",
                            self._state, self._explicitly_stopped, self._stop_in_progress,
@@ -332,20 +287,37 @@ class Player:
         self._current_chain_index = 0
         _song_logger.debug("  -> cleaned up: state=stopped song_id=None")
 
-    def _fire_song_ended(self, song_id):
+    def _fire_song_ended(self, song_id, completion=None):
         """Fire all song_ended callbacks in a background thread.
 
         Callbacks (which call play_song/play_chain) MUST run outside VLC's
         event thread — VLC cannot safely start new media from within its own
         event callbacks.
         """
-        if song_id is None:
-            return
+        # Claim once under the playback lock, before any persistence or
+        # deferred dispatch. Keep only the current generation's item keys.
+        with self._lock:
+            if completion is None:
+                completion = _PlaybackEnd(
+                    self._play_gen, self._current_session_id,
+                    self._current_chain_index if song_id is not None else -1,
+                    song_id,
+                )
+            if (completion.generation != self._play_gen
+                    or self._explicitly_stopped or self._stop_in_progress):
+                return
+            if self._completion_gen != completion.generation:
+                self._completion_gen = completion.generation
+                self._completed_items.clear()
+            key = (completion.item_index, completion.song_id)
+            if key in self._completed_items:
+                return
+            self._completed_items.add(key)
         _song_logger.debug("_fire_song_ended(song=%s) — recording completion, deferring callbacks", song_id)
         # Record completion event (lightweight DB op, safe in VLC thread)
         try:
-            session_id = self._current_session_id
-            if session_id:
+            session_id = completion.session_id
+            if session_id and song_id is not None:
                 database.record_play_event(
                     song_id=song_id,
                     session_id=session_id,
@@ -357,15 +329,24 @@ class Player:
 
         # Defer callbacks to background thread
         _song_logger.debug("  -> starting background thread for callbacks")
-        threading.Thread(target=self._run_ended_callbacks, args=(song_id,), daemon=True, name="song-ended-cb").start()
+        threading.Thread(target=self._run_ended_callbacks,
+                         args=(song_id, completion.generation), daemon=True,
+                         name="song-ended-cb").start()
 
-    def _run_ended_callbacks(self, song_id):
+    def _run_ended_callbacks(self, song_id, generation=None):
         """Run song-ended callbacks in a background thread."""
         with self._cb_lock:
             cbs = list(self._on_song_ended_callbacks)
         _song_logger.debug("_run_ended_callbacks(song=%s) — %d callbacks registered", song_id, len(cbs))
         # Skip DB-recording callbacks when song_id is None (talk-only chain ended)
         for i, cb in enumerate(cbs):
+            with self._lock:
+                if (generation is not None and generation != self._play_gen
+                        or self._explicitly_stopped or self._stop_in_progress):
+                    return
+            # Never hold the player lock while invoking application code:
+            # callbacks can start playback. The coordinator must still
+            # protect commands racing after this check.
             cb_name = getattr(cb, '__name__', repr(cb))
             try:
                 _song_logger.debug("  -> running callback %d/%d: %s", i + 1, len(cbs), cb_name)
@@ -374,26 +355,6 @@ class Player:
             except Exception as e:
                 _song_logger.error("Error in on_song_ended callback %s: %s", cb_name, e)
         _song_logger.debug("_run_ended_callbacks done")
-
-    def _attach_mp_end_reached(self):
-        """Attach MediaPlayerEndReached on the internal MediaPlayer.
-
-        MediaListPlayer does NOT reliably forward this event in all VLC
-        versions, so we attach directly on the internal player instance.
-        Must be called after play() so the internal player is valid.
-        """
-        try:
-            mp = self._list_player.get_media_player()
-            if mp:
-                self._mp_event_manager = mp.event_manager()
-                self._mp_event_manager.event_attach(
-                    vlc.EventType.MediaPlayerEndReached,
-                    self._on_media_end_reached,
-                    None,
-                )
-                _song_logger.debug("  -> attached MediaPlayerEndReached on internal player")
-        except Exception as e:
-            _song_logger.debug("  -> could not attach internal player end event: %s", e)
 
     def _on_media_end_reached(self, event, user_data):
         """Called when the internal MediaPlayer reaches end of media.
@@ -412,7 +373,7 @@ class Player:
         with play_song/play_chain which modify the same fields under
         the lock.
         """
-        event_gen = self._play_gen
+        event_gen = user_data if isinstance(user_data, int) else self._play_gen
         _song_logger.debug("VLC_EVENT MediaPlayerEndReached (internal mp)  state=%s  gen=%d  song_id=%s"
                            "  chain_idx=%d/%d  talk_playing=%s  talk_only=%s",
                            self._state, event_gen, self._current_song_id,
@@ -420,6 +381,7 @@ class Player:
                            self._talk_playing, self._talk_only_chain)
         talk_only_ended = False
         song_id = None
+        completion = None
         _song_logger.debug("  -> waiting for player._lock (event_gen=%d)...", event_gen)
         if not self._lock.acquire(timeout=5.0):
             _song_logger.error("  -> DEADLOCK: could not acquire player._lock within 5s! Dumping threads:")
@@ -443,7 +405,8 @@ class Player:
             # play_chain while this VLC event was queued.  The state now
             # belongs to a different playback session — ignore this event
             # to prevent firing song_ended for the wrong song.
-            if self._play_gen != event_gen:
+            if (self._play_gen != event_gen or self._explicitly_stopped
+                    or self._stop_in_progress):
                 _song_logger.debug("  -> stale event (gen %d != current %d), ignoring",
                                    event_gen, self._play_gen)
                 return
@@ -478,6 +441,8 @@ class Player:
                     return
                 _song_logger.debug("  -> branch1: firing ended for song %s", self._current_song_id)
                 song_id = self._current_song_id
+                completion = _PlaybackEnd(event_gen, self._current_session_id,
+                                          self._current_chain_index, song_id)
                 self._state = "stopped"
                 self._talk_playing = False
                 self._current_song_id = None
@@ -491,6 +456,10 @@ class Player:
                 # _chain_items was cleared by a concurrent gen advance
                 # (e.g. _on_stopped or stop() during long TTS playback).
                 if self._talk_only_chain:
+                    if self._tts_events_pending > 1:
+                        self._tts_events_pending -= 1
+                        return
+                    completion = _PlaybackEnd(event_gen, self._current_session_id, -1, None)
                     talk_only_ended = True
                     self._state = "stopped"
                     self._talk_playing = False
@@ -506,239 +475,190 @@ class Player:
             self._lock.release()
         if song_id:
             _song_logger.debug("  -> firing ended for song %s (from internal mp event)", song_id)
-            self._fire_song_ended(song_id)
+            self._fire_song_ended(song_id, completion)
         elif talk_only_ended:
             # Talk-only chain ended after the lock is released — fire
             # synthetic song_ended(None) to trigger pop_next() in main.py,
             # advancing to the next real song from queue.
             _song_logger.debug("  -> talk-only chain ended, firing synthetic song_ended to advance queue")
-            threading.Thread(
-                target=self._run_ended_callbacks, args=(None,), daemon=True,
-                name="talk-chain-ended-cb"
-            ).start()
+            self._fire_song_ended(None, completion)
 
     def play_song(self, song_id, filepath, session_id=None):
-        """Play a single song. Returns True if playback started."""
-        _song_logger.debug("play_song(id=%s, file=%s) entering", song_id, os.path.basename(filepath) if filepath else None)
-        try:
-            with self._lock:
-                self._play_gen += 1
-                gen = self._play_gen
-                self._first_next_gen = gen
-                self._explicitly_stopped = True
-                self._stop_in_progress = True
-                self._stop_gen = gen
-                _song_logger.debug("  -> stop old playback (gen=%d)", gen)
-                self._list_player.stop()
-                self._stop_in_progress = False
-                self._explicitly_stopped = False
-                self._stop_gen = -1
-                self._media_list = self._vlc_instance.media_list_new([])
-                self._list_player.set_media_list(self._media_list)
-                media = self._vlc_instance.media_new(filepath)
-                self._media_list.add_media(media)
-                self._chain_items = [{"song_id": song_id, "is_tts": False}]
-                self._current_chain_index = 0
-                self._talk_playing = False
-                self._talk_only_chain = False
-                self._talk_total_ms = 0
-                self._tts_events_pending = 0
-                with self._cb_lock:
-                    self._on_song_started_callbacks.clear()
-                _song_logger.debug("  -> play new media")
-                # HACK: VLC's media_list_player.play() can block indefinitely if
-                # the stop/play cycle happens too fast.  Run play() inside a
-                # daemon thread with a 3-second timeout so we never hang the
-                # background thread (same pattern as play_chain).
-                _play_ok = threading.Event()
-                def _do_play():
-                    self._list_player.play()
-                    _play_ok.set()
-                threading.Thread(target=_do_play, daemon=True, name="vlc-play-song-thread").start()
-                if not _play_ok.wait(timeout=3.0):
-                    _song_logger.error("  -> VLC play() TIMED OUT after 3s in play_song! "
-                                       "VLC may be stuck. Continuing anyway.")
-                else:
-                    _song_logger.debug("  -> VLC play() completed normally")
-                # Attach MediaPlayerEndReached directly on internal player
-                self._attach_mp_end_reached()
-                # Set state inside lock so async event handlers see "playing"
-                self._current_song_id = song_id
-                self._current_session_id = session_id
-                self._state = "playing"
-                self._play_started_at = time.time()
-                _song_logger.debug("  -> state=playing song_id=%s (gen=%d, inside lock)", song_id, gen)
+        """Play one song using a dedicated native playback lifecycle."""
+        return self._start_items([{"song_id": song_id, "filepath": filepath, "is_tts": False}], session_id)
 
-            return True
-        except Exception as e:
-            _song_logger.error("play_song FAILED: %s", e)
+    def play_chain(self, items, session_id=None):
+        """Play prepared speech/song items using VLC's media list chaining."""
+        return self._start_items(items, session_id)
+
+    def _start_items(self, items, session_id=None):
+        if not items:
             return False
-
-    def play_chain(self, items):
-        """Play a chain of media items back-to-back (no gap).
-
-        items: list of dicts with 'filepath' key (and optionally 'song_id', 'is_tts')
-        """
-        _song_logger.debug("play_chain(%d items) entering", len(items))
-        try:
+        with self._command_lock:
+            if self._closed:
+                return False
             with self._lock:
                 self._play_gen += 1
-                gen = self._play_gen
-                self._first_next_gen = gen
+                generation = self._play_gen
+                old = self._transport
+                prior_session = self._current_session_id
                 self._explicitly_stopped = True
                 self._stop_in_progress = True
-                self._stop_gen = gen
-                _song_logger.debug("  -> stop old playback (gen=%d)", gen)
-                self._list_player.stop()
-                self._stop_in_progress = False
-                self._explicitly_stopped = False
-                self._stop_gen = -1
-                self._media_list = self._vlc_instance.media_list_new([])
-                self._list_player.set_media_list(self._media_list)
-                successful_items = []
+                self._transport = None
+                self._list_player = None
+                self._media_list = None
+                self._state = "stopped"
+            # No playback state lock may be held while native stop runs.
+            # Its callbacks only enqueue observations with the old identity.
+            if old is not None:
+                old.retire()
+            transport = None
+            try:
+                transport = VLCTransport(self._vlc_instance, vlc.EventType, generation, {
+                    "next": self._on_next_item, "ended": self._on_end_reached,
+                    "stopped": self._on_stopped, "media_end": self._on_media_end_reached,
+                }, self._enqueue_native_event)
+                prepared = []
                 for item in items:
                     media = self._vlc_instance.media_new(item["filepath"])
-                    if not media:
-                        _song_logger.error("  -> VLC media_new FAILED for: %s", item["filepath"])
-                        continue
-                    self._media_list.add_media(media)
-                    successful_items.append(item)
-                _song_logger.debug("  -> built media list with %d/%d items", len(successful_items), len(items))
-                self._chain_items = successful_items
-                self._current_chain_index = 0
-                # Determine if this chain contains TTS (talk) items
-                self._talk_playing = any(it.get("is_tts") for it in successful_items)
-                self._tts_events_pending = sum(1 for it in successful_items if it.get("is_tts"))
-                self._talk_only_chain = self._talk_playing and all(it.get("is_tts") for it in successful_items)
-                self._talk_total_ms = 0
+                    if media is None:
+                        raise RuntimeError("VLC could not open prepared media")
+                    transport.media_list.add_media(media)
+                    media.release()
+                    prepared.append(dict(item))
+                first_song = next((it.get("song_id") for it in prepared if not it.get("is_tts")), None)
+                song = database.get_song(first_song) if first_song else None
+                gain = (song.get("gain_db") or 0.0) if song else 0.0
+                talk_total_ms = 0
+                import wave
+                for item in prepared:
+                    if item.get("is_tts"):
+                        try:
+                            with wave.open(item["filepath"], "rb") as wav:
+                                talk_total_ms += int(wav.getnframes() / wav.getframerate() * 1000)
+                        except (OSError, EOFError, wave.Error):
+                            _song_logger.debug("Could not read prepared speech duration")
+                with self._lock:
+                    self._transport = transport
+                    self._list_player = transport.list_player
+                    self._media_list = transport.media_list
+                    self._chain_items = prepared
+                    self._current_chain_index = 0
+                    self._first_next_gen = generation
+                    self._current_song_id = first_song
+                    self._current_session_id = session_id if session_id is not None else prior_session
+                    self._talk_playing = any(it.get("is_tts") for it in prepared)
+                    self._talk_only_chain = all(it.get("is_tts") for it in prepared)
+                    self._tts_events_pending = sum(bool(it.get("is_tts")) for it in prepared)
+                    self._talk_total_ms = talk_total_ms
+                    self._gain_db = gain
+                    self._play_started_at = time.time()
+                    self._explicitly_stopped = False
+                    self._stop_in_progress = False
+                    self._stop_gen = -1
+                    self._state = "playing"
+                    with self._cb_lock:
+                        self._on_song_started_callbacks.clear()
+                # Carry output settings across native lifecycles.
+                if self._pre_talk_volume is not None:
+                    self._base_volume = self._pre_talk_volume
+                    self._pre_talk_volume = None
                 if self._talk_playing:
-                    import wave as _wave
-                    for _w_item in successful_items:
-                        _w_path = _w_item.get("filepath")
-                        if _w_item.get("is_tts") and _w_path:
-                            try:
-                                with _wave.open(_w_path, 'rb') as _wf:
-                                    _frames = _wf.getnframes()
-                                    _rate = _wf.getframerate()
-                                    if _rate > 0:
-                                        self._talk_total_ms += int(_frames / _rate * 1000)
-                            except Exception:
-                                pass
-                with self._cb_lock:
-                    self._on_song_started_callbacks.clear()
-                _song_logger.debug("  -> play new chain, talk_playing=%s, tts_pending=%d",
-                                   self._talk_playing, self._tts_events_pending)
-
-                # Apply talk volume boost if chain has TTS items
-                if self._talk_playing:
-                    try:
-                        talk_vol_pct = database.get_setting_int("talk_volume", 100)
-                    except Exception:
-                        talk_vol_pct = 100
-                    if talk_vol_pct != 100:
-                        # Use _base_volume directly — we already hold self._lock,
-                        # and get_volume() would deadlock trying to acquire it.
-                        current_vol = self._base_volume
-                        adjusted_vol = max(0, min(100, int(current_vol * talk_vol_pct / 100)))
-                        self._pre_talk_volume = current_vol
-                        self.set_volume(adjusted_vol)
-                        _song_logger.debug("  -> talk volume: %d%% of %d = %d", talk_vol_pct, current_vol, adjusted_vol)
-                    else:
-                        self._pre_talk_volume = None
-
-                _song_logger.debug("  -> built media list with %d items, calling _list_player.play() for chain gen=%d", self._media_list.count(), gen)
-                # HACK: VLC's media_list_player.play() can block indefinitely if
-                # the stop/play cycle happens too fast.  Run play() inside a
-                # daemon thread with a 3-second timeout so we never hang the
-                # background thread.
-                import threading as _thr
-                _play_ok = threading.Event()
-                def _do_play():
-                    self._list_player.play()
-                    _play_ok.set()
-                _t = _thr.Thread(target=_do_play, daemon=True, name="vlc-play-thread")
-                _t.start()
-                if not _play_ok.wait(timeout=3.0):
-                    _song_logger.error("  -> VLC play() TIMED OUT after 3s! "
-                                       "VLC may be stuck. Continuing anyway.")
-                else:
-                    _song_logger.debug("  -> VLC play() completed normally")
-                _song_logger.debug("  -> post-play: is_playing=%s, state=%s",
-                                   self._list_player.is_playing(),
-                                   self._state)
-                # Attach MediaPlayerEndReached directly on internal player
-                self._attach_mp_end_reached()
-                # Set state inside lock so async event handlers see "playing"
-                # Find first non-TTS item for current_song_id
-                first_song_id = None
-                if items:
-                    for it in items:
-                        if not it.get("is_tts"):
-                            first_song_id = it.get("song_id")
-                            break
-                self._current_song_id = first_song_id
-                # Look up gain_db for volume normalization
-                # NOTE: set _gain_db directly + call _apply_effective_volume instead
-                # of set_gain_db() — we already hold self._lock (non-reentrant),
-                # and set_gain_db would try to acquire it again → self-deadlock.
-                if first_song_id:
-                    try:
-                        song = database.get_song(first_song_id)
-                        if song and song.get("gain_db") is not None:
-                            self._gain_db = song["gain_db"]
-                        else:
-                            self._gain_db = 0.0
-                    except Exception:
-                        self._gain_db = 0.0
-                else:
-                    self._gain_db = 0.0
+                    talk_percent = database.get_setting_int("talk_volume", 100)
+                    if talk_percent != 100:
+                        self._pre_talk_volume = self._base_volume
+                        self._base_volume = max(0, min(100, int(self._base_volume * talk_percent / 100)))
                 self._apply_effective_volume()
-                self._state = "playing"
-                self._play_started_at = time.time()
-                _song_logger.debug("  -> state=playing song_id=%s (gen=%d, inside lock)", self._current_song_id, gen)
-
-            _song_logger.debug("  <- play_chain returning True (chain started)")
-            return True
-        except Exception as e:
-            _song_logger.error("play_chain FAILED: %s", e)
-            return False
+                if self._current_eq:
+                    self.set_eq_preset(self._current_eq)
+                finished = threading.Event()
+                failure = []
+                def start_native():
+                    try:
+                        if transport.play() == -1:
+                            failure.append("VLC refused playback")
+                        if self._play_gen != generation:
+                            transport.retire()
+                    except Exception as exc:
+                        failure.append(str(exc))
+                    finally:
+                        finished.set()
+                threading.Thread(target=start_native, daemon=True, name="vlc-play-thread").start()
+                if not finished.wait(3.0):
+                    _song_logger.warning("VLC start still pending: generation=%s", generation)
+                if failure:
+                    raise RuntimeError(failure[0])
+                return True
+            except Exception:
+                _song_logger.exception("VLC playback preparation failed: generation=%s", generation)
+                with self._lock:
+                    self._state = "stopped"
+                    self._current_song_id = None
+                    self._transport = None
+                    self._list_player = None
+                    self._media_list = None
+                    self._stop_in_progress = False
+                    self._explicitly_stopped = True
+                if transport is not None:
+                    transport.retire()
+                return False
 
     def stop(self):
-        """Stop playback."""
-        self._play_gen += 1
-        gen = self._play_gen
-        self._explicitly_stopped = True
-        with self._lock:
-            self._stop_in_progress = True
-            self._stop_gen = gen
-            self._list_player.stop()
-            self._stop_in_progress = False
-            self._stop_gen = -1
-        self._current_song_id = None
-        self._current_session_id = None
-        self._state = "stopped"
-        self._talk_playing = False
-        # Restore volume if talk segment was playing when stopped
-        if self._pre_talk_volume is not None:
-            self.set_volume(self._pre_talk_volume)
-            self._pre_talk_volume = None
-        self._chain_items = []
-        self._current_chain_index = 0
-        self._tts_events_pending = 0
-        with self._cb_lock:
-            self._on_song_started_callbacks.clear()
+        """Retire the playback identity before stopping its native emitter."""
+        with self._command_lock:
+            with self._lock:
+                self._play_gen += 1
+                self._stop_gen = self._play_gen
+                self._explicitly_stopped = True
+                self._stop_in_progress = True
+                transport, native = self._transport, self._list_player
+                self._transport = None
+                self._list_player = None
+                self._current_song_id = None
+                self._current_session_id = None
+                self._state = "stopped"
+                self._talk_playing = False
+                self._talk_only_chain = False
+                self._chain_items = []
+                self._current_chain_index = 0
+                self._tts_events_pending = 0
+            try:
+                if transport is not None:
+                    transport.retire()
+                elif native is not None:
+                    native.stop()
+            finally:
+                self._stop_in_progress = False
+                self._stop_gen = -1
+            if self._pre_talk_volume is not None:
+                self.set_volume(self._pre_talk_volume)
+                self._pre_talk_volume = None
+            with self._cb_lock:
+                self._on_song_started_callbacks.clear()
+
+    def shutdown(self):
+        """Permanently reject starts and stop the native observation dispatcher."""
+        with self._command_lock:
+            self._closed = True
+            self.stop()
+        self._native_events.put(None)
+        worker = getattr(self, "_event_worker", None)
+        if worker is not None and worker is not threading.current_thread():
+            worker.join(timeout=2.0)
 
     def pause(self):
         """Pause playback."""
-        with self._lock:
-            self._list_player.pause()
-        self._state = "paused"
+        with self._command_lock:
+            if self._list_player is not None and self._state == "playing":
+                self._transport.set_pause(1)
+                self._state = "paused"
 
     def resume(self):
         """Resume playback."""
-        with self._lock:
-            self._list_player.play()
-        self._state = "playing"
+        with self._command_lock:
+            if self._list_player is not None and self._state == "paused" and not self._closed:
+                self._transport.set_pause(0)
+                self._state = "playing"
 
     def toggle_pause(self):
         """Toggle pause/resume."""
@@ -765,7 +685,8 @@ class Player:
 
     def _get_mp(self):
         """Return the internal MediaPlayer, or None."""
-        return self._list_player.get_media_player() if self._list_player else None
+        transport = self._transport
+        return transport.media_view if transport is not None else None
 
     def get_position(self):
         """Return current playback position as fraction (0.0 to 1.0).
@@ -903,17 +824,6 @@ class Player:
     def get_eq_preset(self):
         """Return current EQ preset name, or None if disabled."""
         return self._current_eq
-
-    def get_volume(self):
-        """Get current volume (0-100)."""
-        try:
-            with self._lock:
-                mp = self._get_mp()
-                if mp:
-                    return mp.audio_get_volume()
-        except Exception as e:
-            _song_logger.debug("get_volume failed: %s", e)
-        return 70
 
     def seek(self, ms):
         """Seek to a position in milliseconds."""
