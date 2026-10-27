@@ -1,4 +1,7 @@
 from pathlib import Path
+import sqlite3
+import sys
+import pytest
 
 import config
 from db import database
@@ -19,3 +22,16 @@ def test_generated_media_paths_are_disposable():
     for key in ("DATA_DIR", "MUSIC_DIR", "CHROMA_PATH", "ACESTEP_JSON_DIR",
                 "TTS_CACHE_DIR", "SEPARATOR_OUTPUT_DIR", "LOG_PATH"):
         assert Path(getattr(config, key)).is_relative_to(root), key
+
+
+def test_runner_rejects_production_database_connections():
+    assert getattr(sys, "radio_test_isolated", False), "Run tests through scripts/run_tests.py"
+    production = Path(__file__).resolve().parents[2] / "data" / "radio.db"
+    with pytest.raises(PermissionError, match="SQLite"):
+        sqlite3.connect(str(production))
+
+
+def test_runner_rejects_original_audio_writes():
+    production = Path(__file__).resolve().parents[2] / "audio_files" / "test-must-not-exist.wav"
+    with pytest.raises(PermissionError, match="cannot write"):
+        production.write_bytes(b"must never be written")
