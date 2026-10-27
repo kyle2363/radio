@@ -33,10 +33,15 @@ Thumbs.db
 #more
 AGENTS.md
 backend/announcer/voices
-docs
+docs/*
+!docs/ARCHITECTURE.md
+!docs/BASELINE.md
+!docs/MODERNIZATION_PROGRESS.md
+!docs/TESTING.md
 
 #audio files
 audio_files
 
 
 out.wav
+.test-runtime/

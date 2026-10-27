@@ -1,47 +1,56 @@
-"""Test fixtures and configuration."""
-
+"""Isolate storage BEFORE test-module imports capture configuration paths."""
 import os
+from pathlib import Path
 import sys
 import tempfile
 
-# Ensure the backend directory is on sys.path for imports
-BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if BACKEND_DIR not in sys.path:
-    sys.path.insert(0, BACKEND_DIR)
-
-# Disable telemetry before any chromadb imports
+ROOT = Path(__file__).resolve().parents[2]
+RUNTIME = ROOT / ".test-runtime"
+RUNTIME.mkdir(exist_ok=True)
+tempfile.tempdir = str(RUNTIME)
+sys.path.insert(0, str(ROOT / "backend"))
 os.environ["CHROMA_NO_ANALYTICS"] = "1"
 os.environ["CHROMA_TELEMETRY_OFF"] = "1"
 
 import pytest
+import config as cfg
 
-
-@pytest.fixture(scope="session")
-def test_db_path():
-    """Create a temporary SQLite database for testing."""
-    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-    path = tmp.name
-    tmp.close()
-    yield path
-    try:
-        os.unlink(path)
-    except OSError:
-        pass
+COLLECTION_ROOT = Path(tempfile.mkdtemp(prefix="collection-", dir=RUNTIME))
+cfg.DATA_DIR = str(COLLECTION_ROOT)
+cfg.MUSIC_DIR = str(COLLECTION_ROOT / "audio")
+cfg.ACESTEP_JSON_DIR = str(COLLECTION_ROOT / "metadata")
+cfg.DB_PATH = str(COLLECTION_ROOT / "radio.db")
+for name, suffix in {
+    "CHROMA_PATH": "chroma", "ART_DIR": "art", "TTS_CACHE_DIR": "tts",
+    "LYRICS_TIMING_DIR": "lyrics", "SEPARATOR_MODEL_DIR": "models",
+    "SEPARATOR_OUTPUT_DIR": "separated", "PROC_MGR_LOG_DIR": "logs",
+    "LOG_PATH": "playback.log", "TALK_DEBUG_LOG_PATH": "talk.log",
+}.items():
+    setattr(cfg, name, str(COLLECTION_ROOT / suffix))
+cfg.MUQ_ENABLED = False
+cfg.TTS_ENABLED = False
+cfg.PROC_MGR_ENABLED = False
+cfg.VLC_SUPPRESS_STDERR = True
 
 
 @pytest.fixture(autouse=True)
-def patch_config(test_db_path, monkeypatch):
-    """Override config paths for testing so nothing touches the real DB/Chroma."""
-    import config as cfg
-
-    monkeypatch.setattr(cfg, "DB_PATH", test_db_path)
-    monkeypatch.setattr(cfg, "CHROMA_PATH", tempfile.mkdtemp())
-    monkeypatch.setattr(cfg, "MUQ_ENABLED", False)
-    monkeypatch.setattr(cfg, "TTS_ENABLED", False)
-    monkeypatch.setattr(cfg, "VLC_SUPPRESS_STDERR", True)
-
-    # Initialize the test database schema
+def patch_config(monkeypatch):
+    """A fresh DB per test; patch both config and captured database alias."""
     from db import database
+    path = Path(tempfile.mkdtemp(prefix="case-", dir=RUNTIME)) / "radio.db"
+    monkeypatch.setattr(cfg, "DB_PATH", str(path))
+    monkeypatch.setattr(database, "DB_PATH", str(path))
+    with database._settings_cache_lock:
+        database._settings_cache.clear()
     database.init_db()
-
+    with database.get_connection_cm() as conn:
+        conn.executemany(
+            "INSERT INTO songs(id, filepath, file_hash, title, energy, cluster_id, ingest_phase) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [(i, str(COLLECTION_ROOT / "audio" / f"{i}.wav"), f"fixture-{i}", f"Fixture {i}",
+              0.5 if i < 3 else 0.8, i - 1, "clustered")
+             for i in range(1, 29)],
+        )
+        conn.commit()
     yield
+    with database._settings_cache_lock:
+        database._settings_cache.clear()
