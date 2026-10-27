@@ -3,6 +3,7 @@ const path = require("path");
 const { spawn, execSync } = require("child_process");
 const fs = require("fs");
 const http = require("http");
+const { shutdownOwnedBackend } = require("./backend-shutdown.cjs");
 
 let mainWindow;
 let uvicornProcess;
@@ -867,27 +868,27 @@ function stopPowerSave() {
   }
 }
 
+let backendShutdownPromise;
 function shutdownBackend() {
-  if (!uvicornProcess) return;
-  const pid = uvicornProcess.pid;
-  // Best-effort graceful shutdown (fire-and-forget, might complete before exit)
-  try {
-    const req = http.request({
-      hostname: "127.0.0.1", port: 8765,
-      path: "/api/shutdown", method: "POST",
-      timeout: 1000,
-    });
-    req.on("error", () => {});
-    req.end();
-  } catch (_) {}
-  // Synchronously kill the entire process tree (Python + any children like llama.cpp)
-  try {
-    execSync(`taskkill /F /T /PID ${pid}`, { timeout: 5000, stdio: "ignore" });
-  } catch (_) {
-    try { uvicornProcess.kill(); } catch (_) {}
-  }
-  // PID-based /T flag above already kills the process tree; avoid IM kill (affects unrelated processes)
-  uvicornProcess = null;
+  if (backendShutdownPromise) return backendShutdownPromise;
+  const ownedProcess = uvicornProcess;
+  backendShutdownPromise = shutdownOwnedBackend(ownedProcess, {
+    request: http.request,
+    forceKill(child) {
+      if (process.platform === "win32") {
+        try {
+          execSync(`taskkill /F /T /PID ${child.pid}`, { timeout: 5000, stdio: "ignore" });
+          return;
+        } catch (_) { /* Fall back to terminating only our child. */ }
+      }
+      child.kill();
+    },
+  }).then((result) => {
+    if (result === "timeout" || result === "error") console.warn(`Backend shutdown: ${result}`);
+  }).finally(() => {
+    if (uvicornProcess === ownedProcess) uvicornProcess = null;
+  });
+  return backendShutdownPromise;
 }
 
 // ── App Lifecycle ─────────────────────────────────────────────
@@ -927,13 +928,23 @@ app.whenReady().then(() => {
 
 app.on("window-all-closed", () => {
   stopPowerSave();
-  shutdownBackend();
-  globalShortcut.unregisterAll();
   if (process.platform !== "darwin") app.quit();
 });
 
-app.on("quit", () => {
+let shutdownComplete = false;
+let quitPending = false;
+app.on("before-quit", (event) => {
+  if (shutdownComplete) return;
+  app.isQuitting = true;
+  event.preventDefault();
+  if (quitPending) return;
+  quitPending = true;
   stopPowerSave();
-  shutdownBackend();
   globalShortcut.unregisterAll();
+  shutdownBackend().catch((error) => {
+    console.error("Backend shutdown failed:", error.message);
+  }).finally(() => {
+    shutdownComplete = true;
+    app.quit();
+  });
 });

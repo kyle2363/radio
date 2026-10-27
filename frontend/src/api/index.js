@@ -1,9 +1,11 @@
-const API_HOST = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1"
-  ? `${window.location.protocol}//${window.location.host}`
-  : "http://localhost:8765";
-const BASE = API_HOST;
-// Always use backend port directly for WebSocket (Vite proxy doesn't work reliably)
-export const WS_URL = "ws://localhost:8765/ws/events";
+import { resolveApiUrls } from "./urls.js";
+
+const urls = resolveApiUrls(window.location, {
+  apiBaseUrl: import.meta.env.VITE_API_BASE_URL,
+  wsUrl: import.meta.env.VITE_WS_URL,
+});
+const BASE = urls.apiBase;
+export const WS_URL = urls.wsUrl;
 
 async function request(method, path, body, timeout = 5000, externalSignal) {
   const controller = new AbortController();
