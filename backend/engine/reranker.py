@@ -52,13 +52,17 @@ def build_candidates_list(candidates):
     import config
     lines = []
     for c in candidates:
+        try:
+            energy = float(c["energy"]) if c.get("energy") is not None else 0.5
+        except (TypeError, ValueError):
+            energy = 0.5
         lyrics_preview = ""
-        if c.get("lyrics"):
+        if isinstance(c.get("lyrics"), str) and c["lyrics"]:
             words = c["lyrics"].split()[:config.LYRICS_RERANKER_WORDS]
             lyrics_preview = f' | lyrics: "{" ".join(words)}..."'
         lines.append(
-            f"  {c['song_id']} | {c.get('artist', '?')} - {c.get('title', '?')} "
-            f"| energy={c.get('energy', 0.5):.2f} | cluster={c.get('cluster_id', '?')}"
+            f"  {c['song_id']} | {c.get('artist') or ''} - {c.get('title') or ''} "
+            f"| energy={energy:.2f} | cluster={c.get('cluster_id', '?')}"
             f"{lyrics_preview}"
         )
     return "\n".join(lines)
@@ -93,11 +97,11 @@ def rerank(candidates, current_song=None, mood_state=None, energy_trajectory="st
         logger.debug("rerank: no candidates, returning None")
         return None
 
-    current_song_str = f"{current_song['artist']} - {current_song['title']}" if current_song else "None"
+    current_song_str = f"{current_song.get('artist') or ''} - {current_song.get('title') or ''}" if current_song else "None"
     # Build current song lyrics snippet for prompt context
     import config
     current_lyrics = ""
-    if current_song and current_song.get("lyrics"):
+    if current_song and isinstance(current_song.get("lyrics"), str) and current_song["lyrics"]:
         words = current_song["lyrics"].split()[:config.LYRICS_CURRENT_WORDS]
         current_lyrics = " ".join(words)
 
@@ -140,6 +144,7 @@ def rerank(candidates, current_song=None, mood_state=None, energy_trajectory="st
 
     # Retry up to 3 times
     logger.info(f"Reranker: calling LLM with {len(candidates)} candidates, vibe_lock={is_vibe_lock}")
+    candidate_ids = {c["song_id"] for c in candidates}
     for attempt in range(3):
         logger.info(f"Reranker: attempt {attempt + 1}/3")
         try:
@@ -166,10 +171,14 @@ def rerank(candidates, current_song=None, mood_state=None, energy_trajectory="st
                 seen_ids = set()
                 unique_picks = []
                 for pick in picks:
+                    if not isinstance(pick, dict):
+                        continue
                     pid = pick.get("id")
-                    if pid and pid not in seen_ids:
+                    if type(pid) is int and pid in candidate_ids and pid not in seen_ids:
                         seen_ids.add(pid)
                         unique_picks.append(pick)
+                        if len(unique_picks) == 5:
+                            break
 
                 # Validate slot distribution
                 valid_slots = {"exploit", "explore", "wildcard", "context"}
@@ -214,7 +223,7 @@ def rerank(candidates, current_song=None, mood_state=None, energy_trajectory="st
                 return unique_picks
 
         except Exception as e:
-            print(f"Reranker attempt {attempt + 1} failed: {e}")
+            logger.warning("Reranker attempt %d failed: %s", attempt + 1, e)
 
     return None
 
