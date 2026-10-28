@@ -10,6 +10,7 @@ import traceback
 import logging
 import os
 import config
+from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime
 from engine import taste, retriever, slots, reranker, transitions, mood, energy, recovery
@@ -22,12 +23,21 @@ def _song_effective_energy(song):
     n = song.get("user_energy_count", 0) or 0
     return round(0.7 * base + 0.3 * user, 4) if n > 0 and user is not None else base
 from engine.constellations import TasteConstellations
-from engine import player as player_engine
+from engine.playback_plan import MediaUnavailable, call_announcement, prepare_song, prepare_talk
 from db import database
+import announcer
 from announcer import talk_segments
 from announcer.voice_manager import _fade_in_first_second, _concatenate_wavs
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class QueueReservation:
+    """Opaque, one-use claim plus a defensive snapshot for preparation."""
+    token: object
+    epoch: int
+    item: dict
 
 
 @dataclass
@@ -58,11 +68,18 @@ class QueueManager:
     pop_next() waits up to 5s for rebuild, falls back to single recommendation.
     """
 
-    def __init__(self, player, db_handler, broadcast_callback=None, mood_machine=None):
+    def __init__(self, player, db_handler, broadcast_callback=None, mood_machine=None,
+                 *, energy_trajectory=None, talk_context=None, announcement_context=None):
         self._queue = []
         self._condition = threading.Condition()
         self._rebuilding = False
         self._player = player
+        self._energy_trajectory = energy_trajectory if energy_trajectory is not None else energy.get_trajectory()
+        self._talk_context = talk_context if talk_context is not None else talk_segments
+        self._announcements = (announcement_context if announcement_context is not None
+                               else getattr(announcer, "announcements", announcer))
+        self._reservations = {}
+        self._reservation_epoch = 0
         self._db = db_handler
         self._broadcast = broadcast_callback or (lambda *a, **kw: None)
         self._mood = mood_machine or mood.MoodStateMachine()
@@ -137,6 +154,8 @@ class QueueManager:
         """
         with self._condition:
             self._shutdown.set()
+            self._reservation_epoch += 1
+            self._reservations.clear()
             self._rebuild_gen += 1
             self._rebuilding = False
             self._condition.notify_all()
@@ -248,73 +267,191 @@ class QueueManager:
         # compares against the correct previous state.
         self._prev_mood_state = self._mood.get_state()
 
-    def pop_next(self):
-        """Pop the next item to play.
+    def _queue_tiers(self):
+        """Return tier names and live lists; caller holds the condition."""
+        return (("talk", self._pending_talk_segments),
+                ("manual", self._manual_queue), ("ai", self._queue))
 
-        Priority:
-          1. Talk segment queue (pre-generated talk show audio)
-          2. Manual queue (user/LLM additions — survives AI rebuilds)
-          3. AI song queue (recommendation engine picks)
+    def _is_reserved(self, item):
+        return any(held[2] is item for held in self._reservations.values())
+
+    def _track_recommended(self, pick):
+        self._recently_recommended_ids.add(pick["song_id"])
+        trim_count = len(self._recently_recommended_ids) - self._max_recent_history
+        if trim_count > 0:
+            self._recently_recommended_ids = set(list(self._recently_recommended_ids)[trim_count:])
+
+    def reserve_next(self):
+        """Claim the first available talk/manual/AI item without consuming it.
+
+        This call never waits, starts inference, or writes history. Multiple
+        preparations may coexist; each receives a separate queued item. The
+        caller must commit after successful preparation or release on failure.
         """
-        pick = None
-
-        # 1. Talk segments always have priority — they're pre-generated
-        # All queues checked under the same lock for atomicity
-        # NOTE: Generation check removed — talk segments are pre-rendered
-        # audio that doesn't depend on queue state.  The old check caused
-        # valid segments to be silently discarded when the preview watchdog
-        # incremented _rebuild_gen between segment generation and pop_next.
         with self._condition:
             if self._shutdown.is_set():
                 return None
-            if self._pending_talk_segments:
-                pick = self._pending_talk_segments.pop(0)
-                logger.info(f"pop_next: returning pending talk segment ({pick.get('segment_type')})")
+            for tier, items in self._queue_tiers():
+                for item in items:
+                    if not self._is_reserved(item):
+                        reservation = QueueReservation(object(), self._reservation_epoch, deepcopy(item))
+                        self._reservations[reservation.token] = (reservation.epoch, tier, item)
+                        return reservation
+        return None
 
-            # 2. Manual queue (user/LLM additions — survives rebuilds)
-            if pick is None and self._manual_queue:
-                pick = self._manual_queue.pop(0)
-                logger.info(f"pop_next: returning manual queue item (song_id={pick.get('song_id')})")
+    def ensure_available(self, timeout=1.0, cancelled=None):
+        """Wait briefly for a rebuild, then seed one database fallback if needed.
 
-            # 3. AI song queue
+        This only makes a pick available for reservation. It does not reserve,
+        consume, or record history for the pick.
+        """
+        deadline = time.monotonic() + max(0.0, float(timeout))
+
+        def is_cancelled():
+            return bool(cancelled and cancelled())
+
+        def has_available_locked():
+            return any(not self._is_reserved(item)
+                       for _tier, items in self._queue_tiers() for item in items)
+
+        if is_cancelled():
+            return False
+        with self._condition:
+            if self._shutdown.is_set():
+                return False
+            if has_available_locked():
+                return True
+
+        self.request_rebuild()
+        while True:
+            if is_cancelled():
+                return False
+            with self._condition:
+                if self._shutdown.is_set():
+                    return False
+                if has_available_locked():
+                    return True
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                self._condition.wait(min(remaining, 0.05))
+
+        if is_cancelled():
+            return False
+        try:
+            filters = self._single_recommendation_filters()
+            fallback = self._get_database_fallback(filters)
+        except Exception as exc:
+            logger.warning("Could not produce startup database fallback: %s", exc)
+            return False
+        if not fallback or is_cancelled():
+            return False
+
+        with self._condition:
+            if self._shutdown.is_set():
+                return False
+            # A late rebuild or manual/talk insertion wins over this fallback.
+            if any(items for _tier, items in self._queue_tiers()):
+                return has_available_locked()
+            self._queue.append(fallback)
+            self._condition.notify_all()
+            return True
+
+    def commit_reservation(self, reservation):
+        """Consume the exact claimed entry once; return None for stale claims.
+
+        History and recommendation memory advance only after consumption.
+        An equal-valued replacement, clear, or shutdown invalidates a claim.
+        """
+        if not isinstance(reservation, QueueReservation):
+            return None
+        with self._condition:
+            held = self._reservations.pop(reservation.token, None)
+            if (held is None or self._shutdown.is_set()
+                    or held[0] != self._reservation_epoch
+                    or reservation.epoch != held[0]):
+                return None
+            _, tier, item = held
+            items = dict(self._queue_tiers())[tier]
+            for index, candidate in enumerate(items):
+                if candidate is item:
+                    pick = items.pop(index)
+                    if tier == "ai":
+                        self._track_recommended(pick)
+                    self._condition.notify_all()
+                    break
+            else:
+                return None
+        self._record_queue_history(pick)
+        return pick
+
+    def release_reservation(self, reservation):
+        """Make an unconsumed claim available in its unchanged queue position."""
+        if not isinstance(reservation, QueueReservation):
+            return False
+        with self._condition:
+            released = self._reservations.pop(reservation.token, None) is not None
+            if released:
+                self._condition.notify_all()
+            return released
+
+    def discard_reservation(self, reservation):
+        """Remove a permanently unplayable claim without history or recency."""
+        if not isinstance(reservation, QueueReservation):
+            return False
+        with self._condition:
+            held = self._reservations.pop(reservation.token, None)
+            if (held is None or held[0] != self._reservation_epoch
+                    or reservation.epoch != held[0] or self._shutdown.is_set()):
+                return False
+            items = dict(self._queue_tiers())[held[1]]
+            for index, item in enumerate(items):
+                if item is held[2]:
+                    items.pop(index)
+                    self._condition.notify_all()
+                    return True
+            return False
+
+    def _take_available_queued(self):
+        """Consume one unclaimed entry in priority order under the condition."""
+        for tier, items in self._queue_tiers():
+            for index, item in enumerate(items):
+                if not self._is_reserved(item):
+                    pick = items.pop(index)
+                    if tier == "ai":
+                        self._track_recommended(pick)
+                    return pick
+        return None
+
+    def pop_next(self):
+        """Consume talk, manual, then AI entries in their existing order.
+
+        Legacy callers still wait up to five seconds for an empty AI queue
+        before trying a single recommendation. In-flight preparations are
+        skipped, including claims created while this caller waits.
+        """
+        with self._condition:
+            if self._shutdown.is_set():
+                return None
+            pick = self._take_available_queued()
+            if pick is None and self._reservations:
+                return None
             if pick is None:
-                # Preview cache is handled by on_song_started() — it swaps
-                # the preview into _queue before pop_next ever runs.
-                # Just pop directly from _queue.
                 if not self._queue and not self._rebuilding:
                     self.request_rebuild()
-
-                # Wait for rebuild
                 if not self._queue:
                     self._condition.wait(timeout=5.0)
-
                 if self._shutdown.is_set():
                     return None
+                # Manual additions and talk may have arrived during rebuild.
+                pick = self._take_available_queued()
+                if pick is None and self._reservations:
+                    return None
 
-                # A manual addition or prepared talk segment can wake this
-                # waiter while the AI rebuild is still running. Re-check all
-                # tiers in their normal priority order before falling back.
-                if self._pending_talk_segments:
-                    pick = self._pending_talk_segments.pop(0)
-                elif self._manual_queue:
-                    pick = self._manual_queue.pop(0)
-                elif self._queue:
-                    pick = self._queue.pop(0)
-                    # Track recently recommended to prevent cycling
-                    self._recently_recommended_ids.add(pick["song_id"])
-                    trim_count = len(self._recently_recommended_ids) - self._max_recent_history
-                    if trim_count > 0:
-                        trimmed = set(list(self._recently_recommended_ids)[trim_count:])
-                        self._recently_recommended_ids = trimmed
-
-        # DB write (queue_history INSERT) happens outside the condition
-        # to avoid blocking other threads that need _condition.
-        if pick:
+        # Keep the history write and optional inference outside the condition.
+        if pick is not None:
             self._record_queue_history(pick)
             return pick
-
-        # Fallback: single recommendation (outside condition to avoid blocking
-        # all other threads that need _condition — like /api/play/status)
         if not self._shutdown.is_set():
             return self._get_single_recommendation()
         return None
@@ -461,7 +598,7 @@ class QueueManager:
             # All async TTS/talk generation reads from this, never from live
             # state.  This prevents a stale rebuild from generating contextually
             # incoherent announcements.
-            import announcer.talk_segments as _ts_mod
+            _ts_mod = self._talk_context
             snapshot = PlaybackContext(
                 generation=my_gen,
                 current_song_id=self._current_song_id,
@@ -473,8 +610,7 @@ class QueueManager:
             _log_step(f"Snapshot: gen={snapshot.generation}, current={snapshot.current_song_id}, "
                       f"mood={snapshot.mood_state}, recent={len(snapshot.recent_context)} songs")
 
-            # Get energy trajectory (use singleton)
-            traj = energy.get_trajectory()
+            traj = self._energy_trajectory
             energy_dir = traj.get_direction()
             _log_step(f"Energy dir: {energy_dir}")
 
@@ -760,7 +896,7 @@ class QueueManager:
             exploration_level = self._db.get_setting_float("exploration_level", 0.3)
             from engine import archetype as archetype_engine
             archetype_name, _ = archetype_engine.detect_archetype()
-            guest_bias = talk_segments.get_active_guest_slot_bias()
+            guest_bias = self._talk_context.get_active_guest_slot_bias()
             # Pass constellation pockets if available
             _active_pocket = self._constellations.active_pocket if self._constellations.is_active else None
             _log_step(f"Allocating slots (archetype={archetype_name}, exploration={exploration_level})")
@@ -1173,6 +1309,8 @@ class QueueManager:
     def clear_queue(self):
         """Clear all queue tiers: AI recommendations, manual additions, and talk segments."""
         with self._condition:
+            self._reservation_epoch += 1
+            self._reservations.clear()
             self._queue = []
             self._manual_queue = []
             self._pending_talk_segments.clear()
@@ -1275,11 +1413,18 @@ class QueueManager:
             signal_type: The actual play event signal (e.g. "skip_early", "skip_late")
         """
         import time
+        history = self._current_session_id
+        signals = ("skip_early", "skip_late") if action_type == "skip" else "thumbed_down"
+        event = self._db.get_last_play_event(song_id, signals, session_id=history) if history is not None else None
+        if event and event.get("undone"):
+            event = None
         self._last_action = {
             "type": action_type,
             "song_id": song_id,
             "timestamp": time.time(),
-            "signal_type": signal_type,
+            "signal_type": event["signal"] if event else signal_type,
+            "event_id": event["id"] if event else None,
+            "session_id": history,
         }
         self._last_skipped_song = song_info if action_type == "skip" else None
 
@@ -1321,17 +1466,30 @@ class QueueManager:
         song = self._last_skipped_song or self._db.get_song(self._last_action["song_id"])
         if not song:
             return {"success": False, "error": "Song not found"}
+        if "event_id" in self._last_action and self._last_action["event_id"] is None:
+            return {"success": False, "error": "Feedback event not found"}
         filepath = song.get("filepath")
         if not filepath or not os.path.exists(filepath):
             return {"success": False, "error": "File not found"}
-        p = player_engine.get_player()
+        p = self._player
         session_id = self._current_session_id
-        # Stop current playback, play the skipped song
-        p.stop()
-        p.play_song(song["id"], filepath, session_id)
+        from engine.session_port import SessionPlaybackPort
+        managed = isinstance(p, SessionPlaybackPort)
+        # A managed select owns replacement atomically; a separate stop would
+        # lose the current plan when selection fails.
+        if not managed:
+            p.stop()
+        if p.play_song(song["id"], filepath, session_id) is False:
+            return {"success": False, "error": "Playback could not be restored"}
         # Mark the skip event as undone in DB
-        signal_type = self._last_action.get("signal_type", "skip_early")
-        database.undo_play_event(self._last_action["song_id"], signal_type)
+        signal_type = self._last_action.get("signal_type") or "skip_early"
+        if "event_id" in self._last_action:
+            if self._last_action["event_id"] is None:
+                return {"success": False, "error": "Feedback event not found"}
+            self._db.undo_play_event(self._last_action["song_id"], signal_type,
+                session_id=self._last_action["session_id"], event_id=self._last_action["event_id"])
+        else:
+            self._db.undo_play_event(self._last_action["song_id"], signal_type)
         import time
         self.reset_skip_streak()
         self._last_action = None
@@ -1349,7 +1507,13 @@ class QueueManager:
             return {"success": False, "error": "Undo window expired"}
         # Mark the thumbs-down event as undone in DB
         song_id = self._last_action["song_id"]
-        database.undo_play_event(song_id, "thumbed_down")
+        if "event_id" in self._last_action:
+            if self._last_action["event_id"] is None:
+                return {"success": False, "error": "Feedback event not found"}
+            self._db.undo_play_event(song_id, "thumbed_down", session_id=self._last_action["session_id"],
+                                     event_id=self._last_action["event_id"])
+        else:
+            self._db.undo_play_event(song_id, "thumbed_down")
         self._last_action = None
         return {"success": True, "song_id": song_id}
 
@@ -1387,7 +1551,7 @@ class QueueManager:
                 return
 
             # Save module-level state for rollback if rebuild turns stale
-            import announcer.talk_segments as _ts_mod
+            _ts_mod = self._talk_context
             saved_counter = _ts_mod._song_counter
             saved_guest = _ts_mod._current_guest_takeover
             saved_callers = list(_ts_mod._recent_callers)
@@ -1424,7 +1588,17 @@ class QueueManager:
                         pass
 
             caller_mode = self._db.get_setting("talk_caller_mode") or "influences_queue"
-            segment = talk_segments.get_next_talk_segment(
+            segment = self._talk_context.get_next_talk_segment(
+                settings={
+                    "talk_caller_enabled": self._db.get_setting("talk_caller_enabled") or "true",
+                    "talk_monologue_enabled": self._db.get_setting("talk_monologue_enabled") or "true",
+                    "talk_guest_takeover_enabled": self._db.get_setting("talk_guest_takeover_enabled") or "true",
+                    "talk_frequency": self._db.get_setting_int("talk_frequency", 4),
+                    "talk_segment_cooldown": self._db.get_setting_int("talk_segment_cooldown", 2),
+                    "talk_guest_songs_per_set": self._db.get_setting_int("talk_guest_songs_per_set", 4),
+                    "talk_caller_heartbroken_enabled": self._db.get_setting("talk_caller_heartbroken_enabled") or "false",
+                    "talk_caller_melancholy_enabled": self._db.get_setting("talk_caller_melancholy_enabled") or "false",
+                },
                 mood_state=snapshot.mood_state if snapshot else self._mood.get_state(),
                 caller_mode=caller_mode,
                 next_song=next_song,
@@ -1530,7 +1704,8 @@ class QueueManager:
             if not filepath or not os.path.exists(filepath):
                 return
 
-            from announcer import get_announcement, play_announcement, AnnounceTrigger, should_announce
+            announcements = self._announcements
+            AnnounceTrigger = announcements.AnnounceTrigger
             from datetime import datetime
 
             # Use snapshot for context (frozen) rather than live reads
@@ -1590,7 +1765,7 @@ class QueueManager:
                         trigger_type = "recovery"
 
             # Skip TTS if should_announce says no (radio intro frequency gate)
-            if not should_announce({"trigger": trigger, **context}):
+            if not call_announcement(announcements.should_announce, {"trigger": trigger, **context}, advance=False):
                 logger.info(f"_pregen_tts: should_announce returned False for song {next_song_id}, skipping TTS")
                 gen = generation
                 self._cache_pregenerated_tts(next_song_id, generation, {
@@ -1603,7 +1778,7 @@ class QueueManager:
                 }, cancel_event)
                 return
 
-            text = get_announcement(context, trigger)
+            text = call_announcement(announcements.get_announcement, context, trigger, advance=False)
             if not text:
                 gen = generation
                 self._cache_pregenerated_tts(next_song_id, generation, {
@@ -1616,7 +1791,7 @@ class QueueManager:
                 }, cancel_event)
                 return
 
-            wav_path = play_announcement(text, filepath, trigger_type=trigger_type)
+            wav_path = announcements.play_announcement(text, filepath, trigger_type=trigger_type)
             if not wav_path:
                 return
 
@@ -1646,8 +1821,7 @@ class QueueManager:
         Runs in a background thread after queue rebuild.
         """
         try:
-            from announcer.talk_segments import get_active_dj_effect_preset
-            preset_name = get_active_dj_effect_preset()
+            preset_name = self._talk_context.get_active_dj_effect_preset()
             if not preset_name:
                 # Guest takeover ended or never started — clear stale cache
                 with self._dj_effect_cache_lock:
@@ -1780,283 +1954,74 @@ class QueueManager:
 
         self._start_worker(_checker, name="tts-staleness-checker")
 
+    def prepare_pick(self, pick):
+        """Build private immutable media without starting or consuming anything."""
+        if not pick:
+            raise MediaUnavailable("No queue entry was selected")
+        if pick.get("type") == "talk_segment":
+            return prepare_talk(self, pick, _fade_in_first_second, _concatenate_wavs)
+        return prepare_song(self, pick)
+
+    def activate_plan(self, plan, *, kind=None):
+        """Apply logical start effects after an output confirms actual playback."""
+        activation = plan.activation
+        context = activation.get("announcement_context")
+        if context and kind in (None, "song"):
+            call_announcement(self._announcements.should_announce, context, advance=True)
+        if activation.get("announcement_speech") and kind in (None, "speech"):
+            mark_played = getattr(self._announcements, "mark_announcement_played", None)
+            if mark_played:
+                mark_played()
+            # A spoken intro belongs to one occurrence, even if its song is
+            # cancelled before starting. Preparation itself leaves it cached.
+            with self._pregen_lock:
+                cached = self._pregen_cache.get(plan.song_id)
+                speech = next((item for item in plan.items if item.role == "announcement"), None)
+                if cached and speech and cached.get("wav_path") == speech.filepath:
+                    self._pregen_cache.pop(plan.song_id, None)
+        if kind == "song":
+            return
+        if "talk_segment_playing" in activation:
+            self._talk_segment_playing = activation["talk_segment_playing"]
+        mood_shift = activation.get("mood_shift")
+        if mood_shift:
+            self._mood.set_state(mood_shift)
+            self._broadcast("mood_changed", {"mood": mood_shift, "source": "talk_segment"})
+        event = activation.get("talk_event")
+        if event:
+            self._broadcast("talk_segment_started", dict(event))
+
+    def execute_plan(self, plan):
+        """Execute the same prepared media through the injected desktop output."""
+        request = getattr(self._player, "request_prepared_plan", None)
+        if callable(request):
+            return request(plan)
+        if len(plan.items) == 1 and plan.items[0].kind == "song":
+            item = plan.items[0]
+            result = self._player.play_song(item.song_id, item.filepath, plan.session_id)
+        else:
+            items = [{"filepath": item.filepath, "song_id": item.song_id,
+                      "is_tts": item.kind == "speech"} for item in plan.items]
+            result = self._player.play_chain(items, session_id=plan.session_id)
+        if result is False:
+            return False
+        self.activate_plan(plan)
+        return True
+
     def play_next(self, pick):
-        """Play the next item (song or talk segment) with optional TTS.
-
-        Args:
-            pick: Dict from pop_next() with keys:
-                  For songs: song_id, slot, reason, artist, title
-                  For talk segments: type="talk_segment", segment_type, wav_paths, ...
-        """
+        """Legacy desktop entry point using the shared reversible builder."""
         try:
-            logger.info(f"play_next START: pick_type={pick.get('type', 'song')}, song_id={pick.get('song_id')}")
-            # Handle talk segment items
-            if pick.get("type") == "talk_segment":
-                logger.info("play_next: dispatching to _play_talk_segment")
-                self._play_talk_segment(pick)
-                return
-
-            song_id = pick.get("song_id")
-            song = self._db.get_song(song_id)
-            if not song:
-                logger.warning(f"play_next: song {song_id} not found in DB")
-                return
-
-            filepath = song.get("filepath")
-            if not filepath or not os.path.exists(filepath):
-                logger.warning(f"play_next: file not found: {filepath}")
-                return
-
-            # Check for DJ effect modified version (only if guest takeover is active)
-            from announcer.talk_segments import get_active_dj_effect_preset
-            with self._dj_effect_cache_lock:
-                modified_fp = self._dj_effect_cache.get(song_id)
-                if modified_fp and os.path.exists(modified_fp):
-                    if get_active_dj_effect_preset():
-                        filepath = modified_fp
-                        logger.info(f"play_next: using DJ effect version for song {song_id}")
-                    else:
-                        # Guest ended — remove stale entry so we don't re-check
-                        self._dj_effect_cache.pop(song_id, None)
-                        logger.info(f"play_next: DJ effect cache stale for song {song_id} (guest ended), removed")
-
-            session_id = self._current_session_id
-            p = player_engine.get_player()
-
-            # Try TTS announcement
-            tts_enabled = self._db.get_setting("tts_enabled") or "true"
-            should_play_tts = tts_enabled.lower() == "true" and config.TTS_ENABLED
-
-            if should_play_tts:
-                try:
-                    from announcer import should_announce, AnnounceTrigger
-                    from datetime import datetime
-                    current_song_id = p.get_current_song_id()
-                    current_song = self._db.get_song(current_song_id) if current_song_id else None
-
-                    context = {
-                        "current_song": dict(current_song) if current_song else {},
-                        "next_song": dict(song) if song else {},
-                        "mood_state": self._mood.get_state(),
-                        "skip_streak": self._skip_streak,
-                        "hour": datetime.now().hour,
-                    }
-
-                    trigger = AnnounceTrigger.RADIO_INTRO
-                    trigger_type = "radio_intro"
-
-                    if self._skip_streak >= 1:
-                        trigger = AnnounceTrigger.SKIP_STREAK
-                        trigger_type = "skip_streak"
-                    else:
-                        # Check for mood change
-                        current_mood = self._mood.get_state()
-                        if self._prev_mood_state is not None and self._prev_mood_state != current_mood:
-                            trigger = AnnounceTrigger.MOOD_CHANGE
-                            trigger_type = "mood_change"
-
-                        # Check for wildcard slot (if mood didn't change)
-                        if trigger == AnnounceTrigger.RADIO_INTRO:
-                            slot = pick.get("slot", "context")
-                            if slot == "wildcard":
-                                trigger = AnnounceTrigger.WILDCARD
-                                trigger_type = "wildcard"
-
-                        # Check for recovery song (if nothing else matched)
-                        if trigger == AnnounceTrigger.RADIO_INTRO:
-                            recovery_score = song.get("recovery_score", 0)
-                            if recovery_score is not None and recovery_score > 0.75:
-                                trigger = AnnounceTrigger.RECOVERY
-                                trigger_type = "recovery"
-
-                    if not should_announce({"trigger": trigger, **context}):
-                        # No announcement needed, play song directly
-                        # NOTE: on_song_started() is called by main.py after play_next() returns
-                        logger.info(f"play_next: playing song directly (no TTS needed)")
-                        p.play_song(song_id, filepath, session_id)
-                        return
-
-                    # Check pre-generation cache (works when predictions match)
-                    use_cache = (self._skip_streak == 0)
-                    cached = None
-                    if use_cache:
-                        with self._pregen_lock:
-                            cached = self._pregen_cache.pop(song_id, None)
-
-                    # Validate cached TTS matches current playback context.
-                    # The TTS was pre-generated with a specific "previous song" —
-                    # if that doesn't match the actual current song, discard the
-                    # cache entry to avoid stale context (e.g. "that was Song
-                    # X" when the listener just heard Song Y).
-                    if cached and cached.get("wav_path") and os.path.exists(cached["wav_path"]):
-                        cached_prev = cached.get("prev_song_id")
-                        if cached_prev is not None and cached_prev != current_song_id:
-                            logger.info(f"play_next: TTS cache stale (prev {cached_prev} != actual {current_song_id}), "
-                                        f"playing song directly")
-                            cached = None
-                            # Remove stale entry from cache entirely
-                            with self._pregen_lock:
-                                self._pregen_cache.pop(song_id, None)
-
-                    if cached and cached.get("wav_path") and os.path.exists(cached["wav_path"]):
-                        logger.info(f"play_next: TTS cache hit, playing chain (TTS + song)")
-                        items = [
-                            {"filepath": cached["wav_path"], "is_tts": True},
-                            {"filepath": filepath, "song_id": song_id, "is_tts": False},
-                        ]
-                        p.play_chain(items)
-                        return
-
-                    # Cache miss — play song directly. TTS pre-generation in the background
-                    # thread handles async generation so the next song will have TTS.
-                    # NEVER generate TTS synchronously here — it blocks the request thread
-                    # for 5-15 seconds (LLM call + Piper synthesis), freezing the API.
-                    logger.info(f"play_next: TTS cache miss, playing song directly")
-                except Exception as e:
-                    logger.warning(f"TTS announcement failed, playing song directly: {e}")
-
-            # Play song directly (no TTS or TTS failed)
-            logger.info(f"play_next: playing song directly (no TTS)")
-            p.play_song(song_id, filepath, session_id)
-
-        except Exception as e:
-            logger.error(f"play_next failed: {e}")
-
-    def _play_talk_segment(self, pick: dict):
-        """Play a talk segment (caller, monologue, guest takeover).
-
-        Plays TTS WAV(s) as a talk-only chain (no song appended).
-        VLC's _on_end_reached detects the talk-only chain end and fires
-        synthetic song_ended(None), which triggers pop_next() →
-        the next real song from queue plays naturally.
-
-        Applies mood_shift / energy_direction if present.
-
-        On any failure, falls back to playing the next available song
-        so playback never stalls.
-        """
-        try:
-            logger.info(f"_play_talk_segment START: segment_type={pick.get('segment_type')}, wav_paths={pick.get('wav_paths')}")
-            wav_paths = pick.get("wav_paths", [])
-            if not wav_paths:
-                logger.warning("_play_talk_segment: no WAV paths — falling back to next song")
-                self._fallback_play_next_song()
-                return
-
-            # Verify WAV files exist
-            valid_wavs = [w for w in wav_paths if os.path.exists(w)]
-            if not valid_wavs:
-                logger.warning(f"_play_talk_segment: no valid WAV files (checked {len(wav_paths)} paths) — falling back to next song")
-                for w in wav_paths:
-                    logger.warning(f"  missing: {w}")
-                self._fallback_play_next_song()
-                return
-
-            logger.info(f"_play_talk_segment: {len(valid_wavs)}/{len(wav_paths)} valid WAVs, getting player...")
-
-            # Fade in the first WAV for a smooth talk segment entrance
-            if valid_wavs:
-                faded = _fade_in_first_second(valid_wavs[0])
-                if faded:
-                    valid_wavs[0] = faded
-
-            # Concatenate multiple WAVs into one — VLC's media_list_player
-            # has trouble chaining 5+ items reliably.  A single concatenated
-            # WAV + song (2 items) always works.
-            if len(valid_wavs) > 1:
-                concat_path = _concatenate_wavs(valid_wavs)
-                if concat_path:
-                    logger.info("_play_talk_segment: concatenated %d WAVs -> %s", len(valid_wavs), concat_path)
-                    valid_wavs = [concat_path]
-                else:
-                    logger.warning("_play_talk_segment: concatenation failed, using %d individual WAVs", len(valid_wavs))
-
-            p = player_engine.get_player()
-            self._talk_segment_playing = True
-
-            # Look ahead in queue for the next song (peek only — don't pop,
-            # so on_song_started can handle the normal preview swap when the
-            # real song actually starts after TTS finishes).
-            next_song_item = None
-            with self._condition:
-                for item in self._queue:
-                    if item.get("type") != "talk_segment":
-                        next_song_item = item
-                        break
-
-            # Validate the target song matches what was teased
-            if next_song_item:
-                target_nsid = pick.get("target_next_song_id")
-                actual_nsid = next_song_item.get("song_id")
-                if target_nsid is not None and actual_nsid != target_nsid:
-                    logger.info(f"_play_talk_segment: target_next_song_id mismatch "
-                                f"(teased={target_nsid}, actual={actual_nsid}) — "
-                                f"talk segment text may reference wrong song")
-
-            if next_song_item:
-                song_id = next_song_item.get("song_id")
-                song = self._db.get_song(song_id)
-                if song and song.get("filepath") and os.path.exists(song["filepath"]):
-                    # Check for DJ effect modified version (only if guest takeover is active)
-                    from announcer.talk_segments import get_active_dj_effect_preset
-                    with self._dj_effect_cache_lock:
-                        modified_fp = self._dj_effect_cache.get(song_id)
-                        if modified_fp and os.path.exists(modified_fp):
-                            if get_active_dj_effect_preset():
-                                logger.info(f"_play_talk_segment: using DJ effect version for song {song_id}")
-                            else:
-                                self._dj_effect_cache.pop(song_id, None)
-                                logger.info(f"_play_talk_segment: DJ effect cache stale for song {song_id} (guest ended), removed")
-
-                    # Apply mood_shift BEFORE play_chain so the background
-                    # rebuild uses the new mood when picking next songs.
-                    mood_shift = pick.get("mood_shift")
-                    if mood_shift:
-                        try:
-                            logger.info(f"Applying mood shift from talk segment: {mood_shift}")
-                            self._mood.set_state(mood_shift)
-                            self._broadcast("mood_changed", {"mood": mood_shift, "source": "talk_segment"})
-                        except Exception as e:
-                            logger.warning(f"Mood shift from talk segment failed: {e}")
-
-                # Play TTS WAVs as a talk-only chain — VLC's media_list_player
-                # does NOT reliably fire transition events between items, so
-                # chaining TTS + song together never advances past the TTS.
-                # Instead: play TTS alone, let _on_end_reached detect talk-only
-                # chain end and fire synthetic song_ended(None), which triggers
-                # pop_next() → next real song from queue.
-                logger.info(f"_play_talk_segment: playing {len(valid_wavs)} TTS WAV(s) as talk-only chain")
-                p.play_chain([{"filepath": w, "is_tts": True} for w in valid_wavs])
-
-            else:
-                # No song in queue at all — play talk alone; _on_end_reached
-                # fires synthetic song_ended(None), pop_next handles the rest.
+            return self.execute_plan(self.prepare_pick(pick))
+        except Exception:
+            logger.exception("play_next failed")
+            if pick and pick.get("type") == "talk_segment":
                 self._talk_segment_playing = False
-                logger.info(f"_play_talk_segment: no next song item in queue, playing {len(valid_wavs)} WAVs only")
-                p.play_chain([{"filepath": w, "is_tts": True} for w in valid_wavs])
+                self._fallback_play_next_song()
+            return False
 
-
-            # Broadcast talk segment start to frontend
-            # Include next_song info so frontend knows what will play after
-            _next_id = next_song_item.get("song_id") if next_song_item else None
-            _next_artist = next_song_item.get("artist", "") if next_song_item else ""
-            _next_title = next_song_item.get("title", "") if next_song_item else ""
-            self._broadcast("talk_segment_started", {
-                "segment_type": pick.get("segment_type"),
-                "reason": pick.get("reason", ""),
-                "persona_id": pick.get("secondary_persona_id") or pick.get("persona_id"),
-                "duration_secs": pick.get("duration_secs", 30),
-                "next_song_id": _next_id,
-                "next_song_artist": _next_artist,
-                "next_song_title": _next_title,
-            })
-
-            logger.info(f"Talk segment played: {pick.get('segment_type')} ({pick.get('reason', '')})")
-
-        except Exception as e:
-            logger.error(f"_play_talk_segment failed: {e}", exc_info=True)
-            self._talk_segment_playing = False
-            self._fallback_play_next_song()
+    def _play_talk_segment(self, pick):
+        """Compatibility entry point; all outputs use the same talk plan."""
+        return self.play_next(pick)
 
     def _fallback_play_next_song(self):
         """Fallback: pop the next song from the queue and play it directly.
@@ -2065,13 +2030,13 @@ class QueueManager:
         """
         try:
             logger.info("_fallback_play_next_song: looking for next song in queue")
-            p = player_engine.get_player()
+            p = self._player
             session_id = self._current_session_id
 
             next_song_item = None
             with self._condition:
                 for i, item in enumerate(self._queue):
-                    if item.get("type") != "talk_segment":
+                    if item.get("type") != "talk_segment" and not self._is_reserved(item):
                         next_song_item = self._queue.pop(i)
                         break
 
@@ -2088,7 +2053,9 @@ class QueueManager:
             filepath = song["filepath"]
             logger.info(f"_fallback_play_next_song: playing {song.get('artist')} - {song.get('title')}")
             p.play_song(song_id, filepath, session_id)
-            self.on_song_started(song_id, session_id)
+            from engine.session_port import SessionPlaybackPort
+            if not isinstance(p, SessionPlaybackPort):
+                self.on_song_started(song_id, session_id)
 
         except Exception as e:
             logger.error(f"_fallback_play_next_song failed: {e}", exc_info=True)

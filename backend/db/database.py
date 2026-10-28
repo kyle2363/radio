@@ -67,13 +67,23 @@ def init_db():
 
 
 def close_stale_sessions():
-    """Close all sessions that don't have an ended_at timestamp (crashed sessions)."""
+    """Close stale history sessions, preserving those owned by playback sessions."""
     conn = get_connection()
     try:
-        cursor = conn.execute(
-            "UPDATE sessions SET ended_at = ? WHERE ended_at IS NULL",
-            (datetime.now().isoformat(),),
-        )
+        exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", ("playback_sessions",)
+        ).fetchone()
+        now = datetime.now().isoformat()
+        if exists:
+            cursor = conn.execute(
+                "UPDATE sessions SET ended_at = ? WHERE ended_at IS NULL "
+                "AND id NOT IN (SELECT history_session_id FROM playback_sessions)",
+                (now,),
+            )
+        else:
+            cursor = conn.execute(
+                "UPDATE sessions SET ended_at = ? WHERE ended_at IS NULL", (now,)
+            )
         conn.commit()
         count = cursor.rowcount
         if count > 0:
@@ -652,46 +662,54 @@ def get_total_song_count():
         conn.close()
 
 
+def insert_play_event(conn, song_id, session_id, signal, **kwargs):
+    """Insert a play event and update song counters on the caller's connection.
+
+    Transaction ownership remains with the caller.
+    """
+    now = datetime.now()
+    hour = now.hour
+    day_type = "weekday" if now.weekday() < 5 else "weekend"
+    conn.execute(
+        """INSERT INTO play_events
+           (song_id, session_id, signal, skip_at_secs, completion_pct,
+            queue_slot, mood_state, hour_of_day, day_type)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            song_id,
+            session_id,
+            signal,
+            kwargs.get("skip_at_secs"),
+            kwargs.get("completion_pct", 0.0),
+            kwargs.get("queue_slot"),
+            kwargs.get("mood_state"),
+            hour,
+            day_type,
+        ),
+    )
+    # Update song stats based on signal type
+    if signal == "completed":
+        conn.execute(
+            "UPDATE songs SET complete_count = complete_count + 1 WHERE id = ?",
+            (song_id,),
+        )
+    elif signal in ("skip_early", "skip_late", "thumbed_down"):
+        conn.execute(
+            "UPDATE songs SET skip_count = skip_count + 1 WHERE id = ?",
+            (song_id,),
+        )
+    elif signal == "playing":
+        conn.execute(
+            "UPDATE songs SET play_count = play_count + 1, last_played = ? WHERE id = ?",
+            (now.isoformat(), song_id),
+        )
+
+
 def record_play_event(song_id, session_id, signal, **kwargs):
     conn = get_connection()
     try:
-        now = datetime.now()
-        hour = now.hour
-        day_type = "weekday" if now.weekday() < 5 else "weekend"
         conn.execute("BEGIN")
-        conn.execute(
-            """INSERT INTO play_events 
-               (song_id, session_id, signal, skip_at_secs, completion_pct, 
-                queue_slot, mood_state, hour_of_day, day_type)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                song_id,
-                session_id,
-                signal,
-                kwargs.get("skip_at_secs"),
-                kwargs.get("completion_pct", 0.0),
-                kwargs.get("queue_slot"),
-                kwargs.get("mood_state"),
-                hour,
-                day_type,
-            ),
-        )
-        # Update song stats based on signal type
-        if signal == "completed":
-            conn.execute(
-                "UPDATE songs SET complete_count = complete_count + 1 WHERE id = ?",
-                (song_id,),
-            )
-        elif signal in ("skip_early", "skip_late", "thumbed_down"):
-            conn.execute(
-                "UPDATE songs SET skip_count = skip_count + 1 WHERE id = ?",
-                (song_id,),
-            )
-        elif signal == "playing":
-            conn.execute(
-                "UPDATE songs SET play_count = play_count + 1, last_played = ? WHERE id = ?",
-                (now.isoformat(), song_id),
-            )
+        insert_play_event(conn, song_id, session_id, signal, **kwargs)
         conn.commit()
     except Exception:
         conn.rollback()
@@ -700,20 +718,19 @@ def record_play_event(song_id, session_id, signal, **kwargs):
         conn.close()
 
 
-def has_signal_since_last_play(song_id, signal_type):
+def has_signal_since_last_play(song_id, signal_type, session_id=None):
     """Check if there's a non-undone event of signal_type for song_id
     that occurred after the most recent 'playing' event for that song."""
     conn = get_connection()
     try:
+        scope = " AND session_id = ?" if session_id is not None else ""
+        params = [song_id, signal_type] + ([session_id] if session_id is not None else [])
+        params += [song_id] + ([session_id] if session_id is not None else [])
         row = conn.execute(
-            """SELECT COUNT(*) FROM play_events
-               WHERE song_id = ? AND signal = ? AND (undone IS NULL OR undone = 0)
-               AND played_at > COALESCE(
-                   (SELECT MAX(played_at) FROM play_events
-                    WHERE song_id = ? AND signal = 'playing'),
-                   '1970-01-01'
-               )""",
-            (song_id, signal_type, song_id),
+            "SELECT COUNT(*) FROM play_events WHERE song_id = ? AND signal = ? "
+            "AND COALESCE(undone, 0) = 0" + scope +
+            " AND id > COALESCE((SELECT MAX(id) FROM play_events WHERE song_id = ? "
+            "AND signal = 'playing'" + scope + "), 0)", params,
         ).fetchone()
         return row[0] > 0
     finally:
@@ -828,19 +845,43 @@ def get_completed_songs_by_mood(mood_state, limit=50):
         conn.close()
 
 
-def undo_play_event(song_id, signal_type):
+def undo_play_event(song_id, signal_type, session_id=None, event_id=None):
     """Mark the most recent play_event as undone and reverse side effects."""
     conn = get_connection()
     try:
-        conn.execute(
-            """UPDATE play_events SET undone = 1
-               WHERE id = (SELECT id FROM play_events
-                           WHERE song_id = ? AND signal = ? AND (undone IS NULL OR undone = 0)
-                           ORDER BY played_at DESC LIMIT 1)""",
-            (song_id, signal_type),
-        )
+        conn.execute("BEGIN IMMEDIATE")
+        conditions = ["song_id = ?", "signal = ?", "COALESCE(undone, 0) = 0"]
+        params = [song_id, signal_type]
+        if session_id is not None:
+            conditions.append("session_id = ?")
+            params.append(session_id)
+        if event_id is not None:
+            conditions.append("id = ?")
+            params.append(event_id)
+        row = conn.execute("SELECT id, signal, session_id FROM play_events WHERE " + " AND ".join(conditions) +
+                           " ORDER BY id DESC LIMIT 1", params).fetchone()
+        if row is None:
+            conn.commit()
+            return False
+        changed = conn.execute("UPDATE play_events SET undone = 1 WHERE id = ? AND COALESCE(undone, 0) = 0", (row['id'],)).rowcount
+        if not changed:
+            conn.commit()
+            return False
+        signal_type = row['signal']
+        # New attempt flags retain the exact SQL feedback identity. Clear only
+        # that entry so re-applying an undone flag is possible, while a stale
+        # undo cannot clear a later feedback event or another logical play.
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='playback_attempts'").fetchone():
+            attempts = conn.execute("SELECT id, flags_json FROM playback_attempts WHERE song_id=? AND history_session_id=?",
+                                    (song_id, row['session_id'])).fetchall()
+            for attempt in attempts:
+                flags = json.loads(attempt['flags_json'])
+                kept = [flag for flag in flags if not (isinstance(flag, dict) and
+                        flag.get('kind') == signal_type and flag.get('event_id') == row['id'])]
+                if kept != flags:
+                    conn.execute("UPDATE playback_attempts SET flags_json=? WHERE id=?", (json.dumps(kept), attempt['id']))
         # Reverse the counter on the songs table
-        if signal_type in ("skip_early", "skip_late"):
+        if signal_type in ("skip_early", "skip_late", "thumbed_down"):
             conn.execute(
                 "UPDATE songs SET skip_count = MAX(0, skip_count - 1) WHERE id = ?",
                 (song_id,),
@@ -851,18 +892,31 @@ def undo_play_event(song_id, signal_type):
                 (song_id,),
             )
         conn.commit()
+        return True
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 
 
-def get_last_play_event(song_id, signal_type):
+def get_last_play_event(song_id, signal_type, session_id=None, event_id=None):
     """Get the most recent play_event for a song/signal combo."""
     conn = get_connection()
     try:
-        row = conn.execute(
-            "SELECT * FROM play_events WHERE song_id = ? AND signal = ? ORDER BY played_at DESC LIMIT 1",
-            (song_id, signal_type),
-        ).fetchone()
+        signals = signal_type if isinstance(signal_type, (list, tuple)) else [signal_type]
+        if not signals:
+            return None
+        conditions = ["song_id = ?", "signal IN (" + ",".join("?" for _ in signals) + ")"]
+        params = [song_id, *signals]
+        if session_id is not None:
+            conditions.append("session_id = ?")
+            params.append(session_id)
+        if event_id is not None:
+            conditions.append("id = ?")
+            params.append(event_id)
+        row = conn.execute("SELECT * FROM play_events WHERE " + " AND ".join(conditions) +
+                           " ORDER BY id DESC LIMIT 1", params).fetchone()
         return _row_to_dict(row)
     finally:
         conn.close()

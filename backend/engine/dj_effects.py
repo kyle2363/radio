@@ -16,7 +16,7 @@ import config
 
 logger = logging.getLogger(__name__)
 
-EFFECT_CACHE_DIR = os.path.join(config.BASE_DIR, "data", "dj_effect_cache")
+EFFECT_CACHE_DIR = os.path.join(config.DATA_DIR, "dj_effect_cache")
 _CACHE_LOCK = threading.Lock()
 
 

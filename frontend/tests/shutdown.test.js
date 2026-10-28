@@ -71,3 +71,17 @@ test('unsuccessful shutdown response is reported as error', async () => {
   f.reply(500).emit('end');
   assert.equal(await done, 'error');
 });
+
+test('shutdown forwards an authenticated cookie header without changing the trusted destination', async () => {
+  const f = fixture();
+  let sent;
+  const originalRequest = f.options.request;
+  f.options.request = (options, callback) => { sent = options; return originalRequest(options, callback); };
+  f.options.cookieHeader = 'radio_session=opaque';
+  const done = shutdownOwnedBackend(f.child, f.options);
+  f.reply().emit('end');
+  await done;
+  assert.equal(sent.headers.Cookie, 'radio_session=opaque');
+  assert.equal(sent.hostname, '127.0.0.1');
+  assert.equal(sent.path, '/api/shutdown');
+});

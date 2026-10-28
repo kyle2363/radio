@@ -31,15 +31,17 @@ import uvicorn
 
 import chromadb
 import config
+from server_settings import load_server_settings
+from api_security import ApiSecurity
 
 from db import database
+from db.chroma import get_chroma_client
 from ingest import pipeline
-from engine import player as player_engine
+from engine.desktop_playback import DesktopPlayback, LazyNativeOutput
 from engine import queue as queue_engine
 from engine import mood as mood_engine
 from engine import archetype as archetype_engine
 from engine import energy as energy_engine
-from engine.sleep_timer import SleepTimer
 from engine.process_manager import get_process_manager
 
 logging.basicConfig(level=logging.INFO)
@@ -47,10 +49,20 @@ logging.getLogger("torio._extension.utils").setLevel(logging.ERROR)
 logger = logging.getLogger(__name__)
 _playback_logger = logging.getLogger(__name__ + ".playback")
 _server_ready = False
+_server_settings = load_server_settings()
 
 
 @asynccontextmanager
 async def lifespan(app):
+    startup_stop = threading.Event()
+    app.state._startup_stop = startup_stop
+    app.state._startup_threads = []
+
+    def start_auxiliary(target, name):
+        worker = threading.Thread(target=target, daemon=True, name=name)
+        app.state._startup_threads.append(worker)
+        worker.start()
+
     database.init_db()
     database.close_stale_sessions()
     database.cleanup_old_mood_repulsion(days=30)
@@ -92,7 +104,7 @@ async def lifespan(app):
             _chromadb_health_check()
         except Exception as e:
             logger.debug("Startup ChromaDB health check failed: %s", e)
-    threading.Thread(target=_run_chroma_health, daemon=True).start()
+    start_auxiliary(_run_chroma_health, "chroma-startup-health")
 
     # Clear stale DJ effect cache files on startup
     from engine.dj_effects import cleanup_cache as cleanup_dj_cache
@@ -120,106 +132,12 @@ async def lifespan(app):
         if removed > 0:
             logger.info("Cleared %d stale TTS cache files", removed)
 
-    p = player_engine.get_player()
-    qm = _get_queue_manager()
-    msm = _get_mood_state_machine()
-    _talk_ended_lock = threading.Lock()
-
-    def _on_song_ended(song_id):
-        _playback_logger.debug("=== main._on_song_ended(song=%s) ENTER — running in background thread", song_id)
-
-        # Guard: prevent concurrent talk-ended callbacks.  VLC can fire two
-        # MediaPlayerEndReached events for the same talk-only chain end (one
-        # from _on_end_reached, one from _on_media_end_reached), which would
-        # cause two threads racing to pop_next + play_next — the second one
-        # may block the server by calling play_song() while the first holds
-        # the player lock.
-        if song_id is None and not _talk_ended_lock.acquire(blocking=False):
-            _playback_logger.debug("  -> concurrent talk-ended callback detected, skipping duplicate")
-            return
-
-        try:
-            # song_id can be None when a talk-only chain ends (no real song was playing)
-            if song_id is not None:
-                qm.on_song_ended(song_id)
-                # DB "completed" event is already recorded by player.py _fire_song_ended
-                qm.record_completion()
-                song = database.get_song(song_id)
-                if song:
-                    energy_engine.get_trajectory().record_energy(song_id, song.get("energy", 0.5))
-                broadcast("song_ended", {"song_id": song_id})
-            else:
-                _playback_logger.debug("  -> song_id is None (talk-only chain ended), skipping transition logic")
-
-            # Auto-play the next song from the queue (with TTS if enabled)
-            _playback_logger.debug("  -> calling qm.pop_next() (this may block up to 5s)")
-            pick = qm.pop_next()
-            _playback_logger.debug("  <- qm.pop_next() returned")
-            if pick:
-                if pick.get("type") == "talk_segment":
-                    _playback_logger.debug("  -> pop_next returned talk_segment type=%s", pick.get("segment_type"))
-                    _playback_logger.debug("  -> calling qm.play_next(talk_segment)...")
-                    qm.play_next(pick)
-                    _playback_logger.debug("  <- play_next done (talk segment)")
-                else:
-                    _playback_logger.debug("  -> pop_next returned song_id=%s slot=%s", pick.get("song_id"), pick.get("slot"))
-                    session_id = _ensure_session()
-                    database.record_play_event(
-                        song_id=pick["song_id"],
-                        session_id=session_id,
-                        signal="playing",
-                        queue_slot=pick.get("slot"),
-                        mood_state=msm.get_state(),
-                    )
-                    _playback_logger.debug("  -> calling qm.play_next(song)...")
-                    qm.play_next(pick)
-                    qm.on_song_started(pick["song_id"], session_id)
-                    broadcast("song_started", {"song_id": pick["song_id"], "session_id": session_id, "elapsed_ms": 0})
-                    _playback_logger.debug("  <- play_next done")
-            else:
-                _playback_logger.warning("  -> qm.pop_next() returned None — nothing to play!")
-                total = database.get_total_song_count()
-                if total == 0:
-                    _playback_logger.warning("Library is empty — no songs to play")
-                    broadcast("error", {"message": "Library is empty. Add music files and run ingest."})
-                else:
-                    try:
-                        blacklisted = database.get_blacklisted()
-                        if len(blacklisted) >= total:
-                            _playback_logger.warning("All songs are blacklisted")
-                            broadcast("error", {"message": "All songs are blacklisted. Remove some from the blacklist to resume playback."})
-                    except Exception as e:
-                        _playback_logger.error("Failed to check blacklist: %s", e)
-        except Exception as e:
-            _playback_logger.error("=== main._on_song_ended FAILED: %s", e, exc_info=True)
-            # Stop playback to avoid stuck state; next user action will rebuild queue
-            p.stop()
-            broadcast("error", {"message": "Playback error", "details": str(e)})
-        finally:
-            if song_id is None:
-                try:
-                    _talk_ended_lock.release()
-                except RuntimeError:
-                    pass
-        _playback_logger.debug("=== main._on_song_ended EXIT")
-
-    p.on_song_ended(_on_song_ended)
-
-    # Pre-build recommendation queue on startup (without consuming a song)
-    def _prebuild_queue():
-        """Start queue rebuild in background after app is ready."""
-        time.sleep(2)
-        try:
-            qm.on_song_started(None)
-            print("Queue pre-build complete.")
-        except Exception as e:
-            print(f"Queue pre-build failed: {e}")
-
-    threading.Thread(target=_prebuild_queue, daemon=True).start()
+    # Listening sessions warm their own queues when a controller connects.
 
     # Check TTS engine status (async, non-blocking)
     def _check_tts_voice():
-        time.sleep(3)
+        if startup_stop.wait(3) or not config.TTS_ENABLED:
+            return
         try:
             from announcer.voice_manager import get_voice_manager
             vm = get_voice_manager()
@@ -267,7 +185,8 @@ async def lifespan(app):
         except Exception as e:
             print(f"TTS startup check: {e}")
 
-    threading.Thread(target=_check_tts_voice, daemon=True).start()
+    if config.TTS_ENABLED:
+        start_auxiliary(_check_tts_voice, "tts-startup-probe")
 
     # Start broadcast worker for thread-safe WebSocket messaging
     _set_broadcast_loop(asyncio.get_event_loop())
@@ -289,7 +208,7 @@ app = FastAPI(title="Radio", version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=list(_server_settings.security.trusted_origins),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -550,7 +469,16 @@ async def _send_websocket_json(websocket: WebSocket, message: dict):
 
 
 def broadcast(event_type: str, data: dict):
-    """Send an event to all connected WebSocket clients (thread-safe)."""
+    """Scope new controllers while preserving desktop compatibility events."""
+    binding = player_engine.scoped_binding()
+    if binding is not None:
+        _playback_hub.emit(binding.session_id, event_type, data)
+        if _playback_sessions is None or _playback_sessions._vlc_session != binding.session_id:
+            return
+    _broadcast_legacy(event_type, data)
+
+
+def _broadcast_legacy(event_type, data):
     message = {"event": event_type, **data}
     logger.debug(f"broadcast: event={event_type}, clients={len(connected_clients)}")
     loop = _broadcast_loop
@@ -616,6 +544,82 @@ async def websocket_endpoint(websocket: WebSocket):
 _queue_manager = None
 _mood_state_machine = None
 _singleton_lock = threading.RLock()
+_playback_sessions = None
+_native_player = None
+
+
+def _get_playback_sessions():
+    global _playback_sessions
+    if _playback_sessions is None:
+        with _singleton_lock:
+            if _playback_sessions is None:
+                from db.playback_store import PlaybackStore
+                from playback_sessions import PlaybackSessions
+                store = PlaybackStore()
+                store.recover_interrupted()
+                _playback_sessions = PlaybackSessions(store, _get_media_service,
+                    emit=_emit_playback, vlc_output_factory=_native_output)
+    return _playback_sessions
+
+
+def _native_output(session_id, owner, observer):
+    def create():
+        global _native_player
+        from engine.player import get_player
+        from engine.vlc_session_output import VlcSessionOutput
+        _native_player = get_player()
+        def resolve(item):
+            media = _get_media_service()
+            if item.get('resource_id'):
+                return str(media.resolve_resource(item['resource_id']))
+            song = database.get_song(item.get('track_id') or item.get('song_id'))
+            if not song or not song.get('filepath'):
+                raise FileNotFoundError('Media unavailable')
+            # The streaming service applies the same canonical allowlist to VLC.
+            return str(media.resolve_track(item.get('track_id') or item['song_id']))
+        return VlcSessionOutput(_native_player, resolve, observer)
+    return LazyNativeOutput(create)
+
+
+def _emit_playback(session_id, event, data):
+    _playback_hub.emit(session_id, event, data)
+    # Legacy subscribers receive only the currently selected desktop session.
+    if _playback_sessions is not None and _playback_sessions._vlc_session == session_id:
+        owner = _playback_sessions._owners.get(session_id)
+        if owner is not None:
+            player_engine.remember(_playback_sessions, session_id, owner)
+        _broadcast_legacy(event, data)
+
+
+player_engine = DesktopPlayback(_get_playback_sessions,
+    state_path_factory=lambda: os.path.join(config.DATA_DIR, 'desktop-controller.json'))
+
+
+@app.middleware('http')
+async def _desktop_request_scope(request, call_next):
+    from fastapi.responses import JSONResponse
+    from db.playback_store import ConflictError
+    try:
+        # The API security middleware is installed last, outside this boundary.
+        sid = request.headers.get('X-Radio-Playback-Session')
+        owner = request.headers.get('X-Radio-Playback-Owner')
+        if sid is not None and (len(sid) > 128 or not owner or len(owner) > 256):
+            return JSONResponse({'detail': 'Invalid playback controller'}, status_code=403)
+        with player_engine.scope(session_id=sid, owner=owner):
+            response = await call_next(request)
+            binding = player_engine.scoped_binding()
+            if binding is not None:
+                await asyncio.to_thread(player_engine.remember, binding.service, binding.session_id, binding.owner)
+            if binding is not None and request.method in ('POST', 'PUT', 'DELETE') and response.status_code < 400:
+                await asyncio.to_thread(binding.service._persist, binding.session_id, binding.owner)
+                await asyncio.to_thread(binding.service._publish, binding.session_id, 'playback_state', {})
+            return response
+    except PermissionError:
+        return JSONResponse({'detail': 'Invalid playback controller'}, status_code=403)
+    except KeyError:
+        return JSONResponse({'detail': 'Playback session not found'}, status_code=404)
+    except ConflictError:
+        return JSONResponse({'detail': 'Playback session changed; refresh controls'}, status_code=409)
 
 # RMS envelope cache for audio-reactive waveform
 _rms_cache = {}  # {song_id: [float, ...]} — 100-bin normalized envelope
@@ -656,26 +660,11 @@ def _get_current_audio_rms(position_pct: float) -> float:
 
 
 def _get_queue_manager():
-    global _queue_manager
-    if _queue_manager is None:
-        with _singleton_lock:
-            if _queue_manager is None:
-                _queue_manager = queue_engine.QueueManager(
-                    player_engine.get_player(),
-                    database,
-                    broadcast_callback=broadcast,
-                    mood_machine=_get_mood_state_machine(),
-                )
-    return _queue_manager
+    return player_engine.get_player().context.queue
 
 
 def _get_mood_state_machine():
-    global _mood_state_machine
-    if _mood_state_machine is None:
-        with _singleton_lock:
-            if _mood_state_machine is None:
-                _mood_state_machine = mood_engine.MoodStateMachine()
-    return _mood_state_machine
+    return player_engine.get_player().context.mood
 
 
 from engine.song_embeddings import fetch_song_embeddings as _fetch_song_embeddings
@@ -684,16 +673,8 @@ from engine.song_embeddings import fetch_song_embeddings as _fetch_song_embeddin
 _sleep_timer = None
 
 def _get_sleep_timer():
-    global _sleep_timer
-    if _sleep_timer is None:
-        with _singleton_lock:
-            if _sleep_timer is None:
-                _sleep_timer = SleepTimer(
-                    player_engine.get_player(),
-                    _get_mood_state_machine(),
-                    broadcast_callback=broadcast,
-                )
-    return _sleep_timer
+    from engine.desktop_playback import SessionSleepTimer
+    return SessionSleepTimer(player_engine.get_player())
 
 
 # ============================================================
@@ -2047,25 +2028,25 @@ def generate_dj_effect(song_id: int, body: dict):
 # Play Endpoints
 # ============================================================
 
-_current_session_id = None
-_session_lock = threading.Lock()
+
+
+def _history_session_id():
+    return player_engine.get_player()._current_session_id
+
+
+def _session_database():
+    return _get_queue_manager()._db
 
 
 def _ensure_session():
-    global _current_session_id
-    with _session_lock:
-        if not _current_session_id:
-            msm = _get_mood_state_machine()
-            _current_session_id = database.create_session(initial_mood=msm.get_state())
-        return _current_session_id
+    binding = player_engine.get_player()
+    state = binding.service.store.begin_history_session(binding.session_id, binding.owner)
+    return state['history_session_id']
 
 
 def _close_current_session():
-    global _current_session_id
-    with _session_lock:
-        if _current_session_id:
-            database.close_session(_current_session_id)
-            _current_session_id = None
+    binding = player_engine.get_player()
+    database.close_session(binding._current_session_id)
 
 
 @app.get("/api/play/status")
@@ -2107,7 +2088,7 @@ def play_status():
     # Get archetype
     archetype_name, archetype_metrics = archetype_engine.detect_archetype()
 
-    current_mode = database.get_setting("current_mode") or "radio"
+    current_mode = _session_database().get_setting("current_mode") or "radio"
 
     # Reliable position: use VLC position (0-1) * known db duration as fallback
     vlc_pos = p.get_position()
@@ -2153,8 +2134,8 @@ def play_status():
         "audio_rms": audio_rms,
         "talk_segment_active": talk_segment_active,
         "talk_playing": p.is_talk_playing(),
-        "hearted_this_play": database.has_signal_since_last_play(song_id, "hearted") if song_id else False,
-        "thumbed_down_this_play": database.has_signal_since_last_play(song_id, "thumbed_down") if song_id else False,
+        "hearted_this_play": database.has_signal_since_last_play(song_id, "hearted", session_id=_history_session_id()) if song_id else False,
+        "thumbed_down_this_play": database.has_signal_since_last_play(song_id, "thumbed_down", session_id=_history_session_id()) if song_id else False,
     }
 
 
@@ -2162,37 +2143,11 @@ def play_status():
 def play_song(song_id: int):
     song = database.get_song(song_id)
     if not song:
-        return {"error": "Song not found"}
-    filepath = song["filepath"]
-    if not filepath or not os.path.exists(filepath):
-        return {"error": "File not found", "filepath": filepath}
-
-    p = player_engine.get_player()
-    qm = _get_queue_manager()
-    msm = _get_mood_state_machine()
-    session_id = _ensure_session()
-
-    # Record play event
-    database.record_play_event(
-        song_id=song_id,
-        session_id=session_id,
-        signal="playing",
-        mood_state=msm.get_state(),
-    )
-
-    success = p.play_song(song_id, filepath, session_id)
-    if not success:
-        return {"error": "Failed to start playback"}
-
-    # Notify queue manager
-    qm.on_song_started(song_id, session_id)
-
-    broadcast("song_started", {
-        "song_id": song_id,
-        "session_id": session_id,
-        "elapsed_ms": 0,
-    })
-    return {"status": "playing", "song_id": song_id}
+        raise HTTPException(status_code=404, detail='Song not found')
+    if not song.get('filepath') or not os.path.isfile(song['filepath']):
+        raise HTTPException(status_code=404, detail='Media unavailable')
+    success = player_engine.get_player().play_song(song_id)
+    return {'status': 'preparing' if success else 'cancelled', 'song_id': song_id}
 
 
 @app.post("/api/play/pause")
@@ -2206,101 +2161,17 @@ def pause_playback():
 
 @app.post("/api/play/resume")
 def resume_playback():
-    """Resume playback or start a new song.
-
-    If paused: resume normally (VLC unpause).
-    If stopped with current song: restart the song.
-    If stopped without current song: pop from queue and play.
-    Returns current state and action taken.
-    """
     p = player_engine.get_player()
     state = p.get_state()
-
-    if state == "playing":
-        return {"status": "playing", "action": "already_playing"}
-
-    if state == "paused":
-        qm = _get_queue_manager()
-        # Restore _current_song_id from queue manager in case it was cleared
-        paused_song_id = p.get_current_song_id()
-        if not paused_song_id:
-            paused_song_id = qm._current_song_id
-        if paused_song_id:
-            song = database.get_song(paused_song_id)
-            if song and song.get("filepath") and os.path.exists(song["filepath"]):
-                session_id = qm._current_session_id or _ensure_session()
-                p._current_song_id = paused_song_id
-                p._current_session_id = session_id
-                p.resume()
-                broadcast("song_started", {"song_id": paused_song_id, "session_id": session_id})
-                return {"status": "playing", "action": "resumed", "song_id": paused_song_id}
-        # Fallback: try to restart with queue manager's song
-        fallback_song_id = qm._current_song_id
-        if fallback_song_id:
-            song = database.get_song(fallback_song_id)
-            if song and song.get("filepath") and os.path.exists(song["filepath"]):
-                session_id = qm._current_session_id or _ensure_session()
-                p.play_song(fallback_song_id, song["filepath"], session_id)
-                qm.on_song_started(fallback_song_id, session_id)
-                broadcast("song_started", {"song_id": fallback_song_id, "session_id": session_id, "elapsed_ms": 0})
-                return {"status": "playing", "action": "resumed", "song_id": fallback_song_id}
-        # Nothing to resume — pop from queue
-        pick = qm.pop_next()
-        if pick:
-            if pick.get("type") == "talk_segment":
-                qm.play_next(pick)
-            else:
-                session_id = _ensure_session()
-                database.record_play_event(
-                    song_id=pick["song_id"],
-                    session_id=session_id,
-                    signal="playing",
-                    queue_slot=pick.get("slot"),
-                    mood_state=_get_mood_state_machine().get_state(),
-                )
-                qm.play_next(pick)
-                qm.on_song_started(pick["song_id"], session_id)
-                broadcast("song_started", {"song_id": pick["song_id"], "session_id": session_id, "elapsed_ms": 0})
-            return {"status": "playing", "action": "resumed", "song_id": pick.get("song_id")}
-        return {"status": "stopped", "action": "nothing_to_play"}
-
-    # Stopped — try to restart current song
-    song_id = p.get_current_song_id()
-    if not song_id:
-        qm = _get_queue_manager()
-        song_id = qm._current_song_id
-    if song_id:
-        song = database.get_song(song_id)
-        if song and song.get("filepath") and os.path.exists(song["filepath"]):
-            session_id = _ensure_session()
-            success = p.play_song(song_id, song["filepath"], session_id)
-            if success:
-                qm = _get_queue_manager()
-                qm.on_song_started(song_id, session_id)
-                broadcast("song_started", {"song_id": song_id, "session_id": session_id, "elapsed_ms": 0})
-                return {"status": "playing", "action": "restarted", "song_id": song_id}
-
-    # Stopped and no current song — pop from queue
-    qm = _get_queue_manager()
-    pick = qm.pop_next()
-    if pick:
-        if pick.get("type") == "talk_segment":
-            qm.play_next(pick)
-        else:
-            session_id = _ensure_session()
-            database.record_play_event(
-                song_id=pick["song_id"],
-                session_id=session_id,
-                signal="playing",
-                queue_slot=pick.get("slot"),
-                mood_state=_get_mood_state_machine().get_state(),
-            )
-            qm.play_next(pick)
-            qm.on_song_started(pick["song_id"], session_id)
-            broadcast("song_started", {"song_id": pick["song_id"], "session_id": session_id, "elapsed_ms": 0})
-        return {"status": "playing", "action": "new_song", "song_id": pick.get("song_id")}
-
-    return {"status": "stopped", "action": "nothing_to_play"}
+    if state == 'playing':
+        return {'status': state, 'action': 'already_playing'}
+    if state == 'paused':
+        p.resume()
+        return {'status': 'resuming', 'action': 'resumed'}
+    if state == 'interrupted':
+        return {'status': 'resuming', 'action': 'reconnected', 'session': p.reactivate()}
+    result = p.next()
+    return {'status': 'preparing', 'action': 'new_song', 'session': result}
 
 
 @app.post("/api/play/seek")
@@ -2324,7 +2195,6 @@ def toggle_volume_normalization(enabled: bool = Query(True)):
     """Toggle volume normalization (ReplayGain-style)."""
     p = player_engine.get_player()
     p.set_normalization_enabled(enabled)
-    database.set_setting("volume_normalization", "true" if enabled else "false")
     return {"status": "set", "enabled": enabled}
 
 
@@ -2333,7 +2203,6 @@ def set_eq(req: EqRequest):
     """Set equalizer preset."""
     p = player_engine.get_player()
     p.set_eq_preset(req.preset)
-    database.set_setting("eq_preset", req.preset)
     return {"status": "eq_set", "preset": req.preset}
 
 
@@ -2347,7 +2216,7 @@ def get_eq():
 @app.get("/api/play/mode")
 def get_play_mode():
     """Get current play mode (ai/shuffle/sequential)."""
-    mode = database.get_setting("play_mode") or "ai"
+    mode = _session_database().get_setting("play_mode") or "ai"
     return {"mode": mode}
 
 
@@ -2356,7 +2225,7 @@ def set_play_mode(req: PlayModeRequest):
     """Set play mode (ai/shuffle/sequential)."""
     if req.mode not in ("ai", "shuffle", "sequential"):
         return {"error": "Invalid mode. Must be 'ai', 'shuffle', or 'sequential'"}
-    database.set_setting("play_mode", req.mode)
+    _session_database().set_setting("play_mode", req.mode)
     # Clear queue so the next rebuild picks up the new mode
     qm = _get_queue_manager()
     with qm._condition:
@@ -2368,67 +2237,26 @@ def set_play_mode(req: PlayModeRequest):
 @app.post("/api/play/next")
 def play_next():
     p = player_engine.get_player()
-    qm = _get_queue_manager()
-    msm = _get_mood_state_machine()
-    song_id = p.get_current_song_id()
-
-    if song_id:
-        session_id = p._current_session_id if hasattr(p, '_current_session_id') else _current_session_id
-        elapsed_ms = p.get_time()
-        total_ms = p.get_length()
-        pct = round((elapsed_ms / max(1, total_ms)) * 100, 1)
-        # Last 10% = treat as completed, not a skip
-        if pct >= 90.0:
-            signal = "completed"
-            pct = 100.0
-        else:
-            signal = "skip_early" if elapsed_ms < 30000 else "skip_late"
-        database.record_play_event(
-            song_id=song_id,
-            session_id=session_id,
-            signal=signal,
-            mood_state=msm.get_state(),
-            completion_pct=pct,
-            skip_at_secs=elapsed_ms / 1000,
-        )
-        song = database.get_song(song_id)
-        qm.record_action("skip", song_id, song, signal_type=signal)
-        broadcast("song_skipped", {"song_id": song_id})
-
+    p.feedback('skipped')
     p.stop()
-    return {"status": "next"}
+    return {'status': 'next'}
 
 
 @app.post("/api/play/heart")
 def heart_current():
     p = player_engine.get_player()
-    qm = _get_queue_manager()
-    msm = _get_mood_state_machine()
-    song_id = p.get_current_song_id()
-    session_id = p._current_session_id if hasattr(p, '_current_session_id') else _current_session_id
-    if song_id:
-        if database.has_signal_since_last_play(song_id, "hearted"):
-            return {"status": "already_hearted", "song_id": song_id}
-        database.record_play_event(
-            song_id=song_id,
-            session_id=session_id,
-            signal="hearted",
-            mood_state=msm.get_state(),
-        )
-        database.increment_replay_count(song_id)
-        qm.record_heart()
-        broadcast("song_hearted", {"song_id": song_id})
-    return {"status": "hearted", "song_id": song_id}
+    result = p.feedback('hearted')
+    return {'status': 'hearted', 'song_id': p.get_current_song_id(), **result}
 
 
 @app.post("/api/songs/{song_id}/heart")
 def heart_song_by_id(song_id: int):
     msm = _get_mood_state_machine()
-    session_id = _current_session_id
+    session_id = _history_session_id()
     song = database.get_song(song_id)
     if not song:
         raise HTTPException(status_code=404, detail="Song not found")
-    if database.has_signal_since_last_play(song_id, "hearted"):
+    if database.has_signal_since_last_play(song_id, "hearted", session_id=_history_session_id()):
         return {"status": "already_hearted", "song_id": song_id}
     database.record_play_event(
         song_id=song_id,
@@ -2444,26 +2272,15 @@ def heart_song_by_id(song_id: int):
 @app.post("/api/play/thumbs-down")
 def thumbs_down_current():
     p = player_engine.get_player()
-    qm = _get_queue_manager()
-    msm = _get_mood_state_machine()
     song_id = p.get_current_song_id()
-    session_id = p._current_session_id if hasattr(p, '_current_session_id') else _current_session_id
-    if song_id:
-        if database.has_signal_since_last_play(song_id, "thumbed_down"):
-            return {"status": "already_thumbed_down", "song_id": song_id}
-        database.record_play_event(
-            song_id=song_id,
-            session_id=session_id,
-            signal="thumbed_down",
-            mood_state=msm.get_state(),
-        )
+    result = p.feedback('thumbed_down')
+    if result.get('accepted') and song_id:
+        qm = p.context.queue
         qm.reset_skip_streak()
-        song = database.get_song(song_id)
-        qm.record_action("thumbs_down", song_id, song)
-        broadcast("song_thumbed_down", {"song_id": song_id})
-        undo_state = qm.get_undo_state()
-        return {"status": "thumbed_down", "song_id": song_id, "undo": undo_state}
-    return {"status": "thumbed_down", "song_id": song_id}
+        qm.record_action('thumbs_down', song_id, database.get_song(song_id), signal_type='thumbed_down')
+        broadcast('song_thumbed_down', {'song_id': song_id})
+        return {'status': 'thumbed_down', 'song_id': song_id, 'undo': qm.get_undo_state()}
+    return {'status': 'already_thumbed_down' if song_id else 'no_song', 'song_id': song_id}
 
 
 @app.post("/api/play/stop")
@@ -2625,153 +2442,56 @@ def queue_history(limit: int = 30):
 
 @app.post("/api/queue/skip")
 def queue_skip():
-    """Skip the current song and record a skip event."""
     p = player_engine.get_player()
-    qm = _get_queue_manager()
-    msm = _get_mood_state_machine()
+    qm, msm = p.context.queue, p.context.mood
     song_id = p.get_current_song_id()
-
-    is_completed = False
-    if song_id:
-        session_id = p._current_session_id if hasattr(p, '_current_session_id') else _current_session_id
-        elapsed_ms = p.get_time()
-        total_ms = p.get_length()
-        pct = round((elapsed_ms / max(1, total_ms)) * 100, 1)
-        # Last 10% = treat as completed, not a skip
-        if pct >= 90.0:
-            signal = "completed"
-            pct = 100.0
-            is_completed = True
-        else:
-            signal = "skip_early" if elapsed_ms < 30000 else "skip_late"
-        database.record_play_event(
-            song_id=song_id,
-            session_id=session_id,
-            signal=signal,
-            mood_state=msm.get_state(),
-            completion_pct=pct,
-            skip_at_secs=elapsed_ms / 1000,
-        )
-        # Track for potential undo
-        song = database.get_song(song_id)
-        qm.record_action("skip", song_id, song, signal_type=signal)
-        broadcast("song_skipped", {"song_id": song_id})
-
-    # Only increment skip streak for actual skips (not near-complete listens)
-    if not is_completed:
-        qm._skip_streak += 1
-
-    # Check for auto mood shift on skip streak (only for real skips)
-    mood_shifted = False
-    if not is_completed and qm._skip_streak >= 3:
-        new_state = msm.check_auto_mood_shift([], qm._skip_streak)
-        if new_state:
-            msm.set_state(new_state)
-            mood_shifted = True
-            broadcast("mood_changed", {"state": new_state, "reason": f"Skip streak ({qm._skip_streak})"})
-            database.record_mood_change(_current_session_id, new_state, source="auto")
-
-    # If mood shifted, don't stop playback — let the current song finish so the
-    # next queue rebuild picks songs matching the new mood.
-    if not mood_shifted:
-        p.stop()
-
-    # After 5+ skips, use recovery song instead of normal queue
-    pick = None
+    elapsed, duration = p.get_time(), p.get_length()
+    completed = duration > 0 and elapsed / duration >= .9
+    result = p.feedback('completed' if completed else 'skipped')
+    if result.get('accepted') and song_id and not completed:
+        qm.record_action('skip', song_id, database.get_song(song_id),
+                         signal_type='skip_early' if elapsed < 30000 else 'skip_late')
+        if qm._skip_streak >= 3:
+            mood = msm.check_auto_mood_shift([], qm._skip_streak)
+            if mood:
+                p.service.set_mood(p.session_id, p.owner, mood)
+    # Retire this plan before the one explicit advancement. Natural completion
+    # callbacks from the retired instance cannot consume another queue entry.
+    p.stop()
+    recovery_pick = None
     if qm._skip_streak >= 5:
-        from engine import recovery
-        exclude = {song_id} if song_id else set()
-        exclude |= qm._recently_recommended_ids
-        recovery_song, r_type = recovery.get_recovery_song(
-            current_song_id=song_id, exclude_ids=exclude
-        )
-        if recovery_song:
-            pick = {
-                "song_id": recovery_song["id"],
-                "slot": "recovery",
-                "reason": f"Back to something reliable after {qm._skip_streak} skips.",
-                "artist": recovery_song.get("artist", ""),
-                "title": recovery_song.get("title", ""),
-            }
-            broadcast("song_skipped", {"song_id": song_id, "recovery": True})
-
-    if not pick:
-        pick = qm.pop_next()
-
-    # Build response
-    undo_state = qm.get_undo_state()
-    response = {
-        "status": "skipped",
-        "skip_streak": qm._skip_streak,
-        "show_feedback": qm._skip_streak >= 2,
-        "undo": undo_state,
-    }
-    if mood_shifted:
-        response["mood_shift"] = True
-        response["next"] = pick
-        broadcast("queue_updated", {"queue": qm._get_display_queue()})
-        return response
-
-    if pick:
-        if pick.get("type") == "talk_segment":
-            qm.play_next(pick)
-        else:
-            session_id = _ensure_session()
-            database.record_play_event(
-                song_id=pick["song_id"],
-                session_id=session_id,
-                signal="playing",
-                queue_slot=pick.get("slot"),
-                mood_state=msm.get_state(),
-            )
-            qm.play_next(pick)
-            qm.on_song_started(pick["song_id"], session_id)
-        broadcast("queue_updated", {"queue": qm._get_display_queue()})
-        response["next"] = pick
-        return response
-    return response
+        from engine.recovery import get_recovery_song
+        excluded = set(qm._recently_recommended_ids)
+        if song_id:
+            excluded.add(song_id)
+        song, recovery_type = get_recovery_song(current_song_id=song_id, exclude_ids=excluded)
+        if song:
+            recovery_pick = {'song_id': song['id'], 'slot': 'recovery',
+                             'reason': f'Back to something reliable after {qm._skip_streak} skips.'}
+    next_state = p.select_pick(recovery_pick) if recovery_pick else p.next()
+    return {'status': 'skipped', 'skip_streak': qm._skip_streak,
+            'show_feedback': qm._skip_streak >= 2, 'undo': qm.get_undo_state(), 'next': next_state}
 
 
 @app.post("/api/queue/play-next")
 def queue_play_next():
-    """Play the next song from the recommendation queue."""
-    qm = _get_queue_manager()
-    pick = qm.pop_next()
-    if pick:
-        if pick.get("type") == "talk_segment":
-            qm.play_next(pick)
-        else:
-            session_id = _ensure_session()
-            database.record_play_event(
-                song_id=pick["song_id"],
-                session_id=session_id,
-                signal="playing",
-                queue_slot=pick.get("slot"),
-                mood_state=_get_mood_state_machine().get_state(),
-            )
-            qm.play_next(pick)
-            qm.on_song_started(pick["song_id"], session_id)
-        broadcast("queue_updated", {"queue": qm._get_display_queue()})
-        return {"status": "playing", "next": pick}
-    return {"error": "No recommendation available"}
+    p = player_engine.get_player()
+    p.stop()
+    return {'status': 'preparing', 'next': p.next()}
 
 
 @app.post("/api/queue/replay")
 def queue_replay():
-    """Replay the current song."""
     p = player_engine.get_player()
-    qm = _get_queue_manager()
     song_id = p.get_current_song_id()
-    if song_id:
-        song = database.get_song(song_id)
-        filepath = song["filepath"]
-        if filepath and os.path.exists(filepath):
-            p.play_song(song_id, filepath)
-            qm.record_replay()
-            database.increment_replay_count(song_id)
-            broadcast("song_replayed", {"song_id": song_id})
-            return {"status": "replaying", "song_id": song_id}
-    return {"error": "No song to replay"}
+    if not song_id:
+        return {'error': 'No song to replay'}
+    result = p.feedback('replayed')
+    p.context.queue.reset_skip_streak()
+    p.context.queue.clear_undo()
+    p.play_song(song_id)
+    broadcast('song_replayed', {'song_id': song_id})
+    return {'status': 'replaying', 'song_id': song_id}
 
 
 @app.get("/api/queue/skip-streak")
@@ -2789,7 +2509,7 @@ def submit_skip_feedback(body: SkipFeedbackRequest):
     Supports temporal duration: "24h", "session", "permanent", or None (no suppression).
     """
     qm = _get_queue_manager()
-    session_id = _current_session_id
+    session_id = _history_session_id()
     if not session_id:
         return {"status": "no_session"}
 
@@ -2900,7 +2620,7 @@ def set_mood(req: MoodSetRequest):
     msm = _get_mood_state_machine()
     success = msm.set_state(req.state)
     if success:
-        database.record_mood_change(_current_session_id, req.state, source="button")
+        database.record_mood_change(_history_session_id(), req.state, source="button")
         return {"status": "mood_set", "state": req.state}
     return {"error": f"Unknown mood state: {req.state}"}
 
@@ -3243,8 +2963,7 @@ def daily_report():
 @app.get("/api/energy/trajectory")
 def energy_trajectory():
     """Get current energy trajectory state."""
-    from engine.energy import get_trajectory
-    traj = get_trajectory()
+    traj = player_engine.get_player().context.energy
     return {
         "direction": traj.get_direction(),
         "current_energy": traj.get_current_energy(),
@@ -3255,11 +2974,11 @@ def energy_trajectory():
 @app.get("/api/mood/history")
 def mood_history():
     """Get mood change history for the current session."""
-    if not _current_session_id:
+    if not _history_session_id():
         return {"mood_changes": []}
     conn = database.get_connection()
     try:
-        row = conn.execute("SELECT mood_changes FROM sessions WHERE id = ?", (_current_session_id,)).fetchone()
+        row = conn.execute("SELECT mood_changes FROM sessions WHERE id = ?", (_history_session_id(),)).fetchone()
         if row and row["mood_changes"]:
             import json as _json
             return {"mood_changes": _json.loads(row["mood_changes"])}
@@ -3510,7 +3229,7 @@ def set_folder_filter(req: FolderFilterRequest):
     """
     data = _get_recommendation_filters()
     data["folders"] = req.folders
-    database.set_setting("recommendation_filters", json.dumps(data))
+    _session_database().set_setting("recommendation_filters", json.dumps(data))
     _trigger_rebuild()
     broadcast("recommendation_filters_changed", data)
     return {"status": "set", "folders": req.folders}
@@ -3521,7 +3240,7 @@ def clear_folder_filter():
     """Clear folder filter (shim: updates recommendation_filters.folders)."""
     data = _get_recommendation_filters()
     data["folders"] = []
-    database.set_setting("recommendation_filters", json.dumps(data))
+    _session_database().set_setting("recommendation_filters", json.dumps(data))
     _trigger_rebuild()
     broadcast("recommendation_filters_changed", data)
     return {"status": "cleared"}
@@ -3532,7 +3251,7 @@ def clear_folder_filter():
 
 def _get_recommendation_filters() -> dict:
     """Parse the recommendation_filters setting into a dict."""
-    raw = database.get_setting("recommendation_filters") or ""
+    raw = _session_database().get_setting("recommendation_filters") or ""
     if raw and raw.strip():
         try:
             return json.loads(raw)
@@ -3552,8 +3271,8 @@ def _trigger_rebuild():
     qm = _get_queue_manager()
     p = player_engine.get_player()
     current_song_id = p.get_current_song_id()
-    session_id = _current_session_id
-    qm.on_song_started(current_song_id, session_id)
+    session_id = _history_session_id()
+    qm.request_rebuild()
 
 
 @app.get("/api/filter/recommendation")
@@ -3566,7 +3285,7 @@ def get_recommendation_filters():
 def set_recommendation_filters(req: RecommendationFiltersRequest):
     """Set recommendation filters (folder, mtime range, artist mode)."""
     data = req.model_dump()
-    database.set_setting("recommendation_filters", json.dumps(data))
+    _session_database().set_setting("recommendation_filters", json.dumps(data))
     _trigger_rebuild()
     broadcast("recommendation_filters_changed", data)
     return {"status": "set", "filters": data}
@@ -3582,7 +3301,7 @@ def clear_recommendation_filters():
         "artist_mode": None,
         "artists": [],
     }
-    database.set_setting("recommendation_filters", json.dumps(default))
+    _session_database().set_setting("recommendation_filters", json.dumps(default))
     _trigger_rebuild()
     broadcast("recommendation_filters_changed", default)
     return {"status": "cleared"}
@@ -3594,13 +3313,17 @@ def clear_recommendation_filters():
 
 @app.get("/api/settings")
 def get_settings():
-    return database.get_all_settings()
+    settings = database.get_all_settings()
+    from engine.session_settings import SESSION_SETTING_KEYS
+    db = _session_database()
+    settings.update({key: db.get_setting(key) for key in SESSION_SETTING_KEYS})
+    return settings
 
 
 @app.put("/api/settings/{key}")
 def update_setting(key: str, body: dict):
     value = body.get("value", "")
-    database.set_setting(key, value)
+    _session_database().set_setting(key, value)
     # Hot-reload provider settings
     if key in ("chat_provider", "embed_provider"):
         try:
@@ -3628,9 +3351,9 @@ def reset_recommendations():
     finally:
         conn.close()
 
-    database.set_setting("exploration_level", "0.3")
-    database.set_setting("genre_filter", "")
-    database.set_setting("artist_filter", "")
+    _session_database().set_setting("exploration_level", "0.3")
+    _session_database().set_setting("genre_filter", "")
+    _session_database().set_setting("artist_filter", "")
     database.set_setting("vibe_lock_active", "false")
     database.set_setting("vibe_lock_song_id", None)
     database.set_setting("vibe_lock_expires", None)
@@ -3639,7 +3362,7 @@ def reset_recommendations():
     qm._recently_recommended_ids = set()
     qm._skip_streak = 0
     qm.clear_queue()
-    traj = energy_engine.get_trajectory()
+    traj = player_engine.get_player().context.energy
     traj._recent_energies = []
     _get_mood_state_machine().deactivate_vibe_lock()
 
@@ -4004,7 +3727,7 @@ def toggle_mode(req: ModeToggleRequest):
     """Switch between radio and normal mode."""
     if req.mode not in ("radio", "normal"):
         return {"error": "Invalid mode. Must be 'radio' or 'normal'"}
-    database.set_setting("current_mode", req.mode)
+    _session_database().set_setting("current_mode", req.mode)
     # Clear queue when switching modes
     qm = _get_queue_manager()
     with qm._condition:
@@ -4018,27 +3741,13 @@ def toggle_mode(req: ModeToggleRequest):
 
 @app.get("/api/recommend")
 def get_recommendation():
-    """Get a single song recommendation using the full recommendation engine."""
+    """Preview the next ranked song without consuming queue or listening history."""
     qm = _get_queue_manager()
-    pick = qm.pop_next()
-    if pick:
-        if pick.get("type") == "talk_segment":
-            # Return the next actual song instead
-            with qm._condition:
-                for item in qm._queue:
-                    if item.get("type") != "talk_segment":
-                        return {
-                            "song_id": item["song_id"],
-                            "slot": item.get("slot", "context"),
-                            "reason": item.get("reason", ""),
-                        }
-            return {"info": "talk_segment", "segment_type": pick.get("segment_type")}
-        return {
-            "song_id": pick["song_id"],
-            "slot": pick.get("slot", "context"),
-            "reason": pick.get("reason", ""),
-        }
-    return {"error": "No recommendation available"}
+    for item in qm._get_display_queue():
+        if item.get('song_id') and item.get('type') != 'talk_segment':
+            return {key: item.get(key) for key in ('song_id', 'slot', 'reason')}
+    qm.request_rebuild()
+    return {'pending': True, 'queue': []}
 
 
 # ============================================================
@@ -4189,24 +3898,26 @@ def tts_status():
 @app.get("/api/talk/config")
 def get_talk_config():
     """Get all talk show settings."""
+    settings = _session_database()
     return {
-        "talk_segments_enabled": database.get_setting("talk_segments_enabled") or "false",
-        "talk_caller_enabled": database.get_setting("talk_caller_enabled") or "true",
-        "talk_caller_mode": database.get_setting("talk_caller_mode") or "influences_queue",
-        "talk_monologue_enabled": database.get_setting("talk_monologue_enabled") or "true",
-        "talk_guest_takeover_enabled": database.get_setting("talk_guest_takeover_enabled") or "true",
-        "talk_frequency": database.get_setting("talk_frequency") or "4",
-        "talk_guest_songs_per_set": database.get_setting("talk_guest_songs_per_set") or "4",
-        "talk_segment_cooldown": database.get_setting("talk_segment_cooldown") or "2",
-        "talk_caller_heartbroken_enabled": database.get_setting("talk_caller_heartbroken_enabled") or "false",
-        "talk_caller_melancholy_enabled": database.get_setting("talk_caller_melancholy_enabled") or "false",
-        "talk_volume": database.get_setting("talk_volume") or "100",
+        "talk_segments_enabled": settings.get_setting("talk_segments_enabled") or "false",
+        "talk_caller_enabled": settings.get_setting("talk_caller_enabled") or "true",
+        "talk_caller_mode": settings.get_setting("talk_caller_mode") or "influences_queue",
+        "talk_monologue_enabled": settings.get_setting("talk_monologue_enabled") or "true",
+        "talk_guest_takeover_enabled": settings.get_setting("talk_guest_takeover_enabled") or "true",
+        "talk_frequency": settings.get_setting("talk_frequency") or "4",
+        "talk_guest_songs_per_set": settings.get_setting("talk_guest_songs_per_set") or "4",
+        "talk_segment_cooldown": settings.get_setting("talk_segment_cooldown") or "2",
+        "talk_caller_heartbroken_enabled": settings.get_setting("talk_caller_heartbroken_enabled") or "false",
+        "talk_caller_melancholy_enabled": settings.get_setting("talk_caller_melancholy_enabled") or "false",
+        "talk_volume": settings.get_setting("talk_volume") or "100",
     }
 
 
 @app.post("/api/talk/config")
 def update_talk_config(body: dict):
     """Update talk show settings in bulk."""
+    settings = _session_database()
     allowed = {
         "talk_segments_enabled", "talk_caller_enabled", "talk_caller_mode",
         "talk_monologue_enabled", "talk_guest_takeover_enabled",
@@ -4216,10 +3927,9 @@ def update_talk_config(body: dict):
     }
     for key, value in body.items():
         if key in allowed:
-            database.set_setting(key, str(value))
+            settings.set_setting(key, str(value))
             if key == "talk_segments_enabled" and str(value).lower() != "true":
-                from announcer.talk_segments import reset_talk_counters
-                reset_talk_counters()
+                player_engine.get_player().context.talk.reset_talk_counters()
     return {"status": "updated"}
 
 
@@ -4333,8 +4043,7 @@ def set_tts_voice_endpoint(body: dict):
 @app.post("/api/talk/guest-dismiss")
 def talk_dismiss_guest():
     """Dismiss the current guest DJ takeover (user voted them off)."""
-    from announcer.talk_segments import dismiss_guest_takeover
-    outro = dismiss_guest_takeover()
+    outro = player_engine.get_player().context.talk.dismiss_guest_takeover()
     if outro:
         qm = _get_queue_manager()
         with qm._condition:
@@ -4378,7 +4087,6 @@ def onboarding_songs():
 @app.post("/api/onboarding/complete")
 def onboarding_complete(req: OnboardRequest):
     """Complete onboarding by recording taste seed signals."""
-    global _current_session_id
     session_id = _ensure_session()
 
     for song_id in req.song_ids:
@@ -4457,9 +4165,9 @@ def _execute_command_actions(actions: list, explanation: str,
             if sid:
                 song = database.get_song(sid)
                 if song and song.get("filepath") and os.path.exists(song["filepath"]):
-                    database.record_play_event(song_id=sid, session_id=session_id, signal="playing")
+                    pass  # Actual output observations own listening history.
                     p.play_song(sid, song["filepath"], session_id)
-                    qm.on_song_started(sid, session_id)
+                    qm.request_rebuild()
                     results.append({"action": "play_song", "song_id": sid, "artist": song.get("artist"), "title": song.get("title")})
 
         elif act_action == "vibe_lock":
@@ -4485,21 +4193,21 @@ def _execute_command_actions(actions: list, explanation: str,
 
         elif act_action == "set_filter":
             if "genre" in act:
-                database.set_setting("genre_filter", act["genre"])
+                _session_database().set_setting("genre_filter", act["genre"])
                 results.append({"action": "genre_filter", "genre": act["genre"]})
             if "artist" in act:
-                database.set_setting("artist_filter", act["artist"])
+                _session_database().set_setting("artist_filter", act["artist"])
                 results.append({"action": "artist_filter", "artist": act["artist"]})
 
         elif act_action == "clear_filters":
-            database.set_setting("genre_filter", "")
-            database.set_setting("artist_filter", "")
+            _session_database().set_setting("genre_filter", "")
+            _session_database().set_setting("artist_filter", "")
             results.append({"action": "clear_filters"})
 
         elif act_action == "exploration":
             level_map = {"low": 0.1, "medium": 0.5, "high": 0.9}
             level = level_map.get(act.get("level", "medium"), 0.5)
-            database.set_setting("exploration_level", str(level))
+            _session_database().set_setting("exploration_level", str(level))
             results.append({"action": "exploration", "level": act.get("level", "medium")})
 
         elif act_action == "clear_queue":
@@ -4541,7 +4249,6 @@ def _execute_command_actions(actions: list, explanation: str,
 @app.post("/api/command")
 def handle_command(req: CommandRequest):
     """Handle natural language commands."""
-    global _current_session_id
     p = player_engine.get_player()
     qm = _get_queue_manager()
     msm = _get_mood_state_machine()
@@ -4576,7 +4283,7 @@ def handle_command(req: CommandRequest):
     if "actions" in parsed and parsed["actions"]:
         return _execute_command_actions(
             parsed["actions"], parsed.get("explanation", "Done."),
-            p, qm, msm, song_id, _current_session_id,
+            p, qm, msm, song_id, _history_session_id(),
         )
 
     action = parsed.get("action")
@@ -4586,7 +4293,7 @@ def handle_command(req: CommandRequest):
         target = parsed.get("target_mood", msm_state)
         if msm.set_state(target):
             broadcast("mood_changed", {"state": target, "reason": "command"})
-            database.record_mood_change(_current_session_id, target, source="command")
+            database.record_mood_change(_history_session_id(), target, source="command")
             return {"action": action, "target_mood": target, "explanation": parsed["explanation"]}
         return {"action": action, "explanation": f"Could not set mood to {target}"}
 
@@ -4658,15 +4365,15 @@ def handle_command(req: CommandRequest):
         return {"action": action, "explanation": parsed["explanation"]}
 
     elif action == "rebuild":
-        qm.on_song_started(song_id, _current_session_id)
+        qm.request_rebuild()
         return {"action": action, "explanation": "Rebuilding queue..."}
 
     elif action == "mode_switch":
         mode = parsed.get("mode")
         if mode is None:
-            current_mode = database.get_setting("current_mode") or "radio"
+            current_mode = _session_database().get_setting("current_mode") or "radio"
             mode = "normal" if current_mode == "radio" else "radio"
-        database.set_setting("current_mode", mode)
+        _session_database().set_setting("current_mode", mode)
         with qm._condition:
             qm._queue.clear()
         broadcast("queue_updated", {"queue": []})
@@ -4676,13 +4383,13 @@ def handle_command(req: CommandRequest):
         level_str = parsed.get("level", "medium")
         level_map = {"low": 0.1, "medium": 0.5, "high": 0.9}
         level = level_map.get(level_str, 0.5)
-        database.set_setting("exploration_level", str(level))
+        _session_database().set_setting("exploration_level", str(level))
         return {"action": action, "level": level_str, "explanation": parsed["explanation"]}
 
     elif action == "genre_filter":
         genre = parsed.get("genre", "")
-        database.set_setting("genre_filter", genre)
-        qm.on_song_started(song_id, _current_session_id)
+        _session_database().set_setting("genre_filter", genre)
+        qm.request_rebuild()
         return {"action": action, "genre": genre, "explanation": parsed["explanation"]}
 
     elif action == "crossmodal_search":
@@ -4732,8 +4439,8 @@ def handle_command(req: CommandRequest):
 
     elif action == "artist_filter":
         artist = parsed.get("artist", "")
-        database.set_setting("artist_filter", artist)
-        qm.on_song_started(song_id, _current_session_id)
+        _session_database().set_setting("artist_filter", artist)
+        qm.request_rebuild()
         return {"action": action, "artist": artist, "explanation": parsed["explanation"]}
 
     elif action == "folder_filter":
@@ -4744,17 +4451,17 @@ def handle_command(req: CommandRequest):
             folders_raw_lower = folders_raw.lower()
             matched = [f for f in known if folders_raw_lower in f.lower()]
             if matched:
-                database.set_setting("folder_filter", json.dumps(matched))
-                qm.on_song_started(song_id, _current_session_id)
+                _session_database().set_setting("folder_filter", json.dumps(matched))
+                qm.request_rebuild()
                 return {"action": action, "folders": matched, "explanation": f"Restricted to {', '.join(matched)}"}
             return {"action": action, "explanation": f"No folder matching '{folders_raw}' found"}
         return {"action": action, "explanation": "Could not parse folder filter"}
 
     elif action == "clear_filters":
-        database.set_setting("genre_filter", "")
-        database.set_setting("artist_filter", "")
-        database.set_setting("folder_filter", "")
-        qm.on_song_started(song_id, _current_session_id)
+        _session_database().set_setting("genre_filter", "")
+        _session_database().set_setting("artist_filter", "")
+        _session_database().set_setting("folder_filter", "")
+        qm.request_rebuild()
         return {"action": action, "explanation": "Filters cleared"}
 
     elif action == "play_song":
@@ -4773,13 +4480,9 @@ def handle_command(req: CommandRequest):
             conn.close()
         if row and row["filepath"] and os.path.exists(row["filepath"]):
             session_id = _ensure_session()
-            database.record_play_event(
-                song_id=row["id"],
-                session_id=session_id,
-                signal="playing",
-            )
+            pass  # Actual output observations own listening history.
             p.play_song(row["id"], row["filepath"], session_id)
-            qm.on_song_started(row["id"], session_id)
+            qm.request_rebuild()
             return {"action": action, "song_id": row["id"], "explanation": f"Playing: {query}"}
         return {"action": action, "explanation": f"No song found matching '{query}'"}
 
@@ -4843,10 +4546,9 @@ def handle_command(req: CommandRequest):
         allowed = {"talk_segments_enabled", "talk_caller_enabled", "talk_monologue_enabled",
                     "talk_guest_takeover_enabled"}
         for key in allowed:
-            database.set_setting(key, enabled_str)
+            _session_database().set_setting(key, enabled_str)
         if enabled_str != "true":
-            from announcer.talk_segments import reset_talk_counters
-            reset_talk_counters()
+            player_engine.get_player().context.talk.reset_talk_counters()
         return {
             "action": action,
             "enabled": enabled_str == "true",
@@ -4860,14 +4562,14 @@ def handle_command(req: CommandRequest):
         results = []
         if "genre" in parsed:
             genre = parsed["genre"]
-            database.set_setting("genre_filter", genre)
+            _session_database().set_setting("genre_filter", genre)
             results.append(f"genre={genre}")
         if "artist" in parsed:
             artist = parsed["artist"]
-            database.set_setting("artist_filter", artist)
+            _session_database().set_setting("artist_filter", artist)
             results.append(f"artist={artist}")
         if results:
-            qm.on_song_started(song_id, _current_session_id)
+            qm.request_rebuild()
             return {"action": "set_filter", "changes": results, "explanation": "Filter applied: " + ", ".join(results)}
         return {"action": action, "explanation": "No filter specified"}
 
@@ -5014,17 +4716,63 @@ async def api_shutdown():
 
 
 async def _shutdown_runtime():
-    """Stop producers before optional services and the broadcast consumer."""
     global _server_ready
     _server_ready = False
     from engine.lifecycle import shutdown_runtime
     await shutdown_runtime(
-        queue=_queue_manager,
-        player=player_engine.get_player(),
+        queue=_playback_sessions, player=None,
         processes=get_process_manager() if config.PROC_MGR_ENABLED else None,
-        broadcaster=getattr(app.state, "_broadcast_worker", None),
+        broadcaster=getattr(app.state, '_broadcast_worker', None),
+        startup_stop=getattr(app.state, '_startup_stop', None),
+        startup_threads=tuple(getattr(app.state, '_startup_threads', ())),
     )
+    # The native player is optional and is never constructed merely to stop it.
+    if _native_player is not None:
+        await asyncio.to_thread(_native_player.shutdown)
+
+
+_media_service = None
+
+
+def _get_media_service():
+    """Create private generated-media storage only after an authorized request."""
+    global _media_service
+    if _media_service is None:
+        with _singleton_lock:
+            if _media_service is None:
+                from media_service import MediaService
+                _media_service = MediaService(
+                    config.MUSIC_DIR,
+                    (config.TTS_CACHE_DIR, os.path.join(config.DATA_DIR, "dj_effect_cache")),
+                    os.path.join(config.DATA_DIR, "media_resources"), database.get_song,
+                )
+    return _media_service
+
+
+from media_service import create_media_router
+from frontend_hosting import mount_frontend
+from playback_api import create_playback_router, PlaybackEventHub
+
+
+class _LazyPlaybackSessions:
+    def __getattr__(self, name):
+        return getattr(_get_playback_sessions(), name)
+
+
+_playback_hub = PlaybackEventHub()
+
+app.include_router(create_media_router(_get_media_service))
+app.include_router(create_playback_router(_LazyPlaybackSessions(), _playback_hub,
+                                         desktop_claim=player_engine.claim))
+# Register the API boundary before the catch-all client mount. Starlette matches
+# routes in registration order, so a Mount("/") registered first would answer
+# /api/auth/* itself (404) and the client could never learn it needs to sign in.
+# Private routes stay masked by the middleware's 401 gate, which hides this bug.
+app.state.security = ApiSecurity(_server_settings.security).install(app)
+mount_frontend(app, os.path.join(config.BASE_DIR, "frontend", "dist"))
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=config.API_PORT)
+    uvicorn.run(app, host=_server_settings.bind_host, port=config.API_PORT,
+                proxy_headers=False, ssl_certfile=_server_settings.tls_cert_file,
+                ssl_keyfile=_server_settings.tls_key_file)

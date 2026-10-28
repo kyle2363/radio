@@ -61,7 +61,6 @@ body {
 <div id="progress-wrap"><div id="progress-fill"></div></div>
 <div id="status">Connecting...</div>
 <script>
-const API = "http://localhost:8765";
 const titleEl = document.getElementById("title");
 const artistEl = document.getElementById("artist");
 const progressFill = document.getElementById("progress-fill");
@@ -71,8 +70,7 @@ let pollTimer = null;
 
 async function poll() {
   try {
-    const resp = await fetch(API + "/api/play/status", { signal: AbortSignal.timeout(3000) });
-    const data = await resp.json();
+    const data = await window.electronWidget.getPlaybackStatus();
     statusEl.style.display = "none";
     document.getElementById("track").style.display = "flex";
     if (data.current_song) {

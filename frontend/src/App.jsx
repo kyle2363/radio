@@ -1,5 +1,7 @@
 import React, { useEffect, useState, useCallback, useRef, useLayoutEffect } from "react";
 import useTransition from "./hooks/useTransition";
+import usePlaybackSession from './hooks/usePlaybackSession.js';
+import PlaybackOutputSelector from './components/PlaybackOutputSelector.jsx';
 import * as api from "./api";
 import { Loader2, Mic, Sparkles, Sun, Moon, Library, HelpCircle, Settings } from "lucide-react";
 
@@ -46,7 +48,7 @@ import useQueueState from "./hooks/useQueueState";
 import useMoodState from "./hooks/useMoodState";
 import useUIState from "./hooks/useUIState";
 
-function AppInner() {
+function AppInner({ outputPlayback }) {
   const { addToast, removeToast, toasts } = useSharedRadio();
   const fetchStatus = useFetchStatus();
   const {
@@ -717,6 +719,7 @@ function AppInner() {
 
           {/* Spacer */}
           <div className="flex-1" />
+          <PlaybackOutputSelector playback={outputPlayback} />
 
           {/* RIGHT: Action buttons + session controls */}
           <div className="flex items-center gap-[2px] flex-shrink-0">
@@ -897,9 +900,27 @@ function AppInner() {
 }
 
 export default function App() {
+  const outputPlayback = usePlaybackSession({ apiBase: api.API_BASE_URL,
+    onController: api.setPlaybackController,
+    onUnauthorized: () => window.dispatchEvent(new CustomEvent('radio-auth-required')) });
+  useEffect(() => {
+    const headers = api.getPlaybackController()?.requestHeaders();
+    const sessionId = headers?.['X-Radio-Playback-Session'];
+    if (sessionId) window.electron?.setPlaybackSession?.({ session_id: sessionId,
+      owner_key: headers['X-Radio-Playback-Owner'] }).catch(console.error);
+    return () => { window.electron?.setPlaybackSession?.(null).catch(console.error); };
+  }, [outputPlayback.session?.id]);
+  if (!outputPlayback.session) {
+    return <div className="min-h-screen bg-gray-950 text-gray-200 flex flex-col gap-4 items-center justify-center" role="status">
+      <p>{outputPlayback.error || 'Connecting listening session…'}</p>
+      {outputPlayback.error && <button className="rounded border px-4 py-2" onClick={() => outputPlayback.retry().catch(() => {})}>
+        {outputPlayback.retryNeeded ? 'Start a new listening session' : 'Retry connection'}
+      </button>}
+    </div>;
+  }
   return (
     <RadioProvider>
-      <AppInner />
+      <AppInner outputPlayback={outputPlayback} />
     </RadioProvider>
   );
 }

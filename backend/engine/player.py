@@ -7,6 +7,7 @@ import threading
 import time
 import queue
 from dataclasses import dataclass
+from engine.audio_profiles import EQ_PRESETS
 from engine.vlc_transport import VLCTransport
 try:
     import vlc
@@ -117,6 +118,13 @@ class Player:
         self._media_list = None
         self._native_events = queue.SimpleQueue()
         self._closed = False
+        self._observation_instance = None
+        self._observation_items = []
+        self._observation_callbacks = []
+        self._observation_states = {}
+        self._observation_seq = 0
+        self._observation_pause = threading.Event()
+        self._record_direct_completion = True
 
         # Track chain items and current position
         self._chain_items = []
@@ -143,6 +151,7 @@ class Player:
 
         # Talk volume: saved/restored when talk segments play
         self._pre_talk_volume = None
+        self._talk_volume_override = None
 
         # Volume normalization (ReplayGain-style)
         self._base_volume = 70
@@ -171,6 +180,102 @@ class Player:
                     handler(None, generation)
             except Exception:
                 _song_logger.exception("Native playback observation failed: gen=%s", generation)
+
+    def on_observation(self, callback):
+        """Subscribe to actual native item observations (never start requests)."""
+        with self._cb_lock:
+            if not hasattr(self, "_observation_callbacks"):
+                self._observation_callbacks = []
+            self._observation_callbacks.append(callback)
+        def unsubscribe():
+            nonlocal callback
+            with self._cb_lock:
+                if callback is not None:
+                    try:
+                        self._observation_callbacks.remove(callback)
+                    except ValueError:
+                        pass
+                    callback = None  # Release the subscriber even if this closure is retained.
+        return unsubscribe
+
+    def _on_native_observation(self, snapshot, event_or_generation, generation=None):
+        """Interpret copied native event identity on the Python dispatcher."""
+        generation = event_or_generation if generation is None else generation
+        with self._lock:
+            if (generation != self._play_gen or self._explicitly_stopped or self._stop_in_progress
+                    or not getattr(self, "_observation_instance", None)):
+                return
+            pointer = snapshot.get("media_pointer")
+            items = self._observation_items
+            index = next((i for i, item in enumerate(items)
+                          if item.get("_media_pointer") == pointer), None)
+            if index is None:
+                return
+            kind = snapshot["kind"]
+            if kind in ("next", "media_changed"):
+                return  # Selection/prefetch is not evidence of playback.
+            states = getattr(self, "_observation_states", None)
+            if states is None:
+                states = self._observation_states = {}
+            previous = states.get(index)
+            if previous in ("completed", "failed"):
+                return
+            if kind == "playing":
+                if previous == "playing":
+                    return
+                kind = "resumed" if previous == "paused" else "started"
+                states[index] = "playing"
+                self._current_chain_index = index
+                self._current_song_id = items[index].get("song_id")
+                self._talk_playing = bool(items[index].get("is_tts"))
+                self._state = "playing"
+                pause = getattr(self, "_observation_pause", None)
+                if pause:
+                    pause.clear()
+            elif kind == "paused":
+                if previous != "playing":
+                    return
+                states[index] = "paused"
+                self._state = "paused"
+                pause = getattr(self, "_observation_pause", None)
+                if pause:
+                    pause.set()
+            elif kind == "completed":
+                if previous not in ("playing", "paused"):
+                    return
+                states[index] = "completed"
+                if index == len(items) - 1:
+                    self._state = "stopped"
+                    self._talk_playing = False
+            elif kind == "failed":
+                states[index] = "failed"
+                self._state = "stopped"
+            else:
+                return
+            self._observation_seq = getattr(self, "_observation_seq", 0) + 1
+            observation = {"instance_id": self._observation_instance,
+                           "item_id": items[index]["public_item_id"], "kind": kind,
+                           "generation": generation, "observation_seq": self._observation_seq,
+                           "position_ms": 0}
+        # Native calls and all application callbacks run after releasing the
+        # state lock, on this dispatcher rather than libVLC's event thread.
+        if kind in ("paused", "resumed"):
+            observation["position_ms"] = self.get_time()
+        with self._cb_lock:
+            callbacks = list(getattr(self, "_observation_callbacks", []))
+        for callback in callbacks:
+            try:
+                callback(observation)
+            except Exception:
+                _song_logger.exception("Native observation subscriber failed")
+
+    def wait_for_pause(self, instance_id, timeout=1.0):
+        """Confirm an actual paused observation for the requested instance."""
+        if not self._observation_pause.wait(timeout):
+            return False
+        with self._lock:
+            return (self._observation_instance == instance_id and self._state == "paused"
+                    and not self._explicitly_stopped)
 
     def _on_next_item(self, event, user_data):
         """Apply an item-advance observation outside the native callback thread."""
@@ -317,7 +422,7 @@ class Player:
         # Record completion event (lightweight DB op, safe in VLC thread)
         try:
             session_id = completion.session_id
-            if session_id and song_id is not None:
+            if session_id and song_id is not None and getattr(self, "_record_direct_completion", True):
                 database.record_play_event(
                     song_id=song_id,
                     session_id=session_id,
@@ -483,15 +588,16 @@ class Player:
             _song_logger.debug("  -> talk-only chain ended, firing synthetic song_ended to advance queue")
             self._fire_song_ended(None, completion)
 
-    def play_song(self, song_id, filepath, session_id=None):
+    def play_song(self, song_id, filepath, session_id=None, instance_id=None, item_id=None):
         """Play one song using a dedicated native playback lifecycle."""
-        return self._start_items([{"song_id": song_id, "filepath": filepath, "is_tts": False}], session_id)
+        return self._start_items([{"song_id": song_id, "filepath": filepath, "is_tts": False,
+                                   "public_item_id": item_id}], session_id, instance_id)
 
-    def play_chain(self, items, session_id=None):
+    def play_chain(self, items, session_id=None, instance_id=None):
         """Play prepared speech/song items using VLC's media list chaining."""
-        return self._start_items(items, session_id)
+        return self._start_items(items, session_id, instance_id)
 
-    def _start_items(self, items, session_id=None):
+    def _start_items(self, items, session_id=None, instance_id=None):
         if not items:
             return False
         with self._command_lock:
@@ -514,18 +620,25 @@ class Player:
                 old.retire()
             transport = None
             try:
-                transport = VLCTransport(self._vlc_instance, vlc.EventType, generation, {
+                handlers = {
                     "next": self._on_next_item, "ended": self._on_end_reached,
                     "stopped": self._on_stopped, "media_end": self._on_media_end_reached,
-                }, self._enqueue_native_event)
+                }
+                if instance_id is not None:
+                    handlers["observed"] = self._on_native_observation
+                transport = VLCTransport(self._vlc_instance, vlc.EventType, generation,
+                                         handlers, self._enqueue_native_event)
                 prepared = []
                 for item in items:
                     media = self._vlc_instance.media_new(item["filepath"])
                     if media is None:
                         raise RuntimeError("VLC could not open prepared media")
                     transport.media_list.add_media(media)
+                    copied = dict(item)
+                    if instance_id is not None:
+                        copied["_media_pointer"] = media._as_parameter_.value
                     media.release()
-                    prepared.append(dict(item))
+                    prepared.append(copied)
                 first_song = next((it.get("song_id") for it in prepared if not it.get("is_tts")), None)
                 song = database.get_song(first_song) if first_song else None
                 gain = (song.get("gain_db") or 0.0) if song else 0.0
@@ -543,6 +656,12 @@ class Player:
                     self._list_player = transport.list_player
                     self._media_list = transport.media_list
                     self._chain_items = prepared
+                    self._observation_instance = instance_id
+                    self._observation_items = prepared if instance_id is not None else []
+                    self._observation_states = {}
+                    self._observation_seq = 0
+                    if hasattr(self, "_observation_pause"):
+                        self._observation_pause.clear()
                     self._current_chain_index = 0
                     self._first_next_gen = generation
                     self._current_song_id = first_song
@@ -564,7 +683,9 @@ class Player:
                     self._base_volume = self._pre_talk_volume
                     self._pre_talk_volume = None
                 if self._talk_playing:
-                    talk_percent = database.get_setting_int("talk_volume", 100)
+                    talk_percent = getattr(self, '_talk_volume_override', None)
+                    if talk_percent is None:
+                        talk_percent = database.get_setting_int("talk_volume", 100)
                     if talk_percent != 100:
                         self._pre_talk_volume = self._base_volume
                         self._base_volume = max(0, min(100, int(self._base_volume * talk_percent / 100)))
@@ -650,6 +771,8 @@ class Player:
         """Pause playback."""
         with self._command_lock:
             if self._list_player is not None and self._state == "playing":
+                if getattr(self, "_observation_instance", None):
+                    self._observation_pause.clear()
                 self._transport.set_pause(1)
                 self._state = "paused"
 
@@ -657,6 +780,8 @@ class Player:
         """Resume playback."""
         with self._command_lock:
             if self._list_player is not None and self._state == "paused" and not self._closed:
+                if getattr(self, "_observation_instance", None):
+                    self._observation_pause.clear()
                 self._transport.set_pause(0)
                 self._state = "playing"
 
@@ -767,6 +892,17 @@ class Player:
         """Get current base volume (0-100)."""
         return self._base_volume
 
+    def set_talk_volume(self, percent):
+        if type(percent) is not int or not 0 <= percent <= 200:
+            raise ValueError('Speech volume must be between 0 and 200 percent')
+        with self._lock:
+            self._talk_volume_override = percent
+            if self._talk_playing:
+                original = self._pre_talk_volume if self._pre_talk_volume is not None else self._base_volume
+                self._pre_talk_volume = original if percent != 100 else None
+                self._base_volume = min(100, int(original * percent / 100))
+                self._apply_effective_volume()
+
     def set_normalization_enabled(self, enabled):
         """Enable or disable volume normalization."""
         self._normalization_enabled = enabled
@@ -779,15 +915,7 @@ class Player:
         with self._lock:
             self._apply_effective_volume()
 
-    EQ_PRESETS = {
-        "off": None,
-        "bass_boost": [0.0, 0.0, 0.6, 0.8, 0.6, 0.4, 0.2, 0.0, 0.0, 0.0],
-        "vocal_boost": [0.0, 0.0, 0.2, 0.4, 0.6, 0.8, 0.6, 0.4, 0.2, 0.0],
-        "night_mode": [-0.2, -0.1, 0.0, 0.0, 0.0, -0.1, -0.2, -0.4, -0.6, -0.8],
-        "flat": [0.0] * 10,
-        "loudness": [0.4, 0.3, 0.2, 0.1, 0.0, 0.1, 0.2, 0.3, 0.4, 0.5],
-        "clarity": [0.2, 0.3, 0.0, 0.2, 0.5, 0.7, 0.5, 0.3, 0.2, 0.1],
-    }
+    EQ_PRESETS = EQ_PRESETS
 
     def set_eq_preset(self, preset_name):
         """Set equalizer preset by name. 'off' or None to disable."""

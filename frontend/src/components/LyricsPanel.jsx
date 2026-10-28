@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import * as api from "../api";
+import { buildLyricsLines } from '../content/lyrics.js';
 
 function LyricsPanel({ song, positionMs = 0, durationMs = 0, isPlaying = false }) {
   const [karaokeMode, setKaraokeMode] = useState(true);
@@ -62,18 +63,7 @@ function LyricsPanel({ song, positionMs = 0, durationMs = 0, isPlaying = false }
 
   // Build the display lines array from either timed data or plain lyrics
   const displayLines = useCallback(() => {
-    if (timedLines) {
-      return timedLines;
-    }
-    if (song?.lyrics) {
-      return song.lyrics.split("\n").map((line) => ({
-        text: line || "",
-        start_ms: 0,
-        end_ms: 0,
-        words: [],
-      }));
-    }
-    return null;
+    return buildLyricsLines(timedLines, song?.lyrics);
   }, [timedLines, song?.lyrics]);
 
   // Determine the active line index using interpolated position
@@ -122,7 +112,7 @@ function LyricsPanel({ song, positionMs = 0, durationMs = 0, isPlaying = false }
   }, [interpolatedPos, karaokeMode, durationMs, displayLines]);
 
   const lines = displayLines();
-  if (!lines && !loading) {
+  if (lines.length === 0 && !loading) {
     return null;
   }
 

@@ -1,15 +1,24 @@
-const { app, BrowserWindow, ipcMain, Tray, Menu, globalShortcut, nativeImage, Notification, powerMonitor, powerSaveBlocker } = require("electron");
+const { app, BrowserWindow, ipcMain, Tray, Menu, globalShortcut, nativeImage, nativeTheme, Notification, powerMonitor, powerSaveBlocker, session } = require("electron");
 const path = require("path");
 const { spawn, execSync } = require("child_process");
 const fs = require("fs");
 const http = require("http");
 const { shutdownOwnedBackend } = require("./backend-shutdown.cjs");
+const { BACKEND_URL, backendFetch, backendCookieHeader, waitForBackendReady, createPlaybackBinding } = require("./backend-session.cjs");
+const { loadDevelopmentWindow, setThumbnailButtons } = require('./window-startup.cjs');
 
 let mainWindow;
 let uvicornProcess;
 let tray;
 let isMiniMode = false;
-const API_URL = "http://localhost:8765";
+const playbackBinding = createPlaybackBinding();
+const backendRequest = (apiPath, options = {}) => {
+  const headers = playbackBinding.headers();
+  if (/^\/api\/(play|queue|mood|sleep|filter)(\/|$)/.test(apiPath) && !headers['X-Radio-Playback-Session']) {
+    return Promise.reject(Error('Listening session is not ready'));
+  }
+  return backendFetch(session.defaultSession, apiPath, { ...options, headers: { ...options.headers, ...headers } });
+};
 
 // ── State tracking ────────────────────────────────────────────
 let currentSong = { artist: "", title: "" };
@@ -40,7 +49,7 @@ function iconPathFor(style, variant = "tray", mode) {
 
 async function loadAppIconStyle() {
   try {
-    const resp = await fetch(`${API_URL}/api/settings/app_icon_style`);
+    const resp = await backendRequest(`/api/settings/app_icon_style`);
     if (resp.ok) {
       const data = await resp.json();
       appIconStyle = ["drift", "orbit", "pulse", "spectrum"].includes(data.value) ? data.value : "drift";
@@ -130,9 +139,19 @@ function createWindow() {
   mainWindow.on("move", debouncedSave);
 
   if (process.env.NODE_ENV === "development" || !app.isPackaged) {
-    mainWindow.loadURL("http://localhost:3000");
+    const window = mainWindow;
+    loadDevelopmentWindow(window, session.defaultSession, {
+      isCancelled: () => app.isQuitting,
+    }).catch(() => console.error('Unable to load the development window'));
   } else {
-    mainWindow.loadFile(path.join(__dirname, "../dist/index.html"));
+    const window = mainWindow;
+    // Load through HTTP so authenticated requests have a trusted origin. The
+    // public status check succeeds before sign-in and while password is unset.
+    waitForBackendReady(session.defaultSession, {
+      isCancelled: () => window.isDestroyed() || app.isQuitting,
+    }).then((ready) => {
+      if (ready) return window.loadURL(`${BACKEND_URL}/`);
+    }).catch(() => console.error("Unable to load the station window"));
   }
 
   mainWindow.on("closed", () => {
@@ -277,25 +296,25 @@ function rebuildTrayMenu() {
 async function sendCommand(cmd) {
   try {
     if (cmd === "play_pause") {
-      const statusResp = await fetch(`${API_URL}/api/play/status`);
+      const statusResp = await backendRequest(`/api/play/status`);
       const status = await statusResp.json();
       if (status.is_playing) {
-        await fetch(`${API_URL}/api/play/pause`, { method: "POST" });
+        await backendRequest(`/api/play/pause`, { method: "POST" });
         isPlaying = false;
       } else {
-        await fetch(`${API_URL}/api/play/resume`, { method: "POST" });
+        await backendRequest(`/api/play/resume`, { method: "POST" });
         isPlaying = true;
       }
     } else if (cmd === "next") {
-      await fetch(`${API_URL}/api/queue/skip`, { method: "POST" });
+      await backendRequest(`/api/queue/skip`, { method: "POST" });
     } else if (cmd === "stop") {
-      await fetch(`${API_URL}/api/play/stop`, { method: "POST" });
+      await backendRequest(`/api/play/stop`, { method: "POST" });
     } else if (cmd === "heart") {
-      await fetch(`${API_URL}/api/play/heart`, { method: "POST" });
+      await backendRequest(`/api/play/heart`, { method: "POST" });
     } else if (cmd === "thumbs_down") {
-      await fetch(`${API_URL}/api/play/thumbs-down`, { method: "POST" });
+      await backendRequest(`/api/play/thumbs-down`, { method: "POST" });
     } else if (cmd === "replay") {
-      await fetch(`${API_URL}/api/queue/replay`, { method: "POST" });
+      await backendRequest(`/api/queue/replay`, { method: "POST" });
     }
     rebuildTrayMenu();
   } catch (e) {
@@ -305,7 +324,7 @@ async function sendCommand(cmd) {
 
 async function setMood(mood) {
   try {
-    await fetch(`${API_URL}/api/mood/set`, {
+    await backendRequest(`/api/mood/set`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ state: mood }),
@@ -320,15 +339,15 @@ async function setMood(mood) {
 async function toggleVibeLock() {
   try {
     if (vibeLockActive) {
-      await fetch(`${API_URL}/api/mood/vibe-lock/deactivate`, { method: "POST" });
+      await backendRequest(`/api/mood/vibe-lock/deactivate`, { method: "POST" });
       vibeLockActive = false;
     } else {
       // Get current song to activate vibe lock
-      const statusResp = await fetch(`${API_URL}/api/play/status`);
+      const statusResp = await backendRequest(`/api/play/status`);
       const status = await statusResp.json();
       const songId = status.current_song?.id;
       if (!songId) return;
-      await fetch(`${API_URL}/api/mood/vibe-lock/activate`, {
+      await backendRequest(`/api/mood/vibe-lock/activate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ song_id: songId }),
@@ -343,7 +362,7 @@ async function toggleVibeLock() {
 
 async function setSleepTimer(minutes) {
   try {
-    await fetch(`${API_URL}/api/sleep/timer`, {
+    await backendRequest(`/api/sleep/timer`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ minutes, fade_seconds: 30, switch_to_chill: true }),
@@ -355,7 +374,7 @@ async function setSleepTimer(minutes) {
 
 async function cancelSleepTimer() {
   try {
-    await fetch(`${API_URL}/api/sleep/timer`, { method: "DELETE" });
+    await backendRequest(`/api/sleep/timer`, { method: "DELETE" });
   } catch (e) {
     console.error("Cancel sleep timer failed:", e);
   }
@@ -363,11 +382,11 @@ async function cancelSleepTimer() {
 
 async function setVolume(delta) {
   try {
-    const statusResp = await fetch(`${API_URL}/api/play/status`);
+    const statusResp = await backendRequest(`/api/play/status`);
     const status = await statusResp.json();
     const currentVol = status.volume ?? 50;
     const newVol = Math.max(0, Math.min(100, currentVol + delta));
-    await fetch(`${API_URL}/api/play/volume`, {
+    await backendRequest(`/api/play/volume`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ volume: newVol }),
@@ -455,11 +474,11 @@ function setupPowerMonitor() {
     if (!autoPauseOnLock) return;
     console.log("Screen locked - pausing playback");
     try {
-      const statusResp = await fetch(`${API_URL}/api/play/status`);
+      const statusResp = await backendRequest(`/api/play/status`);
       const status = await statusResp.json();
       wasPlayingBeforeLock = status.is_playing;
       if (status.is_playing) {
-        await fetch(`${API_URL}/api/play/pause`, { method: "POST" });
+        await backendRequest(`/api/play/pause`, { method: "POST" });
       }
     } catch (e) {
       console.error("Auto-pause on lock failed:", e);
@@ -472,7 +491,7 @@ function setupPowerMonitor() {
     if (wasPlayingBeforeLock) {
       console.log("Screen unlocked - resuming playback");
       try {
-        await fetch(`${API_URL}/api/play/resume`, { method: "POST" });
+        await backendRequest(`/api/play/resume`, { method: "POST" });
       } catch (e) {
         console.error("Auto-resume on unlock failed:", e);
       }
@@ -485,11 +504,11 @@ function setupPowerMonitor() {
     if (!autoPauseOnLock) return;
     console.log("System sleeping - pausing playback");
     try {
-      const statusResp = await fetch(`${API_URL}/api/play/status`);
+      const statusResp = await backendRequest(`/api/play/status`);
       const status = await statusResp.json();
       wasPlayingBeforeLock = status.is_playing;
       if (status.is_playing) {
-        await fetch(`${API_URL}/api/play/pause`, { method: "POST" });
+        await backendRequest(`/api/play/pause`, { method: "POST" });
       }
     } catch (e) {
       console.error("Auto-pause on suspend failed:", e);
@@ -502,7 +521,7 @@ function setupPowerMonitor() {
     if (wasPlayingBeforeLock) {
       console.log("System resumed - resuming playback");
       try {
-        await fetch(`${API_URL}/api/play/resume`, { method: "POST" });
+        await backendRequest(`/api/play/resume`, { method: "POST" });
       } catch (e) {
         console.error("Auto-resume after wake failed:", e);
       }
@@ -699,12 +718,12 @@ function setupThumbnailToolbar() {
     }
   }
 
-  mainWindow.setThumbnailToolbar([
+  setThumbnailButtons(mainWindow, [
     { tooltip: "Previous", icon: makeIcon(drawTriangle), click: () => sendCommand("replay") },
     { tooltip: "Play / Pause", icon: makeIcon(drawPauseBars), click: () => sendCommand("play_pause") },
     { tooltip: "Next", icon: makeIcon(drawSkip), click: () => sendCommand("next") },
     { tooltip: "Heart", icon: makeIcon(drawHeart), click: () => sendCommand("heart") },
-  ]);
+  ], process.platform, error => console.warn('Thumbnail toolbar unavailable:', error.message));
 }
 
 // ── Jump List ─────────────────────────────────────────────────
@@ -727,6 +746,24 @@ function setupJumpList() {
 
 // ── IPC Handlers ──────────────────────────────────────────────
 function setupIPC() {
+  ipcMain.handle('widget-playback-status', async (event) => {
+    if (!widgetWindow || event.sender !== widgetWindow.webContents || event.senderFrame !== widgetWindow.webContents.mainFrame) {
+      throw Error('Untrusted widget');
+    }
+    const response = await backendRequest('/api/play/status', { signal: AbortSignal.timeout(3000) });
+    if (!response.ok) throw Error('Station unavailable');
+    const state = await response.json();
+    return { current_song: state.current_song && { title: state.current_song.title, artist: state.current_song.artist },
+      position_ms: state.position_ms, duration_ms: state.duration_ms, is_playing: state.is_playing };
+  });
+  ipcMain.handle('set-playback-session', (event, binding) => {
+    if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame) {
+      throw Error('Untrusted playback controller');
+    }
+    const origin = new URL(event.senderFrame.url).origin;
+    if (!['http://localhost:3000', BACKEND_URL].includes(origin)) throw Error('Untrusted playback controller');
+    playbackBinding.set(binding);
+  });
   ipcMain.handle("toggle-mini-player", () => toggleMiniPlayer());
   ipcMain.handle("minimize-to-tray", () => mainWindow?.hide());
   ipcMain.handle("get-mini-mode", () => isMiniMode);
@@ -872,18 +909,25 @@ let backendShutdownPromise;
 function shutdownBackend() {
   if (backendShutdownPromise) return backendShutdownPromise;
   const ownedProcess = uvicornProcess;
-  backendShutdownPromise = shutdownOwnedBackend(ownedProcess, {
-    request: http.request,
-    forceKill(child) {
-      if (process.platform === "win32") {
-        try {
-          execSync(`taskkill /F /T /PID ${child.pid}`, { timeout: 5000, stdio: "ignore" });
-          return;
-        } catch (_) { /* Fall back to terminating only our child. */ }
-      }
-      child.kill();
-    },
-  }).then((result) => {
+  backendShutdownPromise = (async () => {
+    let cookieHeader = '';
+    if (ownedProcess) {
+      try { cookieHeader = await backendCookieHeader(session.defaultSession); } catch (_) {}
+    }
+    return shutdownOwnedBackend(ownedProcess, {
+      cookieHeader,
+      request: http.request,
+      forceKill(child) {
+        if (process.platform === "win32") {
+          try {
+            execSync(`taskkill /F /T /PID ${child.pid}`, { timeout: 5000, stdio: "ignore" });
+            return;
+          } catch (_) { /* Fall back to terminating only our child. */ }
+        }
+        child.kill();
+      },
+    });
+  })().then((result) => {
     if (result === "timeout" || result === "error") console.warn(`Backend shutdown: ${result}`);
   }).finally(() => {
     if (uvicornProcess === ownedProcess) uvicornProcess = null;

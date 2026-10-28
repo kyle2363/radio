@@ -9,19 +9,19 @@ load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file_
 os.environ["ANONYMIZED_TELEMETRY"] = "False"
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DATA_DIR = os.path.join(BASE_DIR, "data")
-MUSIC_DIR = os.path.join(BASE_DIR, "audio_files")
+DATA_DIR = os.path.abspath(os.environ.get("RADIO_DATA_DIR", os.path.join(BASE_DIR, "data")))
+MUSIC_DIR = os.path.abspath(os.environ.get("RADIO_MUSIC_DIR", os.path.join(BASE_DIR, "audio_files")))
 DB_PATH = os.path.join(DATA_DIR, "radio.db")
 CHROMA_PATH = os.path.join(DATA_DIR, "chroma")
 ART_DIR = os.path.join(DATA_DIR, "art")
-ACESTEP_JSON_DIR = os.path.join(BASE_DIR, "docs", "understand")
+ACESTEP_JSON_DIR = os.path.abspath(os.environ.get("RADIO_METADATA_DIR", os.path.join(BASE_DIR, "docs", "understand")))
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://192.168.1.20:5002")
 OLLAMA_EMBED_MODEL = "qwen3-embedding:0.6b"
 OLLAMA_CHAT_MODEL = "qwen3.5:9b"
 TTS_VOICE = "en_US-amy-medium"
 
 # Master TTS toggle — set False to completely disable TTS announcements
-TTS_ENABLED = True
+TTS_ENABLED = os.environ.get("RADIO_TTS_ENABLED", "true").lower() in ("true", "1", "yes")
 
 # OmniVoice TTS settings (voice cloning engine)
 OMNIVOICE_MODEL = "k2-fsa/OmniVoice"
@@ -54,10 +54,10 @@ TALK_VOLUME = 100  # percent of main volume for talk segments
 
 # Talk show debug logging (set True to log OmniVoice inputs + talk segment prompts/responses)
 TALK_SHOW_DEBUG = False
-TALK_DEBUG_LOG_PATH = os.path.join(BASE_DIR, "data", "talk_show_debug.log")
+TALK_DEBUG_LOG_PATH = os.path.join(DATA_DIR, "talk_show_debug.log")
 
 # Song-end debug log
-LOG_PATH = os.path.join(BASE_DIR, "data", "playback.log")
+LOG_PATH = os.path.join(DATA_DIR, "playback.log")
 API_PORT = 8765
 N_CLUSTERS = 28
 
@@ -159,7 +159,7 @@ def _parse_cmd(cmd_str):
     parts = shlex.split(cmd_str, posix=True)
     return (parts[0], parts[1:])
 
-PROC_MGR_ENABLED = True
+PROC_MGR_ENABLED = os.environ.get("RADIO_PROC_MGR_ENABLED", "true").lower() in ("true", "1", "yes")
 PROC_MGR_LOG_DIR = os.path.join(DATA_DIR, "logs")
 
 # --- llama.cpp chat (port 8081) ---

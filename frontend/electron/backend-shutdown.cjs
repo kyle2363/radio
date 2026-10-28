@@ -1,6 +1,6 @@
 // Only accepts the child owned by this Electron instance. Injectable I/O keeps
 // tests independent of Electron, network services, and real process termination.
-async function shutdownOwnedBackend(child, { request, forceKill, timeoutMs = 30000 }) {
+async function shutdownOwnedBackend(child, { request, forceKill, timeoutMs = 30000, cookieHeader = '' }) {
   if (!child || !Number.isInteger(child.pid) || child.pid <= 0 ||
       child.exitCode != null || child.signalCode != null) return 'not-running';
 
@@ -22,6 +22,7 @@ async function shutdownOwnedBackend(child, { request, forceKill, timeoutMs = 300
       req = request({
         hostname: '127.0.0.1', port: 8765,
         path: '/api/shutdown', method: 'POST',
+        ...(cookieHeader ? { headers: { Cookie: cookieHeader } } : {}),
       }, (response) => {
         response.on('end', () => finish(response.statusCode >= 200 && response.statusCode < 300
           ? 'acknowledged' : 'error'));

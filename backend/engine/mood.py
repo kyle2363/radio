@@ -64,7 +64,8 @@ MOOD_STATES = {
 class MoodStateMachine:
     """Manages mood state and vibe lock."""
 
-    def __init__(self):
+    def __init__(self, *, persist_state=True):
+        self._persist_state = persist_state
         self._lock = threading.RLock()
         self._current_state = None
         self._vibe_lock = {
@@ -75,7 +76,8 @@ class MoodStateMachine:
             "expires_at": None,
             "songs_remaining": 0,
         }
-        self._load_state()
+        if persist_state:
+            self._load_state()
 
     def _get_vibe_lock_duration_seconds(self):
         """Get vibe lock duration in seconds from DB settings."""
@@ -161,6 +163,8 @@ class MoodStateMachine:
 
     def _save_state(self):
         """Persist mood state to settings."""
+        if not self._persist_state:
+            return
         database.set_setting("vibe_lock_active", str(self._vibe_lock["active"]).lower())
         if self._vibe_lock["song_id"]:
             database.set_setting("vibe_lock_song_id", str(self._vibe_lock["song_id"]))

@@ -1,0 +1,54 @@
+name: Contract tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  backend-contracts:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: backend/requirements-test.txt
+      - name: Create project virtual environment
+        run: python -m venv backend/venv
+      - name: Install lean contract test dependencies
+        run: backend/venv/Scripts/python -m pip install -r backend/requirements-test.txt
+      - name: Run isolated backend contract tests
+        run: >-
+          backend/venv/Scripts/python -B scripts/run_tests.py
+          backend/tests/test_api_security.py
+          backend/tests/test_media_service.py
+          backend/tests/test_playback_store.py
+          backend/tests/test_playback_coordinator.py
+          backend/tests/test_server_settings.py
+          backend/tests/test_session_port.py
+          backend/tests/test_session_settings.py
+          backend/tests/test_play_event_transaction.py
+          backend/tests/test_stale_history_sessions.py
+          -q
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: frontend
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+      - name: Run frontend tests
+        run: npm test
+        working-directory: frontend
+      - name: Build frontend
+        run: npm run build
+        working-directory: frontend

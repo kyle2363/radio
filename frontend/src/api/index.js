@@ -1,42 +1,31 @@
 import { resolveApiUrls } from "./urls.js";
+import { createRequest } from "./request.js";
+import { playbackHeaders, getPlaybackController } from './sessionBridge.js';
+export { setPlaybackController, getPlaybackController } from './sessionBridge.js';
 
 const urls = resolveApiUrls(window.location, {
   apiBaseUrl: import.meta.env.VITE_API_BASE_URL,
   wsUrl: import.meta.env.VITE_WS_URL,
 });
 const BASE = urls.apiBase;
+export const API_BASE_URL = BASE;
 export const WS_URL = urls.wsUrl;
 
-async function request(method, path, body, timeout = 5000, externalSignal) {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeout);
-  const opts = {
-    method,
-    headers: { "Content-Type": "application/json" },
-    signal: externalSignal || controller.signal,
-  };
-  if (body !== undefined) {
-    opts.body = JSON.stringify(body);
-  }
-  try {
-    const res = await fetch(`${BASE}${path}`, opts);
-    clearTimeout(timeoutId);
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      throw new Error(text || `${res.status} ${res.statusText}`);
-    }
-    return res.json();
-  } catch (e) {
-    clearTimeout(timeoutId);
-    if (e.name === "AbortError") {
-      throw new Error(`Request to ${path} timed out after ${timeout}ms`);
-    }
-    throw e;
-  }
-}
+const request = createRequest({ baseUrl: BASE,
+  getHeaders: playbackHeaders,
+  onUnauthorized: () => window.dispatchEvent(new CustomEvent("radio-auth-required")),
+});
 
 const get = (path, signal) => request("GET", path, undefined, undefined, signal);
-export const post = (path, body, timeout, signal) => request("POST", path, body, timeout, signal);
+export const post = (path, body, timeout, signal) => {
+  const controller = getPlaybackController();
+  if (controller && (/^\/api\/play\/\d+$/.test(path) || path === '/api/play/resume')) {
+    // Preserve the click gesture for browser autoplay policy. The actual start
+    // still comes from the server's prepared plan and observed media events.
+    return controller.play(/^\/api\/play\/\d+$/.test(path) ? Number(path.split('/').pop()) : undefined);
+  }
+  return request("POST", path, body, timeout, signal);
+};
 const put = (path, body, signal) => request("PUT", path, body, undefined, signal);
 const del = (path, signal) => request("DELETE", path, undefined, undefined, signal);
 

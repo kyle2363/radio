@@ -32,7 +32,8 @@ _songs_since_last_skip = 0  # adaptive interval tracker
 _announce_lock = threading.Lock()
 
 
-def get_announcement(context: dict, trigger: AnnounceTrigger = AnnounceTrigger.RADIO_INTRO) -> str:
+def get_announcement(context: dict, trigger: AnnounceTrigger = AnnounceTrigger.RADIO_INTRO,
+                     *, advance: bool = True) -> str:
     """Generate a DJ announcement using Ollama.
 
     Args:
@@ -322,8 +323,8 @@ Rules:
         # Remove any quotes or formatting, strip non-ASCII (emojis)
         announcement = announcement.strip('"\'').strip()
         announcement = announcement.encode('ascii', 'ignore').decode('ascii')
-        with _announce_lock:
-            _last_announcement_time = time.time()
+        if advance:
+            mark_announcement_played()
         logger.debug(f"get_announcement: returning text ({len(announcement)} chars)")
         return announcement
     except Exception as e:
@@ -354,7 +355,14 @@ def get_announcement_interval():
     return int(base * multiplier)
 
 
-def should_announce(context: dict) -> bool:
+def mark_announcement_played():
+    """Publish the interval timestamp only when speech actually starts."""
+    global _last_announcement_time
+    with _announce_lock:
+        _last_announcement_time = time.time()
+
+
+def should_announce(context: dict, *, advance: bool = True) -> bool:
     """Determine if an announcement should be played.
 
     Args:
@@ -373,10 +381,11 @@ def should_announce(context: dict) -> bool:
     hour = context.get("hour", datetime.now().hour)
 
     # Track songs since last skip for adaptive interval
-    if skip_streak > 0:
-        _songs_since_last_skip = 0
-    else:
-        _songs_since_last_skip += 1
+    if advance:
+        if skip_streak > 0:
+            _songs_since_last_skip = 0
+        else:
+            _songs_since_last_skip += 1
 
     # Always announce mood changes and skip streaks
     if trigger in (AnnounceTrigger.MOOD_CHANGE, AnnounceTrigger.SKIP_STREAK,
@@ -393,8 +402,9 @@ def should_announce(context: dict) -> bool:
         except Exception:
             frequency = 3
         with _announce_lock:
-            _radio_intro_count = (_radio_intro_count + 1) % frequency
-            count = _radio_intro_count
+            count = (_radio_intro_count + 1) % max(1, frequency)
+            if advance:
+                _radio_intro_count = count
         return count == 0
 
     # Song intro: announce every other song

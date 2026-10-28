@@ -35,9 +35,12 @@ AGENTS.md
 backend/announcer/voices
 docs/*
 !docs/ARCHITECTURE.md
+!docs/SERVER_ACCESS.md
 !docs/BASELINE.md
 !docs/MODERNIZATION_PROGRESS.md
 !docs/TESTING.md
+!docs/APP_USAGE_CHECKLIST.md
+!docs/CODEX_HANDOFF.md
 
 #audio files
 audio_files
@@ -45,3 +48,4 @@ audio_files
 
 out.wav
 .test-runtime/
+docs/CODEX_HANDOFF.md

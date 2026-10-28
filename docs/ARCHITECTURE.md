@@ -113,3 +113,47 @@ The user selected **shared taste/history with independent playback sessions** an
 | HTTP/WebSocket boundary | Authenticated commands/events and recoverable session snapshots |
 
 These are in-process responsibilities, not a requirement for microservices. Preserve legacy API compatibility and default VLC behavior. Transfer must explicitly retire the old playback instance, preserve the selected track/position, and prevent stale completion from advancing either session. Browser feature parity remains unproven until speech, effects, transitions, normalization, controls, sleep timers, and Electron behavior are tested.
+
+## Current modernization checkpoint — October 28, 2026
+
+This checkpoint updates the October 26 static baseline above. It records implemented paths and remaining validation; it is not a claim of full production readiness. See [MODERNIZATION_PROGRESS.md](MODERNIZATION_PROGRESS.md) for the phase log, test checkpoints, and manual QA status.
+
+### Current request and playback path
+
+```mermaid
+flowchart LR
+    React[React UI and session hook] -->|authenticated commands| API[FastAPI playback routes]
+    API --> Sessions[PlaybackSessions]
+    Sessions --> Coordinator[PlaybackCoordinator]
+    Coordinator --> Store[PlaybackStore: revisions, receipts, attempts]
+    Coordinator --> Queue[Session QueueManager reservations]
+    Sessions --> Browser[BrowserAudioEngine]
+    Sessions --> VLC[Lazy VLC adapter]
+    Browser -->|observed playback events| Sessions
+    VLC -->|native observations| Sessions
+    Browser -->|stable IDs, ranges| Media[Authenticated MediaService]
+    VLC --> Media
+    Media --> Library[(SQLite library and generated leases)]
+```
+
+`main.py` now installs authenticated playback and media routers, scopes legacy control requests to the selected desktop session, and serves the built frontend. The normal server binds to loopback by default; access policy is documented in [SERVER_ACCESS.md](SERVER_ACCESS.md). The React app owns a browser playback session, a browser audio engine, an output selector, and controls for session playback. Electron also receives the active session binding through its preload bridge and has a graceful backend shutdown path.
+
+`PlaybackSessions` creates per-listener queues and mutable mood, energy, talk, announcement, and preference contexts. `SessionSettings` overlays recommendation settings such as play mode and filters per session while delegating shared profile settings to the database. Queue reservations are committed after an observed logical start; they are not consumed when a plan is merely prepared. If startup has no available pick, `ensure_available` waits briefly for a queue rebuild and can add one filtered database fallback without recording history or consuming the recommendation.
+
+`PlaybackCoordinator` owns playback revisions, command receipts, attempts, active reservations, output grants, and transfer fences. Browser observations and VLC adapter observations enter the same session service. The service serializes controls and handoff against transport replacement, routes completion/start feedback into the queue, and persists only accepted events. Browser handoff requires a correlated quiesce acknowledgement and position; output replacement retains the logical session and rejects stale observations. Reconnect preserves the logical plan while requiring a current browser grant.
+
+`MediaService` resolves canonical library paths and leased generated media, supports byte-range streaming, and places private media behind authenticated routes. Browser and VLC plans use the same stable track/resource identifiers. `PlaybackStore` installs an additive schema after a verified backup and persists session state, idempotency receipts, attempts, and history events. Migration/backup behavior has been exercised against disposable test databases only; the user's production database has not been migrated.
+
+### Verified and pending validation
+
+- The latest reported complete backend checkpoint before the most recent integration changes was **375 passed, 8 skipped**. A newer complete count is not available yet. The latest reported frontend checkpoint before recent integration changes was **58 passed**; the count has not been refreshed.
+- The isolated launcher serves the real app on loopback with three generated silent WAVs and a disposable database. Recommendation/model generation is deterministic and mocked, TTS/process management are disabled, writes are guarded to a random `.test-runtime/qa-*` workspace, and outbound sockets are blocked. It does not use the original music or metadata.
+- A browser QA pass on port `18765` exposed a lyrics rendering crash. The crash fix is in place; the isolated browser pass needs to be repeated before calling that flow verified. See [APP_USAGE_CHECKLIST.md](APP_USAGE_CHECKLIST.md).
+- Real-library history updates were explicitly permitted for manual checks on October 28, 2026. Automated tests and the isolated launcher remain synthetic and do not write to the production history.
+- Browser controls, authenticated routes, output transfer, native callback translation, and generated-media range handling have targeted automated coverage. The current CI contract workflow runs the lean backend contract suite and frontend tests/build; it does not run the entire backend suite, VLC, Electron, TTS/GPU, or live app.
+
+Live model recommendation/quality, generated DJ and guest speech, audible VLC/EQ/DJ effects, LAN/reverse-proxy deployment, Electron tray/media-key behavior, and operating-system sleep/lock integration remain separate manual checks. The isolated VLC output uses dummy audio and cannot establish sound quality. Do not infer these checks from synthetic tests.
+
+### Instance boundary
+
+Configure each runtime with its own `RADIO_DATA_DIR`, `RADIO_MUSIC_DIR`, and `RADIO_METADATA_DIR`. TTS and managed process startup can be disabled with `RADIO_TTS_ENABLED` and `RADIO_PROC_MGR_ENABLED`. Playback coordinator, output admission, and queue locks are process-local: run one API worker for a given instance. Store private backups inside that instance's data directory and keep them out of source control.

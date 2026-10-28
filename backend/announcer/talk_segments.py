@@ -1183,9 +1183,10 @@ def get_next_talk_segment(
         # Set active takeover (under lock, fast)
         with _talk_lock:
             try:
-                from db import database
-                songs_per_set = database.get_setting_int("talk_guest_songs_per_set", 4)
-            except Exception:
+                songs_per_set = int(settings.get("talk_guest_songs_per_set", 4))
+                if not 1 <= songs_per_set <= 100:
+                    songs_per_set = 4
+            except (TypeError, ValueError, OverflowError):
                 songs_per_set = 4
             _current_guest_takeover = {
                 "persona_id": guest.id,

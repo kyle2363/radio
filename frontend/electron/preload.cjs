@@ -3,6 +3,7 @@ const { contextBridge, ipcRenderer } = require("electron");
 contextBridge.exposeInMainWorld("electron", {
   platform: process.platform,
   versions: process.versions,
+  setPlaybackSession: (binding) => ipcRenderer.invoke('set-playback-session', binding),
 
   // Window controls
   toggleMiniPlayer: () => ipcRenderer.invoke("toggle-mini-player"),

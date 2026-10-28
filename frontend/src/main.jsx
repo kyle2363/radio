@@ -3,9 +3,11 @@ import ReactDOM from "react-dom/client";
 import App from "./App";
 import ErrorBoundary from "./components/ErrorBoundary";
 import BootScreen from "./components/BootScreen";
+import AuthenticationGate from "./components/AuthenticationGate";
+import { API_BASE_URL } from "./api/index.js";
 import "./styles/global.css";
 
-const HEALTH_URL = "/api/health";
+const HEALTH_URL = `${API_BASE_URL}/api/health`;
 const POLL_INTERVAL = 500;
 const TIMEOUT_MS = 30000;
 const FADE_DELAY_MS = 1000;
@@ -31,7 +33,7 @@ function AppWithBoot() {
 
     const poll = () => {
       if (!shouldPoll.current) return;
-      fetch(HEALTH_URL, { signal: AbortSignal.timeout(3000) })
+      fetch(HEALTH_URL, { signal: AbortSignal.timeout(3000), credentials: 'include' })
         .then((r) => {
           if (r.ok) {
             setReady(true);
@@ -102,4 +104,4 @@ function AppWithBoot() {
   );
 }
 
-ReactDOM.createRoot(document.getElementById("root")).render(<AppWithBoot />);
+ReactDOM.createRoot(document.getElementById("root")).render(<AuthenticationGate><AppWithBoot /></AuthenticationGate>);

@@ -86,6 +86,18 @@ def test_duplicate_completion_records_and_dispatches_once(playback):
     assert callbacks == [17]
 
 
+def test_native_speech_volume_is_session_scoped_and_restores_base(playback, monkeypatch):
+    p, *_ = playback
+    monkeypatch.setattr(p, '_apply_effective_volume', lambda: None)
+    p._talk_playing = True
+    p.set_talk_volume(50)
+    assert p._base_volume == 35 and p._pre_talk_volume == 70
+    p.set_talk_volume(200)
+    assert p._base_volume == 100 and p._pre_talk_volume == 70
+    p.set_talk_volume(100)
+    assert p._base_volume == 70 and p._pre_talk_volume is None
+
+
 def test_stop_discards_already_deferred_completion_callback(playback):
     p, events, callbacks, pending = playback
     p._on_media_end_reached(None, None)
@@ -319,3 +331,81 @@ def test_new_native_emitter_is_ready_before_play_and_late_old_event_is_ignored(p
     assert p._current_song_id == 99
     assert events == []
     old_native.stop.assert_called_once()
+
+
+def test_observed_items_require_native_playing_and_deduplicate_start_end(playback):
+    p, events, callbacks, pending = playback
+    observed = []
+    p._observation_instance = "instance-1"
+    p._observation_items = [{"public_item_id": "speech", "is_tts": True, "_media_pointer": 101},
+                            {"public_item_id": "song", "song_id": 17, "_media_pointer": 102}]
+    p.on_observation(observed.append)
+    p._on_native_observation({"kind": "next", "media_pointer": 101}, 1)
+    assert observed == []
+    for kind, pointer in [("playing", 101), ("playing", 101), ("completed", 101),
+                          ("completed", 101), ("next", 102), ("playing", 102),
+                          ("paused", 102), ("playing", 102), ("playing", 102),
+                          ("completed", 102), ("completed", 102)]:
+        p._on_native_observation({"kind": kind, "media_pointer": pointer}, 1)
+    assert [(e["item_id"], e["kind"]) for e in observed] == [
+        ("speech", "started"), ("speech", "completed"), ("song", "started"),
+        ("song", "paused"), ("song", "resumed"), ("song", "completed")]
+    assert events == callbacks == pending == []
+
+
+def test_observation_callback_outside_player_lock_and_stale_origin_rejected(playback):
+    p, _, _, _ = playback
+    p._observation_instance = "instance-1"
+    p._observation_items = [{"public_item_id": "song", "_media_pointer": 101}]
+    observed = []
+    def callback(event):
+        assert p._lock.acquire(blocking=False)
+        p._lock.release()
+        observed.append(event)
+    p.on_observation(callback)
+    p._on_native_observation({"kind": "playing", "media_pointer": 101}, 0)
+    assert observed == []
+    p._on_native_observation({"kind": "playing", "media_pointer": 101}, 1)
+    assert len(observed) == 1
+
+
+def test_observation_unsubscribe_releases_callback_and_is_idempotent(playback):
+    p, _, _, _ = playback
+    callback = lambda event: None
+    unsubscribe = p.on_observation(callback)
+    assert p._observation_callbacks == [callback]
+    unsubscribe()
+    unsubscribe()
+    assert p._observation_callbacks == []
+
+
+def test_observation_unsubscribe_does_not_retain_subscriber(playback):
+    import gc
+    import weakref
+    p, _, _, _ = playback
+    class Subscriber:
+        def __call__(self, event):
+            pass
+    callback = Subscriber()
+    reference = weakref.ref(callback)
+    unsubscribe = p.on_observation(callback)
+    del callback
+    assert reference() is not None
+    unsubscribe()
+    gc.collect()
+    assert reference() is None
+
+
+def test_closed_session_output_is_not_retained_by_shared_player(playback):
+    import gc
+    import weakref
+    from engine.vlc_session_output import VlcSessionOutput
+    p, _, _, _ = playback
+    output = VlcSessionOutput(p, lambda item: "generated.wav", lambda event: None)
+    reference = weakref.ref(output)
+    assert len(p._observation_callbacks) == 1
+    output.close()
+    del output
+    gc.collect()
+    assert reference() is None
+    assert p._observation_callbacks == []

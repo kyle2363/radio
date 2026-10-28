@@ -118,3 +118,34 @@ def test_registration_failure_releases_partial_native_resources():
                      dict.fromkeys(("next", "ended", "stopped", "media_end"), Mock()), Mock())
     native.release.assert_called_once()
     mp.release.assert_called_once()
+
+
+def test_observed_native_callbacks_copy_item_identity_without_native_queries():
+    from engine.vlc_transport import VLCTransport
+    instance, native, mp, media = transport_parts()
+    queued, snapshots = [], []
+    registrations = {}
+    native.event_manager.return_value.event_attach.side_effect = lambda event, cb: registrations.update({event: cb})
+    mp.event_manager.return_value.event_attach.side_effect = lambda event, cb: registrations.update({event: cb})
+    events = SimpleNamespace(MediaListPlayerNextItemSet=1, MediaPlayerEndReached=2,
+                             MediaListPlayerStopped=3, MediaPlayerMediaChanged=4,
+                             MediaPlayerPlaying=5, MediaPlayerPaused=6, MediaPlayerEncounteredError=7)
+    handlers = dict.fromkeys(("next", "ended", "stopped", "media_end"), Mock())
+    handlers["observed"] = lambda snapshot, _, generation: snapshots.append((snapshot, generation))
+    transport = VLCTransport(instance, events, 41, handlers, lambda *args: queued.append(args))
+    native.reset_mock()
+    mp.reset_mock()
+    registrations[4](SimpleNamespace(u=SimpleNamespace(media=101)))
+    registrations[5](object())
+    registrations[2](object())
+    registrations[4](SimpleNamespace(u=SimpleNamespace(media=102)))
+    registrations[5](object())
+    assert native.mock_calls == mp.mock_calls == []
+    for handler, generation in queued:
+        handler(None, generation)
+    assert snapshots == [({"kind": "media_changed", "media_pointer": 101}, 41),
+                         ({"kind": "playing", "media_pointer": 101}, 41),
+                         ({"kind": "completed", "media_pointer": 101}, 41),
+                         ({"kind": "media_changed", "media_pointer": 102}, 41),
+                         ({"kind": "playing", "media_pointer": 102}, 41)]
+    transport.retire()
