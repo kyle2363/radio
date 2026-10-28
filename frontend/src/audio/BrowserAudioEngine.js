@@ -11,6 +11,7 @@ export class BrowserAudioEngine {
     audioContextFactory = undefined, postEvent, postPosition = async () => {},
     onState = () => {}, onError = () => {}, onPlanComplete = () => {},
     onQuiesceAck = async () => {}, now = () => Date.now(),
+    monotonicNow = () => globalThis.performance?.now?.() ?? Date.now(), requireLease = false, leaseSafetyMarginMs = 250,
   } = {}) {
     if (!clientId || typeof postEvent !== 'function') throw Error('Browser audio requires a client and event transport');
     const base = new URL(apiBase || globalThis.location?.origin || 'http://localhost:8765');
@@ -24,7 +25,8 @@ export class BrowserAudioEngine {
       const AudioContext = globalThis.AudioContext || globalThis.webkitAudioContext;
       return AudioContext ? new AudioContext() : null;
     }) : audioContextFactory;
-    Object.assign(this, { postEvent, postPosition, onState, onError, onPlanComplete, onQuiesceAck, now });
+    Object.assign(this, { postEvent, postPosition, onState, onError, onPlanComplete, onQuiesceAck, now,
+      monotonicNow, requireLease, leaseSafetyMarginMs });
     this.snapshot = null;
     this.context = {};
     this.revision = -1;
@@ -40,6 +42,15 @@ export class BrowserAudioEngine {
     this.positionSequence = 0;
     this.lastPositionAt = -Infinity;
     this.eventTail = Promise.resolve();
+    this.pendingEvents = [];
+    this.flushingEvents = false;
+    this.eventTransportBlocked = false;
+    this.terminalEventFailure = false;
+    this.positionInFlight = false;
+    this.pendingPosition = null;
+    this.leaseDeadline = null;
+    this.leaseInstanceId = null;
+    this.leaseTimer = null;
     this.controls = new Set();
     this.completedInstances = new Set();
     this.completion = null;
@@ -81,6 +92,8 @@ export class BrowserAudioEngine {
       this.positionSequence = 0;
       this.lastPositionAt = -Infinity;
       this.controls.clear();
+      this.terminalEventFailure = false;
+      if (this.leaseInstanceId !== incoming.instance_id) this._clearLease();
       this.contextRevision = contextRevision;
     }
     if (contextRevision < 0 || contextRevision >= this.contextRevision || changedInstance) {
@@ -90,7 +103,15 @@ export class BrowserAudioEngine {
 
     if (!granted || INACTIVE_STATUSES.has(incoming.status) || !incoming.instance_id) {
       this._retireAll();
+      this._clearLease();
       this._setState({ status: granted ? incoming.status : 'idle', recoverable: false });
+      return true;
+    }
+
+    if (this.requireLease && !this._leaseCurrent()) {
+      if (this.active?.instanceId === incoming.instance_id) this._silence(this.active);
+      else this._retireAll();
+      this._setState({ status: 'interrupted', recoverable: true, reason: 'lease_pending' });
       return true;
     }
 
@@ -178,6 +199,68 @@ export class BrowserAudioEngine {
     }
   }
 
+  _leaseCurrent() {
+    if (!this.requireLease) return true;
+    if (this.leaseDeadline == null || this.leaseInstanceId !== this.snapshot?.instance_id ||
+        this.monotonicNow() >= this.leaseDeadline) {
+      this._expireLease();
+      return false;
+    }
+    return true;
+  }
+
+  grantLease(lease, requestStartedAt = this.monotonicNow(), expectedInstanceId = null) {
+    if (!lease || lease.client_id !== this.clientId || !lease.instance_id ||
+        (expectedInstanceId && lease.instance_id !== expectedInstanceId) ||
+        (!expectedInstanceId && this.snapshot?.instance_id && lease.instance_id !== this.snapshot.instance_id)) return false;
+    const remaining = Number(lease.lease_remaining_ms);
+    if (!Number.isFinite(remaining) || remaining <= this.leaseSafetyMarginMs) return false;
+    const deadline = Number(requestStartedAt) + remaining - this.leaseSafetyMarginMs;
+    if (!Number.isFinite(deadline) || deadline <= this.monotonicNow()) return false;
+    clearTimeout(this.leaseTimer);
+    this.leaseInstanceId = lease.instance_id;
+    this.leaseDeadline = deadline;
+    this.leaseTimer = setTimeout(() => this._expireLease(), Math.max(0, deadline - this.monotonicNow()));
+    this.leaseTimer.unref?.();
+    if (this.active && this.active.instanceId !== lease.instance_id) this._silence(this.active);
+    if (this.active?.instanceId === lease.instance_id) this._applyAudioSettings();
+    this._scheduleLeaseGate();
+    if (this.snapshot?.instance_id === lease.instance_id) this.loadSnapshot(this.snapshot);
+    return true;
+  }
+
+  _scheduleLeaseGate() {
+    const record = this.active;
+    if (!record?.gain || this.leaseDeadline == null || this.leaseInstanceId !== record.instanceId) return;
+    const parameter = record.gain.gain;
+    const context = this.audioContext;
+    if (typeof parameter.setValueAtTime !== 'function' || !Number.isFinite(context?.currentTime)) return;
+    const now = context.currentTime;
+    try {
+      parameter.cancelScheduledValues?.(now);
+      parameter.setValueAtTime(parameter.value, now);
+      const seconds = Math.max(0, this.leaseDeadline - this.monotonicNow()) / 1000;
+      parameter.setValueAtTime(0, now + seconds);
+    } catch { /* the lease timer remains the fallback when audio scheduling is unavailable */ }
+  }
+
+  _expireLease() {
+    if (!this.requireLease || this.leaseDeadline == null || this.monotonicNow() < this.leaseDeadline) return;
+    clearTimeout(this.leaseTimer);
+    this.leaseTimer = null;
+    this.leaseDeadline = null;
+    if (!this.active || this.active.instanceId !== this.leaseInstanceId) return;
+    this._silence(this.active);
+    this._setState({ status: 'interrupted', recoverable: true, reason: 'lease_expired' });
+  }
+
+  _clearLease() {
+    clearTimeout(this.leaseTimer);
+    this.leaseTimer = null;
+    this.leaseDeadline = null;
+    this.leaseInstanceId = null;
+  }
+
   _current(record) {
     return !this.disposed && !record.retired && record === this.active && record.generation === this.generation &&
       record.instanceId === this.snapshot?.instance_id && this.snapshot?.mode === 'browser' && this.snapshot.output_client_id === this.clientId;
@@ -185,7 +268,7 @@ export class BrowserAudioEngine {
 
   _attach(record) {
     const listen = (name, callback) => {
-      const guarded = () => { if (this._current(record)) callback(); };
+      const guarded = () => { if (this._current(record) && this._leaseCurrent()) callback(); };
       record.audio.addEventListener(name, guarded);
       record.listeners.push([name, guarded]);
     };
@@ -193,6 +276,7 @@ export class BrowserAudioEngine {
       if (record.pendingSeek != null) this._seek(record.pendingSeek);
     });
     listen('playing', () => {
+      if (!this._leaseCurrent()) return;
       if (record.audio.paused || record.playing || record.completed || record.failed) return;
       const kind = record.started ? 'resumed' : 'started';
       record.started = true;
@@ -229,25 +313,72 @@ export class BrowserAudioEngine {
   }
 
   _sendEvent(record, event, { completion = false } = {}) {
-    const pending = this.eventTail.catch(() => {}).then(async () => {
-      if (!this._current(record)) return null;
+    if (this.terminalEventFailure || !this._current(record)) return Promise.resolve(null);
+    let entry = this.pendingEvents.find(item => item.event.event_id === event.event_id);
+    if (!entry) {
+      let resolve;
+      const promise = new Promise(done => { resolve = done; });
+      entry = { record, event, completion, resolve, promise };
+      this.pendingEvents.push(entry);
+    }
+    this.flushPendingEvents(false);
+    return entry.promise;
+  }
+
+  _terminalControlError(error) {
+    const status = Number(error?.status ?? error?.statusCode ?? error?.response?.status);
+    return Number.isFinite(status) && status >= 400 && status < 500;
+  }
+
+  async flushPendingEvents(force = true) {
+    if (this.eventTransportBlocked && !force) return false;
+    if (this.flushingEvents) return this.eventTail;
+    this.eventTransportBlocked = false;
+    this.flushingEvents = true;
+    const flush = (async () => {
       try {
-        const response = await this.postEvent(event);
-        if (!this._current(record)) return null;
-        if (!response || (!response.accepted && !response.duplicate)) throw Error('Playback event was not accepted');
-        if (this.pendingFailure?.event.event_id === event.event_id) this.pendingFailure = null;
-        if (response.session && !completion) this.loadSnapshot(response.session);
-        return response;
-      } catch {
-        if (this._current(record)) {
-          this.pendingFailure = { record, event, completion };
-          this._interrupt(record, 'connection', 'Playback paused while reconnecting to the station.');
+        while (this.pendingEvents.length && !this.disposed && !this.terminalEventFailure) {
+          const entry = this.pendingEvents[0];
+          if (!this._current(entry.record)) {
+            this.pendingEvents.shift();
+            entry.resolve(null);
+            continue;
+          }
+          try {
+            const response = await this.postEvent(entry.event);
+            if (!this._current(entry.record)) continue;
+            if (!response || (!response.accepted && !response.duplicate)) {
+              const conflict = Error('Playback event was not accepted');
+              conflict.status = 409;
+              throw conflict;
+            }
+            this.pendingEvents.shift();
+            if (this.pendingFailure?.event.event_id === entry.event.event_id) this.pendingFailure = null;
+            if (response.session && !entry.completion) this.loadSnapshot(response.session);
+            entry.resolve(response);
+          } catch (error) {
+            if (!this._current(entry.record)) continue;
+            if (this._terminalControlError(error)) {
+              this.terminalEventFailure = true;
+              this.pendingFailure = { record: entry.record, event: entry.event, completion: entry.completion };
+              this._interrupt(entry.record, 'control_rejected', 'Playback control was rejected by the station.');
+              for (const queued of this.pendingEvents.splice(0)) queued.resolve(null);
+            } else if (entry.completion) {
+              this.pendingFailure = { record: entry.record, event: entry.event, completion: true };
+            }
+            // Network errors and server errors remain queued with the same IDs.
+            // Buffered audio and local pause/seek controls continue working.
+            this.eventTransportBlocked = true;
+            break;
+          }
         }
-        return null;
+        return !this.pendingEvents.length;
+      } finally {
+        this.flushingEvents = false;
       }
-    });
-    this.eventTail = pending;
-    return pending;
+    })();
+    this.eventTail = flush;
+    return flush;
   }
 
   async _complete(completion) {
@@ -288,28 +419,73 @@ export class BrowserAudioEngine {
   }
 
   _position(record) {
+    if (!this._leaseCurrent()) return;
     this._setState({ position_ms: this._positionMs(record) });
     if (this.now() - this.lastPositionAt < 1000 || record.completed || record.failed) return;
     this.lastPositionAt = this.now();
     const payload = { instance_id: record.instanceId, item_id: record.item.item_id, client_id: this.clientId,
       position_ms: this._positionMs(record), sequence: ++this.positionSequence };
-    Promise.resolve().then(() => this._current(record) ? this.postPosition(payload) : null).catch(() => {
-      if (this._current(record)) this._interrupt(record, 'connection', 'Playback paused while reconnecting to the station.');
-    });
+    this.pendingPosition = payload;
+    if (this.positionInFlight) return;
+    this.positionInFlight = true;
+    const send = async () => {
+      try {
+        while (this.pendingPosition && this._current(record)) {
+          const next = this.pendingPosition;
+          this.pendingPosition = null;
+          try { await this.postPosition(next); }
+          catch (error) {
+            if (this._current(record) && this._terminalControlError(error)) {
+              this._interrupt(record, 'control_rejected', 'Playback progress was rejected by the station.');
+            }
+            // Position is advisory: discard a failed checkpoint and let a
+            // later timeupdate send a newer value instead of stalling audio.
+            this.pendingPosition = null;
+            break;
+          }
+        }
+      } finally { this.positionInFlight = false; }
+    };
+    send();
   }
 
   async activate() { return this.play(); }
 
+  seek(positionMs) {
+    if (!this.active || !this._current(this.active) || !this._leaseCurrent()) return false;
+    this._seek(positionMs);
+    return true;
+  }
+
+  setVolume(volume) {
+    if (!this.active || !this._current(this.active) || !this._leaseCurrent()) return false;
+    this.context = { ...this.context, volume };
+    this._applyAudioSettings();
+    return true;
+  }
+
+  setEQ(eq, eq_bands) {
+    if (!this.active || !this._current(this.active) || !this._leaseCurrent()) return false;
+    this.context = { ...this.context, eq, eq_bands };
+    this._applyAudioSettings();
+    return true;
+  }
+
   async play() {
     const record = this.active;
-    if (!record || !this._current(record)) return false;
+    if (!record || !this._current(record) || !this._leaseCurrent()) return false;
+    if (this.pendingEvents.length) {
+      if (this.pendingFailure?.record === record && this.pendingFailure.completion) await this.flushPendingEvents();
+      else this.flushPendingEvents();
+    }
     if (this.pendingFailure?.record === record) {
       const pending = this.pendingFailure;
       if (pending.completion) {
-        await this._complete(this.completion);
+        await this.flushPendingEvents();
         return !this.pendingFailure;
       }
-      if (!await this._sendEvent(record, pending.event)) return false;
+      await this.flushPendingEvents();
+      if (this.pendingFailure) return false;
     }
     if (!this._current(record) || record.completed || record.failed) return false;
     const attempt = ++record.playAttempt;
@@ -333,7 +509,7 @@ export class BrowserAudioEngine {
 
   pause() {
     const record = this.active;
-    if (!record || !this._current(record)) return false;
+    if (!record || !this._current(record) || !this._leaseCurrent()) return false;
     const shouldReport = record.playing && !record.completed;
     this._silence(record);
     this._setState({ status: 'paused', recoverable: false });
@@ -382,7 +558,7 @@ export class BrowserAudioEngine {
     const unavoidable = command.action === 'quiesce' || command.action === 'stop';
     const instanceId = this.snapshot?.instance_id;
     if (instanceId ? command.instance_id !== instanceId : !unavoidable) return false;
-    const record = this.active && this._current(this.active) ? this.active : null;
+    const record = this.active && this._current(this.active) && this._leaseCurrent() ? this.active : null;
     if (!record && !unavoidable) return false;
     this.controls.add(command.id);
     switch (command.action) {
@@ -472,6 +648,9 @@ export class BrowserAudioEngine {
       record.gain.gain.value = gain;
       record.filters.forEach((filter, i) => { filter.frequency.value = frequencies[i]; filter.gain.value = bands[i]; });
     } else record.audio.volume = gain;
+    // Each promoted media element owns a fresh gain node. Preserve the lease
+    // deadline on that node, including when the permit arrived before decode.
+    this._scheduleLeaseGate();
     this.eqApplied = recognized && (webAudio || bands.every((gain) => gain === 0));
     this._setState({ capabilities: { webAudio, eq: webAudio }, eqApplied: this.eqApplied });
   }
@@ -503,11 +682,15 @@ export class BrowserAudioEngine {
     this.completion = null;
     this.deferredSnapshot = null;
     this.pendingFailure = null;
+    this.eventTransportBlocked = false;
+    for (const entry of this.pendingEvents.splice(0)) entry.resolve(null);
+    this.pendingPosition = null;
   }
 
   dispose() {
     if (this.disposed) return;
     this._retireAll();
+    this._clearLease();
     this.disposed = true;
     this.controls.clear();
     this.completedInstances.clear();

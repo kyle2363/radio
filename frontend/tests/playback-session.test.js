@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { PlaybackSessionController, createPlaybackApi } from '../src/api/playback.js';
 
 function setup({ electron = false, saved = null, clientId = 'page', connectTimeout = 8000,
-  handoffTimeout = 20000, socketFactory = null } = {}) {
+  handoffTimeout = 20000, handoffRetryDelay = 1000, socketFactory = null } = {}) {
   const calls = [], storage = new Map(saved ? [['radio.playback.session', JSON.stringify(saved)]] : []);
   const api = { request: async (method, path, body, owner) => {
     calls.push({ method, path, body, owner });
@@ -12,12 +12,70 @@ function setup({ electron = false, saved = null, clientId = 'page', connectTimeo
   }};
   const engine = { loadSnapshot: () => {}, dispose: () => {}, activate: async () => true, applyControl: async () => true };
   const sockets = [];
-  const controller = new PlaybackSessionController({ api, clientId, electron, connectTimeout, handoffTimeout,
+  const controller = new PlaybackSessionController({ api, clientId, electron, connectTimeout, handoffTimeout, handoffRetryDelay,
     engineFactory: options => { engine.options = options; return engine; },
     storage: { getItem: key => storage.get(key), setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) },
     socketFactory: socketFactory || (() => { const socket = { send: data => sockets.push(JSON.parse(data)), close() {} }; return socket; }), reconnectDelay: 0 });
   return { controller, calls, engine, sockets, storage };
 }
+
+test('playback requests time out without disguising timeouts as terminal authorization errors', async () => {
+  const api = createPlaybackApi({ timeoutMs: 5, fetchImpl: async (_url, { signal }) =>
+    new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true })) });
+  await assert.rejects(api.request('POST', '/s/lease'), error => error.name === 'TimeoutError' && !error.status);
+});
+
+test('playback request preserves caller cancellation', async () => {
+  const caller = new AbortController();
+  const reason = new Error('caller cancelled');
+  const api = createPlaybackApi({ timeoutMs: 1000, fetchImpl: async (_url, { signal }) => {
+    const pending = new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }));
+    caller.abort(reason);
+    return pending;
+  } });
+  await assert.rejects(api.request('GET', '/s', undefined, 'owner', caller.signal), error => error === reason);
+});
+
+test('local pause and seek do not wait for a lease request during transport loss', async () => {
+  const { controller, engine } = setup();
+  await controller.start();
+  controller.state.session = { id: 's', mode: 'browser', instance_id: 'i', output_client_id: 'page' };
+  const applied = [];
+  engine.pause = () => applied.push('pause');
+  engine.seek = () => applied.push('seek');
+  controller.ensureLease = () => { throw new Error('unexpected network dependency'); };
+  try {
+    await controller.localControl('pause');
+    await controller.localControl('seek', { position_ms: 1000 });
+    assert.deepEqual(applied, ['pause', 'seek']);
+  } finally { controller.dispose(); }
+});
+
+test('new instance obtains its own permit when an old instance renewal is pending', async () => {
+  const { controller, engine } = setup();
+  await controller.start();
+  const old = { id: 's', mode: 'browser', instance_id: 'old', output_client_id: 'page' };
+  const next = { ...old, instance_id: 'next' };
+  controller.state.session = old;
+  const requested = [], granted = [];
+  let finishOld;
+  controller.api.request = async (_method, _path, body) => {
+    requested.push(body.instance_id);
+    if (body.instance_id === 'old') await new Promise(resolve => { finishOld = resolve; });
+    return { instance_id: body.instance_id, client_id: 'page', lease_remaining_ms: 12000 };
+  };
+  engine.grantLease = lease => { granted.push(lease.instance_id); return true; };
+  try {
+    const first = controller.ensureLease(old, true);
+    controller.state.session = next;
+    const second = controller.ensureLease(next);
+    finishOld();
+    await Promise.all([first, second]);
+    assert.deepEqual(requested, ['old', 'next']);
+    assert.deepEqual(granted, ['next']);
+    assert.equal(controller.leaseInstanceId, 'next');
+  } finally { controller.dispose(); }
+});
 
 test('browser creates its own idle session; capability only in storage/hello', async () => {
   const { controller, calls, sockets, storage } = setup();
@@ -75,9 +133,14 @@ test('transport sends owner header and cookie credentials without URL secrets', 
 test('legacy controls stay scoped and plan completion only refreshes', async () => {
   const { controller, calls, engine } = setup();
   await controller.start();
+  let sought;
+  engine.seek = position => { sought = position; };
   await controller.routeLegacy('/api/play/seek', { method: 'POST', body: { ms: 120 } });
-  assert.equal(calls.at(-1).path, '/s/seek');
-  assert.deepEqual(calls.at(-1).body, { position_ms: 120 });
+  assert.equal(sought, 120);
+  assert.notEqual(calls.at(-1).path, '/s/seek');
+  await controller.routeLegacy('/api/queue/replay');
+  assert.equal(calls.at(-1).path, '/s/replay');
+  assert.ok(calls.at(-1).body.command_id);
   await engine.options.onPlanComplete();
   assert.equal(calls.at(-1).path, '/s');
   assert.equal(calls.at(-1).method, 'GET');
@@ -85,7 +148,57 @@ test('legacy controls stay scoped and plan completion only refreshes', async () 
   controller.dispose();
 });
 
-test('socket loss silences immediately and snapshot refresh cannot restart audio', async () => {
+test('browser controls acquire a producer lease and apply pause, seek, and volume locally', async () => {
+  const { controller, calls, engine } = setup({ saved: { session_id: 's', owner_key: 'secret' } });
+  const order = [];
+  engine.grantLease = (_lease, startedAt) => order.push(['lease', startedAt]);
+  engine.loadSnapshot = () => order.push(['load']);
+  engine.pause = () => order.push(['pause']);
+  engine.play = async () => order.push(['resume']);
+  engine.activate = async () => order.push(['activate']);
+  engine.seek = position => order.push(['seek', position]);
+  engine.setVolume = volume => order.push(['volume', volume]);
+  controller.api.request = async (method, path, body, owner) => {
+    calls.push({ method, path, body, owner });
+    if (path.endsWith('/lease')) return { instance_id: 'instance', client_id: 'page', lease_remaining_ms: 12000 };
+    return live({ instance_id: 'instance' });
+  };
+  await controller.start();
+  await controller.activate();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.deepEqual(order.slice(0, 2).map(entry => entry[0]), ['lease', 'load']);
+  assert.equal(calls.some(call => call.path === '/s/lease'), true);
+  await controller.routeLegacy('/api/play/pause');
+  await controller.routeLegacy('/api/play/seek', { method: 'POST', body: { ms: 400 } });
+  await controller.routeLegacy('/api/play/volume', { method: 'POST', body: { volume: 33 } });
+  assert.ok(order.some(entry => entry[0] === 'pause'));
+  assert.ok(order.some(entry => entry[0] === 'seek' && entry[1] === 400));
+  assert.ok(order.some(entry => entry[0] === 'volume' && entry[1] === 33));
+  controller.dispose();
+});
+
+test('Play on an idle browser session reserves the next plan and preserves the click gesture', async () => {
+  const { controller, calls, engine } = setup();
+  await controller.start();
+  controller.state.session = { id: 's', revision: 0, mode: 'browser', status: 'idle',
+    output_client_id: 'page', active_index: 0, items: [] };
+  let localPlayCalls = 0;
+  engine.play = async () => { localPlayCalls++; };
+  controller.api.request = async (method, path, body, owner) => {
+    calls.push({ method, path, body, owner });
+    return { id: 's', revision: 1, mode: 'browser', status: 'playing', output_client_id: 'page',
+      active_index: 0, items: [{ item_id: 'new-item', terminal: false }] };
+  };
+
+  await controller.routeLegacy('/api/play/resume');
+
+  assert.equal(calls.at(-1).path, '/s/next');
+  assert.equal(controller.gesture, true);
+  assert.equal(localPlayCalls, 0);
+  controller.dispose();
+});
+
+test('control socket loss preserves the active buffered media element', async () => {
   const { controller, engine } = setup();
   await controller.start();
   const snapshots = [];
@@ -93,12 +206,11 @@ test('socket loss silences immediately and snapshot refresh cannot restart audio
   const playing = { id: 's', revision: 1, status: 'playing', mode: 'browser', output_client_id: 'page', items: [{ item_id: 'one', terminal: false }] };
   controller.gesture = true;
   controller.accept(playing);
-  controller.socket.onclose();
-  assert.equal(snapshots.at(-1).output_client_id, null);
   const count = snapshots.length;
-  controller.accept({ ...playing, revision: 2 });
+  controller.socket.onclose();
   assert.equal(snapshots.length, count);
-  assert.equal(controller.getState().needsReconnect, true);
+  assert.equal(controller.getState().needsReconnect, false);
+  assert.equal(controller.getState().connected, false);
   controller.dispose();
 });
 
@@ -171,13 +283,13 @@ test('network media failure locally silences then rechecks authenticated snapsho
   controller.dispose();
 });
 
-test('offline silences browser while desktop controller loss never takes over output', async () => {
+test('offline preserves browser output while desktop controller loss never takes over output', async () => {
   const browser = setup();
   await browser.controller.start();
   browser.controller.gesture = true;
   browser.controller.offline();
-  assert.equal(browser.controller.gesture, false);
-  assert.equal(browser.controller.getState().needsReconnect, true);
+  assert.equal(browser.controller.gesture, true);
+  assert.equal(browser.controller.getState().needsReconnect, false);
   await Promise.resolve();
   browser.controller.dispose();
   const desktop = setup({ electron: true });
@@ -203,18 +315,32 @@ test('disposed desktop claim does not close the shared native listening session'
 const live = (changes = {}) => ({ id: 's', revision: 3, mode: 'browser', status: 'playing',
   output_client_id: 'page', active_index: 0, items: [{ item_id: 'one', terminal: false }], position_ms: 900, ...changes });
 
-test('a reloaded page resumes with its stored grant instead of a foreign identity', async () => {
+test('restored storage never reuses a copied producer identity', async () => {
   const { controller, calls, engine } = setup({ saved: { session_id: 's', owner_key: 'secret', client_id: 'page' }, clientId: null });
   controller.api.request = async (method, path, body, owner) => {
     calls.push({ method, path, body, owner });
     return live();
   };
   await controller.start();
-  assert.equal(controller.clientId, 'page');
-  assert.equal(engine.options.clientId, 'page');
-  assert.equal(controller.getState().needsReconnect, false);
+  assert.notEqual(controller.clientId, 'page');
+  assert.equal(engine.options.clientId, controller.clientId);
+  assert.equal(controller.getState().needsReconnect, true);
   assert.equal(calls.filter(call => call.path === '').length, 0);
   controller.dispose();
+});
+
+test('a copied session capability cannot make duplicated document modules share producer ID', async () => {
+  const saved = { session_id: 's', owner_key: 'secret', client_id: 'copied' };
+  const first = setup({ saved, clientId: null });
+  const { PlaybackSessionController: DuplicateController } = await import('../src/api/playback.js?duplicate-tab');
+  const second = new DuplicateController({ clientId: null, api: { request: async () => ({}) }, storage: {
+    getItem: () => JSON.stringify(saved), setItem() {}, removeItem() {},
+  }, engineFactory: () => ({ loadSnapshot() {}, dispose() {} }), reconnectDelay: 0 });
+  assert.notEqual(first.controller.clientId, 'copied');
+  assert.notEqual(second.clientId, 'copied');
+  assert.notEqual(first.controller.clientId, second.clientId);
+  first.controller.dispose();
+  second.dispose();
 });
 
 test('the audio engine always receives the page identity the station granted', () => {
@@ -258,9 +384,9 @@ test('a live grant owned by this page reactivates locally without a handoff', as
   controller.dispose();
 });
 
-test('a reconnected control socket resumes the granted page without a button', async () => {
+test('a reconnected control socket reconciles without restarting buffered audio', async () => {
   const { controller, engine } = setup({ saved: { session_id: 's', owner_key: 'secret' } });
-  controller.api.request = async () => live();
+  controller.api.request = async () => live({ revision: 5 });
   await controller.start();
   let loads = 0, activated = 0;
   engine.loadSnapshot = () => { loads++; };
@@ -268,7 +394,7 @@ test('a reconnected control socket resumes the granted page without a button', a
   controller.gesture = true;
   controller.accept(live({ revision: 4 }));
   controller.socket.onclose();
-  assert.equal(controller.getState().needsReconnect, true);
+  assert.equal(controller.getState().needsReconnect, false);
   loads = 0;
   controller.connect();
   controller.socket.onopen();
@@ -276,7 +402,7 @@ test('a reconnected control socket resumes the granted page without a button', a
   assert.equal(controller.getState().needsReconnect, false);
   assert.equal(controller.getState().error, null);
   assert.equal(loads, 1);
-  assert.equal(activated, 1);
+  assert.equal(activated, 0);
   controller.dispose();
 });
 
@@ -294,14 +420,38 @@ test('reconnecting a paused grant restores control without starting audio', asyn
   controller.dispose();
 });
 
-test('a handoff that never confirms stops blocking the output selector', async () => {
+test('handoff deadline cancels or reconciles using the original command identity', async () => {
   const { controller } = setup({ handoffTimeout: 40 });
   await controller.start();
-  controller.api.request = async () => ({ awaiting_confirmation: true });
+  const attempts = [];
+  controller.api.request = async (_method, path, body) => {
+    attempts.push({ path, body });
+    if (path.endsWith('/handoff/cancel')) return { ...live({ mode: 'vlc' }), cancelled: true };
+    return { awaiting_confirmation: true };
+  };
   await controller.switchOutput('vlc');
   assert.equal(controller.getState().pendingHandoff, true);
   await new Promise(resolve => setTimeout(resolve, 90));
   assert.equal(controller.getState().pendingHandoff, false);
-  assert.match(controller.getState().error, /did not confirm/);
+  assert.equal(attempts.at(-1).path, '/s/handoff/cancel');
+  assert.deepEqual(attempts.at(-1).body, attempts[0].body);
+  controller.dispose();
+});
+
+test('pending handoff polls the server until an expired producer can be reclaimed', async () => {
+  const { controller, calls } = setup({ handoffTimeout: 200, handoffRetryDelay: 10 });
+  await controller.start();
+  let count = 0;
+  controller.api.request = async (method, path, body, owner) => {
+    calls.push({ method, path, body, owner });
+    count++;
+    return count < 3 ? { awaiting_confirmation: true } : { ...live({ mode: 'browser', revision: 4 }), duplicate: true };
+  };
+  await controller.switchOutput('browser');
+  const original = calls.at(-1).body;
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.ok(count >= 3, `expected repeated handoff calls, saw ${count}`);
+  assert.ok(calls.filter(call => call.path.endsWith('/handoff')).every(call => JSON.stringify(call.body) === JSON.stringify(original)));
+  assert.equal(controller.getState().pendingHandoff, false);
   controller.dispose();
 });

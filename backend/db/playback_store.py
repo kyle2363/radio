@@ -11,6 +11,7 @@ import math
 from pathlib import Path
 import sqlite3
 import threading
+import time
 from uuid import uuid4
 
 from db import database
@@ -49,6 +50,7 @@ def _hash(value):
 
 class PlaybackStore:
     def __init__(self):
+        self._wall_clock = time.time
         with _schema_lock, database.get_connection_cm() as conn:
             existing = conn.execute("SELECT 1 FROM sqlite_master WHERE name='playback_sessions'").fetchone()
             if existing:
@@ -157,9 +159,36 @@ class PlaybackStore:
         payload = self._handoff_payload(expected_revision, target_mode, target_client_id)
         with database.get_connection_cm() as conn:
             state = self._load(conn, session_id, owner)
-            if self._replay(conn, session_id, command_id, payload) is not None:
-                return {**state, "duplicate": True}
+            receipt = self._replay(conn, session_id, command_id, payload)
+            if receipt is not None:
+                return {**state, "duplicate": True, **({"cancelled": True} if receipt.get("cancelled") else {})}
             return None
+
+    def producer_lease_remaining(self, state):
+        return max(0, int((state.get("producer_lease_expires_at", 0) - self._wall_clock()) * 1000))
+
+    def renew_producer_lease(self, session_id, owner, instance_id, client_id):
+        """Persist a bounded producer permit without changing command revision."""
+        with self._transaction() as conn:
+            state = self._load(conn, session_id, owner)
+            if (state["mode"] != "browser" or state["instance_id"] != instance_id
+                    or state.get("output_client_id") != client_id
+                    or state["status"] not in ("ready", "playing", "paused")):
+                raise ConflictError("Browser output grant changed")
+            state["producer_lease_expires_at"] = self._wall_clock() + 12
+            conn.execute("UPDATE playback_sessions SET state_json=? WHERE id=?", (_json(state), session_id))
+            return {"instance_id": instance_id, "client_id": client_id, "lease_remaining_ms": 12000}
+
+    def cancel_handoff(self, session_id, owner, command_id, expected_revision, target_mode, target_client_id):
+        payload = self._handoff_payload(expected_revision, target_mode, target_client_id)
+        with self._transaction() as conn:
+            state = self._load(conn, session_id, owner)
+            receipt = self._replay(conn, session_id, command_id, payload)
+            if receipt is not None:
+                return {**state, "duplicate": True, **({"cancelled": True} if receipt.get("cancelled") else {})}
+            result = {**state, "cancelled": True}
+            self._receipt(conn, session_id, command_id, payload, result)
+            return result
 
     def create_session(self, owner, mode, *, output_client_id=None):
         if not isinstance(owner, str) or not owner or mode not in ("browser", "vlc"):
@@ -264,11 +293,15 @@ class PlaybackStore:
                 raise ConflictError("Playback revision changed")
             if state["status"] not in ("interrupted", "awaiting_output"):
                 raise ConflictError("Playback session does not need reactivation")
+            if self.producer_lease_remaining(state):
+                raise ConflictError("Previous browser producer lease has not expired")
             remaining = [{**item, "started": False} for item in state["items"][state["active_index"]:]]
             if not remaining:
                 raise ConflictError("No media remains to reactivate")
             state.update(instance_id=uuid4().hex, output_client_id=client_id, items=remaining,
-                         active_index=0, status="ready", desired_status="playing", position_seq=-1)
+                         active_index=0, status="paused" if state.get("desired_status") == "paused" else "ready",
+                         desired_status=state.get("desired_status", "playing"), position_seq=-1,
+                         producer_lease_expires_at=0)
             self._save(conn, state)
             self._receipt(conn, session_id, command_id, payload, state)
             return {**state, "duplicate": False}
@@ -327,7 +360,8 @@ class PlaybackStore:
             return {**state, "duplicate": False}
 
     def handoff_output(self, session_id, owner, command_id, expected_revision,
-                       target_mode, target_client_id, *, position_ms, observed_revision=None, desired_status=None):
+                       target_mode, target_client_id, *, position_ms, observed_revision=None, desired_status=None,
+                       source_expired=False):
         """Change only a listening session's output, retaining logical history."""
         if type(position_ms) not in (int, float) or not math.isfinite(position_ms) or position_ms < 0:
             raise ValueError("Position must be finite and nonnegative")
@@ -338,6 +372,8 @@ class PlaybackStore:
                 return {**state, "duplicate": True}
             if state["revision"] != (expected_revision if observed_revision is None else observed_revision):
                 raise ConflictError("Playback revision changed")
+            if source_expired and self.producer_lease_remaining(state):
+                raise ConflictError("Previous browser producer lease has not expired")
             desired = desired_status or ("paused" if state["status"] == "paused" else state.get("desired_status", "playing"))
             if desired not in ("paused", "playing"):
                 raise ValueError("Output intent must be playing or paused")
@@ -346,6 +382,7 @@ class PlaybackStore:
                          instance_id=uuid4().hex, items=remaining, active_index=0,
                          status="awaiting_output" if remaining else "idle",
                          desired_status=desired,
+                         producer_lease_expires_at=0,
                          position_ms=position_ms if remaining else 0, position_seq=-1)
             self._save(conn, state)
             self._receipt(conn, session_id, command_id, payload, state)
@@ -384,7 +421,8 @@ class PlaybackStore:
                             and state["status"] in ("ready", "playing", "paused")
                             and state["instance_id"] == instance_id and state.get("output_client_id") == client_id)
             if accepted:
-                state.update(status="interrupted", instance_id=uuid4().hex, position_seq=-1)
+                desired = "paused" if state["status"] == "paused" else state.get("desired_status", "playing")
+                state.update(status="interrupted", desired_status=desired, instance_id=uuid4().hex, position_seq=-1)
                 if position_ms is not None:
                     state["position_ms"] = position_ms
                 for item in state["items"][index:]:
@@ -444,6 +482,37 @@ class PlaybackStore:
                     conn.execute("UPDATE playback_attempts SET outcome='interrupted' WHERE id=? AND outcome IS NULL",
                                  (item["attempt_id"],))
             state.update(status="stopped", instance_id=None, items=[], active_index=0, position_ms=0)
+            self._save(conn, state)
+            self._receipt(conn, session_id, command_id, payload, state)
+            return {**state, "duplicate": False}
+
+    def replay(self, session_id, owner, command_id, expected_revision):
+        """Record one explicit replay while retaining the current attempt and plan."""
+        payload = {"kind": "replay", "revision": expected_revision}
+        with self._transaction() as conn:
+            state = self._load(conn, session_id, owner)
+            if self._replay(conn, session_id, command_id, payload) is not None:
+                return {**state, "duplicate": True}
+            if state["revision"] != expected_revision:
+                raise ConflictError("Playback revision changed")
+            index = state.get("active_index", 0)
+            items = state.get("items", [])
+            item = items[index] if index < len(items) else None
+            if (state.get("status") not in ("playing", "paused") or not item or
+                    item.get("kind") != "song" or not item.get("started") or item.get("terminal") or
+                    not item.get("attempt_id")):
+                raise ConflictError("There is no started song to replay")
+            attempt = conn.execute("SELECT * FROM playback_attempts WHERE id=?", (item["attempt_id"],)).fetchone()
+            if attempt is None or attempt["outcome"] is not None:
+                raise ConflictError("The current playback attempt cannot be replayed")
+            database.insert_play_event(conn, item["song_id"], attempt["history_session_id"], "replayed")
+            feedback_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+            conn.execute("UPDATE songs SET replay_count=replay_count+1 WHERE id=?", (item["song_id"],))
+            flags = json.loads(attempt["flags_json"])
+            flags.append({"kind": "replayed", "event_id": feedback_id, "command_id": command_id})
+            conn.execute("UPDATE playback_attempts SET flags_json=? WHERE id=?",
+                         (_json(flags), attempt["id"]))
+            state["position_ms"] = 0
             self._save(conn, state)
             self._receipt(conn, session_id, command_id, payload, state)
             return {**state, "duplicate": False}

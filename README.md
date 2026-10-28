@@ -2,6 +2,11 @@
 
 An intelligent radio station that listens to your taste, learns your mood, and recommends music from your local MP3 library. Built with FastAPI + React + VLC.
 
+Playback can use authenticated browser audio or server VLC output. The current
+`stability-server-architecture` branch is still undergoing listening acceptance.
+See [the reliability checkpoint](docs/MODERNIZATION_PROGRESS.md#playback-reliability-completion--october-28-2026)
+for fixes, verification, remaining acceptance checks, and rollback guidance.
+
 ## Features
 
 - **AI music recommendations** via ChromaDB vector search + LLM reranking

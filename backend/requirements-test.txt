@@ -6,3 +6,9 @@ pydantic==2.9.0
 pytest==9.1.0
 python-dotenv==1.2.2
 rapidfuzz==3.14.5
+# Session context imports the real CPU voice-processing helpers. Models,
+# ChromaDB and ingest are outside these isolated controller contracts.
+numpy==2.4.6
+soundfile==0.13.1
+uvicorn==0.30.0
+python-multipart==0.0.29

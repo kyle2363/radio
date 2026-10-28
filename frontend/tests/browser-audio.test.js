@@ -17,6 +17,29 @@ const song = (id) => ({ item_id: `item-${id}`, kind: 'song', song_id: id, url: `
 const snapshot = (changes = {}) => ({ id: 'session-1', mode: 'browser', instance_id: 'instance-1', output_client_id: 'client-1', status: 'ready', items: [song(1), song(2), song(3)], active_index: 0, position_ms: 2000, context: { volume: 70, normalization: true, talk_volume: 50, eq: 'flat' }, revision: 1, ...changes });
 const tick = () => new Promise(setImmediate);
 
+test('lease audio gate is armed on initial decode and each promoted element', () => {
+  const gates = [];
+  const node = () => ({ connect() {}, disconnect() {} });
+  const context = {
+    currentTime: 10, destination: {},
+    createMediaElementSource: node,
+    createBiquadFilter: () => ({ ...node(), frequency: {}, Q: {}, gain: {} }),
+    createGain: () => {
+      const scheduled = [];
+      gates.push(scheduled);
+      return { ...node(), gain: { value: 1, cancelScheduledValues() { scheduled.length = 0; },
+        setValueAtTime(value, time) { scheduled.push([value, time]); } } };
+    },
+  };
+  const f = fixture({ requireLease: true, monotonicNow: () => 1000, audioContextFactory: () => context });
+  f.engine.grantLease({ instance_id: 'instance-1', client_id: 'client-1', lease_remaining_ms: 12000 }, 1000, 'instance-1');
+  f.engine.loadSnapshot(snapshot({ status: 'paused' }));
+  assert.deepEqual(gates[0].at(-1), [0, 21.75]);
+  f.engine.loadSnapshot(snapshot({ status: 'paused', revision: 2, active_index: 1 }));
+  assert.deepEqual(gates[1].at(-1), [0, 21.75]);
+  f.engine.dispose();
+});
+
 function fixture(options = {}) {
   const audios = [], events = [], positions = [], states = [], errors = [], complete = [], acks = [];
   const engine = new BrowserAudioEngine({
@@ -100,6 +123,28 @@ test('a late pause acknowledgement cannot undo a newer local resume', async () =
   acknowledgePause({ accepted: true, session: snapshot({ status: 'paused', revision: 2 }) });
   await tick();
   assert.equal(audio.paused, false);
+  f.engine.dispose();
+});
+
+test('a late pause acknowledgement cannot roll back a newer scrub position', async () => {
+  let acknowledgePause;
+  const f = fixture({ postEvent: async event => {
+    if (event.kind === 'paused') return new Promise(resolve => { acknowledgePause = resolve; });
+    return { accepted: true };
+  } });
+  f.engine.loadSnapshot(snapshot());
+  const audio = f.audios[0];
+  audio.emit('playing');
+  await tick();
+  f.engine.pause();
+  await tick();
+  await f.engine.applyControl({ id: 'scrub-during-pause-ack', action: 'seek', position_ms: 6400,
+    instance_id: 'instance-1', output_client_id: 'client-1' });
+  acknowledgePause({ accepted: true, session: snapshot({ status: 'paused', revision: 2, position_ms: 2000 }) });
+  await tick();
+  assert.equal(audio.paused, true);
+  assert.equal(audio.currentTime, 6.4);
+  assert.equal(f.engine.getState().position_ms, 6400);
   f.engine.dispose();
 });
 
@@ -191,6 +236,34 @@ test('network/auth event failure pauses recoverably and does not advance queue',
   f.engine.dispose();
 });
 
+test('temporary event transport loss keeps buffered playback running and retries ordered events with their original IDs', async () => {
+  const sent = [];
+  let online = false;
+  const f = fixture({ postEvent: async event => {
+    sent.push(event);
+    if (!online) throw Error('connection reset');
+    return { accepted: true };
+  } });
+  f.engine.loadSnapshot(snapshot());
+  const audio = f.audios[0];
+  audio.emit('playing');
+  await tick();
+  assert.equal(audio.paused, false);
+  assert.equal(f.engine.getState().status, 'playing');
+  f.engine.pause();
+  await tick();
+  assert.equal(audio.paused, true);
+  const queuedPauseId = f.engine.pendingEvents.find(entry => entry.event.kind === 'paused').event.event_id;
+  assert.deepEqual(sent.map(event => event.kind), ['started']);
+  online = true;
+  assert.equal(await f.engine.flushPendingEvents(), true);
+  assert.deepEqual(sent.map(event => event.kind), ['started', 'started', 'paused']);
+  assert.equal(sent[0].event_id, sent[1].event_id);
+  assert.equal(sent[2].event_id, queuedPauseId);
+  assert.equal(new Set(sent.map(event => event.event_id)).size, 2);
+  f.engine.dispose();
+});
+
 test('media network error pauses recoverably without failure history or losing playback position', async () => {
   const f = fixture();
   f.engine.loadSnapshot(snapshot());
@@ -251,6 +324,119 @@ test('controls are instance/grant scoped, idempotent and acknowledge quiesce wit
   assert.deepEqual(f.acks, [{ command_id: 'quiesce', instance_id: 'instance-1', client_id: 'client-1', position_ms: 4500 }]);
   assert.equal(f.events.some((event) => event.kind === 'completed'), false);
   assert.equal(f.audios[0].paused, true);
+  f.engine.dispose();
+});
+
+test('rapid seeks settle on the newest position and seeking while paused does not resume audio', async () => {
+  const f = fixture();
+  f.engine.loadSnapshot(snapshot({ status: 'paused' }));
+  const audio = f.audios[0];
+  assert.equal(audio.paused, true);
+  const control = (id, position_ms) => ({ id, action: 'seek', position_ms, instance_id: 'instance-1', output_client_id: 'client-1' });
+  await Promise.all([
+    f.engine.applyControl(control('seek-a', 7100)),
+    f.engine.applyControl(control('seek-b', 2600)),
+    f.engine.applyControl(control('seek-c', 9300)),
+  ]);
+  assert.equal(audio.currentTime, 9.3);
+  assert.equal(audio.paused, true);
+  assert.equal(audio.playCalls, 0);
+  assert.equal(f.engine.getState().position_ms, 9300);
+  f.engine.dispose();
+});
+
+test('stale progress failure after skip cannot interrupt the new item; stop fences pending resume', async () => {
+  let rejectProgress;
+  let finishPlay;
+  const f = fixture({
+    postPosition: () => new Promise((_resolve, reject) => { rejectProgress = reject; }),
+    audioFactory: () => {
+      const audio = new FakeAudio();
+      const play = audio.play.bind(audio);
+      audio.play = () => { audio.playCalls++; audio.paused = false; return new Promise(resolve => { finishPlay = resolve; }); };
+      audio.completePlay = () => finishPlay?.();
+      f.audios.push(audio);
+      return audio;
+    },
+  });
+  f.engine.loadSnapshot(snapshot());
+  const oldAudio = f.audios[0];
+  oldAudio.currentTime = 4;
+  oldAudio.emit('timeupdate');
+  await tick();
+  f.engine.loadSnapshot(snapshot({ instance_id: 'instance-2', revision: 2, position_ms: 0 }));
+  const current = f.audios[2];
+  rejectProgress(Error('old socket request failed'));
+  await tick();
+  assert.equal(current.paused, false);
+  assert.equal(f.engine.getState().status, 'ready');
+  const resume = f.engine.play();
+  assert.equal(await f.engine.applyControl({ id: 'stop-race', action: 'stop', instance_id: 'instance-2', output_client_id: 'client-1' }), true);
+  current.completePlay();
+  await resume;
+  assert.equal(current.src, '');
+  assert.equal(current.paused, true);
+  assert.equal(f.engine.getState().status, 'stopped');
+  f.engine.dispose();
+});
+
+test('required producer lease gates decode and expiry pauses locally without recording completion', async () => {
+  let monotonic = 1000;
+  const f = fixture({ requireLease: true, monotonicNow: () => monotonic, leaseSafetyMarginMs: 250 });
+  f.engine.loadSnapshot(snapshot());
+  assert.equal(f.audios.length, 0);
+  assert.equal(f.engine.getState().reason, 'lease_pending');
+  assert.equal(f.engine.grantLease({ instance_id: 'instance-1', client_id: 'client-1', lease_remaining_ms: 12000 }, 900), true);
+  assert.equal(f.audios.length, 2);
+  const audio = f.audios[0];
+  audio.emit('playing');
+  await tick();
+  assert.equal(audio.paused, false);
+  monotonic = 12650; // request start + 12s lease - 250ms safety margin
+  audio.emit('timeupdate');
+  assert.equal(audio.paused, true);
+  assert.equal(f.engine.getState().status, 'interrupted');
+  assert.equal(f.engine.getState().reason, 'lease_expired');
+  assert.equal(f.events.some(event => event.kind === 'completed'), false);
+  assert.equal(f.complete.length, 0);
+  assert.equal(f.engine.grantLease({ instance_id: 'instance-1', client_id: 'client-1', lease_remaining_ms: 1000 }, 1000), false,
+    'a delayed response cannot extend the deadline from receipt time');
+  f.engine.dispose();
+});
+
+test('a lease can be acquired for a selected future instance while the old snapshot is still loaded', async () => {
+  const f = fixture({ requireLease: true, monotonicNow: () => 1000 });
+  f.engine.loadSnapshot(snapshot());
+  assert.equal(f.engine.grantLease({ instance_id: 'instance-2', client_id: 'client-1', lease_remaining_ms: 12000 }, 900, 'instance-2'), true);
+  assert.equal(f.audios.length, 0);
+  f.engine.loadSnapshot(snapshot({ instance_id: 'instance-2', revision: 2 }));
+  assert.equal(f.audios.length, 2);
+  assert.equal(f.audios[0].playCalls, 1);
+  f.engine.dispose();
+});
+
+test('events observed under a lease remain deliverable after local lease expiry', async () => {
+  let monotonic = 0;
+  let online = false;
+  const sent = [];
+  const f = fixture({ requireLease: true, monotonicNow: () => monotonic, leaseSafetyMarginMs: 0,
+    postEvent: async event => { sent.push(event); if (!online) throw Error('temporary disconnect'); return { accepted: true }; } });
+  f.engine.loadSnapshot(snapshot());
+  assert.equal(f.engine.grantLease({ instance_id: 'instance-1', client_id: 'client-1', lease_remaining_ms: 5000 }, 0), true);
+  const audio = f.audios[0];
+  audio.emit('playing');
+  await tick();
+  const eventId = f.engine.pendingEvents[0].event.event_id;
+  monotonic = 5000;
+  audio.emit('timeupdate');
+  assert.equal(audio.paused, true);
+  assert.equal(f.engine.getState().reason, 'lease_expired');
+  online = true;
+  assert.equal(await f.engine.flushPendingEvents(), true);
+  assert.equal(sent.length, 2);
+  assert.equal(sent[0].event_id, sent[1].event_id);
+  assert.equal(sent[1].event_id, eventId);
+  assert.equal(f.engine.pendingEvents.length, 0);
   f.engine.dispose();
 });
 
@@ -316,7 +502,7 @@ test('recoverable completion retries the same event id after reconnect without r
   const first = f.audios[0];
   first.emit('ended');
   await tick();
-  assert.equal(f.states.at(-1).status, 'interrupted');
+  assert.equal(f.states.at(-1).status, 'awaiting_output');
   await f.engine.activate();
   assert.equal(sent.length, 2);
   assert.equal(sent[0].event_id, sent[1].event_id);

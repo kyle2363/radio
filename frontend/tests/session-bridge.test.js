@@ -71,3 +71,27 @@ test('facade dispatches scoped logical updates and position requests without a s
   assert.equal(facade.readyState, 3);
   setPlaybackController(null);
 });
+
+test('facade exposes matching local pause and seek while offline without replacing metadata or fetching per audio tick', () => {
+  const controller = fake();
+  controller.clientId = 'page';
+  controller.state.session = { ...controller.state.session, mode: 'browser', instance_id: 'i', output_client_id: 'page',
+    items: [{ kind: 'song', item_id: 'one', song_id: 1, started: true, duration_ms: 1000 }] };
+  setPlaybackController(controller);
+  let fetches = 0;
+  const positions = [];
+  const facade = createPlaybackFacade({ fetchStatus: () => { fetches++; } });
+  facade._positionHandler = value => positions.push(value);
+  const before = fetches;
+  controller.update({ connected: false, audio: { instance_id: 'i', item_id: 'one', status: 'paused', position_ms: 400 } });
+  assert.equal(positions.at(-1).is_playing, false);
+  assert.equal(positions.at(-1).position_ms, 400);
+  controller.update({ audio: { instance_id: 'i', item_id: 'one', status: 'paused', position_ms: 800 } });
+  assert.equal(positions.at(-1).position_ms, 800);
+  assert.equal(fetches, before);
+  controller.update({ audio: { instance_id: 'stale', item_id: 'one', status: 'playing', position_ms: 900 } });
+  assert.equal(positions.at(-1).is_playing, undefined);
+  assert.equal(positions.at(-1).position_ms, 0);
+  facade.close();
+  setPlaybackController(null);
+});

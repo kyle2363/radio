@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import * as api from "../api";
 import { useSharedRadio, useFetchStatus } from "./useRadioState";
+import { subscribePlayback, localPlaybackState } from '../api/sessionBridge.js';
 
 export default function usePlaybackState() {
   const [currentSong, setCurrentSong] = useState(null);
@@ -24,11 +25,19 @@ export default function usePlaybackState() {
   const { addToast } = useSharedRadio();
   const fetchStatus = useFetchStatus();
 
+  useEffect(() => subscribePlayback(({ audio }) => {
+    if (!audio) return;
+    setIsPlaying(audio.is_playing);
+    if (audio.position_ms != null) setPositionMs(audio.position_ms);
+  }), []);
+
   const applyPlaybackStatus = useCallback((data) => {
     if (!data) return;
     setCurrentSong(data.current_song);
-    setIsPlaying(data.is_playing);
-    setPositionMs(data.position_ms || 0);
+    const physical = localPlaybackState();
+    const local = physical?.song_id === data.current_song?.id ? physical : null;
+    setIsPlaying(local?.is_playing ?? data.is_playing);
+    setPositionMs(local?.position_ms ?? data.position_ms ?? 0);
     setDurationMs(data.duration_ms || 0);
     if (data.audio_rms != null) setAudioRms(data.audio_rms);
     if (data.skip_streak != null) {

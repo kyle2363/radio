@@ -139,6 +139,26 @@ def test_undo_uses_injected_player(manager, monkeypatch):
     assert calls == ["stop", (1, config.DB_PATH, None)]
 
 
+def test_record_replay_resets_feedback_without_mutating_current_or_manual_queue(manager):
+    from unittest.mock import Mock
+    manager._queue = [{"song_id": 2, "slot": "exploit"}]
+    manager._manual_queue = [{"song_id": 3, "slot": "manual"}]
+    manager._pending_talk_segments = [{"type": "talk_segment"}]
+    manager._current_song_id = 1
+    manager._current_session_id = 44
+    manager._skip_streak = 3
+    manager._last_action = {"type": "skip", "song_id": 4, "timestamp": 0}
+    manager._memory.record_signal = Mock()
+    queues = (list(manager._queue), list(manager._manual_queue), list(manager._pending_talk_segments))
+    generation = manager._rebuild_gen
+    manager.record_replay()
+    assert (manager._queue, manager._manual_queue, manager._pending_talk_segments) == queues
+    assert manager._rebuild_gen == generation
+    assert manager._skip_streak == 0
+    assert manager.get_undo_state()["can_undo"] is False
+    manager._memory.record_signal.assert_called_once_with(song_id=1, signal="replayed", session_id=44)
+
+
 def test_energy_and_talk_context_are_injected_per_instance(queue_module, monkeypatch):
     module, _ = queue_module
     calls = []

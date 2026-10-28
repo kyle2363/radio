@@ -4,8 +4,8 @@ import { playbackHeaders, getPlaybackController } from './sessionBridge.js';
 export { setPlaybackController, getPlaybackController } from './sessionBridge.js';
 
 const urls = resolveApiUrls(window.location, {
-  apiBaseUrl: import.meta.env.VITE_API_BASE_URL,
-  wsUrl: import.meta.env.VITE_WS_URL,
+  apiBaseUrl: import.meta.env?.VITE_API_BASE_URL,
+  wsUrl: import.meta.env?.VITE_WS_URL,
 });
 const BASE = urls.apiBase;
 export const API_BASE_URL = BASE;
@@ -16,18 +16,32 @@ const request = createRequest({ baseUrl: BASE,
   onUnauthorized: () => window.dispatchEvent(new CustomEvent("radio-auth-required")),
 });
 
+// Keep legacy reads on their established endpoint shapes. The controller
+// adapter is intentionally used for playback mutations only.
 const get = (path, signal) => request("GET", path, undefined, undefined, signal);
-export const post = (path, body, timeout, signal) => {
+const CONTROLLER_ROUTES = new Set([
+  '/api/play/pause', '/api/play/resume', '/api/play/seek', '/api/play/volume',
+  '/api/play/volume-normalization', '/api/play/eq', '/api/play/stop',
+  '/api/queue/replay', '/api/queue/clear', '/api/queue/reorder', '/api/mood', '/api/mood/set',
+  '/api/mood/vibe-lock/activate', '/api/mood/vibe-lock/deactivate', '/api/sleep/timer',
+]);
+function routeController(method, path, body) {
+  if (method === 'GET') return null;
   const controller = getPlaybackController();
-  if (controller && (/^\/api\/play\/\d+$/.test(path) || path === '/api/play/resume')) {
+  const basePath = path.split('?')[0];
+  const supported = CONTROLLER_ROUTES.has(basePath) || /^\/api\/play\/\d+$/.test(basePath) ||
+    /^\/api\/queue\/(?:add|remove)\/\d+$/.test(basePath);
+  if (controller && supported) {
     // Preserve the click gesture for browser autoplay policy. The actual start
     // still comes from the server's prepared plan and observed media events.
-    return controller.play(/^\/api\/play\/\d+$/.test(path) ? Number(path.split('/').pop()) : undefined);
+    if (/^\/api\/play\/\d+$/.test(basePath)) return controller.play(Number(basePath.split('/').pop()));
+    return controller.routeLegacy(basePath, { method, body });
   }
-  return request("POST", path, body, timeout, signal);
-};
-const put = (path, body, signal) => request("PUT", path, body, undefined, signal);
-const del = (path, signal) => request("DELETE", path, undefined, undefined, signal);
+  return null;
+}
+export const post = (path, body, timeout, signal) => routeController('POST', path, body) ?? request("POST", path, body, timeout, signal);
+const put = (path, body, signal) => routeController('PUT', path, body) ?? request("PUT", path, body, undefined, signal);
+const del = (path, signal) => routeController('DELETE', path) ?? request("DELETE", path, undefined, undefined, signal);
 
 // ── Playback ──────────────────────────────────────────────
 export const fetchPlayStatus = () => get("/api/play/status");

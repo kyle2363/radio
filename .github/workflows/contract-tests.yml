@@ -30,6 +30,11 @@ jobs:
           backend/tests/test_session_settings.py
           backend/tests/test_play_event_transaction.py
           backend/tests/test_stale_history_sessions.py
+          backend/tests/test_playback_api.py
+          backend/tests/test_playback_sessions.py
+          backend/tests/test_output_disconnect.py
+          backend/tests/test_replay_feedback.py
+          backend/tests/test_replay_queue.py
           -q
 
   frontend:

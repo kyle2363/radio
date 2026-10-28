@@ -2,6 +2,30 @@
 
 from engine.session_settings import SessionSettings
 from tests.test_playback_sessions import domain, start
+import pytest
+
+
+@pytest.fixture
+def main_contract(monkeypatch):
+    """Keep optional vector/ingest adapters outside these route unit tests.
+
+    The actual route functions, session settings and command dispatch are used.
+    Starting ingestion or a vector client is never part of these contracts.
+    """
+    import importlib
+    import sys
+    from types import ModuleType
+    from unittest.mock import Mock
+    import ingest
+
+    if 'main' not in sys.modules:
+        vector = ModuleType('chromadb')
+        vector.PersistentClient = Mock(side_effect=AssertionError('No vector service in route unit tests'))
+        pipeline = Mock(name='isolated_ingest_adapter')
+        monkeypatch.setitem(sys.modules, 'chromadb', vector)
+        monkeypatch.setitem(sys.modules, 'ingest.pipeline', pipeline)
+        monkeypatch.setattr(ingest, 'pipeline', pipeline, raising=False)
+    return importlib.import_module('main')
 
 
 class FakeDatabase:
@@ -115,13 +139,13 @@ def test_guest_set_limit_comes_from_passed_settings(monkeypatch):
     assert talk._current_guest_takeover['songs_remaining'] == 2
 
 
-def test_main_talk_endpoints_and_nl_toggle_do_not_write_profile(monkeypatch):
+def test_main_talk_endpoints_and_nl_toggle_do_not_write_profile(monkeypatch, main_contract):
     import importlib
     import threading
     from types import SimpleNamespace
     from unittest.mock import Mock
     from commands import parser
-    main = importlib.import_module('main')
+    main = main_contract
     db = FakeDatabase()
     db.values['talk_segments_enabled'] = 'true'
     first, second = SessionSettings(db), SessionSettings(db)
@@ -141,11 +165,11 @@ def test_main_talk_endpoints_and_nl_toggle_do_not_write_profile(monkeypatch):
     assert db.writes == []
 
 
-def test_energy_endpoint_reads_bound_context(monkeypatch):
+def test_energy_endpoint_reads_bound_context(monkeypatch, main_contract):
     import importlib
     from types import SimpleNamespace
     from engine.energy import EnergyTrajectory
-    main = importlib.import_module('main')
+    main = main_contract
     local = EnergyTrajectory()
     local.record_energy(1, 0.1)
     local.record_energy(2, 0.9)

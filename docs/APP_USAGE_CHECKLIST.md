@@ -117,7 +117,41 @@ segments, GPU/model behavior, LAN access, Electron tray/media-key behavior, or
 OS sleep and lock integration. Those need a separate review against the actual
 environment after the isolated app passes.
 
-## Bug report template
+## Reliability retest after October 28 fixes
+
+Historical marks above record earlier user feedback; they do not mean the new
+build is accepted. Restart the backend/Electron and reload the browser after
+updating. Use a fresh isolated run for automated UI checks. Its tracks are silent.
+
+On October 28, after the fixes, the user reported that everything seemed to be
+working well and requested a commit. Keep the longer listening scenarios below
+open until their individual results and durations have been recorded.
+
+- [ ] Start from idle, pause, scrub forward/back while paused, resume, rapidly
+      seek twice, then pause immediately. Verify position and controls stay usable.
+- [ ] Note the upcoming order. Replay repeatedly, including while paused.
+      Position resets to zero, pause intent and upcoming order remain unchanged.
+- [ ] Next still advances once and retains existing skip-feedback/undo behavior.
+- [ ] Briefly interrupt only the control connection: buffered audio continues,
+      local pause/seek/volume remain usable, and recovery does not restart it.
+- [ ] With all server communication unavailable, expect safe local interruption
+      when the current producer permit expires (at most about twelve seconds).
+      No unavailable recommendation starts while completion is unacknowledged.
+- [ ] Reload an active page and explicitly reconnect. The new page has a fresh
+      producer identity and can wait for the old permit to expire. A duplicated
+      tab must not become a simultaneous producer for the existing grant.
+- [ ] Transfer a playing and paused session in both directions with the same
+      queue, mood and timer; confirm stale pages cannot control the new output.
+- [ ] Test server restart and media failure separately from a WebSocket drop.
+      Record whether the last accepted checkpoint, pause intent and attempt
+      recover. Unsent observations do not survive destruction of the page.
+
+Keep an actual listening log separately for the sixty-minute browser/Electron
+and VLC acceptance sessions: start/end time, output, interactions, disconnect
+duration and any audible interruption. Synthetic/native dummy-output passes do
+not count as those listening sessions.
+
+### Bug report template
 
 ```text
 Output mode (This browser / Desktop speakers):

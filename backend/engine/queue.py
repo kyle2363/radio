@@ -1382,15 +1382,18 @@ class QueueManager:
             self._broadcast("queue_updated", {"queue": self._get_display_queue(), "gen": self._broadcast_gen})
         return {"added": added, "skipped": skipped}
 
-    def record_replay(self):
-        """Record a replay signal - reset skip streak, boost taste."""
+    def record_replay(self, *, persist=True):
+        """Refresh replay context; the coordinator can own its durable receipt."""
         self.reset_skip_streak()
         self.clear_undo()
-        self._memory.record_signal(
-            song_id=self._current_song_id,
-            signal="replayed",
-            session_id=self._current_session_id,
-        )
+        if persist:
+            self._memory.record_signal(
+                song_id=self._current_song_id,
+                signal="replayed",
+                session_id=self._current_session_id,
+            )
+        else:
+            self._memory._cache.clear()
 
     def record_completion(self):
         """Record a positive completion signal.

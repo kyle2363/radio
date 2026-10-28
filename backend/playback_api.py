@@ -49,6 +49,11 @@ class Position(Payload):
     client_id: str = Field(min_length=1, max_length=128)
 
 
+class ProducerLease(Payload):
+    instance_id: str = Field(min_length=1, max_length=128)
+    client_id: str = Field(min_length=1, max_length=128)
+
+
 class Seek(Payload):
     position_ms: int = Field(ge=0)
 
@@ -210,6 +215,7 @@ class PlaybackEventHub:
             lease['users'] += 1
             async with lease['lock']:
                 self._connections[(sid, client)] = token
+                lease['generation'] = token
             queue = self.subscribe(sid)
             state = await _call(service.snapshot, sid, owner)
             if not self._can_view(state, client):
@@ -254,8 +260,9 @@ class PlaybackEventHub:
                         if self._connections.get((sid, client)) is token:
                             self._connections.pop((sid, client), None)
                             retired = True
+                            state = await _call(service.snapshot, sid, owner)
                     if retired and disconnected:
-                        await self._release(service, sid, owner, client)
+                        await self._release(service, sid, owner, client, lease, token, state.get('instance_id'))
                 except (ConflictError, KeyError, PermissionError, RuntimeError):
                     pass
                 finally:
@@ -263,33 +270,39 @@ class PlaybackEventHub:
                     if not lease['users']:
                         self._connection_locks.pop((sid, client), None)
 
-    async def _release(self, service, sid, owner, client):
+    async def _release(self, service, sid, owner, client, lease, token, instance):
         """Retire the grant of a vanished page, unless it reconnects in time."""
+        lease['users'] += 1
         if self.disconnect_grace > 0:
-            task = asyncio.create_task(self._release_after_grace(service, sid, owner, client))
+            task = asyncio.create_task(self._release_after_grace(service, sid, owner, client, lease, token, instance))
             # The loop keeps only weak references to tasks.
             self._retiring.add(task)
             task.add_done_callback(self._retiring.discard)
             return
-        await asyncio.to_thread(self._retire_output, service, sid, owner, client)
+        await self._release_after_grace(service, sid, owner, client, lease, token, instance)
 
-    async def _release_after_grace(self, service, sid, owner, client):
+    async def _release_after_grace(self, service, sid, owner, client, lease, token, instance):
         try:
             await asyncio.sleep(self.disconnect_grace)
-            with self._lock:
-                if (sid, client) in self._connections:
+            async with lease['lock']:
+                if (lease.get('generation') is not token or (sid, client) in self._connections):
                     return
-            await asyncio.to_thread(self._retire_output, service, sid, owner, client)
+                await asyncio.to_thread(self._retire_output, service, sid, owner, client, instance)
         except asyncio.CancelledError:
             raise
         except (ConflictError, KeyError, PermissionError, RuntimeError):
             pass
+        finally:
+            lease['users'] -= 1
+            if not lease['users']:
+                self._connection_locks.pop((sid, client), None)
 
     @staticmethod
-    def _retire_output(service, sid, owner, client):
+    def _retire_output(service, sid, owner, client, instance):
         state = service.snapshot(sid, owner)
-        if state.get('mode') == 'browser' and state.get('output_client_id') == client:
-            service.interrupt_output(sid, owner, state.get('instance_id'), client)
+        if (state.get('mode') == 'browser' and state.get('output_client_id') == client
+                and state.get('instance_id') == instance):
+            service.interrupt_output(sid, owner, instance, client)
 
 
 def create_playback_router(service, hub=None, desktop_claim=None):
@@ -323,6 +336,7 @@ def create_playback_router(service, hub=None, desktop_claim=None):
         router.add_api_route('/{session_id}' + path, endpoint, methods=[verb], name=method)
 
     for path, method, model in [('/next', 'next', Command), ('/select', 'select_song', Select),
+            ('/replay', 'replay', Command),
             ('/events', 'observe', Observation), ('/position', 'progress', Position),
             ('/pause', 'pause', None), ('/resume', 'resume', None), ('/seek', 'seek', Seek),
             ('/volume', 'set_volume', Volume), ('/eq', 'set_eq', Equalizer),
@@ -330,7 +344,8 @@ def create_playback_router(service, hub=None, desktop_claim=None):
             ('/vibe', 'set_vibe', Vibe), ('/queue/add', 'queue_add', QueueAdd),
             ('/queue/remove', 'queue_remove', QueueRemove), ('/queue/clear', 'queue_clear', None),
             ('/queue/reorder', 'queue_reorder', QueueOrder), ('/stop', 'stop', Command),
-            ('/handoff', 'handoff', Handoff), ('/ack', 'ack_quiesce', Ack),
+            ('/handoff', 'handoff', Handoff), ('/handoff/cancel', 'cancel_handoff', Handoff),
+            ('/lease', 'renew_producer_lease', ProducerLease), ('/ack', 'ack_quiesce', Ack),
             ('/reactivate', 'resume_interrupted', Reactivate), ('/close', 'close', Command),
             ('/timer', 'set_sleep_timer', Timer)]:
         action(path, method, model)

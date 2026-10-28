@@ -35,6 +35,16 @@ def test_owner_header_and_command_contract():
     service.next.assert_called_once_with('s', 'secret', command_id='c', expected_revision=1)
 
 
+def test_explicit_replay_uses_idempotent_command_contract():
+    service = Mock()
+    service.replay.return_value = {'revision': 3, 'duplicate': False}
+    path = '/api/playback/sessions/s/replay'
+    body = {'command_id': 'replay-1', 'expected_revision': 2}
+    assert request(service, path, body, owner=None).status_code == 403
+    assert request(service, path, body).json() == {'revision': 3, 'duplicate': False}
+    service.replay.assert_called_once_with('s', 'secret', command_id='replay-1', expected_revision=2)
+
+
 def test_native_events_and_unknown_fields_rejected():
     service = Mock()
     body = {'event_id': 'e', 'instance_id': 'i', 'item_id': 't', 'kind': 'started', 'client_id': 'b', 'producer': 'native'}

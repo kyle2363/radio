@@ -227,6 +227,10 @@ class DesktopBinding:
         state = self._state()
         return self.service.next(self.session_id, self.owner, uuid4().hex, state['revision'])
 
+    def replay(self, command_id=None):
+        state = self._state()
+        return self.service.replay(self.session_id, self.owner, command_id or uuid4().hex, state['revision'])
+
     def select_pick(self, pick):
         state = self._state()
         plan = self.context.queue.prepare_pick(pick)

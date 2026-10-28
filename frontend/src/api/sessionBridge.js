@@ -13,8 +13,18 @@ function publicCopy(value) {
   return value;
 }
 
+export function localPlaybackState(state = current?.getState?.(), clientId = current?.clientId) {
+  const session = state?.session, audio = state?.audio;
+  const item = session?.items?.[session.active_index || 0];
+  if (!clientId || session?.mode !== 'browser' || session.output_client_id !== clientId ||
+      !session.instance_id || audio?.instance_id !== session.instance_id || !item?.item_id || audio.item_id !== item.item_id ||
+      !['playing', 'paused', 'interrupted', 'awaiting_user_gesture'].includes(audio.status)) return null;
+  return { instance_id: audio.instance_id, item_id: audio.item_id, song_id: item.song_id,
+    status: audio.status, is_playing: audio.status === 'playing', position_ms: audio.position_ms };
+}
+
 function visible(state) {
-  return { session: publicCopy(state?.session || null), connected: Boolean(state?.connected), loading: Boolean(state?.loading) };
+  return { session: publicCopy(state?.session || null), audio: localPlaybackState(state), connected: Boolean(state?.connected), loading: Boolean(state?.loading) };
 }
 
 function publish(state) {
@@ -64,7 +74,9 @@ export function createPlaybackFacade({ fetchStatus = () => {}, onConnected = () 
       if (message === 'position_request') {
         Promise.resolve(fetchStatus()).then(status => {
           if (closed || !status) return;
-          const position = status.elapsed_ms ?? status.position_ms ?? 0;
+          const physical = localPlaybackState();
+          const local = physical?.song_id === status.current_song?.id ? physical : null;
+          const position = local?.position_ms ?? status.elapsed_ms ?? status.position_ms ?? 0;
           facade._positionHandler?.({ ...status, elapsed_ms: position, position_ms: position });
         }).catch(() => {});
       }
@@ -86,10 +98,11 @@ export function createPlaybackFacade({ fetchStatus = () => {}, onConnected = () 
     const before = previous?.items?.[previous.active_index || 0];
     const changedSong = item?.kind === 'song' && item.started &&
       (item.item_id !== before?.item_id || session.instance_id !== previous?.instance_id || !before?.started);
-    const position = session.position_ms || 0;
+    const position = state.audio?.position_ms ?? session.position_ms ?? 0;
     const duration = item?.duration_ms || 0;
     if (changedSong) facade._songStartedHandler?.({ event: 'song_started', song_id: item.song_id, elapsed_ms: position });
-    facade._positionHandler?.({ elapsed_ms: position, position_ms: position, duration_ms: duration });
+    facade._positionHandler?.({ elapsed_ms: position, position_ms: position, duration_ms: duration,
+      ...(state.audio ? { is_playing: state.audio.is_playing } : {}) });
     if (JSON.stringify(previous?.queue) !== JSON.stringify(session.queue)) facade._queueHandler?.({ queue: session.queue || [] });
     if (previous?.mood !== session.mood) facade._moodHandler?.(session.mood);
     if (JSON.stringify(previous?.vibe_lock) !== JSON.stringify(session.vibe_lock)) facade._vibeLockHandler?.(session.vibe_lock?.active ? session.vibe_lock : null);
@@ -100,8 +113,9 @@ export function createPlaybackFacade({ fetchStatus = () => {}, onConnected = () 
     if (priorPreferences.sleep_timer && !preferences.sleep_timer) facade._sleepTimerHandler?.(null);
     facade._rebuildHandler?.({ rebuilding: Boolean(session.queue_rebuilding || session.rebuilding) });
     if (item?.kind === 'speech' && item.started) facade._talkHandler?.(item);
+    const logicalChanged = JSON.stringify(previous) !== JSON.stringify(session);
     previous = session;
-    Promise.resolve(fetchStatus()).then(status => {
+    if (logicalChanged) Promise.resolve(fetchStatus()).then(status => {
       if (closed) return;
       if (changedSong && status?.current_song) electron?.updateNotification?.(status.current_song.artist || '', status.current_song.title || '');
     }).catch(() => {});

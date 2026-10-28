@@ -38,3 +38,21 @@ backend\venv\Scripts\python -B scripts/run_tests.py backend/tests/test_vlc_nativ
 ```
 
 This tests native event delivery without the original library, speaker output, models, or production history. It is separate from ordinary CI and does not prove audible quality, effects, or all advanced feature parity.
+
+## Reliability regression contracts
+
+The contract workflow now includes the playback API, session, disconnect, and
+replay regressions as well as storage/security/media contracts. Its CPU-only
+requirements include the real voice-processing import dependencies. The session
+settings route unit tests replace unrelated ingest/vector adapters; their actual
+route, settings, and command assertions remain enabled. No inference/model
+environment is installed in CI. `frontend/package-lock.json` must agree with
+`package.json`; validate with `npm ci` in a disposable checkout rather than
+replacing a working development installation merely for verification.
+
+Frontend deterministic tests cover transient event failures with unchanged event
+identities, delayed state acknowledgements, local controls, instance-scoped lease
+renewal, lease expiry, copied tab storage, and original-identity handoff recovery.
+Backend regressions cover connection generations, exact-instance retirement,
+persisted restart permits, reclaim receipts, cancellation/admission cleanup, and
+replay with the real queue helper to detect duplicate durable feedback.

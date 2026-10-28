@@ -26,6 +26,13 @@ from engine.session_port import SessionPlaybackPort
 logger = logging.getLogger(__name__)
 
 
+def _trace(action, session_id, state, *, command_id=None, event_id=None, item_id=None, accepted=None):
+    # Deliberately exclude owner keys, producer identities, URLs and media paths.
+    logger.info("playback action=%s session=%s instance=%s item=%s command=%s event=%s revision=%s accepted=%s duplicate=%s",
+                action, session_id, state.get("instance_id"), item_id, command_id, event_id,
+                state.get("revision"), accepted, bool(state.get("duplicate")))
+
+
 class BrowserOutput:
     """A browser grant publishes prepared state and awaits actual observations."""
     def __init__(self, session_id, client_id, emit):
@@ -73,6 +80,13 @@ class BrowserOutput:
             self._ack = {"confirmed": True, "instance_id": instance_id,
                          "command_id": command_id, "position_ms": position_ms}
             return dict(self._ack)
+
+    def cancel_quiesce(self, command_id):
+        with self._lock:
+            if self._pending is None or self._pending[1] != command_id:
+                return
+            self._pending, self._ack = None, None
+        self.pause()
 
     def stop(self):
         self._explicitly_stopped = True
@@ -153,6 +167,7 @@ class ListeningContext:
     timer: object = None
     timer_cancel: object = None
     closing: bool = False
+    handoff_timer: object = None
 
 
 class PlaybackSessions:
@@ -171,6 +186,7 @@ class PlaybackSessions:
         self._executor, self._jobs = None, {}
         self._clock = time.monotonic
         self._wall_clock, self._timer_factory = time.time, threading.Timer
+        self._handoff_timer_factory = threading.Timer
         self.coordinator = PlaybackCoordinator(store, self._plan)
 
     @property
@@ -394,7 +410,8 @@ class PlaybackSessions:
             # Retain the durable retry state without publishing an autoplay
             # status for a grant that the listener deliberately left paused.
             state.update(status="paused", awaiting_output=True)
-        return {**state, "session_id": session_id, "queue": self._queue_snapshot(context), "mood": context.mood.get_state(),
+        return {**state, "producer_lease_remaining_ms": self.store.producer_lease_remaining(state),
+                "session_id": session_id, "queue": self._queue_snapshot(context), "mood": context.mood.get_state(),
                 "context": public_context, "vibe_lock": public_vibe, "preferences": preferences,
                 "energy": {"direction": context.energy.get_direction(), "current": context.energy.get_current_energy()}}
 
@@ -630,6 +647,27 @@ class PlaybackSessions:
         return self._prepare_command(session_id, owner_key, lambda: self.coordinator.select(
             session_id, owner_key, command_id, expected_revision, {"song_id": plan.song_id}), private=plan)
 
+    def replay(self, session_id, owner_key, command_id, expected_revision):
+        """Replay the started song in place, retaining the current session plan."""
+        with self._locked_output(session_id, owner_key) as (context, output):
+            result = self.coordinator.replay(session_id, owner_key, command_id, expected_revision)
+            if not result.get("duplicate"):
+                if isinstance(output, BrowserOutput):
+                    output.update(result)
+                with context.lock:
+                    context.progress.clear()
+                record_replay = getattr(context.queue, "record_replay", None)
+                if callable(record_replay):
+                    try:
+                        record_replay(persist=False)
+                    except Exception:
+                        logger.exception("Could not update replay taste context: session=%s", session_id)
+                self._persist(session_id, owner_key)
+                item = self._active(result)
+                _trace("replay", session_id, result, command_id=command_id, item_id=item.get("item_id"), accepted=True)
+                self._publish(session_id, "song_replayed", {"song_id": item.get("song_id")})
+            return self._public_state(session_id, owner_key, result)
+
     def stop(self, session_id, owner_key, command_id, expected_revision):
         with self._locked_output(session_id, owner_key) as (context, output):
             before = self.store.snapshot(session_id, owner_key)
@@ -676,6 +714,8 @@ class PlaybackSessions:
                     "session": self._public_state(session_id, owner_key, result["session"])}
         result = self.coordinator.observe(session_id, owner_key, event_id, instance_id, item_id,
                                           kind, position_ms=position_ms, client_id=client_id)
+        _trace(kind, session_id, {**result["session"], "duplicate": result.get("duplicate")},
+               event_id=event_id, item_id=item_id, accepted=result["accepted"])
         if not result["accepted"] or result["duplicate"]:
             return {**result, "session": self._public_state(session_id, owner_key, result["session"])}
         state = result["session"]
@@ -808,40 +848,67 @@ class PlaybackSessions:
             if self._jobs.get(sid) is job:
                 self._jobs.pop(sid, None)
 
-    def _reclaim_vanished_browser(self, session_id, owner_key, target_mode, client, command_id, expected_revision):
-        """Regrant a browser output whose page can no longer confirm a quiesce.
+    def renew_producer_lease(self, session_id, owner_key, instance_id, client_id):
+        with self._locked_output(session_id, owner_key):
+            result = self.store.renew_producer_lease(session_id, owner_key, instance_id, client_id)
+            logger.debug("playback action=lease session=%s instance=%s", session_id, instance_id)
+            return result
 
-        A crashed, reloaded or pre-fixed page can leave its grant owned by a
-        client with no control channel. It can never acknowledge the handoff
-        quiesce, so the session would stay wedged on ``awaiting_confirmation``.
-        Retire that lease from its last checkpoint, then regrant explicitly.
-        """
-        probe = self._producer_online
-        if probe is None or target_mode != "browser" or client is None:
-            return None
-        state = self.store.snapshot(session_id, owner_key)
-        owner_client = state.get("output_client_id")
-        if not (state["mode"] == "browser" and owner_client and owner_client != client
-                and state["status"] in ("ready", "playing", "paused") and state["items"]):
-            return None
+    def _source_expired(self, session_id, state):
+        if state["mode"] != "browser" or self.store.producer_lease_remaining(state):
+            return False
+        # Older clients did not acquire a lease. They still need a live socket
+        # quiesce; absence permits checkpoint recovery for that legacy grant.
+        if "producer_lease_expires_at" in state:
+            return True
+        if self._producer_online is None:
+            return False
         try:
-            online = bool(probe(session_id, owner_client))
+            return not self._producer_online(session_id, state.get("output_client_id"))
         except Exception:
             logger.exception("Output liveness probe failed: session=%s", session_id)
-            online = True
-        if online:
-            return None
-        duplicate = self.store.handoff_snapshot(session_id, owner_key, command_id, expected_revision,
-                                                 target_mode, client)
-        if duplicate is not None:
-            return None
-        if state['revision'] != expected_revision:
-            raise ConflictError('Playback revision changed')
-        retired = self.interrupt_output(session_id, owner_key, state["instance_id"], owner_client)
-        if not retired.get("accepted"):
-            return None
-        return self.resume_interrupted(session_id, owner_key, f"reclaim-{uuid4().hex}",
-                                       retired["session"]["revision"], client)
+            return False
+
+    def cancel_handoff(self, session_id, owner_key, command_id, expected_revision,
+                       target_mode, target_client_id=None):
+        generated = uuid5(NAMESPACE_URL, f"radio:{session_id}:{command_id}:browser").hex
+        client = self._client(target_client_id if target_client_id is not None else generated) if target_mode == "browser" else None
+        with self._locked_output(session_id, owner_key) as (context, output):
+            runtime = self.coordinator._runtime(session_id, owner_key)
+            with runtime.lock:
+                duplicate = self.store.handoff_snapshot(session_id, owner_key, command_id,
+                                                        expected_revision, target_mode, client)
+                if duplicate is not None:
+                    return self._public_state(session_id, owner_key, duplicate)
+                intent = runtime.handoff_intent
+                request = (command_id, expected_revision, target_mode, client)
+                if intent is None or intent["request"] != request:
+                    raise ConflictError("No matching pending handoff")
+                result = self.store.cancel_handoff(session_id, owner_key, *request)
+                _trace("handoff_cancel", session_id, result, command_id=command_id, accepted=True)
+                runtime.handoff_intent = None
+                if context.handoff_timer is not None:
+                    context.handoff_timer.cancel()
+                    context.handoff_timer = None
+                if isinstance(output, BrowserOutput):
+                    output.cancel_quiesce(command_id)
+                with self._lock:
+                    if self._vlc_session == session_id and result["mode"] != "vlc":
+                        self._vlc_session = None
+                self._clear_targets(context)
+            return self._public_state(session_id, owner_key, result)
+
+    def _arm_handoff_deadline(self, sid, owner, context, request):
+        if context.handoff_timer is not None:
+            return
+        def expire():
+            try:
+                self.cancel_handoff(sid, owner, *request)
+            except (ConflictError, KeyError, PermissionError, RuntimeError):
+                pass
+        context.handoff_timer = self._handoff_timer_factory(15.0, expire)
+        context.handoff_timer.daemon = True
+        context.handoff_timer.start()
 
     def handoff(self, session_id, owner_key, command_id, expected_revision, target_mode, target_client_id=None):
         # A server-assigned client ID is stable for retries of this command,
@@ -850,10 +917,6 @@ class PlaybackSessions:
         client = self._client(target_client_id if target_client_id is not None else generated) if target_mode == "browser" else None
         if target_mode not in ("vlc", "browser"):
             raise ValueError("Valid playback output mode required")
-        reclaimed = self._reclaim_vanished_browser(session_id, owner_key, target_mode, client,
-                                                   command_id, expected_revision)
-        if reclaimed is not None:
-            return reclaimed
         with self._locked_output(session_id, owner_key) as (context, previous):
             runtime = self.coordinator._runtime(session_id, owner_key)
             key, target = (command_id, target_mode), None
@@ -873,10 +936,14 @@ class PlaybackSessions:
                         raise ConflictError("Output handoff command changed client")
                 self._configure_output(context, target)
                 result = self.coordinator.handoff_output(session_id, owner_key, command_id, expected_revision,
-                                                         target_mode, client, target_transport=target)
+                                                         target_mode, client, target_transport=target,
+                                                         source_expired=self._source_expired(session_id, self.store.snapshot(session_id, owner_key)))
+                _trace("handoff", session_id, result, command_id=command_id, accepted=not result.get("cancelled"))
             except Exception:
                 current = self.store.snapshot(session_id, owner_key)
                 intent = runtime.handoff_intent
+                if intent and intent["request"] == (command_id, expected_revision, target_mode, client):
+                    self._arm_handoff_deadline(session_id, owner_key, context, intent["request"])
                 pending = bool(intent and intent["epoch"] == runtime.epoch and
                                intent["request"][2] == "vlc" and intent["instance_id"] == current["instance_id"])
                 with self._lock:
@@ -890,7 +957,13 @@ class PlaybackSessions:
                         dispose()
                 context.output = runtime.transport
                 raise
-            if not result.get("awaiting_confirmation"):
+            if result.get("awaiting_confirmation"):
+                self._arm_handoff_deadline(session_id, owner_key, context,
+                                           (command_id, expected_revision, target_mode, client))
+            else:
+                if context.handoff_timer is not None:
+                    context.handoff_timer.cancel()
+                    context.handoff_timer = None
                 context.output = runtime.transport
                 if result["mode"] == "browser":
                     with self._lock:
@@ -939,11 +1012,14 @@ class PlaybackSessions:
             with runtime.lock:
                 with context.lock:
                     state = self.store.snapshot(session_id, owner_key)
+                    if self.store.producer_lease_remaining(state):
+                        return {"accepted": False, "session": state}
                     active = self._active(state)
                     recent = context.progress
                     if (recent.get("instance_id") == instance_id and recent.get("item_id") == active.get("item_id")):
                         position_ms = recent["position_ms"]
                     result = self.store.interrupt_output(session_id, owner_key, instance_id, client_id, position_ms)
+                    _trace("interrupt", session_id, result["session"], accepted=result["accepted"])
                     if not result["accepted"]:
                         return result
                     state = result["session"]
@@ -1001,18 +1077,24 @@ class PlaybackSessions:
     def pause(self, session_id, owner_key):
         with self._locked_output(session_id, owner_key) as (context, output):
             output.pause()
-        return self.snapshot(session_id, owner_key)
+        state = self.snapshot(session_id, owner_key)
+        _trace("pause", session_id, state)
+        return state
 
     def resume(self, session_id, owner_key):
         with self._locked_output(session_id, owner_key) as (context, output):
             output.resume()
-        return self.snapshot(session_id, owner_key)
+        state = self.snapshot(session_id, owner_key)
+        _trace("resume", session_id, state)
+        return state
 
     def seek(self, session_id, owner_key, position_ms):
         self._position(position_ms)
         with self._locked_output(session_id, owner_key) as (context, output):
             output.seek(position_ms)
-        return self.snapshot(session_id, owner_key)
+        state = self.snapshot(session_id, owner_key)
+        _trace("seek", session_id, state)
+        return state
 
     def set_volume(self, session_id, owner_key, volume):
         if type(volume) is not int or not 0 <= volume <= 100:
@@ -1213,6 +1295,8 @@ class PlaybackSessions:
         result = self.coordinator.close_session(session_id, owner_key, command_id or uuid4().hex,
                                                 state["revision"] if expected_revision is None else expected_revision)
         context.closing = True
+        if context.handoff_timer is not None:
+            context.handoff_timer.cancel()
         self._cancel_timer_worker(context)
         self._clear_targets(context)
         self._release_preparations(session_id, self._preparation_ids(state))
@@ -1249,6 +1333,8 @@ class PlaybackSessions:
                     for sid, context in contexts
                     if self.store.snapshot(sid, owners[sid])["status"] == "interrupted"}
         for sid, context in contexts:
+            if context.handoff_timer is not None:
+                context.handoff_timer.cancel()
             self._cancel_timer_worker(context)
             self._clear_targets(context)
         for job in jobs:

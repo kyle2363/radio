@@ -1,11 +1,50 @@
 """A vanished browser output retires its grant without ending its listen."""
 import asyncio
 from unittest.mock import Mock
+import pytest
 
 from db import database
 from db.playback_store import PlaybackStore
 from playback_api import PlaybackEventHub
 from tests.test_playback_sessions import domain, start
+
+
+def test_old_grace_generation_cannot_retire_second_disconnect():
+    async def run():
+        service = Mock()
+        hub = PlaybackEventHub(disconnect_grace=0)
+        first, second = object(), object()
+        lease = {'lock': asyncio.Lock(), 'users': 1, 'generation': second}
+        hub._connection_locks[('s', 'page')] = lease
+        # Both sockets have disconnected; the first timer is now runnable.
+        await hub._release_after_grace(service, 's', 'owner', 'page', lease, first, 'instance')
+        service.interrupt_output.assert_not_called()
+        assert not hub._connection_locks
+    asyncio.run(run())
+
+
+def test_grace_cannot_retire_new_instance_for_same_page():
+    service = Mock()
+    service.snapshot.return_value = {'mode': 'browser', 'output_client_id': 'page', 'instance_id': 'new'}
+    PlaybackEventHub._retire_output(service, 's', 'owner', 'page', 'old')
+    service.interrupt_output.assert_not_called()
+
+
+def test_persisted_lease_blocks_restart_reactivation_until_deadline(domain):
+    from db.playback_store import ConflictError
+    service, sid, owner, *_ = domain
+    now = [1000.0]
+    service.store._wall_clock = lambda: now[0]
+    plan, _ = start(service, sid, owner)
+    service.renew_producer_lease(sid, owner, plan['instance_id'], 'tab-a')
+    interrupted = service.store.interrupt_session(sid, owner)['session']
+    restored_store = PlaybackStore()
+    restored_store._wall_clock = lambda: now[0]
+    with pytest.raises(ConflictError):
+        restored_store.reactivate(sid, owner, 'resume', interrupted['revision'], 'tab-b')
+    now[0] += 13
+    restored = restored_store.reactivate(sid, owner, 'resume', interrupted['revision'], 'tab-b')
+    assert restored['items'][0]['attempt_id'] == plan['items'][0]['attempt_id']
 
 
 def test_store_disconnect_preserves_attempt_history_and_current_item():

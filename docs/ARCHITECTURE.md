@@ -157,3 +157,44 @@ Live model recommendation/quality, generated DJ and guest speech, audible VLC/EQ
 ### Instance boundary
 
 Configure each runtime with its own `RADIO_DATA_DIR`, `RADIO_MUSIC_DIR`, and `RADIO_METADATA_DIR`. TTS and managed process startup can be disabled with `RADIO_TTS_ENABLED` and `RADIO_PROC_MGR_ENABLED`. Playback coordinator, output admission, and queue locks are process-local: run one API worker for a given instance. Store private backups inside that instance's data directory and keep them out of source control.
+
+### Playback reliability update — October 28, 2026
+
+Control connectivity and physical playback are separate. A dropped control socket
+keeps the current browser media element and buffered bytes. Local pause, seek,
+resume and volume use the browser engine; native controls keep their existing
+server path. Existing legacy status reads retain their full response contracts.
+
+A browser obtains a producer permit through `POST /api/playback/sessions/{id}/lease`
+before decoding, renewing every three seconds. The permit lasts twelve seconds;
+its expiry persists in session JSON without changing the command revision. The
+client uses a conservative deadline measured from the request's monotonic start,
+with an early safety margin. With WebAudio, scheduled gain also silences expired
+output independently of the page timer. The HTML-only fallback relies on timers
+and media callbacks: a frozen browser renderer cannot provide the same strict
+audio-clock fence. OS sleep, heavy throttling and fallback behavior remain manual
+acceptance checks. Server wall-clock changes can affect persisted lease expiry.
+
+Handoff requires correlated quiescence or an expired absent producer permit.
+Socket absence alone does not authorize overlap. Each document has a fresh
+producer identity; session storage restores controller credentials, not producer
+identity. Reloading an active page can therefore wait for its former permit to
+expire before explicit recovery. Grace cleanup retains the original connection
+generation and playback instance and serializes with replacement registration.
+
+Browser observations queue in memory with fixed event IDs through transient
+failures. Recovery flushes them in order before reconciling authoritative state;
+obsolete progress is dropped/coalesced. The outbox covers temporary outages of
+the same page, not browser crashes or loss of the page's memory. Completion waits
+for server acceptance and never invents a recommendation while offline. A restart
+retires old instances, retains logical attempts, and requires explicit reactivation;
+the persisted old permit must first expire. Receipt retries cannot add duplicate
+history. Pending handoffs poll with the original command identity and cancel or
+reconcile the same operation at their deadline; abandoned native reservations are
+released by server cleanup.
+
+Replay is an idempotent in-place seek to zero on the current started song. It
+keeps the attempt, item, instance, pause intent and upcoming queue. Each distinct
+replay command records one replay signal; retries reuse the receipt. It does not
+request recommendations, start a new listening session or add a completion.
+The queue refreshes its taste cache without writing a second durable replay.

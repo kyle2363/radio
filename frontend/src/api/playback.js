@@ -2,27 +2,40 @@ import { BrowserAudioEngine } from '../audio/BrowserAudioEngine.js';
 
 const STORAGE_KEY = 'radio.playback.session';
 const identity = () => globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+// A duplicated tab may inherit sessionStorage byte-for-byte. Keep producer
+// identity in the page's JS realm, never in copied storage.
+const DOCUMENT_CLIENT_ID = identity();
 
 function storedSession(storage) {
   try { return JSON.parse(storage?.getItem(STORAGE_KEY) || 'null'); } catch { return null; }
 }
 
-export function createPlaybackApi({ baseUrl = '', fetchImpl = globalThis.fetch, onUnauthorized = () => {} } = {}) {
+export function createPlaybackApi({ baseUrl = '', fetchImpl = globalThis.fetch, onUnauthorized = () => {}, timeoutMs = 10000 } = {}) {
   return {
     async request(method, path, body, owner, signal) {
       const headers = { 'Content-Type': 'application/json' };
       if (owner) headers['X-Radio-Playback-Owner'] = owner;
-      const response = await fetchImpl(`${baseUrl}/api/playback/sessions${path}`, {
-        method, headers, credentials: 'include', signal,
-        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-      });
-      if (response.status === 401) onUnauthorized();
-      if (!response.ok) {
-        const error = new Error('The station could not complete this playback request.');
-        error.status = response.status;
-        throw error;
+      const abort = new AbortController();
+      const cancel = () => abort.abort(signal.reason);
+      if (signal?.aborted) cancel();
+      else signal?.addEventListener('abort', cancel, { once: true });
+      const timer = setTimeout(() => abort.abort(new DOMException('Playback request timed out.', 'TimeoutError')), timeoutMs);
+      try {
+        const response = await fetchImpl(`${baseUrl}/api/playback/sessions${path}`, {
+          method, headers, credentials: 'include', signal: abort.signal,
+          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        });
+        if (response.status === 401) onUnauthorized();
+        if (!response.ok) {
+          const error = new Error('The station could not complete this playback request.');
+          error.status = response.status;
+          throw error;
+        }
+        return await response.json();
+      } finally {
+        clearTimeout(timer);
+        signal?.removeEventListener('abort', cancel);
       }
-      return response.json();
     },
   };
 }
@@ -32,18 +45,21 @@ export class PlaybackSessionController {
   constructor({ api = createPlaybackApi(), apiBase = '', wsUrl, clientId = null,
     electron = Boolean(globalThis.window?.electron), storage = globalThis.sessionStorage,
     socketFactory = url => new WebSocket(url), engineFactory = options => new BrowserAudioEngine(options),
-    onChange = () => {}, reconnectDelay = 1500, connectTimeout = 8000, handoffTimeout = 20000,
+    onChange = () => {}, reconnectDelay = 1500, connectTimeout = 8000, handoffTimeout = 20000, handoffRetryDelay = 1000,
     eventTarget = globalThis.window } = {}) {
-    // A page keeps its output grant across reloads: a fresh identity would make
-    // the server's own grant look like a foreign browser and block reconnection.
-    const pageClient = clientId || storedSession(storage)?.client_id || identity();
+    // Capabilities restore the logical session, while each document gets a
+    // distinct producer identity so duplicated tabs cannot emit concurrently.
+    const pageClient = clientId || DOCUMENT_CLIENT_ID;
     Object.assign(this, { api, clientId: pageClient, electron, storage, socketFactory, onChange,
-      reconnectDelay, connectTimeout, handoffTimeout, eventTarget });
+      reconnectDelay, connectTimeout, handoffTimeout, handoffRetryDelay, eventTarget });
     const base = new URL(apiBase || globalThis.location?.origin || 'http://localhost:8765');
     this.wsUrl = wsUrl || `${base.href.replace(/\/$/, '').replace(/^http/, 'ws')}/api/playback/sessions/events`;
     this.disposed = false;
+    this.leaseTimer = null;
+    this.leasePromise = null;
+    this.leaseInstanceId = null;
     this.state = { session: null, audio: { status: 'idle' }, connected: false, loading: true, error: null, pendingHandoff: false, needsReconnect: false, retryNeeded: false };
-    this.engine = engineFactory({ clientId: pageClient, apiBase,
+    this.engine = engineFactory({ clientId: pageClient, apiBase, requireLease: true,
       postEvent: body => this.request('events', body),
       postPosition: body => this.request('position', body),
       onState: audio => this.update({ audio }), onError: error => this.audioError(error),
@@ -54,8 +70,8 @@ export class PlaybackSessionController {
       },
     });
     this.offline = () => {
-      this.suspendLocal('Network connection lost. Reconnect when ready.');
-      this.refresh().catch(error => this.fail(error));
+      this.controlDisconnected('Network connection lost. Reconnecting to the station.');
+      this.scheduleReconnect();
     };
     this.eventTarget?.addEventListener?.('offline', this.offline);
   }
@@ -74,6 +90,13 @@ export class PlaybackSessionController {
     // fabricated producer event through a broken connection.
     if (this.state.session) this.engine.loadSnapshot({ ...this.state.session, output_client_id: null });
     this.update({ needsReconnect: this.suspended, audio: { ...this.state.audio, status: 'interrupted', recoverable: true }, ...(message ? { error: message } : {}) });
+  }
+  controlDisconnected(message) {
+    if (this.disposed) return;
+    // Keep the current media element and its buffered bytes alive while only
+    // the control channel is unavailable. The engine owns observed events and
+    // local controls until the station can reconcile them.
+    this.update({ connected: false, ...(message ? { error: message } : {}) });
   }
   async audioError(error) {
     this.update({ error: error.message });
@@ -161,7 +184,17 @@ export class PlaybackSessionController {
       this.update({ audio: { ...this.state.audio, status: 'awaiting_user_gesture' } });
       return;
     }
-    this.engine.loadSnapshot(session);
+    if (session.mode === 'browser' && session.output_client_id === this.clientId && session.instance_id &&
+        !['idle', 'stopped', 'interrupted', 'awaiting_output'].includes(session.status)) {
+      this.ensureLease(session).then(() => {
+        if (!this.disposed && this.state.session?.revision === session.revision && this.state.session?.instance_id === session.instance_id) {
+          this.engine.loadSnapshot(session);
+          if (this.gesture && session.status === 'playing' && this.engine.getState?.().reason === 'lease_expired') {
+            this.engine.activate().catch(error => this.fail(error));
+          }
+        }
+      }).catch(error => this.fail(error));
+    } else this.engine.loadSnapshot(session);
   }
   refresh() { return this.request('', undefined, 'GET'); }
   connect() {
@@ -186,7 +219,8 @@ export class PlaybackSessionController {
       if (this.socket !== socket || this.disposed) return;
       this.clearConnectTimer();
       socket.send(JSON.stringify({ session_id: this.sessionId, owner_key: this.owner, client_id: this.clientId }));
-      this.update({ connected: true });
+      this.update({ connected: true, error: null });
+      this.recoverControl().catch(error => this.fail(error));
       // A transport drop retires DOM audio for safety. When the control
       // channel is genuinely back and the grant is still ours, resume it
       // without making the listener press a reconnect button.
@@ -206,7 +240,7 @@ export class PlaybackSessionController {
       if (this.socket !== socket || this.disposed) return;
       this.clearConnectTimer();
       this.socket = null;
-      this.suspendLocal('Playback connection lost. Reconnect when ready.');
+      this.controlDisconnected('Playback connection lost. Reconnecting to the station.');
       this.update({ connected: false });
       this.scheduleReconnect();
     };
@@ -231,6 +265,10 @@ export class PlaybackSessionController {
   }
   async resume() {
     if (this.disposed || !this.suspended) return null;
+    // Browser media can have queued completion/skip receipts while offline.
+    // Persist them before reading state so a stale snapshot cannot revive a
+    // terminal item or overwrite the resulting queue position.
+    await this.engine.flushPendingEvents?.();
     await this.refresh();
     if (this.disposed || !this.suspended) return null;
     const session = this.state.session;
@@ -244,6 +282,7 @@ export class PlaybackSessionController {
     this.suspended = false;
     this.gesture = true;
     this.update({ error: null, needsReconnect: false });
+    await this.ensureLease(session);
     this.engine.loadSnapshot(session);
     if (session.status === 'paused') return session;
     return this.engine.activate();
@@ -252,6 +291,7 @@ export class PlaybackSessionController {
   async activate() {
     if (this.state.needsReconnect) return this.reactivate();
     this.gesture = true;
+    if (this.state.session?.mode === 'browser' && this.state.session.output_client_id === this.clientId) await this.ensureLease(this.state.session);
     if (this.state.session) this.engine.loadSnapshot(this.state.session);
     return this.engine.activate();
   }
@@ -282,6 +322,7 @@ export class PlaybackSessionController {
       // quiesce ACK over the channel that just failed; resync locally instead.
       if (session.mode === 'browser' && session.output_client_id === this.clientId) {
         this.clearPendingHandoff();
+        await this.ensureLease(session);
         this.engine.loadSnapshot(session);
         this.connect();
         await this.engine.activate().catch(error => this.fail(error));
@@ -291,8 +332,66 @@ export class PlaybackSessionController {
     }
     this.clearPendingHandoff();
     const result = await this.request('reactivate', { ...this.command(), client_id: this.clientId });
+    if (this.state.session?.instance_id) await this.ensureLease(this.state.session);
     this.connect();
     return result;
+  }
+  async ensureLease(session = this.state.session, force = false) {
+    if (!session?.instance_id || session.mode !== 'browser' || session.output_client_id !== this.clientId) return null;
+    if (!force && this.leaseInstanceId === session.instance_id && this.leaseExpiresAt > performance.now() + 1000) return true;
+    if (this.leasePromise && this.leasePromiseInstanceId === session.instance_id) return this.leasePromise;
+    const instanceId = session.instance_id;
+    const requestStartedAt = performance.now();
+    this.leasePromiseInstanceId = instanceId;
+    const pending = this.api.request('POST', `/${encodeURIComponent(this.sessionId)}/lease`,
+      { instance_id: instanceId, client_id: this.clientId }, this.owner).then(lease => {
+      if (this.disposed || this.state.session?.instance_id !== instanceId || this.state.session?.output_client_id !== this.clientId) return null;
+      const granted = this.engine.grantLease?.(lease, requestStartedAt, instanceId);
+      if (granted === false) throw new Error('The browser playback lease was rejected.');
+      this.leaseInstanceId = instanceId;
+      this.leaseExpiresAt = requestStartedAt + Math.max(0, Number(lease.lease_remaining_ms) - 1000);
+      this.armLeaseRenewal();
+      return true;
+    }).finally(() => {
+      if (this.leasePromise === pending) {
+        this.leasePromise = null;
+        this.leasePromiseInstanceId = null;
+      }
+    });
+    this.leasePromise = pending;
+    return pending;
+  }
+  armLeaseRenewal() {
+    clearTimeout(this.leaseTimer);
+    if (this.disposed || !this.leaseInstanceId) return;
+    this.leaseTimer = setTimeout(() => {
+      const session = this.state.session;
+      if (!session || session.instance_id !== this.leaseInstanceId || session.mode !== 'browser' || session.output_client_id !== this.clientId) return;
+      this.ensureLease(session, true).catch(error => {
+        this.fail(error);
+        if (!this.disposed && this.state.session?.instance_id === session.instance_id &&
+            this.state.session?.output_client_id === this.clientId) this.armLeaseRenewal();
+      });
+    }, 3000);
+    this.leaseTimer.unref?.();
+  }
+  async recoverControl() {
+    // Event receipts are ordered and durable at the client. Flush them before
+    // reading a snapshot that could still reflect pre-command state.
+    await this.engine.flushPendingEvents?.();
+    if (this.pendingVolume != null) {
+      const volume = this.pendingVolume;
+      try {
+        await this.request('volume', { volume });
+        if (this.pendingVolume === volume) this.pendingVolume = null;
+      } catch (error) { this.fail(error); }
+    }
+    const current = this.state.session;
+    if (current?.mode === 'browser' && current.output_client_id === this.clientId && current.instance_id) {
+      try { await this.ensureLease(current, true); }
+      catch (error) { if (![404, 409].includes(error.status)) throw error; }
+    }
+    return this.refresh();
   }
   async switchOutput(mode) {
     if (!['vlc', 'browser'].includes(mode)) throw new Error('Unknown playback output.');
@@ -305,15 +404,41 @@ export class PlaybackSessionController {
   async retryHandoff() {
     const pending = this.pendingHandoff;
     if (!pending) return null;
-    const result = await this.request('handoff', pending);
-    if (!result.awaiting_confirmation) {
-      this.clearPendingHandoff();
-      this.connect();
+    if (this.handoffInFlight) return this.handoffInFlight;
+    this.handoffInFlight = this.request('handoff', pending).then(result => {
+      if (this.pendingHandoff !== pending) return result;
+      if (!result.awaiting_confirmation) {
+        this.clearPendingHandoff();
+        this.connect();
+      } else this.scheduleHandoffRetry();
+      return result;
+    }).catch(error => {
+      if (this.pendingHandoff === pending) this.scheduleHandoffRetry();
+      throw error;
+    }).finally(() => { this.handoffInFlight = null; });
+    return this.handoffInFlight;
+  }
+  async cancelOrReconcileHandoff() {
+    const pending = this.pendingHandoff;
+    if (!pending || this.disposed) return null;
+    try {
+      const result = await this.request('handoff/cancel', pending);
+      if (this.pendingHandoff !== pending) return result;
+      if (result?.cancelled || result?.duplicate) {
+        this.clearPendingHandoff();
+        this.connect();
+        return result;
+      }
+    } catch (error) {
+      this.fail(error);
     }
-    return result;
+    // The cancellation can race a successful commit. Retry the exact receipt
+    // body so the server returns the accepted handoff instead of minting one.
+    return this.retryHandoff().catch(error => this.fail(error));
   }
   clearPendingHandoff() {
     clearTimeout(this.handoffTimer);
+    clearTimeout(this.handoffRetryTimer);
     this.handoffTimer = null;
     this.pendingHandoff = null;
     this.pendingHandoffAt = 0;
@@ -321,16 +446,26 @@ export class PlaybackSessionController {
   }
   armHandoffTimer() {
     clearTimeout(this.handoffTimer);
-    this.pendingHandoffAt = Date.now();
+    if (!this.pendingHandoffAt) this.pendingHandoffAt = Date.now();
     if (!(this.handoffTimeout > 0)) return;
     // A quiesce confirmation travels over the very socket a silent page may
     // have lost. Without a deadline the selector would wait on it forever.
     this.handoffTimer = setTimeout(() => {
       if (this.disposed || !this.pendingHandoff) return;
-      this.clearPendingHandoff();
-      this.fail(new Error('The output switch did not confirm. Reconnect and try again.'));
-    }, this.handoffTimeout);
+      // The server may have committed the reservation while its acknowledgement
+      // was lost. Cancel/reconcile with the original command identity.
+      this.cancelOrReconcileHandoff();
+    }, Math.max(0, this.handoffTimeout - (Date.now() - this.pendingHandoffAt)));
     this.handoffTimer.unref?.();
+  }
+  scheduleHandoffRetry() {
+    clearTimeout(this.handoffRetryTimer);
+    if (this.disposed || !this.pendingHandoff || !(this.handoffRetryDelay > 0)) return;
+    this.handoffRetryTimer = setTimeout(() => {
+      if (!this.pendingHandoff || this.disposed) return;
+      this.retryHandoff().catch(error => this.fail(error));
+    }, this.handoffRetryDelay);
+    this.handoffRetryTimer.unref?.();
   }
 
   async routeLegacy(path, options = {}) {
@@ -341,14 +476,14 @@ export class PlaybackSessionController {
     const match = path.match(/^\/api\/play\/(\d+)$/);
     if (match) return this.play(Number(match[1]));
     if (path === '/api/play/status') return this.legacyStatus();
-    if (path === '/api/play/pause') return this.request('pause');
-    if (path === '/api/play/resume') return this.play();
-    if (path === '/api/play/seek') return this.request('seek', { position_ms: Math.round(body.ms) });
-    if (path === '/api/play/volume') return this.request('volume', body);
+    if (path === '/api/play/pause') return this.localControl('pause');
+    if (path === '/api/play/resume') return this.localControl('resume');
+    if (path === '/api/play/seek') return this.localControl('seek', { position_ms: Math.round(body.ms) });
+    if (path === '/api/play/volume') return this.localControl('volume', body);
     if (path === '/api/play/volume-normalization') return this.request('normalization', body);
     if (path === '/api/play/eq') return method === 'GET' ? { preset: current?.preferences?.eq || 'flat' } : this.request('eq', body);
     if (path === '/api/play/stop') return this.request('stop', this.command());
-    if (['/api/play/next', '/api/queue/skip', '/api/queue/play-next', '/api/queue/pop-next'].includes(path)) return this.request('next', this.command());
+    if (path === '/api/queue/replay') return this.request('replay', this.command());
     if (path === '/api/queue') return current?.queue || [];
     if (path === '/api/queue/status') return { queue: current?.queue || [], queue_size: current?.queue?.length || 0, rebuilding: false };
     if (path === '/api/queue/clear') return this.request('queue/clear');
@@ -364,6 +499,42 @@ export class PlaybackSessionController {
     if (path === '/api/sleep/timer') return this.request('timer', body, method);
     throw new Error('This control is not available for the selected listening session.');
   }
+  async localControl(action, body = {}) {
+    const session = this.state.session;
+    if (action === 'resume' && (!session || ['idle', 'stopped'].includes(session.status) ||
+        session.items?.[session.active_index || 0]?.terminal)) {
+      // Resume is also the UI's Play action. With no live plan, ask the server
+      // to reserve the next item instead of calling play() on an empty engine.
+      this.gesture = true;
+      return this.play();
+    }
+    if (session?.mode !== 'browser' || session.output_client_id !== this.clientId || this.state.needsReconnect) {
+      if (action === 'resume') return this.play();
+      return this.request(action, body);
+    }
+    // Pausing must remain immediate during a transport outage. Seek and volume
+    // use the engine's existing permit; only resume needs a fresh network grant.
+    if (action === 'resume') await this.ensureLease(session);
+    if (this.disposed || this.state.session?.instance_id !== session.instance_id) return null;
+    switch (action) {
+      case 'pause': this.engine.pause(); break;
+      case 'resume': await this.engine.play(); break;
+      case 'seek': this.engine.seek?.(body.position_ms); break;
+      case 'volume': {
+        this.engine.setVolume?.(body.volume);
+        this.pendingVolume = body.volume;
+        if (this.state.connected) {
+          try {
+            await this.request('volume', body);
+            if (this.pendingVolume === body.volume) this.pendingVolume = null;
+          } catch { /* retain the latest local setting for reconnect */ }
+        }
+        break;
+      }
+      default: return this.request(action, body);
+    }
+    return { local: true };
+  }
   legacyStatus() {
     const session = this.state.session || {}, item = session.items?.[session.active_index || 0];
     return { ...session, state: session.status, is_playing: session.status === 'playing',
@@ -377,8 +548,11 @@ export class PlaybackSessionController {
     this.eventTarget?.removeEventListener?.('offline', this.offline);
     clearTimeout(this.reconnectTimer);
     clearTimeout(this.handoffTimer);
+    clearTimeout(this.handoffRetryTimer);
+    clearTimeout(this.leaseTimer);
     this.clearConnectTimer();
     clearInterval(this.poll);
+    clearTimeout(this.leaseTimer);
     const socket = this.socket;
     this.socket = null;
     socket?.close();

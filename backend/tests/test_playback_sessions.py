@@ -21,6 +21,7 @@ class Queue:
         self.claims, self.starts, self.activations = [], [], []
         self.record_completion = Mock()
         self.record_heart = Mock()
+        self.record_replay = Mock()
         self.on_song_ended = Mock()
         self.request_rebuild = Mock()
         self.shutdown = Mock()
@@ -84,6 +85,71 @@ def start(service, sid, owner):
     item = plan['items'][0]
     result = service.observe(sid, owner, 'start', plan['instance_id'], item['item_id'], 'started', client_id='tab-a')
     return plan, result
+
+
+def test_producer_lease_blocks_disconnected_reclaim_until_expired_and_retries_once(domain):
+    service, sid, owner, *_ = domain
+    now = [1000.0]
+    service.store._wall_clock = lambda: now[0]
+    service._producer_online = lambda *args: False
+    plan, started = start(service, sid, owner)
+    revision = started['session']['revision']
+    permit = service.renew_producer_lease(sid, owner, plan['instance_id'], 'tab-a')
+    assert permit['lease_remaining_ms'] == 12000
+    pending = service.handoff(sid, owner, 'lease-move', revision, 'browser', 'tab-b')
+    assert pending['awaiting_confirmation']
+    assert service.store.snapshot(sid, owner)['instance_id'] == plan['instance_id']
+    now[0] += 13
+    moved = service.handoff(sid, owner, 'lease-move', revision, 'browser', 'tab-b')
+    assert moved['output_client_id'] == 'tab-b'
+    retried = service.handoff(sid, owner, 'lease-move', revision, 'browser', 'tab-b')
+    assert retried['duplicate'] and retried['instance_id'] == moved['instance_id']
+    assert retried['revision'] == moved['revision']
+    with pytest.raises(ConflictError):
+        service.handoff(sid, owner, 'lease-move', revision, 'browser', 'tab-c')
+    with pytest.raises(ConflictError):
+        service.renew_producer_lease(sid, owner, plan['instance_id'], 'tab-a')
+
+
+def test_cancel_pending_handoff_releases_native_slot_and_rejects_late_ack(domain):
+    service, sid, owner, *_ = domain
+    plan, started = start(service, sid, owner)
+    revision = started['session']['revision']
+    service.handoff(sid, owner, 'cancel-me', revision, 'vlc')
+    result = service.cancel_handoff(sid, owner, 'cancel-me', revision, 'vlc')
+    assert result['cancelled'] and service._vlc_session is None
+    assert service.coordinator._runtime(sid, owner).handoff_intent is None
+    with pytest.raises(ValueError):
+        service.ack_quiesce(sid, owner, plan['instance_id'], 'cancel-me', 2, client_id='tab-a')
+    assert service.handoff(sid, owner, 'cancel-me', revision, 'vlc')['cancelled']
+
+
+def test_handoff_deadline_releases_admission_and_committed_cancel_reconciles(domain):
+    service, sid, owner, *_ = domain
+    timers = []
+    class Timer:
+        def __init__(self, delay, callback):
+            self.delay, self.callback = delay, callback
+            self.cancel = Mock()
+            self.start = Mock()
+            timers.append(self)
+    service._handoff_timer_factory = Timer
+    plan, started = start(service, sid, owner)
+    revision = started['session']['revision']
+    service.handoff(sid, owner, 'expires', revision, 'vlc')
+    assert timers[0].delay == 15
+    timers[0].callback()
+    assert service._vlc_session is None
+    assert service.handoff(sid, owner, 'expires', revision, 'vlc')['cancelled']
+    revision = service.snapshot(sid, owner)['revision']
+    service.handoff(sid, owner, 'winner', revision, 'vlc')
+    service.ack_quiesce(sid, owner, plan['instance_id'], 'winner', 25, client_id='tab-a')
+    moved = service.handoff(sid, owner, 'winner', revision, 'vlc')
+    cancelled = service.cancel_handoff(sid, owner, 'winner', revision, 'vlc')
+    assert not cancelled.get('cancelled') and cancelled['duplicate']
+    assert cancelled['instance_id'] == moved['instance_id']
+    timers[-1].callback()
+    assert service.snapshot(sid, owner)['instance_id'] == moved['instance_id']
 
 
 def test_constructor_is_lazy_and_owner_is_only_returned_once(domain):

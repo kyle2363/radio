@@ -238,6 +238,30 @@ class PlaybackCoordinator:
                 runtime.transport.stop()
         return state
 
+    def replay(self, session_id, owner, command_id, expected_revision):
+        """Restart the active song in place without changing its queue reservation."""
+        runtime = self._runtime(session_id, owner)
+        with runtime.transport_lock:
+            with runtime.lock:
+                duplicate = self.store.command_snapshot(session_id, owner, command_id, "replay", expected_revision)
+                if duplicate is not None:
+                    return duplicate
+                state = self.store.snapshot(session_id, owner)
+                if state["revision"] != expected_revision:
+                    raise ConflictError("Playback revision changed")
+                index = state.get("active_index", 0)
+                items = state.get("items", [])
+                item = items[index] if index < len(items) else None
+                if (state.get("status") not in ("playing", "paused") or not item or
+                        item.get("kind") != "song" or not item.get("started") or item.get("terminal")):
+                    raise ConflictError("There is no started song to replay")
+                if runtime.active_epoch != runtime.epoch or runtime.instance_id != state.get("instance_id"):
+                    raise ConflictError("The current playback plan is no longer active")
+                seek = getattr(runtime.transport, "seek", None)
+                if not callable(seek) or seek(0) is False:
+                    raise RuntimeError("Playback output could not restart the current song")
+                return self.store.replay(session_id, owner, command_id, expected_revision)
+
     def observe(self, session_id, owner, event_id, instance_id, item_id, kind, **kwargs):
         runtime = self._runtime(session_id, owner)
         with runtime.lock:
@@ -273,7 +297,7 @@ class PlaybackCoordinator:
         return result
 
     def handoff_output(self, session_id, owner, command_id, expected_revision,
-                       target_mode, target_client_id, *, target_transport):
+                       target_mode, target_client_id, *, target_transport, source_expired=False):
         """Move this whole listening session to an internally resolved output.
 
         Service admission must reserve exclusive outputs before calling here.
@@ -289,7 +313,7 @@ class PlaybackCoordinator:
                                                         target_mode, target_client_id)
                 before = duplicate or self.store.snapshot(session_id, owner)
                 if duplicate is not None:
-                    if (before["status"] != "awaiting_output" or
+                    if (duplicate.get("cancelled") or before["status"] != "awaiting_output" or
                             self.store.command_instance(session_id, owner, command_id) != before["instance_id"]):
                         return duplicate
                 if duplicate is None:
@@ -309,7 +333,7 @@ class PlaybackCoordinator:
                                                       before.get("desired_status", "playing") if before["status"] == "awaiting_output" else "playing")}
                 epoch = runtime.epoch
             if duplicate is None:
-                if before["items"] and before["status"] != "awaiting_output":
+                if before["items"] and before["status"] != "awaiting_output" and not source_expired:
                     confirmation = runtime.transport.quiesce(before["instance_id"], command_id=command_id)
                     correlated = bool(confirmation and confirmation.get("confirmed") is True
                                       and confirmation.get("instance_id") == before["instance_id"]
@@ -328,7 +352,8 @@ class PlaybackCoordinator:
                     moved = self.store.handoff_output(session_id, owner, command_id, expected_revision,
                                                       target_mode, target_client_id, position_ms=position,
                                                       observed_revision=current["revision"],
-                                                      desired_status=runtime.handoff_intent["desired_status"])
+                                                      desired_status=runtime.handoff_intent["desired_status"],
+                                                      source_expired=source_expired)
                     runtime.epoch += 1
                     epoch = runtime.epoch
                     runtime.active_epoch = epoch

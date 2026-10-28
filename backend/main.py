@@ -2484,13 +2484,11 @@ def queue_play_next():
 @app.post("/api/queue/replay")
 def queue_replay():
     p = player_engine.get_player()
-    song_id = p.get_current_song_id()
-    if not song_id:
+    result = p.replay()
+    item = result.get('items', [])[result.get('active_index', 0)] if result.get('items') else {}
+    song_id = item.get('song_id')
+    if not song_id or result.get('status') not in ('playing', 'paused'):
         return {'error': 'No song to replay'}
-    result = p.feedback('replayed')
-    p.context.queue.reset_skip_streak()
-    p.context.queue.clear_undo()
-    p.play_song(song_id)
     broadcast('song_replayed', {'song_id': song_id})
     return {'status': 'replaying', 'song_id': song_id}
 

@@ -253,19 +253,33 @@ def install_app_mocks(main_module, qa_port):
     # output to dummy and keep its configuration in the QA workspace.
     try:
         import vlc
-        original_instance = vlc.Instance
-        config_path = str(Path(os.environ["VLC_CONFIG_PATH"]))
-
-        def isolated_vlc_instance(*args, **kwargs):
-            options = []
-            for arg in args:
-                options.extend(arg if isinstance(arg, (tuple, list)) else [arg])
-            options.extend(["--quiet", "--aout=dummy", "--ignore-config", f"--config={config_path}"])
-            return original_instance(options, **kwargs)
-
-        vlc.Instance = isolated_vlc_instance
+        install_vlc_dummy_output(vlc, os.environ["VLC_CONFIG_PATH"])
     except ImportError:
         pass
+
+
+def install_vlc_dummy_output(vlc_module, config_path):
+    """Keep python-vlc's native Instance type while forcing dummy audio.
+
+    python-vlc passes an integer native pointer back through Instance when it
+    wraps API results. Replacing the class with a factory function breaks that
+    pointer wrapping, so only patch the class allocator and leave pointers
+    untouched.
+    """
+    instance_type = vlc_module.Instance
+    original_new = instance_type.__new__
+    extra_options = ("--quiet", "--aout=dummy", "--ignore-config", f"--config={config_path}")
+
+    def isolated_instance_new(cls, *args):
+        if len(args) == 1 and isinstance(args[0], int):
+            return original_new(cls, *args)
+        options = []
+        for arg in args:
+            options.extend(arg if isinstance(arg, (tuple, list)) else [arg])
+        options.extend(extra_options)
+        return original_new(cls, options)
+
+    instance_type.__new__ = staticmethod(isolated_instance_new)
 
 
 def run(port=18765):

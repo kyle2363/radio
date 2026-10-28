@@ -60,6 +60,33 @@ def test_network_guard_allowlist_is_loopback_and_exact_port_only():
     assert not launcher.is_allowed_outbound_address(("127.0.0.1", 8081), 18765)
     assert not launcher.is_allowed_outbound_address(("192.168.1.20", 18765), 18765)
     assert not launcher.is_allowed_outbound_address(("example.com", 18765), 18765)
+
+
+def test_vlc_dummy_output_patch_preserves_native_pointer_wrapping():
+    from types import SimpleNamespace
+
+    calls = []
+
+    class NativeInstance:
+        def __new__(cls, *args):
+            calls.append(args)
+            if len(args) == 1 and isinstance(args[0], int):
+                return ("wrapped-pointer", args[0])
+            return object.__new__(cls)
+
+    vlc_module = SimpleNamespace(Instance=NativeInstance)
+    launcher.install_vlc_dummy_output(vlc_module, "C:/qa/vlc/vlcrc")
+
+    created = vlc_module.Instance(("--plugin-path=qa", "--quiet"))
+    wrapped = vlc_module.Instance(123456)
+
+    assert vlc_module.Instance is NativeInstance
+    assert isinstance(created, NativeInstance)
+    assert wrapped == ("wrapped-pointer", 123456)
+    assert len(calls) == 2
+    assert calls[0] == (["--plugin-path=qa", "--quiet", "--quiet", "--aout=dummy",
+                         "--ignore-config", "--config=C:/qa/vlc/vlcrc"],)
+    assert calls[1] == (123456,)
 def test_qa_storage_policy_rejects_original_data_and_outside_paths(tmp_path):
     import importlib.util
     from pathlib import Path
