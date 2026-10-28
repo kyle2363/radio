@@ -7,7 +7,10 @@ export default defineConfig({
   server: {
     port: 3000,
     proxy: {
-      "/api": { target: "http://localhost:8765", changeOrigin: true },
+      // The playback control socket lives at /api/playback/sessions/events.
+      // Without ws: true the dev server never answers its upgrade, leaving the
+      // page permanently deaf to pause/seek/quiesce and playback_state frames.
+      "/api": { target: "http://localhost:8765", changeOrigin: true, ws: true },
       "/ws": { target: "ws://localhost:8765", ws: true },
     },
   },

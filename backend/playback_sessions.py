@@ -156,11 +156,14 @@ class ListeningContext:
 
 
 class PlaybackSessions:
-    def __init__(self, store, media_factory, queue_factory=None, emit=None, vlc_output_factory=None):
+    def __init__(self, store, media_factory, queue_factory=None, emit=None, vlc_output_factory=None,
+                 producer_online=None):
         self.store, self._media_factory = store, media_factory
         self._media_instance = None
         self._queue_factory, self._emit = queue_factory, emit or (lambda *args: None)
         self._vlc_output_factory = vlc_output_factory
+        # Optional probe: does this browser client still hold a control channel?
+        self._producer_online = producer_online
         self._contexts, self._owners, self._prepared = {}, {}, {}
         self._lock = threading.RLock()
         self._local = threading.local()
@@ -805,6 +808,41 @@ class PlaybackSessions:
             if self._jobs.get(sid) is job:
                 self._jobs.pop(sid, None)
 
+    def _reclaim_vanished_browser(self, session_id, owner_key, target_mode, client, command_id, expected_revision):
+        """Regrant a browser output whose page can no longer confirm a quiesce.
+
+        A crashed, reloaded or pre-fixed page can leave its grant owned by a
+        client with no control channel. It can never acknowledge the handoff
+        quiesce, so the session would stay wedged on ``awaiting_confirmation``.
+        Retire that lease from its last checkpoint, then regrant explicitly.
+        """
+        probe = self._producer_online
+        if probe is None or target_mode != "browser" or client is None:
+            return None
+        state = self.store.snapshot(session_id, owner_key)
+        owner_client = state.get("output_client_id")
+        if not (state["mode"] == "browser" and owner_client and owner_client != client
+                and state["status"] in ("ready", "playing", "paused") and state["items"]):
+            return None
+        try:
+            online = bool(probe(session_id, owner_client))
+        except Exception:
+            logger.exception("Output liveness probe failed: session=%s", session_id)
+            online = True
+        if online:
+            return None
+        duplicate = self.store.handoff_snapshot(session_id, owner_key, command_id, expected_revision,
+                                                 target_mode, client)
+        if duplicate is not None:
+            return None
+        if state['revision'] != expected_revision:
+            raise ConflictError('Playback revision changed')
+        retired = self.interrupt_output(session_id, owner_key, state["instance_id"], owner_client)
+        if not retired.get("accepted"):
+            return None
+        return self.resume_interrupted(session_id, owner_key, f"reclaim-{uuid4().hex}",
+                                       retired["session"]["revision"], client)
+
     def handoff(self, session_id, owner_key, command_id, expected_revision, target_mode, target_client_id=None):
         # A server-assigned client ID is stable for retries of this command,
         # including after restart; it is a scoped ID, never an owner capability.
@@ -812,6 +850,10 @@ class PlaybackSessions:
         client = self._client(target_client_id if target_client_id is not None else generated) if target_mode == "browser" else None
         if target_mode not in ("vlc", "browser"):
             raise ValueError("Valid playback output mode required")
+        reclaimed = self._reclaim_vanished_browser(session_id, owner_key, target_mode, client,
+                                                   command_id, expected_revision)
+        if reclaimed is not None:
+            return reclaimed
         with self._locked_output(session_id, owner_key) as (context, previous):
             runtime = self.coordinator._runtime(session_id, owner_key)
             key, target = (command_id, target_mode), None

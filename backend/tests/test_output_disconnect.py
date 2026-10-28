@@ -78,7 +78,7 @@ def test_hub_old_same_client_disconnect_cannot_interrupt_replacement():
         service = Mock()
         service.snapshot.return_value = {'mode': 'browser', 'output_client_id': 'page', 'instance_id': 'instance'}
         service.interrupt_output.return_value = {'accepted': True}
-        hub = PlaybackEventHub()
+        hub = PlaybackEventHub(disconnect_grace=0)
         async def connect():
             incoming, sent = asyncio.Queue(), asyncio.Queue()
             async def receive(): return await incoming.get()
@@ -99,4 +99,65 @@ def test_hub_old_same_client_disconnect_cannot_interrupt_replacement():
         await new
         service.interrupt_output.assert_called_once_with('s', 'owner', 'instance', 'page')
         assert not hub._connections and not hub._connection_locks
+    asyncio.run(run())
+
+
+def _subscriber(hub, service, client='page'):
+    from starlette.websockets import WebSocket
+    incoming, sent = asyncio.Queue(), asyncio.Queue()
+
+    async def receive():
+        return await incoming.get()
+
+    async def send(message):
+        await sent.put(message)
+
+    scope = {'type': 'websocket', 'path': '/events', 'headers': [], 'query_string': b''}
+    task = asyncio.create_task(hub.websocket(WebSocket(scope, receive, send), service))
+    return incoming, sent, task
+
+
+async def _join(incoming, sent, client='page'):
+    await incoming.put({'type': 'websocket.connect'})
+    await sent.get()
+    await incoming.put({'type': 'websocket.receive',
+                        'text': f'{{"session_id":"s","owner_key":"owner","client_id":"{client}"}}'})
+    await sent.get()
+
+
+def test_hub_grace_delays_retirement_of_an_absent_page():
+    async def run():
+        service = Mock()
+        service.snapshot.return_value = {'mode': 'browser', 'output_client_id': 'page', 'instance_id': 'instance'}
+        hub = PlaybackEventHub(disconnect_grace=0.05)
+        incoming, sent, task = _subscriber(hub, service)
+        await _join(incoming, sent)
+        await incoming.put({'type': 'websocket.disconnect', 'code': 1006})
+        await task
+        # A closed control socket is not yet proof the station stopped playing.
+        service.interrupt_output.assert_not_called()
+        await asyncio.sleep(0.2)
+        service.interrupt_output.assert_called_once_with('s', 'owner', 'instance', 'page')
+        assert not hub._retiring
+    asyncio.run(run())
+
+
+def test_hub_reconnect_inside_grace_keeps_the_same_output():
+    async def run():
+        service = Mock()
+        service.snapshot.return_value = {'mode': 'browser', 'output_client_id': 'page', 'instance_id': 'instance'}
+        hub = PlaybackEventHub(disconnect_grace=0.1)
+        first, sent, first_task = _subscriber(hub, service)
+        await _join(first, sent)
+        await first.put({'type': 'websocket.disconnect', 'code': 1006})
+        await first_task
+        second, reply, second_task = _subscriber(hub, service)
+        await _join(second, reply)
+        await asyncio.sleep(0.2)
+        service.interrupt_output.assert_not_called()
+        await second.put({'type': 'websocket.disconnect', 'code': 1006})
+        await second_task
+        await asyncio.sleep(0.2)
+        service.interrupt_output.assert_called_once_with('s', 'owner', 'instance', 'page')
+        assert not hub._retiring and not hub._connections
     asyncio.run(run())

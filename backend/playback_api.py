@@ -1,8 +1,7 @@
-"""Typed session HTTP boundary and bounded, session-scoped event delivery.
-
-Install behind ApiSecurity. Controller capabilities travel only in the owner
-header or the first WebSocket frame, never in resource URLs. Disconnect only
-removes that subscriber: it cannot revoke a replacement browser grant.
+"""The HTTP boundary and its event hub. Controller capabilities travel only in
+the owner header or the first WebSocket frame, never in resource URLs.
+Disconnect removes that subscriber immediately and retires the browser grant
+only after a grace period in which the same page may reconnect.
 """
 import asyncio
 from copy import deepcopy
@@ -127,10 +126,17 @@ def _owner(value):
 
 
 class PlaybackEventHub:
-    def __init__(self, max_pending=64):
+    def __init__(self, max_pending=64, disconnect_grace=10.0):
         if max_pending < 1:
             raise ValueError('Positive event bound required')
+        if disconnect_grace < 0:
+            raise ValueError('Disconnect grace must be nonnegative')
         self.max_pending = max_pending
+        # A dropped control socket is not proof that the browser stopped
+        # playing: reloads, dev-proxy hiccups and sleeping laptops all close it.
+        # Wait this long for the same page to reconnect before retiring output.
+        self.disconnect_grace = disconnect_grace
+        self._retiring = set()
         self._lock = threading.RLock()
         self._subscribers = {}
         self._connections = {}
@@ -140,6 +146,11 @@ class PlaybackEventHub:
     def subscriber_count(self):
         with self._lock:
             return sum(len(value) for value in self._subscribers.values())
+
+    def is_connected(self, session_id, client_id):
+        """True while this exact page holds a live control channel."""
+        with self._lock:
+            return (session_id, client_id) in self._connections
 
     def subscribe(self, session_id):
         queue = asyncio.Queue(self.max_pending)
@@ -234,24 +245,51 @@ class PlaybackEventHub:
             if queue is not None:
                 self.unsubscribe(sid, queue)
             if token is not None:
-                def finish_disconnect():
-                    state = service.snapshot(sid, owner)
-                    if state.get('mode') == 'browser' and state.get('output_client_id') == client:
-                        service.interrupt_output(sid, owner, state.get('instance_id'), client)
+                retired = False
                 try:
-                    # Serialize replacement registration and disconnect cleanup
-                    # without holding the thread lock needed by service emits.
+                    # Serialize replacement registration and disconnect
+                    # cleanup without holding the thread lock needed by
+                    # service emits.
                     async with lease['lock']:
                         if self._connections.get((sid, client)) is token:
                             self._connections.pop((sid, client), None)
-                            if disconnected:
-                                await asyncio.to_thread(finish_disconnect)
+                            retired = True
+                    if retired and disconnected:
+                        await self._release(service, sid, owner, client)
                 except (ConflictError, KeyError, PermissionError, RuntimeError):
                     pass
                 finally:
                     lease['users'] -= 1
                     if not lease['users']:
                         self._connection_locks.pop((sid, client), None)
+
+    async def _release(self, service, sid, owner, client):
+        """Retire the grant of a vanished page, unless it reconnects in time."""
+        if self.disconnect_grace > 0:
+            task = asyncio.create_task(self._release_after_grace(service, sid, owner, client))
+            # The loop keeps only weak references to tasks.
+            self._retiring.add(task)
+            task.add_done_callback(self._retiring.discard)
+            return
+        await asyncio.to_thread(self._retire_output, service, sid, owner, client)
+
+    async def _release_after_grace(self, service, sid, owner, client):
+        try:
+            await asyncio.sleep(self.disconnect_grace)
+            with self._lock:
+                if (sid, client) in self._connections:
+                    return
+            await asyncio.to_thread(self._retire_output, service, sid, owner, client)
+        except asyncio.CancelledError:
+            raise
+        except (ConflictError, KeyError, PermissionError, RuntimeError):
+            pass
+
+    @staticmethod
+    def _retire_output(service, sid, owner, client):
+        state = service.snapshot(sid, owner)
+        if state.get('mode') == 'browser' and state.get('output_client_id') == client:
+            service.interrupt_output(sid, owner, state.get('instance_id'), client)
 
 
 def create_playback_router(service, hub=None, desktop_claim=None):

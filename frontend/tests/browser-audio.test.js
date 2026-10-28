@@ -423,3 +423,23 @@ test('WebAudio creates one graph per activated item, applies ten EQ bands, and d
   assert.ok(nodes.every((value) => value.disconnected));
   assert.equal(context.closed, true);
 });
+
+test('a retired page still confirms a handoff quiesce with its last known position', async () => {
+  const f = fixture();
+  f.engine.loadSnapshot(snapshot());
+  // A dropped control socket retires DOM audio locally while the station may
+  // still be waiting on the handoff it started for this page.
+  f.engine.loadSnapshot({ ...snapshot({ revision: 2 }), output_client_id: null });
+  assert.equal(f.audios[0].src, '');
+  const command = { id: 'late', action: 'quiesce', instance_id: 'instance-1', output_client_id: 'client-1' };
+  assert.equal(await f.engine.applyControl(command), true);
+  assert.deepEqual(f.acks, [{ command_id: 'late', instance_id: 'instance-1', client_id: 'client-1', position_ms: 2000 }]);
+  assert.equal(await f.engine.applyControl({ ...command, id: 'now', action: 'pause' }), false);
+  f.engine.dispose();
+  // A page that never loaded audio owns no instance, so only the handoff
+  // confirmation is answered, and never a control that needs a live element.
+  const blank = fixture();
+  assert.equal(await blank.engine.applyControl({ id: 'stop', action: 'stop', instance_id: 'x', output_client_id: 'client-1' }), true);
+  assert.equal(await blank.engine.applyControl({ id: 'seek', action: 'seek', position_ms: 10, instance_id: 'x', output_client_id: 'client-1' }), false);
+  blank.engine.dispose();
+});

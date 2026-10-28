@@ -4,7 +4,7 @@
 
 This is the initial static architecture baseline, inspected on October 26, 2026 at commit `63cc57562baa85645211fa120f42d78d0a67f8ac`. It describes existing code, not a claim that runtime behavior has passed validation. See [BASELINE.md](BASELINE.md) for limitations and identified defects. Source line numbers in that document refer to the baseline commit.
 
-The modernization branch is `codex/stability-server-architecture`; the rollback reference is `codex/modernization-baseline-20261026`. Git does not protect the ignored runtime data, original audio, or source JSON metadata.
+The current modernization branch is `stability-server-architecture` (renamed by the user from `codex/stability-server-architecture`), with implementation checkpoint `c065ed3`; the rollback reference is `codex/modernization-baseline-20261026`. Git does not protect the ignored runtime data, original audio, or source JSON metadata.
 
 ## Existing system
 
@@ -142,13 +142,13 @@ flowchart LR
 
 `PlaybackCoordinator` owns playback revisions, command receipts, attempts, active reservations, output grants, and transfer fences. Browser observations and VLC adapter observations enter the same session service. The service serializes controls and handoff against transport replacement, routes completion/start feedback into the queue, and persists only accepted events. Browser handoff requires a correlated quiesce acknowledgement and position; output replacement retains the logical session and rejects stale observations. Reconnect preserves the logical plan while requiring a current browser grant.
 
-`MediaService` resolves canonical library paths and leased generated media, supports byte-range streaming, and places private media behind authenticated routes. Browser and VLC plans use the same stable track/resource identifiers. `PlaybackStore` installs an additive schema after a verified backup and persists session state, idempotency receipts, attempts, and history events. Migration/backup behavior has been exercised against disposable test databases only; the user's production database has not been migrated.
+`MediaService` resolves canonical library paths and leased generated media, supports byte-range streaming, and places private media behind authenticated routes. Browser and VLC plans use the same stable track/resource identifiers. `PlaybackStore` installs an additive schema after a verified backup and persists session state, idempotency receipts, attempts, and history events. The agent exercised migration/backup behavior against disposable databases only. The user subsequently launched the real app; its current production migration state was not inspected during the final review.
 
 ### Verified and pending validation
 
-- The latest reported complete backend checkpoint before the most recent integration changes was **375 passed, 8 skipped**. A newer complete count is not available yet. The latest reported frontend checkpoint before recent integration changes was **58 passed**; the count has not been refreshed.
+- Final reviewed-tree verification: **450 backend tests passed, 9 skipped; 83 frontend tests passed; 4 opt-in native VLC tests passed; production build passed**. These checks do not resolve the remaining reconnect race/idempotency review findings recorded in the handoff.
 - The isolated launcher serves the real app on loopback with three generated silent WAVs and a disposable database. Recommendation/model generation is deterministic and mocked, TTS/process management are disabled, writes are guarded to a random `.test-runtime/qa-*` workspace, and outbound sockets are blocked. It does not use the original music or metadata.
-- A browser QA pass on port `18765` exposed a lyrics rendering crash. The crash fix is in place; the isolated browser pass needs to be repeated before calling that flow verified. See [APP_USAGE_CHECKLIST.md](APP_USAGE_CHECKLIST.md).
+- Browser QA on port `18765` exposed and verified a fix for a missing-lyrics rendering crash, then exercised pause/seek, same-attempt reconnect, and separate-tab mood. Subsequent user-reported pause/seek and development WebSocket problems led to further tested fixes; live acceptance is still open. See [APP_USAGE_CHECKLIST.md](APP_USAGE_CHECKLIST.md) and the local `CODEX_HANDOFF.md` (explicitly ignored by current Git rules).
 - Real-library history updates were explicitly permitted for manual checks on October 28, 2026. Automated tests and the isolated launcher remain synthetic and do not write to the production history.
 - Browser controls, authenticated routes, output transfer, native callback translation, and generated-media range handling have targeted automated coverage. The current CI contract workflow runs the lean backend contract suite and frontend tests/build; it does not run the entire backend suite, VLC, Electron, TTS/GPU, or live app.
 

@@ -3,6 +3,10 @@ import { BrowserAudioEngine } from '../audio/BrowserAudioEngine.js';
 const STORAGE_KEY = 'radio.playback.session';
 const identity = () => globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
+function storedSession(storage) {
+  try { return JSON.parse(storage?.getItem(STORAGE_KEY) || 'null'); } catch { return null; }
+}
+
 export function createPlaybackApi({ baseUrl = '', fetchImpl = globalThis.fetch, onUnauthorized = () => {} } = {}) {
   return {
     async request(method, path, body, owner, signal) {
@@ -25,16 +29,21 @@ export function createPlaybackApi({ baseUrl = '', fetchImpl = globalThis.fetch, 
 
 /** One controller per page. The station alone advances completed plans. */
 export class PlaybackSessionController {
-  constructor({ api = createPlaybackApi(), apiBase = '', wsUrl, clientId = identity(),
+  constructor({ api = createPlaybackApi(), apiBase = '', wsUrl, clientId = null,
     electron = Boolean(globalThis.window?.electron), storage = globalThis.sessionStorage,
     socketFactory = url => new WebSocket(url), engineFactory = options => new BrowserAudioEngine(options),
-    onChange = () => {}, reconnectDelay = 1500, eventTarget = globalThis.window } = {}) {
-    Object.assign(this, { api, clientId, electron, storage, socketFactory, onChange, reconnectDelay, eventTarget });
+    onChange = () => {}, reconnectDelay = 1500, connectTimeout = 8000, handoffTimeout = 20000,
+    eventTarget = globalThis.window } = {}) {
+    // A page keeps its output grant across reloads: a fresh identity would make
+    // the server's own grant look like a foreign browser and block reconnection.
+    const pageClient = clientId || storedSession(storage)?.client_id || identity();
+    Object.assign(this, { api, clientId: pageClient, electron, storage, socketFactory, onChange,
+      reconnectDelay, connectTimeout, handoffTimeout, eventTarget });
     const base = new URL(apiBase || globalThis.location?.origin || 'http://localhost:8765');
     this.wsUrl = wsUrl || `${base.href.replace(/\/$/, '').replace(/^http/, 'ws')}/api/playback/sessions/events`;
     this.disposed = false;
     this.state = { session: null, audio: { status: 'idle' }, connected: false, loading: true, error: null, pendingHandoff: false, needsReconnect: false, retryNeeded: false };
-    this.engine = engineFactory({ clientId, apiBase,
+    this.engine = engineFactory({ clientId: pageClient, apiBase,
       postEvent: body => this.request('events', body),
       postPosition: body => this.request('position', body),
       onState: audio => this.update({ audio }), onError: error => this.audioError(error),
@@ -91,8 +100,7 @@ export class PlaybackSessionController {
     return this.start();
   }
   async initialize() {
-    let saved;
-    try { saved = JSON.parse(this.storage?.getItem(STORAGE_KEY) || 'null'); } catch { /* unavailable storage */ }
+    const saved = storedSession(this.storage);
     if (saved?.session_id && saved?.owner_key) {
       this.sessionId = saved.session_id;
       this.owner = saved.owner_key;
@@ -100,7 +108,7 @@ export class PlaybackSessionController {
       catch (error) {
         if (!this.disposed && [403, 404].includes(error.status)) {
           try {
-            const stored = JSON.parse(this.storage?.getItem(STORAGE_KEY) || 'null');
+            const stored = storedSession(this.storage);
             if (stored?.session_id === saved.session_id && stored?.owner_key === saved.owner_key) {
               if (this.storage?.removeItem) this.storage.removeItem(STORAGE_KEY);
               else this.storage?.setItem(STORAGE_KEY, '');
@@ -124,7 +132,7 @@ export class PlaybackSessionController {
       }
       this.sessionId = result.session.id || result.session.session_id;
       this.owner = result.owner_key;
-      try { this.storage?.setItem(STORAGE_KEY, JSON.stringify({ session_id: this.sessionId, owner_key: this.owner })); } catch { /* session remains usable */ }
+      try { this.storage?.setItem(STORAGE_KEY, JSON.stringify({ session_id: this.sessionId, owner_key: this.owner, client_id: this.clientId })); } catch { /* session remains usable */ }
       this.accept(result);
     }
     if (this.disposed) return;
@@ -164,10 +172,25 @@ export class PlaybackSessionController {
         (this.state.session?.mode !== 'browser' || this.state.session.output_client_id !== this.clientId)) return;
     const socket = this.socketFactory(this.wsUrl);
     this.socket = socket;
+    // An unanswered upgrade (stale dev proxy, sleeping host) never closes on
+    // its own. Without a deadline the page would wait on it forever and never
+    // retry, so the station would stay silent until a reload.
+    if (this.connectTimeout > 0) {
+      this.connectTimer = setTimeout(() => {
+        if (this.socket !== socket || socket.readyState !== 0) return;
+        try { socket.close(); } catch { /* already closing */ }
+      }, this.connectTimeout);
+      this.connectTimer.unref?.();
+    }
     socket.onopen = () => {
       if (this.socket !== socket || this.disposed) return;
+      this.clearConnectTimer();
       socket.send(JSON.stringify({ session_id: this.sessionId, owner_key: this.owner, client_id: this.clientId }));
       this.update({ connected: true });
+      // A transport drop retires DOM audio for safety. When the control
+      // channel is genuinely back and the grant is still ours, resume it
+      // without making the listener press a reconnect button.
+      if (this.suspended) this.resume().catch(error => this.fail(error));
     };
     socket.onmessage = message => {
       if (this.socket !== socket || this.disposed) return;
@@ -181,14 +204,49 @@ export class PlaybackSessionController {
     };
     socket.onclose = () => {
       if (this.socket !== socket || this.disposed) return;
+      this.clearConnectTimer();
       this.socket = null;
       this.suspendLocal('Playback connection lost. Reconnect when ready.');
       this.update({ connected: false });
-      if (this.reconnectDelay > 0) this.reconnectTimer = setTimeout(async () => {
-        try { await this.refresh(); this.connect(); } catch (error) { this.fail(error); }
-      }, this.reconnectDelay);
+      this.scheduleReconnect();
     };
     socket.onerror = () => socket.close();
+  }
+  clearConnectTimer() {
+    clearTimeout(this.connectTimer);
+    this.connectTimer = null;
+  }
+  scheduleReconnect(delay = this.reconnectDelay) {
+    if (this.disposed || this.reconnectDelay <= 0) return;
+    clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = setTimeout(async () => {
+      if (this.disposed) return;
+      // A failed probe (backend restarting) must not end the retry chain.
+      try { await this.refresh(); } catch (error) { this.fail(error); }
+      if (this.disposed) return;
+      this.connect();
+      if (!this.socket) this.scheduleReconnect(Math.min(Math.max(delay, 1500) * 2, 15000));
+    }, delay);
+    this.reconnectTimer.unref?.();
+  }
+  async resume() {
+    if (this.disposed || !this.suspended) return null;
+    await this.refresh();
+    if (this.disposed || !this.suspended) return null;
+    const session = this.state.session;
+    const active = session?.items?.[session.active_index || 0];
+    if (!session || session.mode !== 'browser' || session.output_client_id !== this.clientId) return null;
+    // Interrupted grants need the explicit server-side reactivation path; a
+    // local transport failure is the only case this method recovers.
+    if (!active || active.terminal || ['idle', 'stopped', 'interrupted', 'awaiting_output'].includes(session.status)) return null;
+    // Reuse the gesture this page had before the drop. If the browser refuses,
+    // the engine reports awaiting_user_gesture and offers its own button.
+    this.suspended = false;
+    this.gesture = true;
+    this.update({ error: null, needsReconnect: false });
+    this.engine.loadSnapshot(session);
+    if (session.status === 'paused') return session;
+    return this.engine.activate();
   }
   command() { return { command_id: identity(), expected_revision: this.state.session?.revision || 0 }; }
   async activate() {
@@ -210,7 +268,7 @@ export class PlaybackSessionController {
   }
   async reactivate() {
     this.gesture = false;
-    await this.refresh();
+    const current = await this.refresh();
     if (this.disposed) return null;
     this.gesture = true;
     this.suspended = false;
@@ -218,9 +276,20 @@ export class PlaybackSessionController {
     const session = this.state.session;
     const active = session?.items?.[session.active_index || 0];
     if (!active || active.terminal || ['idle', 'stopped'].includes(session?.status)) return this.switchOutput('browser');
-    if (!['interrupted', 'awaiting_output'].includes(session?.status)) return this.switchOutput('browser');
-    this.pendingHandoff = null;
-    this.update({ pendingHandoff: false });
+    if (!['interrupted', 'awaiting_output'].includes(session?.status)) {
+      // The grant is still ours and the plan is live, so the loss was the
+      // transport rather than the output. Switching to ourselves would need a
+      // quiesce ACK over the channel that just failed; resync locally instead.
+      if (session.mode === 'browser' && session.output_client_id === this.clientId) {
+        this.clearPendingHandoff();
+        this.engine.loadSnapshot(session);
+        this.connect();
+        await this.engine.activate().catch(error => this.fail(error));
+        return current;
+      }
+      return this.switchOutput('browser');
+    }
+    this.clearPendingHandoff();
     const result = await this.request('reactivate', { ...this.command(), client_id: this.clientId });
     this.connect();
     return result;
@@ -230,6 +299,7 @@ export class PlaybackSessionController {
     if (this.pendingHandoff) return this.retryHandoff();
     this.pendingHandoff = { ...this.command(), target_mode: mode, target_client_id: mode === 'browser' ? this.clientId : null };
     this.update({ pendingHandoff: true });
+    this.armHandoffTimer();
     return this.retryHandoff();
   }
   async retryHandoff() {
@@ -237,11 +307,30 @@ export class PlaybackSessionController {
     if (!pending) return null;
     const result = await this.request('handoff', pending);
     if (!result.awaiting_confirmation) {
-      this.pendingHandoff = null;
-      this.update({ pendingHandoff: false });
+      this.clearPendingHandoff();
       this.connect();
     }
     return result;
+  }
+  clearPendingHandoff() {
+    clearTimeout(this.handoffTimer);
+    this.handoffTimer = null;
+    this.pendingHandoff = null;
+    this.pendingHandoffAt = 0;
+    if (this.state.pendingHandoff) this.update({ pendingHandoff: false });
+  }
+  armHandoffTimer() {
+    clearTimeout(this.handoffTimer);
+    this.pendingHandoffAt = Date.now();
+    if (!(this.handoffTimeout > 0)) return;
+    // A quiesce confirmation travels over the very socket a silent page may
+    // have lost. Without a deadline the selector would wait on it forever.
+    this.handoffTimer = setTimeout(() => {
+      if (this.disposed || !this.pendingHandoff) return;
+      this.clearPendingHandoff();
+      this.fail(new Error('The output switch did not confirm. Reconnect and try again.'));
+    }, this.handoffTimeout);
+    this.handoffTimer.unref?.();
   }
 
   async routeLegacy(path, options = {}) {
@@ -287,6 +376,8 @@ export class PlaybackSessionController {
     this.disposed = true;
     this.eventTarget?.removeEventListener?.('offline', this.offline);
     clearTimeout(this.reconnectTimer);
+    clearTimeout(this.handoffTimer);
+    this.clearConnectTimer();
     clearInterval(this.poll);
     const socket = this.socket;
     this.socket = null;

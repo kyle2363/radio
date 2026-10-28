@@ -558,7 +558,8 @@ def _get_playback_sessions():
                 store = PlaybackStore()
                 store.recover_interrupted()
                 _playback_sessions = PlaybackSessions(store, _get_media_service,
-                    emit=_emit_playback, vlc_output_factory=_native_output)
+                    emit=_emit_playback, vlc_output_factory=_native_output,
+                    producer_online=lambda session_id, client_id: _playback_hub.is_connected(session_id, client_id))
     return _playback_sessions
 
 

@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { PlaybackSessionController, createPlaybackApi } from '../src/api/playback.js';
 
-function setup({ electron = false, saved = null } = {}) {
+function setup({ electron = false, saved = null, clientId = 'page', connectTimeout = 8000,
+  handoffTimeout = 20000, socketFactory = null } = {}) {
   const calls = [], storage = new Map(saved ? [['radio.playback.session', JSON.stringify(saved)]] : []);
   const api = { request: async (method, path, body, owner) => {
     calls.push({ method, path, body, owner });
@@ -11,9 +12,10 @@ function setup({ electron = false, saved = null } = {}) {
   }};
   const engine = { loadSnapshot: () => {}, dispose: () => {}, activate: async () => true, applyControl: async () => true };
   const sockets = [];
-  const controller = new PlaybackSessionController({ api, clientId: 'page', electron, engineFactory: options => { engine.options = options; return engine; },
+  const controller = new PlaybackSessionController({ api, clientId, electron, connectTimeout, handoffTimeout,
+    engineFactory: options => { engine.options = options; return engine; },
     storage: { getItem: key => storage.get(key), setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) },
-    socketFactory: () => { const socket = { send: data => sockets.push(JSON.parse(data)), close() {} }; return socket; }, reconnectDelay: 0 });
+    socketFactory: socketFactory || (() => { const socket = { send: data => sockets.push(JSON.parse(data)), close() {} }; return socket; }), reconnectDelay: 0 });
   return { controller, calls, engine, sockets, storage };
 }
 
@@ -196,4 +198,110 @@ test('disposed desktop claim does not close the shared native listening session'
   await started;
   assert.equal(calls.length, 1);
   assert.equal(storage.size, 0);
+});
+
+const live = (changes = {}) => ({ id: 's', revision: 3, mode: 'browser', status: 'playing',
+  output_client_id: 'page', active_index: 0, items: [{ item_id: 'one', terminal: false }], position_ms: 900, ...changes });
+
+test('a reloaded page resumes with its stored grant instead of a foreign identity', async () => {
+  const { controller, calls, engine } = setup({ saved: { session_id: 's', owner_key: 'secret', client_id: 'page' }, clientId: null });
+  controller.api.request = async (method, path, body, owner) => {
+    calls.push({ method, path, body, owner });
+    return live();
+  };
+  await controller.start();
+  assert.equal(controller.clientId, 'page');
+  assert.equal(engine.options.clientId, 'page');
+  assert.equal(controller.getState().needsReconnect, false);
+  assert.equal(calls.filter(call => call.path === '').length, 0);
+  controller.dispose();
+});
+
+test('the audio engine always receives the page identity the station granted', () => {
+  const { controller, engine } = setup({ clientId: null });
+  assert.equal(typeof controller.clientId, 'string');
+  assert.ok(controller.clientId.length > 0);
+  assert.equal(engine.options.clientId, controller.clientId);
+  controller.dispose();
+});
+
+test('a socket stuck before its upgrade is abandoned so a retry can happen', async () => {
+  const sockets = [];
+  const { controller } = setup({ connectTimeout: 40, socketFactory: () => {
+    const socket = { readyState: 0, closes: 0, send() {}, onopen: null, onmessage: null, onclose: null, onerror: null,
+      close() { this.closes++; this.readyState = 3; this.onclose?.(); } };
+    sockets.push(socket);
+    return socket;
+  } });
+  await controller.start();
+  assert.equal(sockets.length, 1);
+  await new Promise(resolve => setTimeout(resolve, 90));
+  assert.equal(sockets[0].closes, 1);
+  assert.equal(controller.socket, null);
+  controller.dispose();
+});
+
+test('a live grant owned by this page reactivates locally without a handoff', async () => {
+  const { controller, calls, engine } = setup({ saved: { session_id: 's', owner_key: 'secret' } });
+  let activated = 0;
+  engine.activate = async () => { activated++; return true; };
+  controller.api.request = async (method, path, body, owner) => {
+    calls.push({ method, path, body, owner });
+    return live();
+  };
+  await controller.start();
+  await controller.reactivate();
+  assert.equal(calls.some(call => call.path.endsWith('/handoff')), false);
+  assert.equal(calls.some(call => call.path.endsWith('/reactivate')), false);
+  assert.equal(activated, 1);
+  assert.equal(controller.getState().needsReconnect, false);
+  controller.dispose();
+});
+
+test('a reconnected control socket resumes the granted page without a button', async () => {
+  const { controller, engine } = setup({ saved: { session_id: 's', owner_key: 'secret' } });
+  controller.api.request = async () => live();
+  await controller.start();
+  let loads = 0, activated = 0;
+  engine.loadSnapshot = () => { loads++; };
+  engine.activate = async () => { activated++; return true; };
+  controller.gesture = true;
+  controller.accept(live({ revision: 4 }));
+  controller.socket.onclose();
+  assert.equal(controller.getState().needsReconnect, true);
+  loads = 0;
+  controller.connect();
+  controller.socket.onopen();
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(controller.getState().needsReconnect, false);
+  assert.equal(controller.getState().error, null);
+  assert.equal(loads, 1);
+  assert.equal(activated, 1);
+  controller.dispose();
+});
+
+test('reconnecting a paused grant restores control without starting audio', async () => {
+  const { controller, engine } = setup({ saved: { session_id: 's', owner_key: 'secret' } });
+  controller.api.request = async () => live({ status: 'paused' });
+  await controller.start();
+  let activated = 0;
+  engine.activate = async () => { activated++; return true; };
+  controller.suspended = true;
+  await controller.resume();
+  assert.equal(activated, 0);
+  assert.equal(controller.getState().needsReconnect, false);
+  assert.equal(controller.getState().session.status, 'paused');
+  controller.dispose();
+});
+
+test('a handoff that never confirms stops blocking the output selector', async () => {
+  const { controller } = setup({ handoffTimeout: 40 });
+  await controller.start();
+  controller.api.request = async () => ({ awaiting_confirmation: true });
+  await controller.switchOutput('vlc');
+  assert.equal(controller.getState().pendingHandoff, true);
+  await new Promise(resolve => setTimeout(resolve, 90));
+  assert.equal(controller.getState().pendingHandoff, false);
+  assert.match(controller.getState().error, /did not confirm/);
+  controller.dispose();
 });

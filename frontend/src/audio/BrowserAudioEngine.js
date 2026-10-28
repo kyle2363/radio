@@ -373,9 +373,17 @@ export class BrowserAudioEngine {
   }
 
   async applyControl(command) {
-    if (this.disposed || !command?.id || !this.active || !this._current(this.active) ||
-        command.instance_id !== this.snapshot.instance_id || command.output_client_id !== this.clientId || this.controls.has(command.id)) return false;
+    if (this.disposed || !command?.id || command.output_client_id !== this.clientId ||
+        this.controls.has(command.id)) return false;
     if (!['pause', 'resume', 'seek', 'volume', 'eq', 'quiesce', 'stop'].includes(command.action)) return false;
+    // Handoff confirmations must be answered even after this page retired its
+    // audio (reload, transport drop, blocked autoplay), otherwise the station
+    // waits on a quiesce that can never arrive and the selector wedges.
+    const unavoidable = command.action === 'quiesce' || command.action === 'stop';
+    const instanceId = this.snapshot?.instance_id;
+    if (instanceId ? command.instance_id !== instanceId : !unavoidable) return false;
+    const record = this.active && this._current(this.active) ? this.active : null;
+    if (!record && !unavoidable) return false;
     this.controls.add(command.id);
     switch (command.action) {
       case 'pause': this.pause(); break;
@@ -384,14 +392,14 @@ export class BrowserAudioEngine {
       case 'volume': this.context = { ...this.context, volume: command.volume }; this._applyAudioSettings(); break;
       case 'eq': this.context = { ...this.context, eq: command.eq, eq_bands: command.eq_bands }; this._applyAudioSettings(); break;
       case 'quiesce': {
-        const record = this.active;
         this._silence(record);
         this._setState({ status: 'paused', recoverable: false });
         try {
-          await this.onQuiesceAck({ command_id: command.id, instance_id: record.instanceId, client_id: this.clientId, position_ms: this._positionMs(record) });
+          await this.onQuiesceAck({ command_id: command.id, instance_id: command.instance_id, client_id: this.clientId,
+            position_ms: record ? this._positionMs(record) : number(this.snapshot?.position_ms) });
         } catch {
           this.controls.delete(command.id);
-          if (this._current(record)) this._interrupt(record, 'connection', 'Output is paused while the station confirms the handoff.');
+          if (record && this._current(record)) this._interrupt(record, 'connection', 'Output is paused while the station confirms the handoff.');
           return false;
         }
         break;

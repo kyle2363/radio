@@ -605,6 +605,43 @@ def test_paused_browser_handoff_never_publishes_autoplay_state(domain):
     assert len(service.context_for(sid, owner).queue.starts) == 1
 
 
+def test_vanished_browser_grant_is_reclaimed_without_a_quiesce(domain):
+    service, sid, owner, media, events, *_ = domain
+    plan, started = start(service, sid, owner)
+    item = plan['items'][0]
+    # The old page never connected a control channel, so it can never confirm.
+    service._producer_online = lambda session_id, client: False
+    reclaimed = service.handoff(sid, owner, 'reclaim', started['session']['revision'], 'browser', 'new-tab')
+    assert 'awaiting_confirmation' not in reclaimed
+    assert reclaimed['output_client_id'] == 'new-tab' and reclaimed['status'] == 'ready'
+    assert reclaimed['items'][0]['attempt_id'] == item['attempt_id']
+    assert reclaimed['instance_id'] != started['session']['instance_id']
+
+
+def test_stale_handoff_cannot_reclaim_a_vanished_browser(domain):
+    service, sid, owner, *_ = domain
+    _, started = start(service, sid, owner)
+    before = service.snapshot(sid, owner)
+    service._producer_online = lambda *args: False
+    with pytest.raises(ConflictError):
+        service.handoff(sid, owner, 'stale-reclaim', 999999, 'browser', 'new-tab')
+    after = service.snapshot(sid, owner)
+    assert after['revision'] == before['revision']
+    assert after['instance_id'] == before['instance_id']
+    assert after['output_client_id'] == before['output_client_id']
+
+
+def test_live_browser_grant_still_has_to_confirm_its_quiesce(domain):
+    service, sid, owner, media, events, *_ = domain
+    plan, started = start(service, sid, owner)
+    service._producer_online = lambda session_id, client: client == 'tab-a'
+    pending = service.handoff(sid, owner, 'move', started['session']['revision'], 'browser', 'new-tab')
+    assert pending['awaiting_confirmation']
+    service.ack_quiesce(sid, owner, plan['instance_id'], 'move', 175, client_id='tab-a')
+    moved = service.handoff(sid, owner, 'move', started['session']['revision'], 'browser', 'new-tab')
+    assert moved['output_client_id'] == 'new-tab' and not moved.get('awaiting_confirmation')
+
+
 def test_paused_native_handoff_starts_only_after_resume_and_keeps_single_listen(domain):
     from db import database
     from engine.vlc_session_output import VlcSessionOutput
