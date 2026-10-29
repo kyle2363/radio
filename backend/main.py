@@ -45,6 +45,8 @@ from engine import energy as energy_engine
 from engine.process_manager import get_process_manager
 
 logging.basicConfig(level=logging.INFO)
+from access_logging import configure_access_logging
+configure_access_logging()
 logging.getLogger("torio._extension.utils").setLevel(logging.ERROR)
 logger = logging.getLogger(__name__)
 _playback_logger = logging.getLogger(__name__ + ".playback")
@@ -3316,12 +3318,28 @@ def get_settings():
     from engine.session_settings import SESSION_SETTING_KEYS
     db = _session_database()
     settings.update({key: db.get_setting(key) for key in SESSION_SETTING_KEYS})
+    settings['llm_reranking_default_enabled'] = database.get_setting('llm_reranking_enabled') or 'true'
     return settings
 
 
 @app.put("/api/settings/{key}")
 def update_setting(key: str, body: dict):
     value = body.get("value", "")
+    if key == 'llm_reranking_enabled':
+        if type(value) is bool:
+            enabled = value
+        elif value in ('true', 'false'):
+            enabled = value == 'true'
+        else:
+            raise HTTPException(422, 'Reranking enabled must be true or false')
+        scope = body.get('scope', 'session')
+        if scope == 'global':
+            database.set_setting(key, str(enabled).lower())
+        elif scope == 'session':
+            _get_queue_manager().set_reranking_enabled(enabled)
+        else:
+            raise HTTPException(422, 'Setting scope must be session or global')
+        return {'status': 'updated', 'key': key, 'value': str(enabled).lower(), 'scope': scope}
     _session_database().set_setting(key, value)
     # Hot-reload provider settings
     if key in ("chat_provider", "embed_provider"):
@@ -4760,14 +4778,38 @@ class _LazyPlaybackSessions:
 
 _playback_hub = PlaybackEventHub()
 
+# Portable services are lazy: importing the app never opens production vectors
+# or installs the additive synchronization schema. HTTP sync work runs in the
+# FastAPI worker pool, outside playback/session locks.
+from portable_api import create_portable_router, native_authorizer
+from portable_server import ServerCatalog
+from portable_sync import PortableProfileStore
+
+_portable_catalog = None
+_portable_catalog_lock = threading.Lock()
+
+
+def _get_portable_store():
+    return PortableProfileStore()
+
+
+def _get_portable_catalog():
+    global _portable_catalog
+    with _portable_catalog_lock:
+        if _portable_catalog is None:
+            _portable_catalog = ServerCatalog(_get_portable_store())
+        return _portable_catalog
+
 app.include_router(create_media_router(_get_media_service))
 app.include_router(create_playback_router(_LazyPlaybackSessions(), _playback_hub,
                                          desktop_claim=player_engine.claim))
+app.include_router(create_portable_router(_get_portable_store, _get_portable_catalog))
 # Register the API boundary before the catch-all client mount. Starlette matches
 # routes in registration order, so a Mount("/") registered first would answer
 # /api/auth/* itself (404) and the client could never learn it needs to sign in.
 # Private routes stay masked by the middleware's 401 gate, which hides this bug.
-app.state.security = ApiSecurity(_server_settings.security).install(app)
+app.state.security = ApiSecurity(_server_settings.security,
+                                 native_authorizer=native_authorizer(lambda: PortableProfileStore(initialize=False))).install(app)
 mount_frontend(app, os.path.join(config.BASE_DIR, "frontend", "dist"))
 
 

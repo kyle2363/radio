@@ -1096,6 +1096,16 @@ class PlaybackSessions:
         _trace("seek", session_id, state)
         return state
 
+    def set_reranking(self, session_id, owner_key, enabled):
+        if type(enabled) is not bool:
+            raise ValueError('Reranking enabled must be a boolean')
+        context = self.context_for(session_id, owner_key)
+        with context.lock:
+            context.queue.set_reranking_enabled(enabled)
+            self._persist(session_id, owner_key)
+        self._publish(session_id, 'playback_state', {})
+        return self.snapshot(session_id, owner_key)
+
     def set_volume(self, session_id, owner_key, volume):
         if type(volume) is not int or not 0 <= volume <= 100:
             raise ValueError("Volume must be an integer from 0 to 100")

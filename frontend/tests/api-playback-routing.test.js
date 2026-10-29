@@ -56,3 +56,32 @@ test('real API facade routes supported playback controls through the session con
     if (oldFetch === undefined) delete globalThis.fetch; else globalThis.fetch = oldFetch;
   }
 });
+
+test('reranking settings carry session and profile scope without issuing playback commands', async () => {
+  const oldWindow = globalThis.window, oldFetch = globalThis.fetch;
+  const fetched = [];
+  globalThis.window = { location: { protocol: 'http:', host: 'localhost:8765' }, dispatchEvent() {} };
+  globalThis.fetch = async (url, options) => {
+    fetched.push({ url, options });
+    return { ok: true, status: 200, json: async () => ({ ok: true }), text: async () => '' };
+  };
+  setPlaybackController({ requestHeaders: () => ({ 'X-Radio-Playback-Session': 's', 'X-Radio-Playback-Owner': 'secret' }),
+    routeLegacy: () => { throw new Error('Reranking must not restart playback'); } });
+  try {
+    const api = await import('../src/api/index.js?reranking-settings-test');
+    await api.updateReranking(false);
+    await api.updateReranking(true, 'global');
+    assert.deepEqual(fetched.map(call => JSON.parse(call.options.body)), [
+      { value: false, scope: 'session' }, { value: true, scope: 'global' },
+    ]);
+    for (const { url, options } of fetched) {
+      assert.equal(new URL(url).pathname, '/api/settings/llm_reranking_enabled');
+      assert.equal(options.method, 'PUT');
+      assert.equal(options.headers['X-Radio-Playback-Owner'], 'secret');
+    }
+  } finally {
+    setPlaybackController(null);
+    if (oldWindow === undefined) delete globalThis.window; else globalThis.window = oldWindow;
+    if (oldFetch === undefined) delete globalThis.fetch; else globalThis.fetch = oldFetch;
+  }
+});

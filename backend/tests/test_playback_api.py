@@ -35,6 +35,16 @@ def test_owner_header_and_command_contract():
     service.next.assert_called_once_with('s', 'secret', command_id='c', expected_revision=1)
 
 
+def test_reranking_session_toggle_requires_owner_and_strict_boolean():
+    service = Mock()
+    service.set_reranking.return_value = {'preferences': {'settings': {'llm_reranking_enabled': 'false'}}}
+    path = '/api/playback/sessions/s/reranking'
+    assert request(service, path, {'enabled': False}, owner=None).status_code == 403
+    assert request(service, path, {'enabled': 'false'}).status_code == 422
+    assert request(service, path, {'enabled': False}).status_code == 200
+    service.set_reranking.assert_called_once_with('s', 'secret', enabled=False)
+
+
 def test_explicit_replay_uses_idempotent_command_contract():
     service = Mock()
     service.replay.return_value = {'revision': 3, 'duplicate': False}

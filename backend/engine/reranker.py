@@ -8,11 +8,15 @@ import json
 import logging
 from datetime import datetime
 
-from llm import llm_chat
-
 import config
 
 logger = logging.getLogger(__name__)
+
+
+def llm_chat():
+    """Keep deterministic helpers importable without optional provider packages."""
+    from llm import llm_chat as resolve
+    return resolve()
 
 
 RERANK_PROMPT = """\

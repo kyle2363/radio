@@ -187,6 +187,98 @@ def test_delayed_rebuild_keeps_its_scheduled_generation(manager, monkeypatch):
 
 
 @pytest.fixture
+def ranking_pipeline(manager, queue_module, monkeypatch):
+    from unittest.mock import Mock
+    from engine.session_context import new_talk_context
+    from engine.mood import MoodStateMachine
+    from engine import archetype
+    module, _ = queue_module
+    manager._mood = MoodStateMachine(persist_state=False)
+    manager._talk_context = new_talk_context()
+    manager._talk_context.get_active_guest_slot_bias = lambda: None
+    manager._memory.get_taste_vectors = lambda **kw: {'text': [1.0], 'audio': [1.0], 'drift': 0}
+    manager._memory.get_repulsion_vector = lambda: None
+    manager._memory.get_audio_repulsion_vector = lambda: None
+    manager._get_recent_played_context = lambda n: []
+    manager._start_worker = Mock()
+    manager._start_tts_staleness_checker = Mock()
+    talk = Mock(return_value=False)
+    manager._maybe_schedule_talk_segment = talk
+    monkeypatch.setattr(manager._db, 'get_song', lambda sid: {'id': sid, 'title': str(sid), 'energy': 0.5})
+    candidates = [{'song_id': sid, 'score': 1 - sid / 10, 'artist': str(sid), 'energy': 0.5} for sid in range(1, 6)]
+    monkeypatch.setattr(module.retriever, 'build_candidate_list', lambda **kw: candidates)
+    monkeypatch.setattr(module.slots, 'allocate_slots', lambda *a, **kw: {})
+    monkeypatch.setattr(archetype, 'detect_archetype', lambda: ('explorer', {}))
+    picks = [{'id': sid, 'slot': 'context', 'reason': 'fixture'} for sid in range(1, 6)]
+    llm = Mock(return_value=picks)
+    deterministic = Mock(return_value=picks)
+    monkeypatch.setattr(module.reranker, 'rerank', llm)
+    monkeypatch.setattr(module.reranker, 'deterministic_assignment', deterministic)
+    database.set_setting('constellations_enabled', 'false')
+    database.set_setting('current_mode', 'radio')
+    return llm, deterministic, talk
+
+
+@pytest.mark.parametrize('enabled', [True, False])
+def test_reranking_gate_leaves_dj_scheduling_independent(manager, ranking_pipeline, enabled):
+    llm, deterministic, talk = ranking_pipeline
+    manager.set_reranking_enabled(enabled)
+    manager._rebuild_queue()
+    assert llm.call_count == int(enabled)
+    assert deterministic.call_count == int(not enabled)
+    assert len(manager._queue) == 5
+    talk.assert_called_once()
+
+
+def test_toggle_fences_inflight_ranking_preserving_queue_preview_and_session(manager, ranking_pipeline):
+    llm, _, talk = ranking_pipeline
+    manager._queue = [{'song_id': 20}]
+    manager._manual_queue = [{'song_id': 30}]
+    manager._preview_queue = [{'song_id': 40}]
+    manager._pending_talk_segments = [{'type': 'talk', 'generation': manager._rebuild_gen}]
+    manager._pregen_cache = {20: {'wav_path': 'already-prepared.wav', 'generation': manager._rebuild_gen}}
+    original_generation = manager._rebuild_gen
+    events = []
+    manager._broadcast = lambda event, payload: events.append((event, payload))
+    manager._current_session_id, manager._current_song_id = 7, 9
+    # Run the toggle inside the LLM call, after configuration was captured.
+    def delayed(**kwargs):
+        manager.set_reranking_enabled(False)
+        return [{'id': sid} for sid in range(1, 6)]
+    llm.side_effect = delayed
+    manager._rebuild_queue(seed_id=0)
+    assert manager._queue == [{'song_id': 20}]
+    assert manager._manual_queue == [{'song_id': 30}]
+    assert manager._preview_queue == [{'song_id': 40}]
+    assert manager._pending_talk_segments == [{'type': 'talk', 'generation': original_generation}]
+    assert manager._pregen_cache[20]['wav_path'] == 'already-prepared.wav'
+    assert manager._rebuild_gen == original_generation
+    assert (manager._current_session_id, manager._current_song_id) == (7, 9)
+    assert not manager._rebuilding
+    assert events[-1][0] == 'queue_rebuilding' and not events[-1][1]['rebuilding']
+    assert events[-1][1]['gen'] > events[0][1]['gen']
+    talk.assert_not_called()
+    # The next generation honors the changed setting.
+    manager._rebuild_queue(seed_id=0)
+    assert llm.call_count == 1
+    assert manager._preview_queue[0]['song_id'] == 1
+
+
+def test_toggle_between_admission_and_start_notice_cannot_leave_spinner_running(manager, ranking_pipeline, queue_module, monkeypatch):
+    module, _ = queue_module
+    events = []
+    manager._broadcast = lambda event, payload: events.append((event, payload))
+    def before_notice(message):
+        if message.startswith('Rebuild queue state:'):
+            manager.set_reranking_enabled(False)
+    monkeypatch.setattr(module, '_log_step', before_notice)
+    manager._rebuild_queue(seed_id=0)
+    assert events and all(not payload['rebuilding'] for event, payload in events if event == 'queue_rebuilding')
+    assert not manager._rebuilding
+    ranking_pipeline[0].assert_not_called()
+
+
+@pytest.fixture
 def fallback_library(manager, queue_module, monkeypatch):
     module, _ = queue_module
     # These files are test-only availability fixtures; they are never decoded.

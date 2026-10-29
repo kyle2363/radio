@@ -35,6 +35,15 @@ jobs:
           backend/tests/test_output_disconnect.py
           backend/tests/test_replay_feedback.py
           backend/tests/test_replay_queue.py
+          backend/tests/test_access_logging.py
+          backend/tests/test_portable_catalog.py
+          backend/tests/test_portable_matching.py
+          backend/tests/test_portable_recommender.py
+          backend/tests/test_portable_server.py
+          backend/tests/test_portable_sync.py
+          backend/tests/test_portable_security.py
+          backend/tests/test_portable_client.py
+          backend/tests/test_portable_media.py
           -q
 
   frontend:

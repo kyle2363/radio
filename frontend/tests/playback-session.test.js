@@ -7,7 +7,7 @@ function setup({ electron = false, saved = null, clientId = 'page', connectTimeo
   const calls = [], storage = new Map(saved ? [['radio.playback.session', JSON.stringify(saved)]] : []);
   const api = { request: async (method, path, body, owner) => {
     calls.push({ method, path, body, owner });
-    if (path === '' || path === '/desktop/claim') return { session: { id: 's', mode: electron ? 'vlc' : 'browser', revision: 0, status: 'idle', items: [], output_client_id: 'page' }, owner_key: 'secret' };
+    if (path === '' || path === '/desktop/claim') return { session: { id: 's', mode: path === '/desktop/claim' ? 'vlc' : 'browser', revision: 0, status: 'idle', items: [], output_client_id: 'page' }, owner_key: 'secret' };
     return { id: 's', mode: 'browser', revision: 1, status: 'interrupted', active_index: 0, items: [{ item_id: 'one' }], output_client_id: 'old' };
   }};
   const engine = { loadSnapshot: () => {}, dispose: () => {}, activate: async () => true, applyControl: async () => true };
@@ -88,10 +88,12 @@ test('browser creates its own idle session; capability only in storage/hello', a
   controller.dispose();
 });
 
-test('Electron explicitly claims desktop and restored sessions await explicit reactivation', async () => {
+test('Electron defaults to isolated browser output and restored sessions await explicit reactivation', async () => {
   const desktop = setup({ electron: true });
   await desktop.controller.start();
-  assert.equal(desktop.calls[0].path, '/desktop/claim');
+  assert.equal(desktop.calls[0].path, '');
+  assert.deepEqual(desktop.calls[0].body, { client_id: 'page' });
+  assert.equal(desktop.controller.getState().session.mode, 'browser');
   assert.ok(desktop.controller.socket);
   assert.deepEqual(desktop.controller.requestHeaders(), { 'X-Radio-Playback-Session': 's', 'X-Radio-Playback-Owner': 'secret' });
   desktop.controller.dispose();
@@ -300,16 +302,29 @@ test('offline preserves browser output while desktop controller loss never takes
   desktop.controller.dispose();
 });
 
-test('disposed desktop claim does not close the shared native listening session', async () => {
+test('disposed Electron creation closes its newly allocated isolated browser session', async () => {
   const { controller, storage, calls } = setup({ electron: true });
   let resolve;
-  controller.api.request = (method, path) => { calls.push({ method, path }); return new Promise(done => { resolve = done; }); };
+  controller.api.request = (method, path) => { calls.push({ method, path }); return path.endsWith('/close') ? Promise.resolve({}) : new Promise(done => { resolve = done; }); };
   const started = controller.start();
   controller.dispose();
-  resolve({ session: { id: 'shared', revision: 1 }, owner_key: 'shared-owner' });
+  resolve({ session: { id: 'isolated', mode: 'browser', revision: 1 }, owner_key: 'isolated-owner' });
   await started;
-  assert.equal(calls.length, 1);
+  assert.equal(calls.length, 2);
+  assert.equal(calls.at(-1).path, '/isolated/close');
   assert.equal(storage.size, 0);
+});
+
+test('restored Electron sessions retain explicit native output without creating a browser session', async () => {
+  const { controller, calls } = setup({ electron: true, saved: { session_id: 'native', owner_key: 'secret' } });
+  controller.api.request = async (method, path) => {
+    calls.push({ method, path });
+    return { id: 'native', mode: 'vlc', revision: 3, status: 'paused', items: [] };
+  };
+  await controller.start();
+  assert.equal(controller.getState().session.mode, 'vlc');
+  assert.deepEqual(calls.map(call => call.path), ['/native']);
+  controller.dispose();
 });
 
 const live = (changes = {}) => ({ id: 's', revision: 3, mode: 'browser', status: 'playing',

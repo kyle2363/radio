@@ -132,6 +132,7 @@ CREATE TABLE IF NOT EXISTS settings (
 INSERT OR IGNORE INTO settings (key, value) VALUES
     ('exploration_level', '0.3'),
     ('current_mode', 'radio'),
+    ('llm_reranking_enabled', 'true'),
     ('archetype', 'mood_listener'),
     ('vibe_lock_active', 'false'),
     ('vibe_lock_song_id', 'NULL'),

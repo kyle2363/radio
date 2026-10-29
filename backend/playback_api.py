@@ -70,6 +70,10 @@ class Normalization(Payload):
     enabled: bool
 
 
+class Reranking(Payload):
+    enabled: bool
+
+
 class Mood(Payload):
     mood: Literal['chill', 'neutral', 'energetic', 'focus', 'melancholy', 'discovery']
 
@@ -341,6 +345,7 @@ def create_playback_router(service, hub=None, desktop_claim=None):
             ('/pause', 'pause', None), ('/resume', 'resume', None), ('/seek', 'seek', Seek),
             ('/volume', 'set_volume', Volume), ('/eq', 'set_eq', Equalizer),
             ('/normalization', 'set_normalization', Normalization), ('/mood', 'set_mood', Mood),
+            ('/reranking', 'set_reranking', Reranking),
             ('/vibe', 'set_vibe', Vibe), ('/queue/add', 'queue_add', QueueAdd),
             ('/queue/remove', 'queue_remove', QueueRemove), ('/queue/clear', 'queue_clear', None),
             ('/queue/reorder', 'queue_reorder', QueueOrder), ('/stop', 'stop', Command),

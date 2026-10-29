@@ -89,6 +89,9 @@ test('facade exposes matching local pause and seek while offline without replaci
   controller.update({ audio: { instance_id: 'i', item_id: 'one', status: 'paused', position_ms: 800 } });
   assert.equal(positions.at(-1).position_ms, 800);
   assert.equal(fetches, before);
+  facade.send('position_request');
+  assert.equal(positions.at(-1).position_ms, 800);
+  assert.equal(fetches, before, 'Local browser position must not poll the backend');
   controller.update({ audio: { instance_id: 'stale', item_id: 'one', status: 'playing', position_ms: 900 } });
   assert.equal(positions.at(-1).is_playing, undefined);
   assert.equal(positions.at(-1).position_ms, 0);

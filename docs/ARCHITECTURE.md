@@ -1,5 +1,10 @@
 # Radio architecture
 
+For the additive pre-Android catalog, offline reference, manual synchronization,
+browser-default and logging changes, see [PRE_ANDROID_HANDOFF.md](PRE_ANDROID_HANDOFF.md).
+That document records current contracts and limitations; the historical baseline
+sections below remain as inspected evidence.
+
 ## Scope and evidence
 
 This is the initial static architecture baseline, inspected on October 26, 2026 at commit `63cc57562baa85645211fa120f42d78d0a67f8ac`. It describes existing code, not a claim that runtime behavior has passed validation. See [BASELINE.md](BASELINE.md) for limitations and identified defects. Source line numbers in that document refer to the baseline commit.

@@ -581,18 +581,13 @@ function AppInner({ outputPlayback }) {
   useEffect(() => {
     if (!window._ws) return;
     window._ws._queueHandler = (data) => {
-      console.log(">>> _queueHandler received:", JSON.stringify(data).substring(0, 200));
       if (data.queue) {
         if (data.gen == null || data.gen >= rebuildGenRef.current) {
-          console.log(">>> _queueHandler setting queue, gen=", data.gen);
           setQueue(data.queue);
-        } else {
-          console.log(">>> _queueHandler IGNORING stale gen", data.gen, "<", rebuildGenRef.current);
         }
       }
     };
     window._ws._rebuildHandler = (data) => {
-      console.log(">>> _rebuildHandler received:", JSON.stringify(data));
       if (data.rebuilding === true) {
         if (data.gen != null) {
           rebuildGenRef.current = data.gen;

@@ -143,11 +143,10 @@ export class PlaybackSessionController {
         throw error;
       }
     } else {
-      const result = await this.api.request('POST', this.electron ? '/desktop/claim' : '', this.electron ? undefined : { client_id: this.clientId });
+      const result = await this.api.request('POST', '', { client_id: this.clientId });
       if (this.disposed) {
-        // Only browser creation is known to allocate a new isolated session.
-        // A desktop claim can refer to an already adopted shared output.
-        if (!this.electron && result?.owner_key && result?.session?.id) {
+        // Fresh creation allocates an isolated browser session on every client.
+        if (result?.owner_key && result?.session?.id) {
           try { await this.api.request('POST', `/${encodeURIComponent(result.session.id)}/close`,
             { command_id: identity(), expected_revision: result.session.revision }, result.owner_key); } catch { /* exact isolated cleanup attempted */ }
         }

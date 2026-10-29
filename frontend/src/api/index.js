@@ -108,6 +108,7 @@ export const toggleMode = (mode) => post("/api/mode/toggle", { mode });
 // ── Settings ──────────────────────────────────────────────
 export const fetchSettings = () => get("/api/settings");
 export const updateSetting = (key, value) => put(`/api/settings/${key}`, { value });
+export const updateReranking = (enabled, scope = 'session') => put('/api/settings/llm_reranking_enabled', { value: enabled, scope });
 export const resetRecommendations = () => post("/api/settings/reset-recommendations");
 export const wipeDatabase = () => post("/api/settings/wipe-db");
 export const exportSettings = () => get("/api/settings/export");

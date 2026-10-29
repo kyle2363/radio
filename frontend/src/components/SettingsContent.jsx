@@ -35,6 +35,7 @@ function SettingsContent({ addToast, sectionSpacing, onSectionSpacingChange, rig
   const [wiping, setWiping] = useState(false);
   const [talkSegmentsEnabled, setTalkSegmentsEnabled] = useState(false);
   const [constellationsEnabled, setConstellationsEnabled] = useState(true);
+  const [rerankingSaving, setRerankingSaving] = useState(false);
   const [waveformMode, setWaveformMode] = useState("orbit");
   const [iconStyle, setIconStyle] = useState("drift");
   const [jitterOverride, setJitterOverride] = useState("");
@@ -180,6 +181,22 @@ function SettingsContent({ addToast, sectionSpacing, onSectionSpacingChange, rig
   };
 
   const toggleSection = (key) => setSections((s) => ({ ...s, [key]: !s[key] }));
+
+  const toggleReranking = async (scope) => {
+    if (rerankingSaving) return;
+    const key = scope === 'global' ? 'llm_reranking_default_enabled' : 'llm_reranking_enabled';
+    const enabled = settings[key] === 'false';
+    setRerankingSaving(true);
+    try {
+      await api.updateReranking(enabled, scope);
+      setSettings(value => ({ ...value, [key]: String(enabled) }));
+      addToast?.('Saved', 'success');
+    } catch {
+      addToast?.('Failed to save song selection setting', 'error');
+    } finally {
+      setRerankingSaving(false);
+    }
+  };
 
   const llmAnyOffline = llmStatus && (
     (!llmStatus.chat?.openai?.healthy && !llmStatus.chat?.ollama?.healthy) ||
@@ -726,6 +743,20 @@ function SettingsContent({ addToast, sectionSpacing, onSectionSpacingChange, rig
                   </div>
                 ))}
               </div>
+            </div>
+            <div className="set-row">
+              <div>
+                <div className="set-label">LLM song selection</div>
+                <div style={{ fontSize: '10px', color: 'var(--text-muted)', marginTop: '1px' }}>This session · applies to future recommendations. DJ and TTS stay independent.</div>
+              </div>
+              <Toggle checked={settings.llm_reranking_enabled !== 'false'} onChange={() => toggleReranking('session')} label="LLM song selection for this session" />
+            </div>
+            <div className="set-row">
+              <div>
+                <div className="set-label">LLM selection for new sessions</div>
+                <div style={{ fontSize: '10px', color: 'var(--text-muted)', marginTop: '1px' }}>Default for future listening sessions</div>
+              </div>
+              <Toggle checked={settings.llm_reranking_default_enabled !== 'false'} onChange={() => toggleReranking('global')} label="Default LLM song selection" />
             </div>
             <div className="set-row">
               <div className="set-label">Mode</div>

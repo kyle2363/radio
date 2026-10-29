@@ -94,8 +94,11 @@ def _authority(value):
 class ApiSecurity:
     cookie_name = "radio_session"
 
-    def __init__(self, settings: SecuritySettings):
+    def __init__(self, settings: SecuritySettings, *, native_authorizer=None):
         self.settings = settings
+        # Optional, narrowly scoped native protocol. It must reject paths outside
+        # its own API and return no credentials. Cookie/WS behavior is unchanged.
+        self.native_authorizer = native_authorizer
         if bool(settings.password) != bool(settings.signing_secret):
             raise ValueError("Password and signing secret must be configured together")
         if settings.signing_secret and len(settings.signing_secret.encode("utf-8")) < 32:
@@ -324,14 +327,47 @@ class _SecurityMiddleware:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
-        if not self.security._valid_host(scope):
+        native = None
+        valid_host = self.security._valid_host(scope)
+        if valid_host and self.security.native_authorizer and scope["path"].startswith("/api/portable/v1/"):
+            from starlette.concurrency import run_in_threadpool
+            native = await run_in_threadpool(self.security.native_authorizer, scope)
+            if native:
+                scope["portable_identity"] = native
+        try:
+            # A valid explicit bearer is the native client's CSRF boundary.
+            # Browser-supplied Origin/Fetch Metadata still follows existing rules.
+            native_origin = bool(native and _header(scope, b"origin") is None
+                                 and _header(scope, b"sec-fetch-site") is None)
+        except ValueError:
+            native_origin = False
+        if not valid_host:
             response = _json({"detail": "Invalid Host"}, 400)
-        elif not self.security._valid_origin(scope, unsafe=scope["method"] not in ("GET", "HEAD", "OPTIONS")):
+        elif not native_origin and not self.security._valid_origin(scope, unsafe=scope["method"] not in ("GET", "HEAD", "OPTIONS")):
             response = _json({"detail": "Invalid request origin"}, 403)
         elif (scope["path"] not in ("/api/auth/login", "/api/auth/logout", "/api/auth/status")
-              and not self.security._public_get(scope) and not self.security.authenticated(scope)):
+              and not self.security._public_get(scope) and not native and not self.security.authenticated(scope)):
             response = _json({"detail": "Authentication required"}, 401)
         else:
+            if scope["path"].startswith("/api/portable/v1/") and scope["method"] in ("POST", "PUT"):
+                # Bound untrusted JSON before framework parsing. Per-event and
+                # batch constraints remain stricter inside the portable service.
+                pending, size = [], 0
+                while True:
+                    message = await receive()
+                    if message["type"] == "http.disconnect":
+                        return
+                    size += len(message.get("body", b""))
+                    if size > 2 * 1024 * 1024:
+                        await _json({"detail": "Portable request body too large"}, 413)(scope, receive, send)
+                        return
+                    pending.append(message)
+                    if not message.get("more_body", False):
+                        break
+                original_receive = receive
+                async def bounded_receive():
+                    return pending.pop(0) if pending else await original_receive()
+                receive = bounded_receive
             await self.app(scope, receive, send)
             return
         await response(scope, receive, send)

@@ -36,6 +36,7 @@ class _TasteCacheEntry:
     audio_vector: list | None
     drift: float
     expires_at: float
+    profile_generation: int = 0
 
 
 LAYERS = [
@@ -113,6 +114,7 @@ class MemorySystem:
             signal_types=['hearted', 'replayed', 'completed'],
             limit=2000,
             session_id=session_id,
+            include_shared=True,
         )
         if not liked:
             return []
@@ -186,7 +188,8 @@ class MemorySystem:
         """
         cache_key = f"s:{session_id}:sk:{skip_streak}:{collection_name}"
         entry = self._cache.get(cache_key)
-        if entry and entry.expires_at > time():
+        profile_generation = getattr(database, "_shared_profile_generation", 0)
+        if entry and entry.expires_at > time() and entry.profile_generation == profile_generation:
             return entry.text_vector, entry.drift
 
         signals = self.get_recent_signals(
@@ -228,6 +231,7 @@ class MemorySystem:
             audio_vector=None,
             drift=drift,
             expires_at=time() + self._cache_ttl,
+            profile_generation=profile_generation,
         )
 
         return blended, drift

@@ -199,6 +199,7 @@ def add_missing_columns():
 
         # Seed new settings that may not exist in older databases
         new_settings = {
+            'llm_reranking_enabled': 'true',
             'vibe_lock_duration_minutes': '30',
             'vibe_lock_max_songs': '10',
             'dislike_decay_rate': '0.029',
@@ -1470,7 +1471,7 @@ def get_recent_queue_song_ids(limit=50):
         conn.close()
 
 
-def get_recent_signals(signal_types=None, limit=2000, session_id=None):
+def get_recent_signals(signal_types=None, limit=2000, session_id=None, include_shared=False):
     """Get recent play events for taste memory.
 
     Returns list of dicts with song_id, played_at, signal, session_id.
@@ -1486,7 +1487,8 @@ def get_recent_signals(signal_types=None, limit=2000, session_id=None):
             params = []
 
         if session_id is not None:
-            where_clauses += " AND session_id = ?"
+            shared = include_shared and conn.execute("SELECT 1 FROM sqlite_master WHERE name='portable_projection'").fetchone()
+            where_clauses += " AND (session_id = ? OR id IN (SELECT play_id FROM portable_projection))" if shared else " AND session_id = ?"
             params.append(session_id)
 
         where_clauses += " AND (undone IS NULL OR undone = 0)"

@@ -58,7 +58,7 @@ class PlaybackContext:
 
 def _log_step(msg):
     """Log a rebuild step with thread name for debugging."""
-    logger.info(f"[REBUILD-{threading.current_thread().name}] {msg}")
+    logger.debug("[REBUILD-%s] %s", threading.current_thread().name, msg)
 
 
 class QueueManager:
@@ -104,6 +104,9 @@ class QueueManager:
         self._talk_segment_playing = False  # True while a talk segment TTS is playing
         self._manual_queue = []  # user/LLM additions — survives song queue rebuilds
         self._rebuild_gen = 0  # incremented each rebuild; used to discard stale results
+        # Ranking configuration has its own fence: changing it must not retire
+        # prepared speech, reservations, or the existing preview generation.
+        self._ranking_epoch = 0
         self._broadcast_gen = 0  # monotonically increasing counter for broadcast events
         # Queue preview cache — pre-built queue from the last rebuild, tagged
         # with the song that was playing when it was generated.  When a song
@@ -536,6 +539,22 @@ class QueueManager:
         except Exception as e:
             logger.warning("Failed to record queue history: %s", e)
 
+    def set_reranking_enabled(self, enabled):
+        """Apply only to future ranking work, keeping all prepared media/queues."""
+        if type(enabled) is not bool:
+            raise ValueError('Reranking enabled must be a boolean')
+        with self._condition:
+            previous = (self._db.get_setting('llm_reranking_enabled') or 'true').lower() != 'false'
+            self._db.set_setting('llm_reranking_enabled', str(enabled).lower())
+            if previous != enabled:
+                self._ranking_epoch += 1
+                self._rebuilding = False
+                self._condition.notify_all()
+                # Serialize the completion notice with rebuild admission. The
+                # next rebuild receives a strictly newer broadcast generation.
+                self._broadcast_gen += 1
+                self._broadcast('queue_rebuilding', {'rebuilding': False, 'gen': self._broadcast_gen})
+
     def request_rebuild(self, seed_id=None, advance_talk_counter=False):
         """Assign identity before scheduling, so delayed workers stay stale."""
         with self._condition:
@@ -570,6 +589,8 @@ class QueueManager:
                     (expected_generation is not None and expected_generation != self._rebuild_gen)):
                 return
             my_gen = self._rebuild_gen if expected_generation is None else expected_generation
+            ranking_epoch = self._ranking_epoch
+            reranking_enabled = (self._db.get_setting('llm_reranking_enabled') or 'true').lower() != 'false'
         # Determine the context seed: explicit seed → first queue item → current song
         if seed_id is None:
             with self._condition:
@@ -585,9 +606,14 @@ class QueueManager:
             _log_step(f"Rebuild queue state: _queue={len(self._queue)} items, manual={len(self._manual_queue)}, talk={len(self._pending_talk_segments)}, first_id={_queue_first}")
         # Notify frontend that background preview generation has started
         with self._condition:
+            if self._rebuild_gen != my_gen or self._ranking_epoch != ranking_epoch:
+                if self._rebuild_gen == my_gen:
+                    self._rebuilding = False
+                self._condition.notify_all()
+                return
             self._broadcast_gen += 1
             broadcast_gen = self._broadcast_gen
-        self._broadcast("queue_rebuilding", {"rebuilding": True, "gen": broadcast_gen})
+            self._broadcast("queue_rebuilding", {"rebuilding": True, "gen": broadcast_gen})
         _log_step("Broadcast queue_rebuilding=True")
 
         try:
@@ -941,8 +967,8 @@ class QueueManager:
                     conn.close()
                 picks = [{"id": r["id"], "slot": "manual", "reason": reason} for r in rows]
                 _log_step(f"Built {len(picks)} picks from {play_mode} mode")
-            elif mode == "normal":
-                _log_step("Normal mode - deterministic assignment")
+            elif mode == "normal" or not reranking_enabled:
+                _log_step("Deterministic song assignment")
                 picks = reranker.deterministic_assignment(candidates, slots_result)
             else:
                 # Rerank with LLM
@@ -1012,8 +1038,10 @@ class QueueManager:
 
             # --- Phase 1: Validate rebuild is current BEFORE talk scheduling ---
             with self._condition:
-                if self._rebuild_gen != my_gen:
+                if self._rebuild_gen != my_gen or self._ranking_epoch != ranking_epoch:
                     _log_step(f"Stale rebuild (gen {my_gen} != {self._rebuild_gen}), discarding (pre-talk)")
+                    if self._rebuild_gen == my_gen:
+                        self._rebuilding = False
                     self._condition.notify_all()
                     return
 
@@ -1033,10 +1061,14 @@ class QueueManager:
             _log_step("Setting preview queue and notifying")
             was_empty = False
             with self._condition:
-                if self._rebuild_gen != my_gen:
+                if self._rebuild_gen != my_gen or self._ranking_epoch != ranking_epoch:
                     _log_step(f"Stale rebuild (gen {my_gen} != {self._rebuild_gen}), discarding (post-talk)")
                     # Talk segment was appended but rebuild is stale — remove it
-                    self._discard_stale_talk_segment(my_gen)
+                    if self._rebuild_gen != my_gen:
+                        self._discard_stale_talk_segment(my_gen)
+                    else:
+                        # Speech remains valid: only song selection changed.
+                        self._rebuilding = False
                     self._condition.notify_all()
                     return
                 # Store as preview, tagged with the seed it was generated for

@@ -16,6 +16,7 @@ SESSION_SETTING_KEYS = TALK_SETTING_KEYS | frozenset({
     "genre_filter",
     "artist_filter",
     "exploration_level",
+    "llm_reranking_enabled",
 })
 
 
@@ -27,7 +28,8 @@ class SessionSettings:
         self.overrides = overrides if overrides is not None else {}
         for key in SESSION_SETTING_KEYS:
             if key not in self.overrides:
-                self.overrides[key] = database.get_setting(key)
+                value = database.get_setting(key)
+                self.overrides[key] = ('true' if key == 'llm_reranking_enabled' and value is None else value)
 
     def get_setting(self, key):
         if key in SESSION_SETTING_KEYS:

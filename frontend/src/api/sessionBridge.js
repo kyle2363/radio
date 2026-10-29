@@ -72,6 +72,14 @@ export function createPlaybackFacade({ fetchStatus = () => {}, onConnected = () 
     send(message) {
       if (closed) return;
       if (message === 'position_request') {
+        const physical = localPlaybackState();
+        if (physical) {
+          const session = current.getState().session;
+          const item = session.items?.[session.active_index || 0];
+          facade._positionHandler?.({ elapsed_ms: physical.position_ms, position_ms: physical.position_ms,
+            duration_ms: item?.duration_ms || 0, is_playing: physical.is_playing });
+          return;
+        }
         Promise.resolve(fetchStatus()).then(status => {
           if (closed || !status) return;
           const physical = localPlaybackState();

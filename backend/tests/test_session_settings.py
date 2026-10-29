@@ -73,6 +73,68 @@ def test_non_recommendation_settings_delegate_to_global_database():
     assert db.writes == [("tts_enabled", "false")]
 
 
+def test_reranking_default_is_snapshotted_without_changing_other_ai_controls():
+    db = FakeDatabase()
+    first = SessionSettings(db)
+    assert first.get_setting('llm_reranking_enabled') == 'true'
+    db.set_setting('llm_reranking_enabled', 'false')
+    second = SessionSettings(db)
+    assert first.get_setting('llm_reranking_enabled') == 'true'
+    assert second.get_setting('llm_reranking_enabled') == 'false'
+    first.set_setting('llm_reranking_enabled', 'false')
+    assert db.get_setting('tts_enabled') == 'true'
+    assert db.writes == [('llm_reranking_enabled', 'false')]
+
+
+def test_reranking_survives_session_restore_and_isolates_existing_queue(domain):
+    service, sid, owner, *_ = domain
+    other = service.create(client_id='other')
+    queue = service.context_for(sid, owner).queue
+    queue.set_reranking_enabled = lambda enabled: queue._db.set_setting('llm_reranking_enabled', str(enabled).lower())
+    before = service.snapshot(sid, owner)
+    result = service.set_reranking(sid, owner, False)
+    assert result['preferences']['settings']['llm_reranking_enabled'] == 'false'
+    assert result['queue'] == before['queue'] and result['instance_id'] == before['instance_id']
+    assert result['revision'] == before['revision']
+    assert service.snapshot(other['session']['id'], other['owner_key'])['preferences']['settings']['llm_reranking_enabled'] == 'true'
+    from playback_sessions import PlaybackSessions
+    from tests.test_playback_sessions import Queue
+    service.shutdown()
+    recovered = PlaybackSessions(service.store, lambda: service.media, queue_factory=Queue)
+    try:
+        restored = recovered.attach(sid, owner)
+        assert restored['preferences']['settings']['llm_reranking_enabled'] == 'false'
+        assert restored['preferences']['settings']['talk_segments_enabled'] == before['preferences']['settings']['talk_segments_enabled']
+    finally:
+        recovered.shutdown()
+
+
+def test_settings_api_distinguishes_session_override_from_global_default(monkeypatch, main_contract):
+    from db import database
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    from fastapi import HTTPException
+    main = main_contract
+    first = SessionSettings(database)
+    second = SessionSettings(database)
+    setter = Mock(side_effect=lambda enabled: first.set_setting('llm_reranking_enabled', str(enabled).lower()))
+    monkeypatch.setattr(main, '_session_database', lambda: first)
+    monkeypatch.setattr(main, '_get_queue_manager', lambda: SimpleNamespace(set_reranking_enabled=setter))
+    main.update_setting('llm_reranking_enabled', {'value': False})
+    assert first.get_setting('llm_reranking_enabled') == 'false'
+    assert second.get_setting('llm_reranking_enabled') == 'true'
+    assert main.get_settings()['llm_reranking_default_enabled'] == 'true'
+    main.update_setting('llm_reranking_enabled', {'value': False, 'scope': 'global'})
+    assert second.get_setting('llm_reranking_enabled') == 'true'
+    assert SessionSettings(database).get_setting('llm_reranking_enabled') == 'false'
+    assert main.get_settings()['llm_reranking_default_enabled'] == 'false'
+    setter.assert_called_once_with(False)
+    for body in ({'value': 'invalid'}, {'value': True, 'scope': 'all'}):
+        with pytest.raises(HTTPException) as error:
+            main.update_setting('llm_reranking_enabled', body)
+        assert error.value.status_code == 422
+
+
 def test_settings_overlay_mutates_the_supplied_preferences_dict_in_place():
     db = FakeDatabase()
     preferences = {"play_mode": "shuffle"}
