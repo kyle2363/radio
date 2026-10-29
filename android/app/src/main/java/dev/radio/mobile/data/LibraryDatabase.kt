@@ -7,6 +7,9 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 @Entity(tableName = "local_playback_starts", indices = [Index(value = ["songId"])])
 data class LocalPlaybackStart(@PrimaryKey val attemptId: String, val songId: String, val occurredAt: Long, val positionMs: Long)
 
+@Entity(tableName = "local_playback_snapshot")
+data class LocalPlaybackSnapshot(@PrimaryKey val key: Int = 1, val payload: String)
+
 @Entity(tableName = "library_root")
 data class LibraryRoot(@PrimaryKey val key: Int = 1, val uri: String, val folderId: String, val name: String, val scannedAt: Long)
 
@@ -45,6 +48,8 @@ interface LibraryDao {
     @Upsert suspend fun saveFolders(folders: List<LocalFolder>)
     @Insert(onConflict = OnConflictStrategy.IGNORE) suspend fun savePlaybackStart(start: LocalPlaybackStart)
     @Query("SELECT * FROM local_playback_starts ORDER BY occurredAt") suspend fun playbackStarts(): List<LocalPlaybackStart>
+    @Query("SELECT * FROM local_playback_snapshot WHERE `key` = 1") suspend fun playbackSnapshot(): LocalPlaybackSnapshot?
+    @Upsert suspend fun savePlaybackSnapshot(snapshot: LocalPlaybackSnapshot)
 }
 
 val LIBRARY_MIGRATION_1_2 = object : Migration(1, 2) {
@@ -54,5 +59,11 @@ val LIBRARY_MIGRATION_1_2 = object : Migration(1, 2) {
     }
 }
 
-@Database(entities = [LibraryRoot::class, LocalSong::class, LocalFolder::class, LocalPlaybackStart::class], version = 2, exportSchema = true)
+val LIBRARY_MIGRATION_2_3 = object : Migration(2, 3) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS local_playback_snapshot (`key` INTEGER NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(`key`))")
+    }
+}
+
+@Database(entities = [LibraryRoot::class, LocalSong::class, LocalFolder::class, LocalPlaybackStart::class, LocalPlaybackSnapshot::class], version = 3, exportSchema = true)
 abstract class LibraryDatabase : RoomDatabase() { abstract fun library(): LibraryDao }

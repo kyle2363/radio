@@ -171,6 +171,7 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
                     if (query.isNotBlank() && results.isEmpty()) Text("No matching songs", Modifier.padding(20.dp))
                 }
                 "Now playing" -> if (song == null) Column(Modifier.padding(insets).padding(20.dp)) {
+                    audio.error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(bottom = 12.dp)) }
                     Text("Choose a song from your library.")
                     TextButton(onClick = { navigate("Library") }) { Text("Browse music") }
                 } else BoxWithConstraints(Modifier.padding(insets).consumeWindowInsets(insets).fillMaxSize()) {

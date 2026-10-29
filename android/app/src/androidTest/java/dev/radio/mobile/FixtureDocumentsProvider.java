@@ -70,6 +70,7 @@ public class FixtureDocumentsProvider extends DocumentsProvider {
                     add("root", null, "Music", Document.MIME_TYPE_DIR, 1000);
                     add("background1", "root", "Background one.mp3", "audio/mpeg", 8000);
                     add("background2", "root", "Background two.mp3", "audio/mpeg", 7000);
+                    add("background3", "root", "Background three.mp3", "audio/mpeg", 6000);
                     break;
             }
             Bundle result = new Bundle(); result.putInt("writes", writeAttempts); return result;

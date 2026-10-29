@@ -24,6 +24,7 @@ import kotlin.random.Random
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 class LocalPlaybackController(
     context: Context,
+    private val onCheckpoint: (PlaybackState) -> Unit = {},
     private val onAudibleStart: (LocalSong, String, Long) -> Unit = { _, _, _ -> }
 ) : PlaybackController {
     private val player = ExoPlayer.Builder(context.applicationContext).build().apply {
@@ -48,6 +49,7 @@ class LocalPlaybackController(
     private var started = false
     private var ticker: Job? = null
     private var closed = false
+    private var lastCheckpointAt = 0L
 
     // Every system transport command uses the same guards, shuffle and journal as the app.
     internal val sessionPlayer: Player = object : ForwardingPlayer(player) {
@@ -63,7 +65,7 @@ class LocalPlaybackController(
         override fun seekToPrevious() = previous()
         override fun seekToPreviousMediaItem() = previous()
         override fun setShuffleModeEnabled(shuffleModeEnabled: Boolean) = shuffle(shuffleModeEnabled)
-        override fun stop() { player.pause(); player.stop(); publish() }
+        override fun stop() { player.pause(); player.stop(); publish(checkpoint = true) }
     }
 
     init {
@@ -78,7 +80,7 @@ class LocalPlaybackController(
                         onAudibleStart(song, attemptId, player.currentPosition.coerceAtLeast(0))
                     }
                 }
-                publish()
+                publish(checkpoint = true)
                 if (player.isPlaying && ticker?.isActive != true) ticker = scope.launch {
                     while (isActive && player.isPlaying) { publish(); delay(250) }
                 } else if (!player.isPlaying) { ticker?.cancel(); ticker = null }
@@ -86,7 +88,7 @@ class LocalPlaybackController(
             override fun onPlayerError(exception: PlaybackException) {
                 error = "Couldn't play this file. It may be missing, unreadable or unsupported. Try Next, or check the Music folder and rescan."
                 player.pause()
-                publish()
+                publish(checkpoint = true)
             }
         })
     }
@@ -94,7 +96,7 @@ class LocalPlaybackController(
     private fun beginAttempt(id: String) { attemptSong = id; attemptId = UUID.randomUUID().toString(); started = false }
     private fun canReadCurrent() = !accessLost && queueById[player.currentMediaItem?.mediaId]?.available == true
     private fun validUri(song: LocalSong) = Uri.parse(song.uri).scheme == "content"
-    private fun publish() {
+    private fun publish(checkpoint: Boolean = false) {
         if (closed) return
         val id = player.currentMediaItem?.mediaId
         val current = queueById[id]
@@ -117,11 +119,35 @@ class LocalPlaybackController(
             durationMs = duration,
             isPlaying = player.isPlaying, playWhenReady = player.playWhenReady && player.playbackState != Player.STATE_ENDED,
             buffering = player.playbackState == Player.STATE_BUFFERING, ended = player.playbackState == Player.STATE_ENDED,
-            seekable = player.isCurrentMediaItemSeekable && duration != null && duration > 0 && error == null && canReadCurrent(),
+            seekable = (player.isCurrentMediaItemSeekable || player.playbackState == Player.STATE_IDLE) && duration != null && duration > 0 && error == null && canReadCurrent(),
             canNext = !accessLost && next != C.INDEX_UNSET && queue.any { it.available && it.id != id },
             canPrevious = canReadCurrent(), shuffled = player.shuffleModeEnabled, error = error
         )
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (checkpoint || now - lastCheckpointAt >= 5000) {
+            lastCheckpointAt = now
+            onCheckpoint(mutable.value)
+        }
     }
+
+    internal fun restorePaused(saved: PlaybackSnapshot, catalog: List<LocalSong>, accessLost: Boolean) {
+        val restored = resolvePlaybackSnapshot(saved, catalog, accessLost)
+        if (restored == null) { restorationFailed("The saved queue is no longer in this library. Choose a song to start a new queue."); return }
+        this.accessLost = accessLost
+        queue = restored.songs; queueById = queue.associateBy { it.id }; source = restored.source
+        error = restored.error
+        beginAttempt(restored.currentId)
+        player.pause()
+        player.setMediaItems(queue.map { MediaItem.Builder().setMediaId(it.id).setUri(it.uri).setMediaMetadata(metadata(it)).build() },
+            queue.indexOfFirst { it.id == restored.currentId }, restored.positionMs)
+        val indices = queue.mapIndexed { index, song -> song.id to index }.toMap()
+        player.setShuffleOrder(DefaultShuffleOrder(restored.playOrder.map { indices.getValue(it) }.toIntArray(), Random.nextLong()))
+        player.shuffleModeEnabled = restored.shuffled
+        // No prepare or play: restoration must not read/decode audio, acquire focus or
+        // manufacture a listening start. Explicit Play will prepare the restored item.
+        publish()
+    }
+    internal fun restorationFailed(message: String) { error = message; publish() }
 
     override fun playFrom(items: List<LocalSong>, selectedId: String, source: String) {
         val snapshot = playbackQueue(items, selectedId).filter(::validUri)
@@ -135,7 +161,7 @@ class LocalPlaybackController(
         if (player.shuffleModeEnabled) reshuffle()
         player.prepare()
         player.play()
-        publish()
+        publish(checkpoint = true)
     }
     override fun toggle() {
         if (player.playWhenReady && player.playbackState != Player.STATE_ENDED) { pause(); return }
@@ -146,14 +172,14 @@ class LocalPlaybackController(
         if (player.playbackState == Player.STATE_ENDED) { beginAttempt(player.currentMediaItem!!.mediaId); player.seekTo(0) }
         error = null
         if (player.playbackState == Player.STATE_IDLE) player.prepare()
-        player.play(); publish()
+        player.play(); publish(checkpoint = true)
     }
     private fun metadata(song: LocalSong) = MediaMetadata.Builder().setTitle(song.title).setArtist(song.artist)
         .setAlbumTitle(song.folderPath.ifEmpty { source }).build()
-    override fun pause() { if (!closed) { player.pause(); publish() } }
+    override fun pause() { if (!closed) { player.pause(); publish(checkpoint = true) } }
     override fun seek(positionMs: Long) {
         if (!state.value.seekable) return
-        player.seekTo(positionMs.coerceIn(0, state.value.durationMs ?: Long.MAX_VALUE)); publish()
+        player.seekTo(positionMs.coerceIn(0, state.value.durationMs ?: Long.MAX_VALUE)); publish(checkpoint = true)
     }
     private fun adjacent(forward: Boolean): Int {
         val timeline = player.currentTimeline
@@ -174,7 +200,7 @@ class LocalPlaybackController(
         player.seekTo(index, 0)
         if (player.playbackState == Player.STATE_IDLE) player.prepare()
         player.playWhenReady = continuePlaying
-        publish()
+        publish(checkpoint = true)
     }
     override fun next() { if (queue.isNotEmpty()) move(adjacent(true)) }
     override fun previous() {
@@ -187,7 +213,7 @@ class LocalPlaybackController(
         if (accessLost || queue.none { it.id == songId && it.available }) return
         error = null; beginAttempt(songId); player.seekTo(index, 0)
         if (player.playbackState == Player.STATE_IDLE) player.prepare()
-        player.play(); publish()
+        player.play(); publish(checkpoint = true)
     }
     private fun seekToItem(index: Int, positionMs: Long) {
         if (index !in 0 until player.mediaItemCount || accessLost) return
@@ -197,12 +223,12 @@ class LocalPlaybackController(
         error = null
         player.seekTo(index, positionMs.coerceAtLeast(0))
         if (player.playbackState == Player.STATE_IDLE) player.prepare()
-        publish()
+        publish(checkpoint = true)
     }
     override fun shuffle(enabled: Boolean) {
         if (enabled && !player.shuffleModeEnabled) reshuffle()
         player.shuffleModeEnabled = enabled
-        publish()
+        publish(checkpoint = true)
     }
     private fun reshuffle() {
         // Media3 retains its permutation when shuffle is disabled. Replace that order
@@ -231,26 +257,24 @@ class LocalPlaybackController(
         val byId = songs.associateBy { it.id }
         val updated = queue.map { byId[it.id] ?: it.copy(available = false) }
         val uriChanged = queue.zip(updated).any { (before, after) -> before.uri != after.uri }
+        val bookmark = state.value.snapshot()
         queue = updated
         queueById = updated.associateBy { it.id }
         if (!canReadCurrent()) {
             player.stop()
             error = "Folder access or the current file is unavailable. Choose the Music folder again or rescan."
         } else if (uriChanged) {
-            val id = player.currentMediaItem!!.mediaId
-            val position = player.currentPosition
-            player.pause()
-            val readable = queue.filter { it.available }
-            player.setMediaItems(readable.map { MediaItem.Builder().setMediaId(it.id).setUri(it.uri).setMediaMetadata(metadata(it)).build() }, readable.indexOfFirst { it.id == id }, position)
+            bookmark?.let { restorePaused(it, queue, accessLost = false) }
         } else {
             for (index in player.mediaItemCount - 1 downTo 0) {
                 if (queue.none { it.id == player.getMediaItemAt(index).mediaId && it.available }) player.removeMediaItem(index)
             }
         }
-        publish()
+        publish(checkpoint = true)
     }
     fun close() {
         if (closed) return
+        publish(checkpoint = true)
         closed = true; scope.cancel(); player.release()
     }
 }
