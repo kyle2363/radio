@@ -1,0 +1,37 @@
+# Generated state and machine-specific IDE/SDK settings (all modules)
+.gradle/
+.kotlin/
+.idea/
+*.iml
+local.properties
+.DS_Store
+
+# Build outputs, native build caches, and profiler captures
+build/
+out/
+captures/
+.externalNativeBuild/
+.cxx/
+*.apk
+*.aab
+*.apks
+*.hprof
+*.jfr
+
+# Signing material and local credentials; keep only dummy examples in Git
+*.jks
+*.keystore
+*.p12
+*.pfx
+keystore.properties
+key.properties
+signing.properties
+.env
+.env.*
+!.env.example
+
+# Keep the Gradle wrapper, version catalog, and shared build configuration tracked.
+
+# The Kotlin data package is source, not the root project's runtime data directory.
+!app/src/main/java/dev/radio/mobile/data/
+!app/src/main/java/dev/radio/mobile/data/**

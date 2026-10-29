@@ -1,0 +1,12 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <provider android:name="dev.radio.mobile.FixtureDocumentsProvider"
+            android:authorities="dev.radio.mobile.test.documents"
+            android:permission="android.permission.MANAGE_DOCUMENTS"
+            android:exported="true" android:grantUriPermissions="true">
+            <intent-filter><action android:name="android.content.action.DOCUMENTS_PROVIDER" /></intent-filter>
+        </provider>
+        <provider android:name="dev.radio.mobile.FixtureControlProvider"
+            android:authorities="dev.radio.mobile.test.control" android:exported="true" />
+    </application>
+</manifest>

@@ -1,0 +1,78 @@
+package dev.radio.mobile.playback
+
+import android.app.PendingIntent
+import android.content.Intent
+import android.os.Binder
+import android.os.IBinder
+import androidx.media3.common.Player
+import androidx.media3.session.MediaSession
+import androidx.media3.session.MediaSessionService
+import dev.radio.mobile.MainActivity
+import dev.radio.mobile.data.LibraryRepository
+import kotlinx.coroutines.*
+
+/** Owns the only production player, independent of activity and Compose lifetimes. */
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+class RadioPlaybackService : MediaSessionService() {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private lateinit var engine: LocalPlaybackController
+    private var session: MediaSession? = null
+
+    // In-process binding avoids serializing the entire local catalog over controller IPC.
+    // The service is non-exported; Android's media session supplies system/earbud controls.
+    inner class LocalBinder : Binder() { val controller: PlaybackController get() = engine }
+    private val binder = LocalBinder()
+
+    override fun onCreate() {
+        super.onCreate()
+        val library = repositoryFactory(this)
+        engine = LocalPlaybackController(this) { song, attempt, position ->
+            library.recordPlaybackStart(song.id, attempt, position)
+        }
+        val activity = PendingIntent.getActivity(this, 0,
+            Intent(this, MainActivity::class.java).setAction(MainActivity.ACTION_NOW_PLAYING)
+                .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        session = MediaSession.Builder(this, engine.sessionPlayer).setSessionActivity(activity)
+            .setCallback(object : MediaSession.Callback {
+                override fun onConnect(session: MediaSession, controller: MediaSession.ControllerInfo): MediaSession.ConnectionResult {
+                    // System controls can operate the existing queue, not replace it with URIs
+                    // or alter repeat/speed policies outside the app's current feature set.
+                    val commands = MediaSession.ConnectionResult.DEFAULT_PLAYER_COMMANDS.buildUpon()
+                        .remove(Player.COMMAND_SET_MEDIA_ITEM).remove(Player.COMMAND_CHANGE_MEDIA_ITEMS)
+                        .remove(Player.COMMAND_SET_REPEAT_MODE).remove(Player.COMMAND_SET_SPEED_AND_PITCH).build()
+                    return MediaSession.ConnectionResult.AcceptedResultBuilder()
+                        .setAvailablePlayerCommands(commands).build()
+                }
+            }).build().also { addSession(it) }
+        scope.launch {
+            library.state.collect { state ->
+                if (!state.loading && !state.scanning) engine.reconcileLibrary(state.songs, state.accessLost)
+            }
+        }
+        library.checkAccess()
+    }
+
+    override fun onBind(intent: Intent?): IBinder? {
+        val mediaBinder = super.onBind(intent)
+        return if (intent?.action == ACTION_LOCAL_BIND) binder else mediaBinder
+    }
+
+    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session
+
+    // MediaSessionService keeps ongoing playback after task removal, stops idle playback,
+    // and handles the media notification/foreground lifetime without a second notification.
+    override fun onDestroy() {
+        scope.cancel()
+        session?.release()
+        session = null
+        engine.close()
+        super.onDestroy()
+    }
+
+    companion object {
+        const val ACTION_LOCAL_BIND = "dev.radio.mobile.BIND_PLAYBACK"
+        // Dependency seam lets service instrumentation use an in-memory catalog and journal.
+        internal var repositoryFactory: (android.content.Context) -> LibraryRepository = LibraryRepository::get
+    }
+}
