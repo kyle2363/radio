@@ -68,6 +68,13 @@ class ServicePlaybackController(context: Context) : PlaybackController {
     override fun seek(positionMs: Long) = command { it.seek(positionMs) }
     override fun jumpTo(songId: String) = command { it.jumpTo(songId) }
     override fun shuffle(enabled: Boolean) = command { it.shuffle(enabled) }
+    override fun addToQueue(items: List<LocalSong>, playNext: Boolean) { val snapshot = items.toList(); command { it.addToQueue(snapshot, playNext) } }
+    override fun removeFromQueue(songId: String) = command { it.removeFromQueue(songId) }
+    override fun moveInQueue(songId: String, target: Int) = command { it.moveInQueue(songId, target) }
+    override fun clearUpcoming() = command { it.clearUpcoming() }
+    override fun setSleepTimer(durationMs: Long, fade: Boolean) = command { it.setSleepTimer(durationMs, fade) }
+    override fun sleepAtTrackEnd() = command { it.sleepAtTrackEnd() }
+    override fun cancelSleepTimer() = command { it.cancelSleepTimer() }
     // The service observes the canonical repository even while there is no activity.
     override fun reconcileLibrary(songs: List<LocalSong>, accessLost: Boolean) = Unit
     fun close() {

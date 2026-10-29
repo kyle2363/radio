@@ -128,4 +128,73 @@ class MediaPlaybackTest {
         await("Next failed to recover") { controller.state.value.currentId == "long1" && controller.state.value.isPlaying }
         main { assertEquals(listOf("long1"), starts.map { it.first }); assertNull(controller.state.value.error) }
     }
+    @Test fun queueEditsPreserveAudioPositionAndManualShuffleOrder() {
+        val songs = List(5) { song("long1").copy(id = "edit$it") }
+        main { controller.playFrom(songs.take(4), "edit1", "Folder") }
+        await("Editing fixture didn't play") { controller.state.value.isPlaying }
+        main {
+            controller.pause(); controller.seek(3000)
+            controller.moveInQueue("edit3", 0)
+            assertEquals(listOf("edit3", "edit0", "edit1", "edit2"), controller.state.value.playOrder)
+            controller.addToQueue(listOf(songs[4], songs[0]), true)
+            assertEquals(listOf("edit3", "edit1", "edit4", "edit0", "edit2"), controller.state.value.playOrder)
+            assertEquals("edit1", controller.state.value.currentId)
+            assertEquals(3000L, controller.state.value.positionMs)
+            assertEquals(1, starts.size)
+            controller.removeFromQueue("edit3")
+            controller.shuffle(true)
+            controller.moveInQueue("edit0", controller.state.value.playOrder.lastIndex)
+            assertEquals("edit0", controller.state.value.playOrder.last())
+            controller.addToQueue(listOf(songs[2]), true)
+            assertEquals(listOf("edit1", "edit2"), controller.state.value.playOrder.take(2))
+            assertEquals(4, controller.state.value.queue.size)
+            assertEquals(3000L, controller.state.value.positionMs)
+            controller.next()
+            assertEquals("edit2", controller.state.value.currentId)
+            assertFalse(controller.state.value.playWhenReady)
+            assertEquals(1, starts.size)
+            controller.toggle()
+        }
+        await("Edited queue didn't resume") { controller.state.value.currentId == "edit2" && controller.state.value.isPlaying && starts.size == 2 }
+        var next = ""
+        main { next = controller.state.value.playOrder[controller.state.value.playOrder.indexOf("edit2") + 1]; controller.removeFromQueue("edit2") }
+        await("Removing current item didn't continue to the correct next track") { controller.state.value.currentId == next && controller.state.value.isPlaying && starts.size == 3 }
+        main {
+            controller.pause(); controller.clearUpcoming()
+            assertFalse(controller.state.value.canNext)
+            assertEquals(controller.state.value.currentId, controller.state.value.playOrder.last())
+            controller.state.value.playOrder.toList().forEach(controller::removeFromQueue)
+            assertTrue(controller.state.value.queue.isEmpty())
+            assertNull(controller.state.value.currentId)
+            assertFalse(controller.state.value.playWhenReady)
+        }
+    }
+    @Test fun sleepTimerCanBeReplacedCancelledAndStopAtTrackEndWithoutStartingNext() {
+        main { controller.playFrom(listOf(song("long1"), song("long2")), "long1", "Timer") }
+        await("Timer fixture didn't play") { controller.state.value.isPlaying }
+        main {
+            controller.setSleepTimer(5000, false)
+            controller.setSleepTimer(1000, true)
+            assertTrue(controller.state.value.sleepTimer.active)
+            assertTrue(controller.sessionPlayer.volume < 0.2f)
+            controller.cancelSleepTimer()
+            assertEquals(1f, controller.sessionPlayer.volume)
+            assertTrue(controller.state.value.playWhenReady)
+            controller.setSleepTimer(500, false)
+        }
+        await("Countdown didn't pause audio") { !controller.state.value.playWhenReady && !controller.state.value.sleepTimer.active }
+        main { assertEquals(1, starts.size); assertEquals(1f, controller.sessionPlayer.volume) }
+        var previousStarts = 0
+        main {
+            previousStarts = starts.size
+            controller.playFrom(listOf(song("short1", 600), song("long2")), "short1", "End of song")
+            controller.sleepAtTrackEnd()
+        }
+        await("Short song didn't start") { starts.size == previousStarts + 1 }
+        await("End-of-song timer didn't stop") { !controller.state.value.playWhenReady && !controller.state.value.sleepTimer.active }
+        main {
+            assertEquals("short1", controller.state.value.currentId)
+            assertEquals(previousStarts + 1, starts.size)
+        }
+    }
 }

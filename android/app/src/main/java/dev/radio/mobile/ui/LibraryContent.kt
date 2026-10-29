@@ -38,7 +38,8 @@ fun LibraryContent(
     state: LibraryState, folderId: String?, category: String, onCategory: (String) -> Unit,
     sort: LibrarySort, onSort: (LibrarySort) -> Unit, listState: LazyListState,
     onFolder: (String) -> Unit, onSong: (LocalSong, List<LocalSong>, String) -> Unit,
-    choose: () -> Unit, rescan: () -> Unit, cancel: () -> Unit, modifier: Modifier = Modifier
+    choose: () -> Unit, rescan: () -> Unit, cancel: () -> Unit, modifier: Modifier = Modifier,
+    onSongAction: (SongAction, LocalSong) -> Unit = { _, _ -> }, playlistContent: @Composable () -> Unit = {}
 ) {
     val ordered = remember(state.songs, sort) { orderSongs(state.songs, sort) }
     val parent = folderId ?: state.root?.folderId
@@ -56,23 +57,22 @@ fun LibraryContent(
                 listOf("Folders", "Playlists", "Songs").forEach { tab -> Tab(selected = category == tab, onClick = { onCategory(tab) }, text = { Text(tab) }, unselectedContentColor = MaterialTheme.colorScheme.onSurfaceVariant) }
             }
             var menu by remember { mutableStateOf(false) }
-            Box(Modifier.padding(start = 8.dp)) {
-                TextButton(onClick = { menu = true }) { Text(sort.label, style = MaterialTheme.typography.labelMedium); Text("  ⌄") }
-                DropdownMenu(menu, onDismissRequest = { menu = false }) { LibrarySort.entries.forEach { item ->
-                    DropdownMenuItem(text = { Text(item.label) }, onClick = { onSort(item); menu = false })
-                } }
-            }
-            LazyColumn(state = listState, modifier = Modifier.fillMaxSize().testTag("library-list")) {
-                if (folderId == null && category == "Playlists") {
-                    item { Text("Playlists are coming in a later checkpoint. Samsung Music playlists stay unchanged.", Modifier.padding(20.dp)) }
-                } else {
+            if (folderId == null && category == "Playlists") playlistContent()
+            else {
+                Box(Modifier.padding(start = 8.dp)) {
+                    TextButton(onClick = { menu = true }) { Text(sort.label, style = MaterialTheme.typography.labelMedium); Text("  ⌄") }
+                    DropdownMenu(menu, onDismissRequest = { menu = false }) { LibrarySort.entries.forEach { item ->
+                        DropdownMenuItem(text = { Text(item.label) }, onClick = { onSort(item); menu = false })
+                    } }
+                }
+                LazyColumn(state = listState, modifier = Modifier.fillMaxSize().testTag("library-list")) {
                     val browsingFolders = folderId != null || category == "Folders"
                     if (browsingFolders) items(childFolders, key = { "folder:${it.id}" }) { item ->
                         LibraryRow(item.name, if (!item.available) "Folder unavailable · saved listing" else item.path, Symbol.Folder) { onFolder(item.id) }
                     }
                     val visible = if (browsingFolders) ordered.filter { it.folderId == parent } else ordered
                     val source = if (!browsingFolders) "All songs" else state.folders.firstOrNull { it.id == parent }?.name ?: "Music"
-                    items(visible, key = { it.id }) { song -> LibraryRow(song.title, songSubtitle(song), Symbol.Music) { onSong(song, visible, source) } }
+                    items(visible, key = { it.id }) { song -> LibraryRow(song.title, songSubtitle(song), Symbol.Music, trailing = { SongActions(song, onSongAction) }) { onSong(song, visible, source) } }
                     if (visible.isEmpty() && (!browsingFolders || childFolders.isEmpty())) item {
                         Text("No MP3s in this ${if (browsingFolders) "folder" else "library"}. Try another folder or rescan after adding files.", Modifier.padding(20.dp))
                     }

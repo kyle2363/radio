@@ -11,6 +11,7 @@ import org.json.JSONObject
 /** One ordered writer outlives services. A load waits behind every earlier checkpoint. */
 internal class PlaybackSnapshotStore(dao: LibraryDao, scope: CoroutineScope) {
     private sealed interface Request {
+        data object Clear : Request
         data class Save(val state: PlaybackState) : Request
         data class Load(val reply: CompletableDeferred<PlaybackSnapshot?>) : Request
     }
@@ -21,6 +22,9 @@ internal class PlaybackSnapshotStore(dao: LibraryDao, scope: CoroutineScope) {
         scope.launch {
             try {
                 for (request in requests) when (request) {
+                    Request.Clear -> try { dao.clearPlaybackSnapshot() }
+                    catch (cancelled: CancellationException) { throw cancelled }
+                    catch (error: Exception) { android.util.Log.w("RadioPlayback", "Couldn't clear playback bookmark", error) }
                     is Request.Save -> try {
                         request.state.snapshot()?.let { dao.savePlaybackSnapshot(LocalPlaybackSnapshot(payload = encode(it))) }
                     } catch (cancelled: CancellationException) { throw cancelled }
@@ -37,6 +41,7 @@ internal class PlaybackSnapshotStore(dao: LibraryDao, scope: CoroutineScope) {
         // Never overwrite an existing bookmark with the empty state during startup.
         if (state.currentId != null && state.queue.isNotEmpty()) requests.trySend(Request.Save(state))
     }
+    fun clear() { requests.trySend(Request.Clear) }
     suspend fun load(): PlaybackSnapshot? {
         val reply = CompletableDeferred<PlaybackSnapshot?>()
         requests.send(Request.Load(reply))

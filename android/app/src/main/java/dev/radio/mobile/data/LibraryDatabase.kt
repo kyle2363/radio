@@ -50,6 +50,7 @@ interface LibraryDao {
     @Query("SELECT * FROM local_playback_starts ORDER BY occurredAt") suspend fun playbackStarts(): List<LocalPlaybackStart>
     @Query("SELECT * FROM local_playback_snapshot WHERE `key` = 1") suspend fun playbackSnapshot(): LocalPlaybackSnapshot?
     @Upsert suspend fun savePlaybackSnapshot(snapshot: LocalPlaybackSnapshot)
+    @Query("DELETE FROM local_playback_snapshot") suspend fun clearPlaybackSnapshot()
 }
 
 val LIBRARY_MIGRATION_1_2 = object : Migration(1, 2) {
@@ -65,5 +66,13 @@ val LIBRARY_MIGRATION_2_3 = object : Migration(2, 3) {
     }
 }
 
-@Database(entities = [LibraryRoot::class, LocalSong::class, LocalFolder::class, LocalPlaybackStart::class, LocalPlaybackSnapshot::class], version = 3, exportSchema = true)
-abstract class LibraryDatabase : RoomDatabase() { abstract fun library(): LibraryDao }
+val LIBRARY_MIGRATION_3_4 = object : Migration(3, 4) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS local_playlists (id TEXT NOT NULL, name TEXT NOT NULL, nameKey TEXT NOT NULL, createdAt INTEGER NOT NULL, updatedAt INTEGER NOT NULL, PRIMARY KEY(id))")
+        db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_local_playlists_nameKey ON local_playlists (nameKey)")
+        db.execSQL("CREATE TABLE IF NOT EXISTS local_playlist_songs (playlistId TEXT NOT NULL, songId TEXT NOT NULL, position INTEGER NOT NULL, PRIMARY KEY(playlistId, songId), FOREIGN KEY(playlistId) REFERENCES local_playlists(id) ON UPDATE NO ACTION ON DELETE CASCADE)")
+    }
+}
+
+@Database(entities = [LibraryRoot::class, LocalSong::class, LocalFolder::class, LocalPlaybackStart::class, LocalPlaybackSnapshot::class, LocalPlaylist::class, LocalPlaylistSong::class], version = 4, exportSchema = true)
+abstract class LibraryDatabase : RoomDatabase() { abstract fun library(): LibraryDao; abstract fun playlists(): PlaylistDao }

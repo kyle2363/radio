@@ -3,7 +3,7 @@ package dev.radio.mobile.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -23,24 +23,39 @@ import dev.radio.mobile.playback.PlaybackState
 import kotlinx.coroutines.launch
 
 @Composable
-fun IntegratedQueue(audio: PlaybackState, accessAllowed: Boolean, onSelect: (String) -> Unit, modifier: Modifier = Modifier) {
+fun IntegratedQueue(audio: PlaybackState, accessAllowed: Boolean, onSelect: (String) -> Unit, modifier: Modifier = Modifier,
+    playback: PlaybackController? = null, onAdd: () -> Unit = {}, onSave: (List<String>) -> Unit = {}) {
     val byId = remember(audio.queue) { audio.queue.associateBy { it.id } }
     val currentIndex = remember(audio.playOrder, audio.currentId) { audio.playOrder.indexOf(audio.currentId) }
     val list = rememberLazyListState(initialFirstVisibleItemIndex = currentIndex.coerceAtLeast(0))
     val scope = rememberCoroutineScope()
+    var editing by remember { mutableStateOf(false) }
+    var menu by remember { mutableStateOf(false) }
     // Start at the current song when opened, then leave browsing under the user's control.
     // Selecting or advancing a track updates the highlight without moving the viewport.
     Column(modifier) {
         Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            Text(if (audio.shuffled) "Shuffled order" else "In order", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(if (audio.shuffled) "Shuffled order" else "In order", modifier = Modifier.weight(1f), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
             TextButton(onClick = { if (currentIndex >= 0) scope.launch { list.animateScrollToItem(currentIndex) } }, enabled = currentIndex >= 0,
                 modifier = Modifier.testTag("queue-position").semantics { stateDescription = "Track ${currentIndex + 1} of ${audio.playOrder.size}. Show current song." }) {
                 Text("${currentIndex + 1} / ${audio.playOrder.size}")
             }
+            if (playback != null) {
+                if (editing) TextButton(onClick = { editing = false }) { Text("Done") }
+                IconButton(onClick = onAdd, enabled = accessAllowed) { RadioIcon(Symbol.Add, "Add songs to queue") }
+                Box {
+                    IconButton(onClick = { menu = true }) { RadioIcon(Symbol.More, "Queue options") }
+                    DropdownMenu(menu, { menu = false }) {
+                        DropdownMenuItem(text = { Text("Edit queue") }, onClick = { menu = false; editing = true })
+                        DropdownMenuItem(text = { Text("Save queue to playlist") }, onClick = { menu = false; onSave(audio.playOrder) })
+                        DropdownMenuItem(text = { Text("Clear upcoming songs") }, enabled = audio.canNext, onClick = { menu = false; playback.clearUpcoming() })
+                    }
+                }
+            }
         }
         LazyColumn(state = list, modifier = Modifier.fillMaxWidth().weight(1f).testTag("playback-queue"), contentPadding = PaddingValues(bottom = 12.dp)) {
-            items(audio.playOrder, key = { it }) { id ->
-                val song = byId[id] ?: return@items
+            itemsIndexed(audio.playOrder, key = { _, id -> id }) { index, id ->
+                val song = byId[id] ?: return@itemsIndexed
                 val current = id == audio.currentId
                 val tint = if (current) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
                 Row(Modifier.fillMaxWidth().selectable(selected = current, enabled = accessAllowed && song.available, role = Role.Button, onClick = { onSelect(id) })
@@ -54,6 +69,25 @@ fun IntegratedQueue(audio: PlaybackState, accessAllowed: Boolean, onSelect: (Str
                             fontWeight = if (current) FontWeight.Medium else FontWeight.Normal, color = if (current) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
                         Text(if (current) audio.status else if (!song.available) "Unavailable" else songSubtitle(song), maxLines = 1, overflow = TextOverflow.Ellipsis,
                             style = MaterialTheme.typography.bodySmall, color = tint)
+                    }
+                    if (playback != null) {
+                        if (editing) {
+                            IconButton(onClick = { playback.moveInQueue(id, index - 1) }, enabled = index > 0) { RadioIcon(Symbol.Up, "Move ${song.title} up") }
+                            IconButton(onClick = { playback.moveInQueue(id, index + 1) }, enabled = index < audio.playOrder.lastIndex) { RadioIcon(Symbol.Down, "Move ${song.title} down") }
+                            IconButton(onClick = { playback.removeFromQueue(id) }) { RadioIcon(Symbol.Remove, "Remove ${song.title} from queue") }
+                        } else {
+                            var options by remember { mutableStateOf(false) }
+                            Box {
+                                IconButton(onClick = { options = true }, modifier = Modifier.testTag("queue-menu-$id")) { RadioIcon(Symbol.More, "Queue options for ${song.title}") }
+                                DropdownMenu(options, { options = false }) {
+                                    DropdownMenuItem(text = { Text("Play next") }, enabled = !current && accessAllowed && song.available, onClick = { options = false; playback.addToQueue(listOf(song), true) })
+                                    DropdownMenuItem(text = { Text("Move up") }, enabled = index > 0, onClick = { options = false; playback.moveInQueue(id, index - 1) })
+                                    DropdownMenuItem(text = { Text("Move down") }, enabled = index < audio.playOrder.lastIndex, onClick = { options = false; playback.moveInQueue(id, index + 1) })
+                                    DropdownMenuItem(text = { Text("Add to playlist") }, onClick = { options = false; onSave(listOf(id)) })
+                                    DropdownMenuItem(text = { Text("Remove from queue") }, onClick = { options = false; playback.removeFromQueue(id) })
+                                }
+                            }
+                        }
                     }
                 }
             }

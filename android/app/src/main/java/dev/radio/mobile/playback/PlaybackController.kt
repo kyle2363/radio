@@ -18,7 +18,8 @@ data class PlaybackState(
     val canNext: Boolean = false,
     val canPrevious: Boolean = false,
     val shuffled: Boolean = false,
-    val error: String? = null
+    val error: String? = null,
+    val sleepTimer: SleepTimerState = SleepTimerState()
 ) {
     val current: LocalSong? get() = queue.firstOrNull { it.id == currentId }
     val status: String get() = when {
@@ -47,4 +48,11 @@ interface PlaybackController {
     fun jumpTo(songId: String)
     fun shuffle(enabled: Boolean)
     fun reconcileLibrary(songs: List<LocalSong>, accessLost: Boolean)
+    fun addToQueue(items: List<LocalSong>, playNext: Boolean = false)
+    fun removeFromQueue(songId: String)
+    fun moveInQueue(songId: String, target: Int)
+    fun clearUpcoming()
+    fun setSleepTimer(durationMs: Long, fade: Boolean = true)
+    fun sleepAtTrackEnd()
+    fun cancelSleepTimer()
 }

@@ -243,4 +243,83 @@ class RadioShellTest {
         compose.onNodeWithText("After Hours").performClick()
         background.assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Background off"))
     }
+
+    @Test fun playlistsCanBeCreatedEditedPlayedAndDeletedWithoutChangingTheActiveQueue() {
+        compose.onNodeWithText("Playlists").performClick()
+        compose.onNodeWithText("New playlist").performClick()
+        compose.onNodeWithTag("playlist-name").performTextInput("Night Drive")
+        compose.onNodeWithText("Create").performClick()
+        compose.waitUntil { repository.playlists.state.value.playlists.any { it.name == "Night Drive" } }
+        compose.onNodeWithText("Add songs").performClick()
+        compose.onNodeWithTag("song-picker-search").performTextInput("After Hours")
+        compose.onNodeWithTag("song-picker-row-sample0").performClick()
+        compose.onNodeWithTag("song-picker-search").performTextClearance()
+        compose.onNodeWithTag("song-picker-search").performTextInput("Morning Light")
+        compose.onNodeWithTag("song-picker-row-sample1").performClick()
+        compose.onNodeWithText("Add (2)").performClick()
+        val id = repository.playlists.state.value.playlists.single().id
+        compose.waitUntil { repository.playlists.state.value.songIds(id).size == 2 }
+        compose.onNodeWithTag("playlist-song-menu-sample1").performClick()
+        compose.onNodeWithText("Move up").performClick()
+        compose.waitUntil { repository.playlists.state.value.songIds(id).first() == "sample1" }
+        screenshot("playlist-custom-order")
+        compose.onNodeWithContentDescription("Playlist options").performClick()
+        compose.onNodeWithText("Rename playlist").performClick()
+        compose.onNodeWithTag("playlist-name").performTextClearance()
+        compose.onNodeWithTag("playlist-name").performTextInput("Late Night")
+        compose.onNodeWithText("Save").performClick()
+        compose.waitUntil { repository.playlists.state.value.playlists.single().name == "Late Night" }
+        compose.onNodeWithText("Play").performClick()
+        compose.onNodeWithContentDescription("Queue").assertIsDisplayed()
+        assertEquals(listOf("sample1", "sample0"), playback.state.value.queue.map { it.id })
+        compose.onNodeWithContentDescription("Back").performClick()
+        compose.onNodeWithTag("playlist-song-menu-sample0").performClick()
+        compose.onNodeWithText("Remove from playlist").performClick()
+        compose.waitUntil { repository.playlists.state.value.songIds(id).size == 1 }
+        assertEquals(2, playback.state.value.queue.size)
+        compose.onNodeWithContentDescription("Playlist options").performClick()
+        compose.onNodeWithText("Delete playlist").performClick()
+        compose.onNodeWithText("Delete", useUnmergedTree = true).performClick()
+        compose.waitUntil { repository.playlists.state.value.playlists.isEmpty() }
+        assertEquals(10, repository.state.value.songs.size)
+        assertEquals(2, playback.state.value.queue.size)
+    }
+
+    @Test fun queueEditingSavingAndSleepControlsAreAvailable() {
+        compose.onNodeWithText("After Hours").performClick()
+        compose.onNodeWithContentDescription("Queue").performClick()
+        compose.onNodeWithContentDescription("Queue options").performClick()
+        compose.onNodeWithText("Edit queue").performClick()
+        compose.onNodeWithContentDescription("Move Morning Light up").performClick()
+        assertEquals("sample1", playback.state.value.playOrder.first())
+        compose.onNodeWithContentDescription("Remove A Long Way Home (Live Session Recording) from queue").performClick()
+        assertEquals(9, playback.state.value.queue.size)
+        compose.onNodeWithText("Done").performClick()
+        screenshot("editable-queue")
+        compose.onNodeWithContentDescription("Queue options").performClick()
+        compose.onNodeWithText("Save queue to playlist").performClick()
+        compose.onNodeWithTag("playlist-name").performTextInput("Queue copy")
+        compose.onNodeWithText("Create and add").performClick()
+        compose.waitUntil { repository.playlists.state.value.playlists.any { it.name == "Queue copy" } }
+        val id = repository.playlists.state.value.playlists.single().id
+        compose.waitUntil { repository.playlists.state.value.songIds(id) == playback.state.value.playOrder }
+        compose.onNodeWithContentDescription("Add songs to queue").performClick()
+        compose.onNodeWithTag("song-picker-search").performTextInput("A Long Way")
+        compose.onNodeWithTag("song-picker-row-sample2").performClick()
+        compose.onNodeWithText("Add (1)").performClick()
+        assertEquals("sample2", playback.state.value.playOrder.last())
+        compose.onNodeWithContentDescription("Sleep timer").performClick()
+        compose.onNodeWithTag("sleep-minutes").performTextClearance()
+        compose.onNodeWithTag("sleep-minutes").performTextInput("1")
+        screenshot("sleep-timer-dialog")
+        compose.onNodeWithText("Start timer").performClick()
+        compose.onNodeWithTag("sleep-countdown").assertIsDisplayed()
+        assertEquals(60000L, playback.state.value.sleepTimer.remainingMs)
+        compose.onNodeWithContentDescription("Sleep timer").performClick()
+        compose.onNodeWithText("Cancel timer").performClick()
+        assertTrue(!playback.state.value.sleepTimer.active)
+        compose.onNodeWithContentDescription("Sleep timer").performClick()
+        compose.onNodeWithText("Stop at end of this song").performClick()
+        assertTrue(playback.state.value.sleepTimer.endOfTrack)
+    }
 }

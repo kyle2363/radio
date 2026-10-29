@@ -12,6 +12,12 @@ import androidx.compose.ui.unit.dp
 
 // Native vectors with consistent geometry; no icon font or extra UI dependency.
 enum class Symbol(val path: String, val filled: Boolean = false) {
+    More("M13.5 5 A1.5 1.5 0 1 1 10.5 5 A1.5 1.5 0 1 1 13.5 5 Z M13.5 12 A1.5 1.5 0 1 1 10.5 12 A1.5 1.5 0 1 1 13.5 12 Z M13.5 19 A1.5 1.5 0 1 1 10.5 19 A1.5 1.5 0 1 1 13.5 19 Z", true),
+    Clock("M21 12 A9 9 0 1 1 3 12 A9 9 0 1 1 21 12 M12 7 V12 L15 14"),
+    Add("M12 4 V20 M4 12 H20"),
+    Up("M5 14 L12 7 L19 14"),
+    Down("M5 10 L12 17 L19 10"),
+    Remove("M4 6 H20 M9 6 V3 H15 V6 M6 6 L7 21 H17 L18 6"),
     Refresh("M20 7 A9 9 0 1 0 21 14 M20 2 V8 H14"),
     Play("M8 5 L19 12 L8 19 Z", true),
     Pause("M7 5 H10 V19 H7 Z M14 5 H17 V19 H14 Z", true),

@@ -25,6 +25,7 @@ import kotlin.random.Random
 class LocalPlaybackController(
     context: Context,
     private val onCheckpoint: (PlaybackState) -> Unit = {},
+    private val onQueueCleared: () -> Unit = {},
     private val onAudibleStart: (LocalSong, String, Long) -> Unit = { _, _, _ -> }
 ) : PlaybackController {
     private val player = ExoPlayer.Builder(context.applicationContext).build().apply {
@@ -50,6 +51,9 @@ class LocalPlaybackController(
     private var ticker: Job? = null
     private var closed = false
     private var lastCheckpointAt = 0L
+    private var sleepDeadline: SleepDeadline? = null
+    private var sleepEndOfTrack = false
+    private var sleepJob: Job? = null
 
     // Every system transport command uses the same guards, shuffle and journal as the app.
     internal val sessionPlayer: Player = object : ForwardingPlayer(player) {
@@ -70,6 +74,9 @@ class LocalPlaybackController(
 
     init {
         player.addListener(object : Player.Listener {
+            override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+                if (!playWhenReady && sleepEndOfTrack && reason == Player.PLAY_WHEN_READY_CHANGE_REASON_END_OF_MEDIA_ITEM) cancelSleepTimer()
+            }
             override fun onEvents(player: Player, events: Player.Events) {
                 val id = player.currentMediaItem?.mediaId
                 if (id != null && id != attemptSong) beginAttempt(id)
@@ -80,7 +87,9 @@ class LocalPlaybackController(
                         onAudibleStart(song, attemptId, player.currentPosition.coerceAtLeast(0))
                     }
                 }
-                publish(checkpoint = true)
+                publish(checkpoint = events.containsAny(Player.EVENT_MEDIA_ITEM_TRANSITION, Player.EVENT_POSITION_DISCONTINUITY,
+                    Player.EVENT_PLAY_WHEN_READY_CHANGED, Player.EVENT_PLAYBACK_STATE_CHANGED, Player.EVENT_SHUFFLE_MODE_ENABLED_CHANGED,
+                    Player.EVENT_TIMELINE_CHANGED, Player.EVENT_PLAYER_ERROR))
                 if (player.isPlaying && ticker?.isActive != true) ticker = scope.launch {
                     while (isActive && player.isPlaying) { publish(); delay(250) }
                 } else if (!player.isPlaying) { ticker?.cancel(); ticker = null }
@@ -121,7 +130,8 @@ class LocalPlaybackController(
             buffering = player.playbackState == Player.STATE_BUFFERING, ended = player.playbackState == Player.STATE_ENDED,
             seekable = (player.isCurrentMediaItemSeekable || player.playbackState == Player.STATE_IDLE) && duration != null && duration > 0 && error == null && canReadCurrent(),
             canNext = !accessLost && next != C.INDEX_UNSET && queue.any { it.available && it.id != id },
-            canPrevious = canReadCurrent(), shuffled = player.shuffleModeEnabled, error = error
+            canPrevious = canReadCurrent(), shuffled = player.shuffleModeEnabled, error = error,
+            sleepTimer = SleepTimerState(sleepDeadline?.remaining(android.os.SystemClock.elapsedRealtime()) ?: 0L, sleepEndOfTrack, sleepDeadline?.fade == true)
         )
         val now = android.os.SystemClock.elapsedRealtime()
         if (checkpoint || now - lastCheckpointAt >= 5000) {
@@ -250,6 +260,126 @@ class LocalPlaybackController(
             val second = order[1]; order[1] = order[2]; order[2] = second
         }
         player.setShuffleOrder(DefaultShuffleOrder(order.toIntArray(), Random.nextLong()))
+    }
+
+    private fun mediaItem(song: LocalSong) = MediaItem.Builder().setMediaId(song.id).setUri(song.uri).setMediaMetadata(metadata(song)).build()
+    private fun nativeIndex(id: String) = (0 until player.mediaItemCount).firstOrNull { player.getMediaItemAt(it).mediaId == id }
+    private fun setVisibleOrder(order: List<String>) {
+        if (player.shuffleModeEnabled) {
+            val indices = (0 until player.mediaItemCount).associateBy { player.getMediaItemAt(it).mediaId }
+            player.setShuffleOrder(DefaultShuffleOrder(order.mapNotNull(indices::get).toIntArray(), Random.nextLong()))
+        }
+    }
+    override fun addToQueue(items: List<LocalSong>, playNext: Boolean) {
+        if (accessLost) return
+        val incoming = items.filter { it.available && validUri(it) }.distinctBy { it.id }
+        if (incoming.isEmpty()) return
+        val before = state.value.playOrder
+        val wasEmpty = player.mediaItemCount == 0
+        if (wasEmpty) player.pause()
+        val additions = incoming.filter { nativeIndex(it.id) == null }
+        val incomingById = incoming.associateBy { it.id }
+        queue = queue.map { incomingById[it.id] ?: it } + additions.filter { added -> queue.none { it.id == added.id } }
+        queueById = queue.associateBy { it.id }
+        if (additions.isNotEmpty()) player.addMediaItems(additions.map(::mediaItem))
+        source = "Custom queue"; error = null
+        val combined = (before + additions.map { it.id }).distinct()
+        if (playNext && !wasEmpty) {
+            val current = player.currentMediaItem?.mediaId
+            val selected = incoming.map { it.id }.filter { it != current }
+            val order = combined.filterNot { it in selected }.toMutableList()
+            order.addAll((order.indexOf(current) + 1).coerceAtLeast(0), selected)
+            if (player.shuffleModeEnabled) setVisibleOrder(order)
+            else selected.forEachIndexed { offset, id ->
+                val from = nativeIndex(id) ?: return@forEachIndexed
+                val currentIndex = player.currentMediaItemIndex
+                val target = currentIndex + 1 + offset - if (from <= currentIndex) 1 else 0
+                player.moveMediaItem(from, target.coerceIn(0, player.mediaItemCount - 1))
+            }
+        } else if (player.shuffleModeEnabled) setVisibleOrder(combined)
+        if (!player.shuffleModeEnabled) queue = (0 until player.mediaItemCount).mapNotNull { queueById[player.getMediaItemAt(it).mediaId] }
+        queueById = queue.associateBy { it.id }
+        publish(checkpoint = true)
+    }
+    override fun moveInQueue(songId: String, target: Int) {
+        val order = state.value.playOrder.toMutableList()
+        val from = order.indexOf(songId)
+        if (from < 0 || target !in order.indices || from == target) return
+        order.add(target, order.removeAt(from))
+        if (player.shuffleModeEnabled) setVisibleOrder(order)
+        else {
+            player.moveMediaItem(nativeIndex(songId) ?: return, target)
+            queue = order.mapNotNull(queueById::get); queueById = queue.associateBy { it.id }
+        }
+        source = "Custom queue"
+        publish(checkpoint = true)
+    }
+    override fun removeFromQueue(songId: String) {
+        val index = nativeIndex(songId) ?: return
+        val current = player.currentMediaItem?.mediaId == songId
+        val oldOrder = state.value.playOrder
+        val successor = oldOrder.drop(oldOrder.indexOf(songId) + 1).firstOrNull { queueById[it]?.available == true }
+            ?: oldOrder.take(oldOrder.indexOf(songId)).lastOrNull { queueById[it]?.available == true }
+        val continuePlaying = player.playWhenReady
+        queue = queue.filterNot { it.id == songId }; queueById = queue.associateBy { it.id }
+        player.removeMediaItem(index)
+        if (current && successor != null) {
+            beginAttempt(successor)
+            player.seekTo(nativeIndex(successor) ?: 0, 0)
+            player.playWhenReady = continuePlaying
+        }
+        if (queue.isEmpty() || player.mediaItemCount == 0) {
+            queue = emptyList(); queueById = emptyMap()
+            player.pause(); player.clearMediaItems(); cancelSleepTimer(); source = ""; error = null
+            onQueueCleared()
+        } else { source = "Custom queue"; error = null }
+        publish(checkpoint = true)
+    }
+    override fun clearUpcoming() {
+        val order = state.value.playOrder
+        val current = order.indexOf(state.value.currentId)
+        if (current < 0 || current == order.lastIndex) return
+        val keep = order.take(current + 1).toSet()
+        queue = queue.filter { it.id in keep }; queueById = queue.associateBy { it.id }
+        var index = player.mediaItemCount - 1
+        while (index >= 0) {
+            if (player.getMediaItemAt(index).mediaId !in keep) {
+                val end = index + 1
+                while (index >= 0 && player.getMediaItemAt(index).mediaId !in keep) index--
+                player.removeMediaItems(index + 1, end)
+            } else index--
+        }
+        source = "Custom queue"
+        publish(checkpoint = true)
+    }
+    override fun setSleepTimer(durationMs: Long, fade: Boolean) {
+        cancelSleepTimer()
+        sleepDeadline = SleepDeadline(android.os.SystemClock.elapsedRealtime() + durationMs.coerceIn(100L, 24 * 60 * 60 * 1000L), fade)
+        sleepJob = scope.launch {
+            while (isActive) {
+                val deadline = sleepDeadline ?: break
+                val now = android.os.SystemClock.elapsedRealtime()
+                if (deadline.remaining(now) == 0L) {
+                    player.pause(); sleepDeadline = null; player.volume = 1f
+                    publish(checkpoint = true); break
+                }
+                player.volume = deadline.gain(now)
+                publish()
+                delay(250)
+            }
+        }
+        publish()
+    }
+    override fun sleepAtTrackEnd() {
+        cancelSleepTimer()
+        if (player.currentMediaItem == null) return
+        sleepEndOfTrack = true; player.pauseAtEndOfMediaItems = true
+        publish()
+    }
+    override fun cancelSleepTimer() {
+        sleepJob?.cancel(); sleepJob = null; sleepDeadline = null; sleepEndOfTrack = false
+        player.pauseAtEndOfMediaItems = false; player.volume = 1f
+        publish()
     }
     override fun reconcileLibrary(songs: List<LocalSong>, accessLost: Boolean) {
         this.accessLost = accessLost

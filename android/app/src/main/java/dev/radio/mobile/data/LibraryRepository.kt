@@ -31,6 +31,7 @@ class LibraryRepository(context: Context, private val db: LibraryDatabase) {
     private val resolver = context.applicationContext.contentResolver
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     internal val playbackSnapshots = PlaybackSnapshotStore(db.library(), scope)
+    val playlists = PlaylistRepository(db, scope)
     private val mutex = Mutex()
     private val mutable = MutableStateFlow(LibraryState())
     val state: StateFlow<LibraryState> = mutable.asStateFlow()
@@ -114,7 +115,7 @@ class LibraryRepository(context: Context, private val db: LibraryDatabase) {
     companion object {
         @Volatile private var instance: LibraryRepository? = null
         fun get(context: Context): LibraryRepository = instance ?: synchronized(this) {
-            instance ?: LibraryRepository(context, Room.databaseBuilder(context.applicationContext, LibraryDatabase::class.java, "local-library.db").addMigrations(LIBRARY_MIGRATION_1_2, LIBRARY_MIGRATION_2_3).build()).also { instance = it }
+            instance ?: LibraryRepository(context, Room.databaseBuilder(context.applicationContext, LibraryDatabase::class.java, "local-library.db").addMigrations(LIBRARY_MIGRATION_1_2, LIBRARY_MIGRATION_2_3, LIBRARY_MIGRATION_3_4).build()).also { instance = it }
         }
     }
 }

@@ -160,4 +160,15 @@ class BackgroundPlaybackTest {
         assertFalse("Reopening must not override an explicit pause", playback.state.value.playWhenReady)
         assertEquals(2, starts())
     }
+
+    @Test fun sleepExpiryWorksWithScreenOffAndRemovingLastEntryClearsRestorationBookmark() {
+        main { playback.setSleepTimer(1200, false) }
+        scenario!!.moveToState(Lifecycle.State.CREATED)
+        shell("input keyevent 223")
+        await("Sleep timer didn't expire in background") { !playback.state.value.playWhenReady && !playback.state.value.sleepTimer.active }
+        assertNotNull(runBlocking { library.playbackSnapshots.load() })
+        main { songs.forEach { playback.removeFromQueue(it.id) } }
+        await("Queue didn't clear") { playback.state.value.queue.isEmpty() && playback.state.value.currentId == null }
+        assertNull(runBlocking { library.playbackSnapshots.load() })
+    }
 }

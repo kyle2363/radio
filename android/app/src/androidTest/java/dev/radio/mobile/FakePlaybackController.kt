@@ -29,4 +29,23 @@ class FakePlaybackController : PlaybackController {
     override fun shuffle(enabled: Boolean) { mutable.update { old -> old.copy(shuffled = enabled,
         playOrder = if (enabled) listOfNotNull(old.currentId) + old.queue.map { it.id }.filter { it != old.currentId }.reversed() else old.queue.map { it.id }) } }
     override fun reconcileLibrary(songs: List<LocalSong>, accessLost: Boolean) { if (accessLost) pause() }
+    override fun addToQueue(items: List<LocalSong>, playNext: Boolean) { mutable.update { old ->
+        val queue = (old.queue + items.filter { it.available }).distinctBy { it.id }
+        val ids = items.map { it.id }.filter { it != old.currentId }.distinct()
+        val order = (old.playOrder + ids).distinct().toMutableList()
+        if (playNext && old.currentId != null) { order.removeAll(ids.toSet()); order.addAll(order.indexOf(old.currentId) + 1, ids) }
+        old.copy(queue = queue, playOrder = order, currentId = old.currentId ?: queue.firstOrNull()?.id, source = "Custom queue")
+    } }
+    override fun removeFromQueue(songId: String) { mutable.update { old ->
+        val queue = old.queue.filterNot { it.id == songId }; val order = old.playOrder.filterNot { it == songId }
+        old.copy(queue = queue, playOrder = order, currentId = old.currentId.takeUnless { it == songId } ?: order.firstOrNull())
+    } }
+    override fun moveInQueue(songId: String, target: Int) { mutable.update { old ->
+        val order = old.playOrder.toMutableList(); if (target in order.indices && order.remove(songId)) order.add(target, songId)
+        old.copy(playOrder = order, queue = if (old.shuffled) old.queue else order.mapNotNull { id -> old.queue.firstOrNull { it.id == id } })
+    } }
+    override fun clearUpcoming() { mutable.update { old -> val ids = old.playOrder.take(old.playOrder.indexOf(old.currentId) + 1); old.copy(queue = old.queue.filter { it.id in ids }, playOrder = ids) } }
+    override fun setSleepTimer(durationMs: Long, fade: Boolean) { mutable.update { it.copy(sleepTimer = SleepTimerState(durationMs, fade = fade)) } }
+    override fun sleepAtTrackEnd() { mutable.update { it.copy(sleepTimer = SleepTimerState(endOfTrack = true)) } }
+    override fun cancelSleepTimer() { mutable.update { it.copy(sleepTimer = SleepTimerState()) } }
 }

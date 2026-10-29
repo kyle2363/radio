@@ -51,7 +51,7 @@ class PlaybackRestorationTest {
         if (seed) context.deleteDatabase(file.absolutePath)
         else assertTrue("Run the save half first", file.exists())
         db = Room.databaseBuilder(context, LibraryDatabase::class.java, file.absolutePath)
-            .addMigrations(LIBRARY_MIGRATION_1_2, LIBRARY_MIGRATION_2_3).build()
+            .addMigrations(LIBRARY_MIGRATION_1_2, LIBRARY_MIGRATION_2_3, LIBRARY_MIGRATION_3_4).build()
         if (seed) runBlocking {
             db.library().saveRoot(LibraryRoot(uri = root.toString(), folderId = "root", name = "Music", scannedAt = 1))
             db.library().saveSongs((1..3).map { i -> LocalSong("background$i", root.toString(), "root",
@@ -83,7 +83,7 @@ class PlaybackRestorationTest {
         var selected = ""
         main { playback.shuffle(true); selected = playback.state.value.playOrder[1]; playback.jumpTo(selected) }
         await("Second song didn't play") { playback.state.value.currentId == selected && playback.state.value.isPlaying && starts() == 2 }
-        main { playback.pause(); playback.seek(12345) }
+        main { playback.setSleepTimer(600000, false); playback.pause(); playback.seek(12345) }
         await("Pause/seek wasn't applied") { !playback.state.value.playWhenReady && playback.state.value.positionMs == 12345L }
         val saved = runBlocking { library.playbackSnapshots.load() }!!
         assertEquals(12345L, saved.positionMs)
@@ -108,6 +108,7 @@ class PlaybackRestorationTest {
         assertFalse(restored.isPlaying)
         assertFalse(restored.playWhenReady)
         assertFalse(restored.buffering)
+        assertFalse("A restored session must not revive the old sleep timer", restored.sleepTimer.active)
         Thread.sleep(250)
         assertEquals("Restoration must not record a play", 2, starts())
         main { playback.seek(8000); playback.toggle() }

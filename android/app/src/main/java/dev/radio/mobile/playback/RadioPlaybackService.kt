@@ -29,7 +29,8 @@ class RadioPlaybackService : MediaSessionService() {
     override fun onCreate() {
         super.onCreate()
         val library = repositoryFactory(this)
-        engine = LocalPlaybackController(this, onCheckpoint = { if (initialized) library.playbackSnapshots.save(it) }) { song, attempt, position ->
+        engine = LocalPlaybackController(this, onCheckpoint = { if (initialized) library.playbackSnapshots.save(it) },
+            onQueueCleared = { if (initialized) library.playbackSnapshots.clear() }) { song, attempt, position ->
             library.recordPlaybackStart(song.id, attempt, position)
         }
         clientController = InitializingPlaybackController(engine)
