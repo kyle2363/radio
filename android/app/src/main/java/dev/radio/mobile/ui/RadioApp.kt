@@ -51,9 +51,11 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri -> if (uri != null) repository.chooseFolder(uri) }
     fun chooseFolder() { picker.launch(library.root?.uri?.let(Uri::parse) ?: DocumentsContract.buildDocumentUri("com.android.externalstorage.documents", "primary:Music")) }
     val lifecycle = LocalLifecycleOwner.current
+    val activity = LocalContext.current.playbackActivity()
     DisposableEffect(repository, lifecycle) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) repository.checkAccess()
+            if (event == Lifecycle.Event.ON_STOP && activity?.isChangingConfigurations != true) repository.loudness.pauseAnalysis()
         }
         lifecycle.lifecycle.addObserver(observer)
         repository.checkAccess()
@@ -260,6 +262,7 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
                     HorizontalDivider()
                     Text("Playback", Modifier.padding(top = 16.dp), style = MaterialTheme.typography.titleSmall)
                     Text("Music keeps playing in the background. After a restart, your last queue returns paused. Sleep timers clear on restart.", Modifier.padding(vertical = 8.dp), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    NormalizationSettings(repository.loudness, library, audio.currentId)
                 }
                 else -> Column(Modifier.padding(insets).padding(20.dp)) {
                     Text("Your local radio", style = MaterialTheme.typography.headlineSmall)

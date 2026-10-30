@@ -68,6 +68,7 @@ class ServicePlaybackController(context: Context) : PlaybackController {
     override fun seek(positionMs: Long) = command { it.seek(positionMs) }
     override fun jumpTo(songId: String) = command { it.jumpTo(songId) }
     override fun shuffle(enabled: Boolean) = command { it.shuffle(enabled) }
+    override fun setRepeat(mode: RepeatMode) = command { it.setRepeat(mode) }
     override fun addToQueue(items: List<LocalSong>, playNext: Boolean) { val snapshot = items.toList(); command { it.addToQueue(snapshot, playNext) } }
     override fun removeFromQueue(songId: String) = command { it.removeFromQueue(songId) }
     override fun moveInQueue(songId: String, target: Int) = command { it.moveInQueue(songId, target) }

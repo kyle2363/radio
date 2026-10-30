@@ -74,5 +74,11 @@ val LIBRARY_MIGRATION_3_4 = object : Migration(3, 4) {
     }
 }
 
-@Database(entities = [LibraryRoot::class, LocalSong::class, LocalFolder::class, LocalPlaybackStart::class, LocalPlaybackSnapshot::class, LocalPlaylist::class, LocalPlaylistSong::class], version = 4, exportSchema = true)
-abstract class LibraryDatabase : RoomDatabase() { abstract fun library(): LibraryDao; abstract fun playlists(): PlaylistDao }
+val LIBRARY_MIGRATION_4_5 = object : Migration(4, 5) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS local_loudness (songId TEXT NOT NULL, uri TEXT NOT NULL, modifiedAt INTEGER, byteSize INTEGER, catalogScan INTEGER NOT NULL, algorithm TEXT NOT NULL, integratedLufs REAL, samplePeak REAL, status TEXT NOT NULL, measuredAt INTEGER NOT NULL, PRIMARY KEY(songId))")
+    }
+}
+
+@Database(entities = [LibraryRoot::class, LocalSong::class, LocalFolder::class, LocalPlaybackStart::class, LocalPlaybackSnapshot::class, LocalPlaylist::class, LocalPlaylistSong::class, LocalLoudness::class], version = 5, exportSchema = true)
+abstract class LibraryDatabase : RoomDatabase() { abstract fun library(): LibraryDao; abstract fun playlists(): PlaylistDao; abstract fun loudness(): LoudnessDao }

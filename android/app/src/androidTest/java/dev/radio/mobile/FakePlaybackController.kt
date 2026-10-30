@@ -28,6 +28,7 @@ class FakePlaybackController : PlaybackController {
     override fun jumpTo(songId: String) { select(songId, true) }
     override fun shuffle(enabled: Boolean) { mutable.update { old -> old.copy(shuffled = enabled,
         playOrder = if (enabled) listOfNotNull(old.currentId) + old.queue.map { it.id }.filter { it != old.currentId }.reversed() else old.queue.map { it.id }) } }
+    override fun setRepeat(mode: RepeatMode) { mutable.update { it.copy(repeat = mode) } }
     override fun reconcileLibrary(songs: List<LocalSong>, accessLost: Boolean) { if (accessLost) pause() }
     override fun addToQueue(items: List<LocalSong>, playNext: Boolean) { mutable.update { old ->
         val queue = (old.queue + items.filter { it.available }).distinctBy { it.id }

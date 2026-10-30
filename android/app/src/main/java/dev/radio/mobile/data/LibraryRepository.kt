@@ -35,6 +35,7 @@ class LibraryRepository(context: Context, private val db: LibraryDatabase) {
     private val mutex = Mutex()
     private val mutable = MutableStateFlow(LibraryState())
     val state: StateFlow<LibraryState> = mutable.asStateFlow()
+    val loudness = LoudnessRepository(context, db.loudness(), scope, state)
     private var scanJob: Job? = null
     private fun hasAccess(uri: Uri) = resolver.persistedUriPermissions.any { it.uri == uri && it.isReadPermission }
     private val ready = scope.launch {
@@ -115,7 +116,7 @@ class LibraryRepository(context: Context, private val db: LibraryDatabase) {
     companion object {
         @Volatile private var instance: LibraryRepository? = null
         fun get(context: Context): LibraryRepository = instance ?: synchronized(this) {
-            instance ?: LibraryRepository(context, Room.databaseBuilder(context.applicationContext, LibraryDatabase::class.java, "local-library.db").addMigrations(LIBRARY_MIGRATION_1_2, LIBRARY_MIGRATION_2_3, LIBRARY_MIGRATION_3_4).build()).also { instance = it }
+            instance ?: LibraryRepository(context, Room.databaseBuilder(context.applicationContext, LibraryDatabase::class.java, "local-library.db").addMigrations(LIBRARY_MIGRATION_1_2, LIBRARY_MIGRATION_2_3, LIBRARY_MIGRATION_3_4, LIBRARY_MIGRATION_4_5).build()).also { instance = it }
         }
     }
 }

@@ -72,6 +72,13 @@ public class FixtureDocumentsProvider extends DocumentsProvider {
                     add("background2", "root", "Background two.mp3", "audio/mpeg", 7000);
                     add("background3", "root", "Background three.mp3", "audio/mpeg", 6000);
                     break;
+                case "loudness":
+                    entries.clear(); failFolder = null; slowFolder = null;
+                    add("root", null, "Music", Document.MIME_TYPE_DIR, 1000);
+                    for (String id : new String[]{"level-loud", "level-quiet", "level-stereo", "level-gated", "level-32k"}) add(id, "root", id + ".mp3", "audio/mpeg", 1000);
+                    add("long1", "root", "Silence.mp3", "audio/mpeg", 1000);
+                    add("broken", "root", "Broken.mp3", "audio/mpeg", 1000);
+                    break;
             }
             Bundle result = new Bundle(); result.putInt("writes", writeAttempts); return result;
         }
@@ -123,8 +130,8 @@ public class FixtureDocumentsProvider extends DocumentsProvider {
         File directory = new File(getContext().getCacheDir(), ".test-runtime/documents"); directory.mkdirs();
         File file = new File(directory, id);
         if (!file.exists()) try (FileOutputStream out = new FileOutputStream(file)) {
-            if (id.startsWith("long") || id.startsWith("short") || id.startsWith("background")) {
-                String asset = id.startsWith("background") ? "silence-background.mp3" : id.startsWith("long") ? "silence-long.mp3" : "silence-short.mp3";
+            if (id.startsWith("long") || id.startsWith("short") || id.startsWith("background") || id.startsWith("level-")) {
+                String asset = id.startsWith("level-") ? id + ".mp3" : id.startsWith("background") ? "silence-background.mp3" : id.startsWith("long") ? "silence-long.mp3" : "silence-short.mp3";
                 try (InputStream in = getContext().getAssets().open(asset)) {
                     byte[] buffer = new byte[8192]; int count; while ((count = in.read(buffer)) != -1) out.write(buffer, 0, count);
                 }

@@ -322,4 +322,24 @@ class RadioShellTest {
         compose.onNodeWithText("Stop at end of this song").performClick()
         assertTrue(playback.state.value.sleepTimer.endOfTrack)
     }
+    @Test fun normalizationSettingsPersistAndShowOnlyValidCachedMeasurements() {
+        val original = context.getSharedPreferences("radio_audio", Context.MODE_PRIVATE).getBoolean("normalization", false)
+        try {
+            val sample = repository.state.value.songs.first { it.id == "sample0" }
+            runBlocking { db.loudness().save(LocalLoudness(sample.id, sample.uri, sample.modifiedAt, sample.byteSize, 1,
+                dev.radio.mobile.music.LOUDNESS_ALGORITHM, -12.0, .8, "measured", 1)) }
+            compose.onNodeWithTag("nav-Settings").performClick()
+            compose.onNodeWithTag("normalization-settings").performScrollTo()
+            compose.waitUntil { repository.loudness.state.value.measured == 1 }
+            scenario.onActivity { repository.loudness.setEnabled(false) }
+            compose.onNodeWithTag("normalization-switch").performClick()
+            compose.waitUntil { repository.loudness.state.value.enabled }
+            screenshot("normalization-settings")
+            recreate()
+            compose.onNodeWithTag("normalization-settings").performScrollTo()
+            compose.onNodeWithTag("normalization-switch").assertIsOn()
+            compose.onNodeWithText("1 / 10 songs measured").assertIsDisplayed()
+            assertTrue(context.getSharedPreferences("radio_audio", Context.MODE_PRIVATE).getBoolean("normalization", false))
+        } finally { scenario.onActivity { repository.loudness.setEnabled(original) } }
+    }
 }

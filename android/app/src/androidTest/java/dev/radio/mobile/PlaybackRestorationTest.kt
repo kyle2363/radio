@@ -51,7 +51,7 @@ class PlaybackRestorationTest {
         if (seed) context.deleteDatabase(file.absolutePath)
         else assertTrue("Run the save half first", file.exists())
         db = Room.databaseBuilder(context, LibraryDatabase::class.java, file.absolutePath)
-            .addMigrations(LIBRARY_MIGRATION_1_2, LIBRARY_MIGRATION_2_3, LIBRARY_MIGRATION_3_4).build()
+            .addMigrations(LIBRARY_MIGRATION_1_2, LIBRARY_MIGRATION_2_3, LIBRARY_MIGRATION_3_4, LIBRARY_MIGRATION_4_5).build()
         if (seed) runBlocking {
             db.library().saveRoot(LibraryRoot(uri = root.toString(), folderId = "root", name = "Music", scannedAt = 1))
             db.library().saveSongs((1..3).map { i -> LocalSong("background$i", root.toString(), "root",

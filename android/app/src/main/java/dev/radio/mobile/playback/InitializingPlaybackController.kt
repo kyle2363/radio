@@ -23,6 +23,7 @@ internal class InitializingPlaybackController(private val engine: PlaybackContro
     override fun previous() = command { engine.previous() }
     override fun jumpTo(songId: String) = command { engine.jumpTo(songId) }
     override fun shuffle(enabled: Boolean) = command { engine.shuffle(enabled) }
+    override fun setRepeat(mode: RepeatMode) = command { engine.setRepeat(mode) }
     override fun addToQueue(items: List<LocalSong>, playNext: Boolean) { val snapshot = items.toList(); command { engine.addToQueue(snapshot, playNext) } }
     override fun removeFromQueue(songId: String) = command { engine.removeFromQueue(songId) }
     override fun moveInQueue(songId: String, target: Int) = command { engine.moveInQueue(songId, target) }

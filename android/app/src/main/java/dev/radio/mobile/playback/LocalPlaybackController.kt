@@ -11,6 +11,9 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.Timeline
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.DefaultRenderersFactory
+import androidx.media3.exoplayer.audio.AudioSink
+import androidx.media3.exoplayer.audio.DefaultAudioSink
 import androidx.media3.exoplayer.source.ShuffleOrder.DefaultShuffleOrder
 import dev.radio.mobile.data.LocalSong
 import kotlinx.coroutines.*
@@ -28,7 +31,12 @@ class LocalPlaybackController(
     private val onQueueCleared: () -> Unit = {},
     private val onAudibleStart: (LocalSong, String, Long) -> Unit = { _, _, _ -> }
 ) : PlaybackController {
-    private val player = ExoPlayer.Builder(context.applicationContext).build().apply {
+    internal val normalizationProcessor = NormalizationAudioProcessor()
+    private val renderers = object : DefaultRenderersFactory(context.applicationContext) {
+        override fun buildAudioSink(context: Context, enableFloatOutput: Boolean, enableAudioOutputPlaybackParams: Boolean): AudioSink =
+            DefaultAudioSink.Builder(context).setEnableFloatOutput(false).setAudioProcessors(arrayOf(normalizationProcessor)).build()
+    }
+    private val player = ExoPlayer.Builder(context.applicationContext, renderers).build().apply {
         setAudioAttributes(AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MUSIC).build(), true)
         setHandleAudioBecomingNoisy(true)
         setWakeMode(C.WAKE_MODE_LOCAL)
@@ -69,6 +77,7 @@ class LocalPlaybackController(
         override fun seekToPrevious() = previous()
         override fun seekToPreviousMediaItem() = previous()
         override fun setShuffleModeEnabled(shuffleModeEnabled: Boolean) = shuffle(shuffleModeEnabled)
+        override fun setRepeatMode(repeatMode: Int) = setRepeat(repeatMode.toRepeatMode())
         override fun stop() { player.pause(); player.stop(); publish(checkpoint = true) }
     }
 
@@ -89,7 +98,7 @@ class LocalPlaybackController(
                 }
                 publish(checkpoint = events.containsAny(Player.EVENT_MEDIA_ITEM_TRANSITION, Player.EVENT_POSITION_DISCONTINUITY,
                     Player.EVENT_PLAY_WHEN_READY_CHANGED, Player.EVENT_PLAYBACK_STATE_CHANGED, Player.EVENT_SHUFFLE_MODE_ENABLED_CHANGED,
-                    Player.EVENT_TIMELINE_CHANGED, Player.EVENT_PLAYER_ERROR))
+                    Player.EVENT_REPEAT_MODE_CHANGED, Player.EVENT_TIMELINE_CHANGED, Player.EVENT_PLAYER_ERROR))
                 if (player.isPlaying && ticker?.isActive != true) ticker = scope.launch {
                     while (isActive && player.isPlaying) { publish(); delay(250) }
                 } else if (!player.isPlaying) { ticker?.cancel(); ticker = null }
@@ -130,7 +139,7 @@ class LocalPlaybackController(
             buffering = player.playbackState == Player.STATE_BUFFERING, ended = player.playbackState == Player.STATE_ENDED,
             seekable = (player.isCurrentMediaItemSeekable || player.playbackState == Player.STATE_IDLE) && duration != null && duration > 0 && error == null && canReadCurrent(),
             canNext = !accessLost && next != C.INDEX_UNSET && queue.any { it.available && it.id != id },
-            canPrevious = canReadCurrent(), shuffled = player.shuffleModeEnabled, error = error,
+            canPrevious = canReadCurrent(), shuffled = player.shuffleModeEnabled, repeat = player.repeatMode.toRepeatMode(), error = error,
             sleepTimer = SleepTimerState(sleepDeadline?.remaining(android.os.SystemClock.elapsedRealtime()) ?: 0L, sleepEndOfTrack, sleepDeadline?.fade == true)
         )
         val now = android.os.SystemClock.elapsedRealtime()
@@ -158,6 +167,7 @@ class LocalPlaybackController(
         publish()
     }
     internal fun restorationFailed(message: String) { error = message; publish() }
+    internal fun updateNormalization(profile: NormalizationProfile) { normalizationProcessor.profile = profile; publish() }
 
     override fun playFrom(items: List<LocalSong>, selectedId: String, source: String) {
         val snapshot = playbackQueue(items, selectedId).filter(::validUri)
@@ -193,10 +203,13 @@ class LocalPlaybackController(
     }
     private fun adjacent(forward: Boolean): Int {
         val timeline = player.currentTimeline
+        // Only repeat-all wraps the walk at the end of the queue. Repeat-one must keep Next
+        // advancing to the following song instead of returning the current item again.
+        val repeatMode = if (player.repeatMode == Player.REPEAT_MODE_ALL) Player.REPEAT_MODE_ALL else Player.REPEAT_MODE_OFF
         var index = player.currentMediaItemIndex
         repeat(queue.size) {
-            index = if (forward) timeline.getNextWindowIndex(index, Player.REPEAT_MODE_OFF, player.shuffleModeEnabled)
-                else timeline.getPreviousWindowIndex(index, Player.REPEAT_MODE_OFF, player.shuffleModeEnabled)
+            index = if (forward) timeline.getNextWindowIndex(index, repeatMode, player.shuffleModeEnabled)
+                else timeline.getPreviousWindowIndex(index, repeatMode, player.shuffleModeEnabled)
             if (index == C.INDEX_UNSET) return C.INDEX_UNSET
             if (queueById[player.getMediaItemAt(index).mediaId]?.available == true) return index
         }
@@ -238,6 +251,14 @@ class LocalPlaybackController(
     override fun shuffle(enabled: Boolean) {
         if (enabled && !player.shuffleModeEnabled) reshuffle()
         player.shuffleModeEnabled = enabled
+        publish(checkpoint = true)
+    }
+    override fun setRepeat(mode: RepeatMode) {
+        player.repeatMode = when (mode) {
+            RepeatMode.OFF -> Player.REPEAT_MODE_OFF
+            RepeatMode.ALL -> Player.REPEAT_MODE_ALL
+            RepeatMode.ONE -> Player.REPEAT_MODE_ONE
+        }
         publish(checkpoint = true)
     }
     private fun reshuffle() {
@@ -407,4 +428,10 @@ class LocalPlaybackController(
         publish(checkpoint = true)
         closed = true; scope.cancel(); player.release()
     }
+}
+
+private fun Int.toRepeatMode(): RepeatMode = when (this) {
+    Player.REPEAT_MODE_ALL -> RepeatMode.ALL
+    Player.REPEAT_MODE_ONE -> RepeatMode.ONE
+    else -> RepeatMode.OFF
 }
