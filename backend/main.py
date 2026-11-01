@@ -37,6 +37,8 @@ from api_security import ApiSecurity
 from db import database
 from db.chroma import get_chroma_client
 from ingest import pipeline
+from mobile_catalog import IngestActivity
+_catalog_ingest_activity = IngestActivity()
 from engine.desktop_playback import DesktopPlayback, LazyNativeOutput
 from engine import queue as queue_engine
 from engine import mood as mood_engine
@@ -748,7 +750,7 @@ def ingest_run():
         except Exception as e:
             logger.error("Ingest failed: %s", e)
 
-    threading.Thread(target=_run, daemon=True).start()
+    _catalog_ingest_activity.start(_run)
     return {"status": "started"}
 
 
@@ -823,7 +825,7 @@ def ingest_run_phase(phase_name: str):
         except Exception as e:
             logger.error("Phase %s failed: %s", phase_name, e)
 
-    threading.Thread(target=_run, daemon=True).start()
+    _catalog_ingest_activity.start(_run)
     return {"status": "started", "phase": phase_name, "ready": ready_count}
 
 
@@ -866,6 +868,7 @@ def ingest_retry_failures():
 
 
 @app.post("/api/embed/rebuild-audio")
+@_catalog_ingest_activity.track
 def rebuild_audio_embeddings():
     """Rebuild MuQ-MuLan audio embeddings for all songs.
 
@@ -906,6 +909,7 @@ def rebuild_audio_embeddings():
 
 
 @app.post("/api/ingest/reembed-all")
+@_catalog_ingest_activity.track
 def reembed_all():
     """Re-embed all songs with updated embedding text (folder, collection, neighboring folder).
 
@@ -956,6 +960,7 @@ def reembed_all():
 
 
 @app.post("/api/ingest/reprocess-single/{song_id}")
+@_catalog_ingest_activity.track
 def ingest_reprocess_single(song_id: int):
     """Re-analyze a single song's audio features and re-normalize the library."""
     song = database.get_song(song_id)
@@ -4675,7 +4680,7 @@ def api_reprocess_energy(payload: ReprocessRequest):
         except Exception as e:
             logger.error("Reprocess energy failed: %s", e)
 
-    threading.Thread(target=_run, daemon=True).start()
+    _catalog_ingest_activity.start(_run)
     return {"status": "started", "reembed": payload.reembed, "recluster": payload.recluster}
 
 
@@ -4735,6 +4740,10 @@ async def api_shutdown():
 async def _shutdown_runtime():
     global _server_ready
     _server_ready = False
+    try:
+        await _mobile_hosting.disable()
+    except Exception:
+        logger.warning("Mobile gateway cleanup incomplete; admission remains disabled")
     from engine.lifecycle import shutdown_runtime
     await shutdown_runtime(
         queue=_playback_sessions, player=None,
@@ -4800,6 +4809,14 @@ def _get_portable_catalog():
             _portable_catalog = ServerCatalog(_get_portable_store())
         return _portable_catalog
 
+from mobile_hosting import MobileHosting, create_mobile_hosting_router, read_parent_capability
+
+_mobile_hosting = MobileHosting(_get_portable_store,
+                               os.path.join(config.DATA_DIR, "mobile", "identity.dpapi"),
+                               catalog_factory=_get_portable_catalog,
+                               ingest_busy=lambda: _catalog_ingest_activity.busy() or pipeline.get_ingest_progress()["running"],
+                               ingest_epoch=_catalog_ingest_activity.epoch)
+app.include_router(create_mobile_hosting_router(_mobile_hosting))
 app.include_router(create_media_router(_get_media_service))
 app.include_router(create_playback_router(_LazyPlaybackSessions(), _playback_hub,
                                          desktop_claim=player_engine.claim))
@@ -4814,6 +4831,7 @@ mount_frontend(app, os.path.join(config.BASE_DIR, "frontend", "dist"))
 
 
 if __name__ == "__main__":
+    _mobile_hosting.capability = read_parent_capability()
     uvicorn.run(app, host=_server_settings.bind_host, port=config.API_PORT,
                 proxy_headers=False, ssl_certfile=_server_settings.tls_cert_file,
                 ssl_keyfile=_server_settings.tls_key_file)

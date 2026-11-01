@@ -2,6 +2,16 @@
 
 The backend listens on `127.0.0.1` by default. This keeps the service available to the local Electron and browser clients without exposing it to the network.
 
+## Android USB pairing and proposed remote access
+
+Checkpoints 1A–1B implement an explicitly enabled USB development gateway on `127.0.0.1:18766`, with signed server identity, one-time pairing and mandatory scoped device authentication for capabilities and prepared catalog/vector reads. It starts only through the owned Electron development process and is off at startup. No admin/legacy/profile-write or source-audio route is exposed. Follow [MOBILE_PAIRING.md](MOBILE_PAIRING.md) for installation, ADB forwarding, pairing, catalog preparation/import, revocation and recovery.
+
+Catalog preparation is an explicit local parent-authorized action. It serves immutable published data and checks API-owned ingest activity/epochs before publication; independent maintenance scripts remain outside that tracker, so do not run them concurrently with preparation. SQLite and Chroma still do not share a transaction. Preparation failures retain the last prepared revision, and phone reads never start ingestion, export or models. A preparation deadline prevents late publication but cannot forcibly interrupt a blocked storage call.
+
+The October 30 [mobile connection architecture](MOBILE_CONNECTION_PLAN.md) proposes later Cloudflare Quick Tunnel hosting and Firebase Spark endpoint discovery. Those features are not implemented or enabled. A future tunnel must never target the full desktop FastAPI application or use its loopback trust as device authorization.
+
+The user deferred direct LAN hosting. The current connection is debug-only USB/`adb reverse`; release clients reject this cleartext transport. The existing desktop configuration remains unchanged. The plain-LAN opt-in below is an existing desktop deployment option, not the phone integration path or permission to enable it on shared Wi-Fi.
+
 ## Configuration
 
 Set configuration in your own environment or a private `.env` file. Do not commit real passwords, authentication secrets, certificates, or private origins.

@@ -4,6 +4,14 @@ contextBridge.exposeInMainWorld("electron", {
   platform: process.platform,
   versions: process.versions,
   setPlaybackSession: (binding) => ipcRenderer.invoke('set-playback-session', binding),
+  // Narrow local provisioning controls; no URL, header or bearer-token bridge.
+  isMobilePairingAvailable: () => ipcRenderer.invoke('mobile-pairing-available'),
+  createMobilePairingBundle: (deviceName) => ipcRenderer.invoke('mobile-pairing-create', deviceName),
+  listPairedMobileDevices: () => ipcRenderer.invoke('mobile-pairing-devices'),
+  revokePairedMobileDevice: (deviceId) => ipcRenderer.invoke('mobile-pairing-revoke', deviceId),
+  cancelMobileCatalog: () => ipcRenderer.invoke('mobile-catalog-cancel'),
+  prepareMobileCatalog: () => ipcRenderer.invoke('mobile-catalog-prepare'),
+  getMobileCatalogStatus: () => ipcRenderer.invoke('mobile-catalog-status'),
 
   // Window controls
   toggleMiniPlayer: () => ipcRenderer.invoke("toggle-mini-player"),

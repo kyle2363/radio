@@ -34,9 +34,12 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
     sourceSets.getByName("androidTest").assets.srcDir(rootProject.file("../.test-runtime/android-fixtures"))
     sourceSets.getByName("androidTest").assets.srcDir(file("schemas"))
+    // One synthetic signed wire fixture is shared with the backend interoperability tests.
+    sourceSets.getByName("androidTest").assets.srcDir(rootProject.file("../backend/tests/fixtures"))
 }
 
 dependencies {

@@ -42,7 +42,8 @@ import kotlinx.coroutines.launch
 private val destinations = listOf("Radio" to Symbol.Radio, "Library" to Symbol.Library, "Settings" to Symbol.Settings)
 
 @Composable
-fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.current), playback: PlaybackController = rememberPlaybackController(), openPlayerRequest: Int = 0) {
+fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.current), playback: PlaybackController = rememberPlaybackController(), openPlayerRequest: Int = 0,
+    pairingRepository: dev.radio.mobile.connection.PairingRepository? = null) {
     val audio by playback.state.collectAsState()
     val library by repository.state.collectAsState()
     val playlists by repository.playlists.state.collectAsState()
@@ -110,7 +111,7 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
         if (target == "Search") searchReturnPage = page
         if (target == "Now playing") playerReturnPage = page
         page = target
-        if (target != "Search") prefs.edit().putString("last_screen", target).apply()
+        if (target != "Search") prefs.edit().putString("last_screen", if (target in listOf("Server", "Matching")) "Settings" else target).apply()
     }
     fun back() {
         if (page == "Now playing" && showQueue) { showQueue = false; return }
@@ -118,6 +119,8 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
         when (page) {
             "Search" -> page = searchReturnPage
             "Now playing" -> page = playerReturnPage
+            "Server" -> page = "Settings"
+            "Matching" -> page = "Server"
             "Library" -> if (category == "Playlists" && playlistId != null) playlistId = null else folder = library.folders.firstOrNull { it.id == folder }?.parentId?.takeUnless { it == library.root?.folderId }
             else -> folder = library.folders.firstOrNull { it.id == folder }?.parentId?.takeUnless { it == library.root?.folderId }
         }
@@ -128,7 +131,7 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
         if (!library.loading && !library.scanning) playback.reconcileLibrary(library.songs, library.accessLost)
     }
     LaunchedEffect(audio.currentId) { liked = false; locked = false }
-    val showBack = page == "Search" || page == "Now playing" || (page == "Library" && (folder != null || category == "Playlists" && playlistId != null))
+    val showBack = page == "Server" || page == "Matching" || page == "Search" || page == "Now playing" || (page == "Library" && (folder != null || category == "Playlists" && playlistId != null))
     BackHandler(showBack) { back() }
     RadioTheme(
         palette = RadioPalette.entries.firstOrNull { it.name == palette } ?: RadioPalette.Ocean,
@@ -167,7 +170,7 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
                         }
                     }
                     NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
-                        destinations.forEach { (label, symbol) -> NavigationBarItem(selected = page == label, onClick = { navigate(label) }, modifier = Modifier.testTag("nav-$label"), icon = { RadioIcon(symbol) }, label = { Text(label) }) }
+                        destinations.forEach { (label, symbol) -> NavigationBarItem(selected = page == label || label == "Settings" && page in listOf("Server", "Matching"), onClick = { navigate(label) }, modifier = Modifier.testTag("nav-$label"), icon = { RadioIcon(symbol) }, label = { Text(label) }) }
                     }
                 }
             },
@@ -228,7 +231,13 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
                             onQueueToggle = { showQueue = !showQueue }, modifier = Modifier.padding(horizontal = 24.dp), compact = compact)
                     }
                 }
-                "Settings" -> Column(Modifier.padding(insets).fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp)) {
+                "Server" -> Column(Modifier.padding(insets).consumeWindowInsets(insets).imePadding().fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).testTag("server-scroll")) {
+                    ServerSettings(pairingRepository, onOpenMatching = { navigate("Matching") })
+                }
+                "Matching" -> Column(Modifier.padding(insets).consumeWindowInsets(insets).imePadding().fillMaxSize().padding(horizontal = 16.dp)) {
+                    ServerSettings(pairingRepository, matchingScreen = true)
+                }
+                "Settings" -> Column(Modifier.padding(insets).consumeWindowInsets(insets).imePadding().fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).testTag("settings-scroll")) {
                     SectionLabel("Music library")
                     Text(library.root?.name ?: "No folder selected", style = MaterialTheme.typography.titleSmall)
                     Text("${library.songs.count { it.available }} MP3s · ${library.songs.count { !it.available }} missing", style = MaterialTheme.typography.bodySmall)
@@ -263,6 +272,7 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
                     Text("Playback", Modifier.padding(top = 16.dp), style = MaterialTheme.typography.titleSmall)
                     Text("Music keeps playing in the background. After a restart, your last queue returns paused. Sleep timers clear on restart.", Modifier.padding(vertical = 8.dp), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     NormalizationSettings(repository.loudness, library, audio.currentId)
+                    TextButton(onClick = { navigate("Server") }, modifier = Modifier.testTag("open-server")) { Text("Server") }
                 }
                 else -> Column(Modifier.padding(insets).padding(20.dp)) {
                     Text("Your local radio", style = MaterialTheme.typography.headlineSmall)

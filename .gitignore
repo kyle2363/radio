@@ -48,6 +48,8 @@ docs/*
 !docs/PORTABLE_SYNC_API.md
 !docs/PORTABLE_MEDIA_PLAN.md
 !docs/ANDROID_APP_PLAN.md
+!docs/MOBILE_CONNECTION_PLAN.md
+!docs/MOBILE_PAIRING.md
 !docs/CODEX_HANDOFF.md
 
 #audio files

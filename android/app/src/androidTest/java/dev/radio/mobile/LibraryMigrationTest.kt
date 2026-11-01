@@ -5,6 +5,7 @@ import androidx.room.Room
 import androidx.test.platform.app.InstrumentationRegistry
 import dev.radio.mobile.data.*
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.flow.first
 import org.json.JSONObject
 import org.junit.Assert.*
 import org.junit.Test
@@ -16,6 +17,8 @@ class LibraryMigrationTest {
     @Test fun v2MigrationPreservesExistingListeningHistoryAndAddsBookmarkStorage() = verifyMigration(2)
     @Test fun v3MigrationAddsPlaylistsWithoutDroppingBookmarks() = verifyMigration(3)
     @Test fun v4MigrationPreservesPlaylistsAndAddsLoudnessCache() = verifyMigration(4)
+    @Test fun v5MigrationPreservesLoudnessAndAddsPortableMetadataOnly() = verifyMigration(5)
+    @Test fun v6MigrationAddsContentIdentityWithoutChangingPlayback() = verifyMigration(6)
     private fun verifyMigration(version: Int) = runBlocking {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val context = instrumentation.targetContext
@@ -37,9 +40,10 @@ class LibraryMigrationTest {
                 db.execSQL("INSERT INTO local_playlists (id, name, nameKey, createdAt, updatedAt) VALUES ('pl', 'Keep playlist', 'keep playlist', 1, 1)")
                 db.execSQL("INSERT INTO local_playlist_songs (playlistId, songId, position) VALUES ('pl', 'keep', 0)")
             }
+            if (version >= 5) db.execSQL("INSERT INTO local_loudness (songId, uri, modifiedAt, byteSize, catalogScan, algorithm, integratedLufs, samplePeak, status, measuredAt) VALUES ('keep', 'content://fixture/song', 1, 3, 1, 'fixture', -12.0, 0.5, 'measured', 2)")
             db.version = version
         }
-        val db = Room.databaseBuilder(context, LibraryDatabase::class.java, file.absolutePath).addMigrations(LIBRARY_MIGRATION_1_2, LIBRARY_MIGRATION_2_3, LIBRARY_MIGRATION_3_4, LIBRARY_MIGRATION_4_5).build()
+        val db = Room.databaseBuilder(context, LibraryDatabase::class.java, file.absolutePath).addMigrations(LIBRARY_MIGRATION_1_2, LIBRARY_MIGRATION_2_3, LIBRARY_MIGRATION_3_4, LIBRARY_MIGRATION_4_5, LIBRARY_MIGRATION_5_6, LIBRARY_MIGRATION_6_7).build()
         try {
             assertEquals("Music", db.library().root()!!.name)
             assertEquals("keep", db.library().allSongs().single().id)
@@ -52,6 +56,8 @@ class LibraryMigrationTest {
             db.library().savePlaybackSnapshot(bookmark)
             assertEquals(bookmark, db.library().playbackSnapshot())
             if (version >= 4) assertEquals(listOf("keep"), db.playlists().songs("pl"))
+            if (version >= 5) assertEquals(-12.0, db.loudness().observe().first().single().integratedLufs!!, 0.0)
+            assertNull(db.catalogs().latest())
         } finally { db.close(); context.deleteDatabase(file.absolutePath) }
         Unit
     }

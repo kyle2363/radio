@@ -28,7 +28,7 @@ public class FixtureDocumentsProvider extends DocumentsProvider {
     }
     private final Map<String, Entry> entries = new LinkedHashMap<>();
     private String failFolder, slowFolder;
-    private int writeAttempts;
+    private int writeAttempts, documentQueries;
     @Override public boolean onCreate() { return true; }
     @Override public Bundle call(String method, String arg, Bundle extras) {
         // Android can call back into this provider while checking grants: don't hold its lock.
@@ -43,7 +43,7 @@ public class FixtureDocumentsProvider extends DocumentsProvider {
         synchronized (this) {
             switch (method) {
                 case "reset":
-                    entries.clear(); failFolder = null; slowFolder = null; writeAttempts = 0;
+                    entries.clear(); failFolder = null; slowFolder = null; writeAttempts = 0; documentQueries = 0;
                     add("root", null, "Music", Document.MIME_TYPE_DIR, 1000);
                     String[] folders = {"October 2026", "September 2026", "August 2026", "July 2026", "June 2026", "May 2026", "April 2026", "March 2026"};
                     for (int i = 0; i < folders.length; i++) add("d" + i, "root", folders[i], Document.MIME_TYPE_DIR, 8000 - i);
@@ -80,7 +80,7 @@ public class FixtureDocumentsProvider extends DocumentsProvider {
                     add("broken", "root", "Broken.mp3", "audio/mpeg", 1000);
                     break;
             }
-            Bundle result = new Bundle(); result.putInt("writes", writeAttempts); return result;
+            Bundle result = new Bundle(); result.putInt("writes", writeAttempts); result.putInt("documentQueries", documentQueries); return result;
         }
     }
     private void add(String id, String parent, String name, String mime, long modified) { entries.put(id, new Entry(id, parent, name, mime, modified)); }
@@ -98,6 +98,7 @@ public class FixtureDocumentsProvider extends DocumentsProvider {
         cursor.addRow(row); return cursor;
     }
     @Override public synchronized Cursor queryDocument(String id, String[] projection) throws FileNotFoundException {
+        documentQueries++;
         Entry entry = entries.get(id); if (entry == null) throw new FileNotFoundException(id);
         return result(projection, Collections.singletonList(entry));
     }
@@ -117,7 +118,7 @@ public class FixtureDocumentsProvider extends DocumentsProvider {
                 case Document.COLUMN_DISPLAY_NAME: row[i] = e.name; break;
                 case Document.COLUMN_MIME_TYPE: row[i] = e.mime; break;
                 case Document.COLUMN_LAST_MODIFIED: row[i] = e.modified; break;
-                case Document.COLUMN_SIZE: row[i] = 32L; break;
+                case Document.COLUMN_SIZE: row[i] = e.mime.equals(Document.MIME_TYPE_DIR) ? 0L : (long) "Synthetic invalid MP3; retain filename".getBytes(StandardCharsets.UTF_8).length; break;
                 case Document.COLUMN_FLAGS: row[i] = 0; break;
             }
             cursor.addRow(row);

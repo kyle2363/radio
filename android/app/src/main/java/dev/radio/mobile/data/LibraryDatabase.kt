@@ -41,6 +41,7 @@ interface LibraryDao {
     @Query("SELECT * FROM local_songs WHERE rootUri = :uri") suspend fun songs(uri: String): List<LocalSong>
     @Query("SELECT * FROM local_folders WHERE rootUri = :uri") suspend fun folders(uri: String): List<LocalFolder>
     @Query("SELECT * FROM local_songs") suspend fun allSongs(): List<LocalSong>
+    @Query("SELECT * FROM local_songs WHERE id = :id LIMIT 1") suspend fun song(id: String): LocalSong?
     @Query("UPDATE local_songs SET available = 0 WHERE rootUri = :uri") suspend fun markSongsMissing(uri: String)
     @Query("UPDATE local_folders SET available = 0 WHERE rootUri = :uri") suspend fun markFoldersMissing(uri: String)
     @Upsert suspend fun saveRoot(root: LibraryRoot)
@@ -80,5 +81,20 @@ val LIBRARY_MIGRATION_4_5 = object : Migration(4, 5) {
     }
 }
 
-@Database(entities = [LibraryRoot::class, LocalSong::class, LocalFolder::class, LocalPlaybackStart::class, LocalPlaybackSnapshot::class, LocalPlaylist::class, LocalPlaylistSong::class, LocalLoudness::class], version = 5, exportSchema = true)
-abstract class LibraryDatabase : RoomDatabase() { abstract fun library(): LibraryDao; abstract fun playlists(): PlaylistDao; abstract fun loudness(): LoudnessDao }
+val LIBRARY_MIGRATION_5_6 = object : Migration(5, 6) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS portable_catalog_revisions (manifestSha256 TEXT NOT NULL, serverId TEXT NOT NULL, catalogId TEXT NOT NULL, revision INTEGER NOT NULL, manifest TEXT NOT NULL, songCount INTEGER NOT NULL, vectorCount INTEGER NOT NULL, importedAt INTEGER NOT NULL, PRIMARY KEY(serverId, manifestSha256))")
+        db.execSQL("CREATE TABLE IF NOT EXISTS portable_catalog_songs (manifestSha256 TEXT NOT NULL, songId TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(manifestSha256, songId))")
+        db.execSQL("CREATE TABLE IF NOT EXISTS portable_catalog_vectors (manifestSha256 TEXT NOT NULL, songId TEXT NOT NULL, space TEXT NOT NULL, model TEXT NOT NULL, modelVersion TEXT NOT NULL, dimension INTEGER NOT NULL, metric TEXT NOT NULL, normalization TEXT NOT NULL, dtype TEXT NOT NULL, byteLength INTEGER NOT NULL, blobSha256 TEXT NOT NULL, PRIMARY KEY(manifestSha256, songId, space))")
+        db.execSQL("CREATE TABLE IF NOT EXISTS portable_catalog_active (serverId TEXT NOT NULL, catalogId TEXT NOT NULL, revision INTEGER NOT NULL, manifestSha256 TEXT NOT NULL, PRIMARY KEY(serverId))")
+    }
+}
+
+val LIBRARY_MIGRATION_6_7 = object : Migration(6, 7) {
+ override fun migrate(db: SupportSQLiteDatabase) {
+  db.execSQL("CREATE TABLE IF NOT EXISTS local_content_hashes (songId TEXT NOT NULL, uri TEXT NOT NULL, byteSize INTEGER, modifiedAt INTEGER, sha256 TEXT NOT NULL, hashedAt INTEGER NOT NULL, PRIMARY KEY(songId))")
+  db.execSQL("CREATE TABLE IF NOT EXISTS portable_match_decisions (serverId TEXT NOT NULL, catalogId TEXT NOT NULL, localId TEXT NOT NULL, contentSha256 TEXT NOT NULL, songId TEXT NOT NULL, action TEXT NOT NULL, decidedAt INTEGER NOT NULL, targetIdentity TEXT NOT NULL, PRIMARY KEY(serverId, catalogId, localId, contentSha256, songId))")
+ }
+}
+@Database(entities = [LibraryRoot::class, LocalSong::class, LocalFolder::class, LocalPlaybackStart::class, LocalPlaybackSnapshot::class, LocalPlaylist::class, LocalPlaylistSong::class, LocalLoudness::class, PortableCatalogRevision::class, PortableCatalogSong::class, PortableCatalogVector::class, PortableCatalogActive::class, LocalContentHash::class, PortableMatchDecision::class], version = 7, exportSchema = true)
+abstract class LibraryDatabase : RoomDatabase() { abstract fun library(): LibraryDao; abstract fun playlists(): PlaylistDao; abstract fun loudness(): LoudnessDao; abstract fun catalogs(): PortableCatalogDao; abstract fun matching(): MatchingDao }

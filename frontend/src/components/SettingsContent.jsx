@@ -5,6 +5,7 @@ import TalkSettings from "./TalkSettings";
 import IngestPanel from "./IngestPanel";
 import LibraryVerify from "./LibraryVerify";
 import { ICON_STYLES, BRAND_ICONS } from "./BrandIcons";
+import MobilePairingSettings from "./MobilePairingSettings";
 
 function Toggle({ checked, onChange, label }) {
   return (
@@ -457,6 +458,16 @@ function SettingsContent({ addToast, sectionSpacing, onSectionSpacingChange, rig
           </div>
         )}
       </div>
+
+      {window.electron?.createMobilePairingBundle && <div className="set-sec">
+        <div className="set-hdr" onClick={() => toggleSection('server')}>
+          <div className="icon-chip" style={{ background: '#1e1e1e' }}><Monitor size={13} style={{ color: '#8a9bb5' }} /></div>
+          <span style={{ color: 'var(--text-primary)', fontSize: 13, fontWeight: 500 }}>Server / Paired devices</span>
+          <div style={{ flex: 1 }} />
+          <ChevronDown size={14} style={{ color: 'var(--text-muted)', transform: sections.server ? 'rotate(0deg)' : 'rotate(-90deg)' }} />
+        </div>
+        {sections.server && <div className="set-body"><MobilePairingSettings /></div>}
+      </div>}
 
       {/* System */}
       <div className="set-sec">

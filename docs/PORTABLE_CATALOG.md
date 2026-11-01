@@ -6,6 +6,14 @@ audio files, playback sessions or network services. The server adapter extracts
 source data separately; refer to the portable API documentation for transport and
 authentication.
 
+## Android checkpoint 1B transport
+
+The USB gateway now serves explicitly prepared full revisions, pinned historical revisions, exact-base deltas and digest-addressed vector bytes. Preparation is a local desktop action; mobile GETs never run export or ingestion. Android imports into separate Room v6 metadata tables and private vector storage, validating the package before an atomic active-revision change. See [MOBILE_PAIRING.md](MOBILE_PAIRING.md) for the workflow and limits.
+
+The native transport requires the gateway's raw canonical Python JSON bytes and preserves numeric tokens while validating sorted Unicode keys and string escaping. It stores a full manifest as the active revision identity; a delta has a different self-hash even at the same target revision and is validated separately as a transfer plan. Provenance remains per descriptor, including when identical stored bytes are reused by compatible references. All descriptors are validated, even if their bytes share a cache entry.
+
+Android cache reclamation removes private inactive data while retaining every active catalog and the in-progress import. It does not delete source audio or change the Media3 timeline. Matching, local content hashing and recommendation use of the imported vectors remain later checkpoints.
+
 ## Identity and song records
 
 `catalog_id` identifies one server library independently of a host path. A song's

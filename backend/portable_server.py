@@ -6,11 +6,13 @@ import os
 from pathlib import Path
 import re
 import threading
+import time
 from uuid import uuid4
 
 import config
 from db import database
 from portable.catalog import canonical_json, read_catalog, write_catalog
+from portable_identity import ContentIdentityCache
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +33,28 @@ class ServerCatalog:
         self.root = Path(root or Path(config.DATA_DIR) / "portable_catalogs")
         self.client_factory = client_factory
         self._lock = threading.Lock()
+        self.identities = ContentIdentityCache(self.root / "content-identity.sqlite3")
+
+    def _approved(self, path):
+        try:
+            return path.resolve().is_relative_to(Path(config.MUSIC_DIR).resolve())
+        except OSError:
+            return False
+
+    def prepare_identities(self, cancelled, progress):
+        """Only the explicit preparation worker may read source music."""
+        with database.get_connection_cm() as conn:
+            paths = [Path(row[0]) for row in conn.execute("SELECT filepath FROM songs ORDER BY id")]
+        completed = hashed = skipped = 0
+        progress(completed, len(paths), hashed, skipped)
+        for path in paths:
+            if cancelled():
+                break
+            digest = self.identities.measure(path, cancelled=cancelled) if self._approved(path) else None
+            completed += 1
+            hashed += bool(digest)
+            skipped += not bool(digest)
+            progress(completed, len(paths), hashed, skipped)
 
     def source(self):
         with database.get_connection_cm() as conn:
@@ -50,6 +74,9 @@ class ServerCatalog:
                           filename=filepath.name, folder=folder if folder != "." else "", collections=memberships.get(str(row["id"]), []),
                           genres=_tags(row.get("genre_tags")), emotional_tags=_tags(row.get("emotional_tags")),
                           instrument_tags=_tags(row.get("instrument_tags")), available=filepath.is_file())
+            digest = self.identities.cached(filepath) if self._approved(filepath) else None
+            if digest:
+                source["content_sha256"] = digest
             songs.append(source)
         if self.client_factory is None:
             # The existing helper constructs PersistentClient and may create a
@@ -132,7 +159,17 @@ class ServerCatalog:
                     # Source music, metadata, and Chroma are never touched.
                     blob.unlink()
                     os.link(pooled, blob)
-            os.rename(staging, self.root / str(revision))
+            destination = self.root / str(revision)
+            for attempt in range(6):
+                try:
+                    os.rename(staging, destination)
+                    break
+                except PermissionError as exc:
+                    # Match the underlying package writer's Windows lock
+                    # handling without ever publishing a partial copy.
+                    if getattr(exc, "winerror", None) not in (5, 32) or attempt == 5 or destination.exists():
+                        raise
+                    time.sleep(.01 * 2 ** attempt)
             with self.store.transaction() as conn:
                 conn.executemany("INSERT OR REPLACE INTO portable_meta VALUES (?,?)",
                                  [("catalog_revision", str(revision)), ("catalog_digest", digest)])
