@@ -14,6 +14,3 @@ data class PortableMatchDecision(val serverId: String,val catalogId: String,val 
  @Upsert suspend fun saveDecision(value:PortableMatchDecision)
  @Query("DELETE FROM portable_match_decisions WHERE serverId=:server AND catalogId=:catalog AND localId=:local AND contentSha256=:hash AND songId=:song") suspend fun clearDecision(server:String,catalog:String,local:String,hash:String,song:String)
 }
-
-
-

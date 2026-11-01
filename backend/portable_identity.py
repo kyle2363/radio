@@ -105,4 +105,3 @@ class ContentIdentityCache:
                 return digest
             except OSError:
                 return None
-
