@@ -110,7 +110,7 @@ fun PlayerTransport(
             Text(audio.durationMs?.let(::playerTime) ?: "--:--", style = MaterialTheme.typography.labelSmall)
         }
         Row(Modifier.fillMaxWidth().padding(vertical = if (compact) 4.dp else 12.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            IconToggleButton(audio.shuffled, onCheckedChange = { playback.shuffle(it) }) { RadioIcon(Symbol.Shuffle, "Shuffle") }
+            if(audio.radioActive)Spacer(Modifier.size(48.dp)) else IconToggleButton(audio.shuffled, onCheckedChange = { playback.shuffle(it) }) { RadioIcon(Symbol.Shuffle, "Shuffle") }
             IconButton(onClick = { playback.previous() }, enabled = audio.canPrevious) { RadioIcon(Symbol.Previous, "Previous song") }
             FilledIconButton(onClick = { playback.toggle() }, enabled = canRead, modifier = Modifier.size(if (compact) 56.dp else 64.dp)) {
                 RadioIcon(if (audio.playWhenReady) Symbol.Pause else Symbol.Play, if (audio.playWhenReady) "Pause" else "Play", Modifier.size(32.dp))

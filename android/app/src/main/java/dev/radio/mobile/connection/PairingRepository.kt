@@ -27,6 +27,7 @@ class PairingRepository(
     private val mutex get() = pairingMutex
     companion object { private val pairingMutex = Mutex() }
     private fun publish(snapshot: StoredPairing, message: String? = null) {
+        dev.radio.mobile.data.JournalIdentityProvider.publishPairing(snapshot)
         val record = snapshot.record
         mutableState.value = ConnectionState(loaded = true, serverId = record?.bundle?.serverId, endpoint = record?.bundle?.endpoint,
             paired = record?.deviceId != null, pending = record != null && record.deviceId == null, quarantined = snapshot.quarantined,

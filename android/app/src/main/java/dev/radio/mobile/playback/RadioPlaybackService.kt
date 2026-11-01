@@ -15,10 +15,12 @@ import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
 import dev.radio.mobile.MainActivity
 import dev.radio.mobile.data.LibraryRepository
+import dev.radio.mobile.data.JournalIdentity
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.combine
 
 /** Owns the only production player, independent of activity and Compose lifetimes. */
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
@@ -42,10 +44,51 @@ class RadioPlaybackService : MediaSessionService() {
     override fun onCreate() {
         super.onCreate()
         val library = repositoryFactory(this)
+        val attemptIdentities = mutableMapOf<String, JournalIdentity>()
         prefs = PlaybackPrefs(this)
         engine = LocalPlaybackController(this, onCheckpoint = { if (initialized) library.playbackSnapshots.save(it) },
-            onQueueCleared = { if (initialized) library.playbackSnapshots.clear() }) { song, attempt, position ->
-            library.recordPlaybackStart(song.id, attempt, position)
+            onQueueCleared = { if (initialized) library.playbackSnapshots.clear() },
+            onAttemptFinished = { _, attempt, kind, listened, duration, reason ->
+                attemptIdentities.remove(attempt)?.let { library.journal.finished(it, attempt, kind, listened, duration, reason) }
+            }, onExplicitReplay = { song, attempt ->
+                val identity = library.journal.identity(song)
+                attemptIdentities.clear()
+                attemptIdentities[attempt] = identity
+                library.journal.replay(song, attempt, identity)
+            }) { song, attempt, position ->
+            attemptIdentities.keys.retainAll(setOf(attempt))
+            val identity = attemptIdentities.getOrPut(attempt) { library.journal.identity(song) }
+            library.journal.started(song, attempt, position, identity)
+            library.radio.actualStart(attempt)
+        }
+        var radioRequest: Job? = null
+        engine.onRadioStart = {
+            radioRequest?.cancel()
+            val expected=engine.state.value
+            radioRequest=scope.launch {
+                val batch=withContext(Dispatchers.IO){library.radio.recommendations()} ?: return@launch
+                beforeRadioStartCommit()
+                if(library.radio.valid(batch.token) && engine.state.value.queueRevision==expected.queueRevision && engine.state.value.currentId==expected.currentId)
+                    engine.beginRadio(batch.suggestions.map{it.song})
+            }
+        }
+        scope.launch {
+            combine(
+                engine.state.map{listOf(it.currentId,it.playOrder,it.radioActive,it.queueRevision,it.playWhenReady,it.sleepTimer.active)}.distinctUntilChanged(),
+                library.journal.state.map{listOf(it.pendingWrites,it.feedbackLoaded,it.history.firstOrNull()?.eventId)}.distinctUntilChanged(),
+                library.radio.state.map{listOf(it.mood,it.exploration,it.vibeLocalId)}.distinctUntilChanged(),
+                dev.radio.mobile.data.JournalIdentityProvider.mappings
+            ){_,_,_,_->Unit}.collect {
+                val expected=engine.state.value
+                library.radio.updatePlayback(expected)
+                val current=expected.playOrder.indexOf(expected.currentId)
+                val upcoming=expected.playOrder.drop(current+1).toSet()
+                if(initialized && expected.radioActive && expected.playWhenReady && !expected.sleepTimer.active && current>=0 && upcoming.size<=2){
+                    val batch=withContext(Dispatchers.IO){library.radio.recommendations(upcoming+setOfNotNull(expected.currentId),5-upcoming.size)}
+                    if(batch!=null && library.radio.valid(batch.token) && engine.state.value.playWhenReady)
+                        engine.appendRadio(expected,batch.suggestions.map{it.song})
+                }
+            }
         }
         // Repeat is a preference, not queue content: apply it before the session exists so the
         // system controls never show a stale icon after a restart.
@@ -166,5 +209,6 @@ class RadioPlaybackService : MediaSessionService() {
         const val ACTION_CYCLE_REPEAT = "dev.radio.mobile.CYCLE_REPEAT"
         // Dependency seam lets service instrumentation use an in-memory catalog and journal.
         internal var repositoryFactory: (android.content.Context) -> LibraryRepository = LibraryRepository::get
+        internal var beforeRadioStartCommit: suspend () -> Unit = {}
     }
 }

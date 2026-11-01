@@ -49,6 +49,7 @@ interface LibraryDao {
     @Upsert suspend fun saveFolders(folders: List<LocalFolder>)
     @Insert(onConflict = OnConflictStrategy.IGNORE) suspend fun savePlaybackStart(start: LocalPlaybackStart)
     @Query("SELECT * FROM local_playback_starts ORDER BY occurredAt") suspend fun playbackStarts(): List<LocalPlaybackStart>
+    @Query("SELECT * FROM local_playback_starts WHERE attemptId=:attempt LIMIT 1") suspend fun playbackStart(attempt: String): LocalPlaybackStart?
     @Query("SELECT * FROM local_playback_snapshot WHERE `key` = 1") suspend fun playbackSnapshot(): LocalPlaybackSnapshot?
     @Upsert suspend fun savePlaybackSnapshot(snapshot: LocalPlaybackSnapshot)
     @Query("DELETE FROM local_playback_snapshot") suspend fun clearPlaybackSnapshot()
@@ -96,5 +97,14 @@ val LIBRARY_MIGRATION_6_7 = object : Migration(6, 7) {
   db.execSQL("CREATE TABLE IF NOT EXISTS portable_match_decisions (serverId TEXT NOT NULL, catalogId TEXT NOT NULL, localId TEXT NOT NULL, contentSha256 TEXT NOT NULL, songId TEXT NOT NULL, action TEXT NOT NULL, decidedAt INTEGER NOT NULL, targetIdentity TEXT NOT NULL, PRIMARY KEY(serverId, catalogId, localId, contentSha256, songId))")
  }
 }
-@Database(entities = [LibraryRoot::class, LocalSong::class, LocalFolder::class, LocalPlaybackStart::class, LocalPlaybackSnapshot::class, LocalPlaylist::class, LocalPlaylistSong::class, LocalLoudness::class, PortableCatalogRevision::class, PortableCatalogSong::class, PortableCatalogVector::class, PortableCatalogActive::class, LocalContentHash::class, PortableMatchDecision::class], version = 7, exportSchema = true)
-abstract class LibraryDatabase : RoomDatabase() { abstract fun library(): LibraryDao; abstract fun playlists(): PlaylistDao; abstract fun loudness(): LoudnessDao; abstract fun catalogs(): PortableCatalogDao; abstract fun matching(): MatchingDao }
+val LIBRARY_MIGRATION_7_8 = object : Migration(7, 8) {
+ override fun migrate(db: SupportSQLiteDatabase) {
+  db.execSQL("CREATE TABLE IF NOT EXISTS local_listening_events (eventId TEXT NOT NULL, localId TEXT NOT NULL, attemptId TEXT, kind TEXT NOT NULL, occurredAt INTEGER NOT NULL, logicalClock INTEGER NOT NULL, payload TEXT NOT NULL, listenedMs INTEGER NOT NULL, completion REAL, terminationReason TEXT, provenance TEXT NOT NULL, PRIMARY KEY(eventId))")
+  db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_local_listening_events_attemptId_kind ON local_listening_events(attemptId, kind)")
+  db.execSQL("CREATE TABLE IF NOT EXISTS local_event_outbox (eventId TEXT NOT NULL, serverId TEXT, deviceId TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(eventId))")
+  db.execSQL("CREATE TABLE IF NOT EXISTS local_journal_clock (`key` INTEGER NOT NULL, value INTEGER NOT NULL, PRIMARY KEY(`key`))")
+  db.execSQL("CREATE TABLE IF NOT EXISTS local_song_feedback (localId TEXT NOT NULL, favorite INTEGER NOT NULL, disliked INTEGER NOT NULL, PRIMARY KEY(localId))")
+ }
+}
+@Database(entities = [LibraryRoot::class, LocalSong::class, LocalFolder::class, LocalPlaybackStart::class, LocalPlaybackSnapshot::class, LocalPlaylist::class, LocalPlaylistSong::class, LocalLoudness::class, PortableCatalogRevision::class, PortableCatalogSong::class, PortableCatalogVector::class, PortableCatalogActive::class, LocalContentHash::class, PortableMatchDecision::class, LocalListeningEvent::class, LocalEventOutbox::class, LocalJournalClock::class, LocalSongFeedback::class], version = 8, exportSchema = true)
+abstract class LibraryDatabase : RoomDatabase() { abstract fun library(): LibraryDao; abstract fun playlists(): PlaylistDao; abstract fun loudness(): LoudnessDao; abstract fun catalogs(): PortableCatalogDao; abstract fun matching(): MatchingDao; abstract fun journal(): ListeningJournalDao }

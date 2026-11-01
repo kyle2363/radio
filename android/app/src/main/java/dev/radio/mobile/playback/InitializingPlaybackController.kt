@@ -20,6 +20,8 @@ internal class InitializingPlaybackController(private val engine: PlaybackContro
     override fun pause() = command { engine.pause() }
     override fun seek(positionMs: Long) = command { engine.seek(positionMs) }
     override fun next() = command { engine.next() }
+    override fun next(reason: String) = command { engine.next(reason) }
+    override fun replay() = command { engine.replay() }
     override fun previous() = command { engine.previous() }
     override fun jumpTo(songId: String) = command { engine.jumpTo(songId) }
     override fun shuffle(enabled: Boolean) = command { engine.shuffle(enabled) }
@@ -31,4 +33,6 @@ internal class InitializingPlaybackController(private val engine: PlaybackContro
     override fun setSleepTimer(durationMs: Long, fade: Boolean) = command { engine.setSleepTimer(durationMs, fade) }
     override fun sleepAtTrackEnd() = command { engine.sleepAtTrackEnd() }
     override fun cancelSleepTimer() = command { engine.cancelSleepTimer() }
+    override fun startRadio() = command { engine.startRadio() }
+    override fun stopRadio() = command { engine.stopRadio() }
 }

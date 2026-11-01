@@ -19,6 +19,7 @@ class LibraryMigrationTest {
     @Test fun v4MigrationPreservesPlaylistsAndAddsLoudnessCache() = verifyMigration(4)
     @Test fun v5MigrationPreservesLoudnessAndAddsPortableMetadataOnly() = verifyMigration(5)
     @Test fun v6MigrationAddsContentIdentityWithoutChangingPlayback() = verifyMigration(6)
+    @Test fun v7MigrationAddsEmptyJournalWithoutReinterpretingHistory() = verifyMigration(7)
     private fun verifyMigration(version: Int) = runBlocking {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val context = instrumentation.targetContext
@@ -43,7 +44,7 @@ class LibraryMigrationTest {
             if (version >= 5) db.execSQL("INSERT INTO local_loudness (songId, uri, modifiedAt, byteSize, catalogScan, algorithm, integratedLufs, samplePeak, status, measuredAt) VALUES ('keep', 'content://fixture/song', 1, 3, 1, 'fixture', -12.0, 0.5, 'measured', 2)")
             db.version = version
         }
-        val db = Room.databaseBuilder(context, LibraryDatabase::class.java, file.absolutePath).addMigrations(LIBRARY_MIGRATION_1_2, LIBRARY_MIGRATION_2_3, LIBRARY_MIGRATION_3_4, LIBRARY_MIGRATION_4_5, LIBRARY_MIGRATION_5_6, LIBRARY_MIGRATION_6_7).build()
+        val db = Room.databaseBuilder(context, LibraryDatabase::class.java, file.absolutePath).addMigrations(LIBRARY_MIGRATION_1_2, LIBRARY_MIGRATION_2_3, LIBRARY_MIGRATION_3_4, LIBRARY_MIGRATION_4_5, LIBRARY_MIGRATION_5_6, LIBRARY_MIGRATION_6_7, LIBRARY_MIGRATION_7_8).build()
         try {
             assertEquals("Music", db.library().root()!!.name)
             assertEquals("keep", db.library().allSongs().single().id)
@@ -58,6 +59,8 @@ class LibraryMigrationTest {
             if (version >= 4) assertEquals(listOf("keep"), db.playlists().songs("pl"))
             if (version >= 5) assertEquals(-12.0, db.loudness().observe().first().single().integratedLufs!!, 0.0)
             assertNull(db.catalogs().latest())
+            assertTrue(db.journal().events().isEmpty())
+            assertTrue(db.journal().outbox().isEmpty())
         } finally { db.close(); context.deleteDatabase(file.absolutePath) }
         Unit
     }

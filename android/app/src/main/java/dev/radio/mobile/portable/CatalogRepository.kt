@@ -44,6 +44,7 @@ class CatalogRepository internal constructor(private val db: LibraryDatabase, pr
     fun cancelImport() { importJob?.cancel() }
     suspend fun importCatalog() = withContext(Dispatchers.IO) {
         if (!mutex.tryLock()) return@withContext
+        JournalIdentityProvider.invalidateMappings()
         importJob = currentCoroutineContext()[Job]
         target = null
         try {
@@ -207,7 +208,7 @@ class CatalogRepository internal constructor(private val db: LibraryDatabase, pr
     }
     private fun PortableCatalogRevision.info(usable: Boolean) = CatalogInfo(serverId, catalogId, revision, songCount, vectorCount, importedAt, usable)
     companion object {
-        private val storageMutex = Mutex()
+        internal val storageMutex = Mutex()
         fun get(context: Context, pairing: PairingRepository): CatalogRepository = CatalogRepository(LibraryRepository.get(context).db, pairing, File(context.applicationContext.noBackupFilesDir, "portable_catalog_blobs"))
     }
 }

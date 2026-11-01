@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "catalog_id": "fixture-radio",
+  "seed": 17,
+  "now": 2000,
+  "songs": [
+    {"id":"1","artist":"North","title":"One","album":"Morning","duration":180,"energy":0.5,"valence":0.5,"cluster_id":0,"genres":["ambient"],"folder":"Morning","collections":["calm"]},
+    {"id":"2","artist":"East","title":"Two","duration":181,"energy":0.6,"valence":0.6,"cluster_id":1,"genres":["pop"],"folder":"Day","collections":["bright"]},
+    {"id":"3","artist":"West","title":"Three","duration":182,"energy":0.4,"valence":0.4,"cluster_id":2,"genres":["ambient"],"folder":"Morning","collections":["calm"]},
+    {"id":"4","artist":"South","title":"Four","duration":183,"energy":0.8,"valence":0.6,"cluster_id":3,"genres":["rock"],"folder":"Day"},
+    {"id":"5","artist":"Ocean","title":"Five","duration":184,"energy":0.2,"valence":0.3,"cluster_id":4,"genres":["ambient"],"folder":"Night"},
+    {"id":"6","artist":"Sky","title":"Six","duration":185,"energy":0.5,"valence":0.5,"cluster_id":5,"genres":["pop"],"folder":"Day"}
+  ],
+  "embeddings": [
+    {"song_id":"1","space":"text","model":"fixture-text","model_version":"1","vector":[1,0,0]},
+    {"song_id":"2","space":"text","model":"fixture-text","model_version":"1","vector":[0.8,0.6,0]},
+    {"song_id":"3","space":"text","model":"fixture-text","model_version":"1","vector":[0.6,0.8,0]},
+    {"song_id":"4","space":"text","model":"fixture-text","model_version":"1","vector":[0,1,0]},
+    {"song_id":"5","space":"text","model":"fixture-text","model_version":"1","vector":[-1,0,0]},
+    {"song_id":"1","space":"audio","model":"fixture-audio","model_version":"1","vector":[1,0]},
+    {"song_id":"2","space":"audio","model":"fixture-audio","model_version":"1","vector":[0.6,0.8]},
+    {"song_id":"3","space":"audio","model":"fixture-audio","model_version":"1","vector":[0.8,0.6]},
+    {"song_id":"4","space":"audio","model":"fixture-audio","model_version":"1","vector":[0,1]},
+    {"song_id":"5","space":"audio","model":"fixture-audio","model_version":"1","vector":[-1,0]}
+  ],
+  "local_tracks": [{"local_id":"phone-1","song_id":"1"},{"local_id":"phone-2","song_id":"2"},{"local_id":"phone-3","song_id":"3"},{"local_id":"phone-4","song_id":"4"},{"local_id":"phone-5","song_id":"5"},{"local_id":"phone-6","song_id":"6"},{"local_id":"extra","title":"Phone only","artist":"Phone","energy":0.5}],
+  "history": [{"event_id":"start1","type":"started","song_id":"1","timestamp":0},{"event_id":"end1","type":"completed","song_id":"1","timestamp":180}],
+  "settings": {"audio_blend":0.65,"mood":"neutral","exploration_level":0.3},
+  "expected": {"rank_ids":["3","2","6","local:extra","1","4","5"],"scores":[0.70800001,0.67200001,0.3,0.3,0.28,0.23,-0.38],"selection_ids":["3","2","6","local:extra","1"],"slots":["exploit","explore","wildcard","context","fallback"],"replay_current":"1","upcoming_after_replay":["3","2","6","local:extra","1"]}
+}

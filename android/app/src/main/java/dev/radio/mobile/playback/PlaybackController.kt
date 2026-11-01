@@ -24,6 +24,7 @@ data class PlaybackState(
     val repeat: RepeatMode = RepeatMode.OFF,
     val error: String? = null,
     val sleepTimer: SleepTimerState = SleepTimerState()
+    ,val radioActive: Boolean = false, val queueRevision: Long = 0
 ) {
     val current: LocalSong? get() = queue.firstOrNull { it.id == currentId }
     val status: String get() = when {
@@ -47,6 +48,8 @@ interface PlaybackController {
     fun toggle()
     fun pause()
     fun next()
+    fun next(reason: String) = next()
+    fun replay() = Unit
     fun previous()
     fun seek(positionMs: Long)
     fun jumpTo(songId: String)
@@ -60,4 +63,6 @@ interface PlaybackController {
     fun setSleepTimer(durationMs: Long, fade: Boolean = true)
     fun sleepAtTrackEnd()
     fun cancelSleepTimer()
+    fun startRadio() = Unit
+    fun stopRadio() = Unit
 }

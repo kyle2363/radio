@@ -32,9 +32,11 @@ class LibraryRepository(context: Context, internal val db: LibraryDatabase) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     internal val playbackSnapshots = PlaybackSnapshotStore(db.library(), scope)
     val playlists = PlaylistRepository(db, scope)
+    val journal = ListeningJournalRepository(context, db, scope)
     private val mutex = Mutex()
     private val mutable = MutableStateFlow(LibraryState())
     val state: StateFlow<LibraryState> = mutable.asStateFlow()
+    val radio = dev.radio.mobile.recommendation.RadioRepository(context, db, state, journal, scope)
     val loudness = LoudnessRepository(context, db.loudness(), scope, state)
     private var scanJob: Job? = null
     private fun hasAccess(uri: Uri) = resolver.persistedUriPermissions.any { it.uri == uri && it.isReadPermission }
@@ -59,7 +61,7 @@ class LibraryRepository(context: Context, internal val db: LibraryDatabase) {
     fun recordPlaybackStart(songId: String, attemptId: String, positionMs: Long) {
         scope.launch {
             ready.join()
-            try { db.library().savePlaybackStart(LocalPlaybackStart(attemptId, songId, System.currentTimeMillis(), positionMs)) }
+            try { db.library().song(songId)?.let { journal.started(it, attemptId, positionMs) } }
             catch (error: Exception) { android.util.Log.w("RadioPlayback", "Couldn't save local playback start", error) }
         }
     }
@@ -67,6 +69,7 @@ class LibraryRepository(context: Context, internal val db: LibraryDatabase) {
     @Synchronized
     private fun startScan(uri: Uri, takeGrant: Boolean): Job {
         scanJob?.takeIf { it.isActive }?.let { return it }
+        JournalIdentityProvider.invalidateMappings()
         return scope.launch {
             ready.join()
             mutex.withLock {
@@ -116,7 +119,7 @@ class LibraryRepository(context: Context, internal val db: LibraryDatabase) {
     companion object {
         @Volatile private var instance: LibraryRepository? = null
         fun get(context: Context): LibraryRepository = instance ?: synchronized(this) {
-            instance ?: LibraryRepository(context, Room.databaseBuilder(context.applicationContext, LibraryDatabase::class.java, "local-library.db").addMigrations(LIBRARY_MIGRATION_1_2, LIBRARY_MIGRATION_2_3, LIBRARY_MIGRATION_3_4, LIBRARY_MIGRATION_4_5, LIBRARY_MIGRATION_5_6, LIBRARY_MIGRATION_6_7).build()).also { instance = it }
+            instance ?: LibraryRepository(context, Room.databaseBuilder(context.applicationContext, LibraryDatabase::class.java, "local-library.db").addMigrations(LIBRARY_MIGRATION_1_2, LIBRARY_MIGRATION_2_3, LIBRARY_MIGRATION_3_4, LIBRARY_MIGRATION_4_5, LIBRARY_MIGRATION_5_6, LIBRARY_MIGRATION_6_7, LIBRARY_MIGRATION_7_8).build()).also { instance = it }
         }
     }
 }

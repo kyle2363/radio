@@ -101,3 +101,7 @@ Checkpoint 1A was subsequently phone-tested and accepted. For 1B, check: the Ser
 5. Confirm/reject decisions are scoped to server/catalog plus local bytes and target content identity (or exact target payload when no hash exists). A replaced server recording invalidates its old decision; a removed target remains visible/resettable. Matching never rewrites historic listening records or the active queue.
 
 Phone acceptance: run matching while playing local music, try cancelling/restarting, review a duplicate or uncertain filename, save/reset a decision, then reopen offline. Report the three counts and any files you expected to match. Actual personal-library coverage remains a phone check, not a synthetic-test claim. Recommendations remain a later checkpoint.
+
+## Local listening feedback (2A)
+
+The 2A APK adds persistent Like/Dislike, explicit Replay and saved Skip reasons in Now Playing. This works without USB or a server. The local journal records observed listening time and immutable attempt outcomes; it does not upload or synchronize history yet. Update without clearing data: the explicit v7→v8 migration retains existing library, matching decisions, bookmarks and playlists. Historical starts are not backfilled. Unpaired or unavailable mappings remain local-only for each captured attempt; later matching does not rewrite earlier events. If saving fails, local audio continues and Now Playing offers Retry. Committed data survives restart, while process death before a pending write commits can lose that observation.

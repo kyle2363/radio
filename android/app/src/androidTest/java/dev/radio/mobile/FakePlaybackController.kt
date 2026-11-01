@@ -8,6 +8,13 @@ import kotlinx.coroutines.flow.update
 
 /** UI wiring fixture only; actual MP3 decoding/events are exercised by MediaPlaybackTest. */
 class FakePlaybackController : PlaybackController {
+    var lastSkipReason: String? = null
+    var replayCount = 0
+    var startRadioCount = 0
+    override fun startRadio() { startRadioCount++; mutable.update { it.copy(radioActive = true) } }
+    override fun stopRadio() { mutable.update { it.copy(radioActive = false) } }
+    override fun next(reason: String) { lastSkipReason = reason; next() }
+    override fun replay() { replayCount++; seek(0) }
     private val mutable = MutableStateFlow(PlaybackState())
     override val state: StateFlow<PlaybackState> = mutable
     private fun select(id: String, playing: Boolean) {

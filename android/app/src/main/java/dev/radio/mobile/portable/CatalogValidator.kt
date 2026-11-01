@@ -95,7 +95,7 @@ object CatalogValidator {
         catalogRequire(norm.isFinite() && norm > 0.0, "Zero or invalid catalog vector.")
         if (descriptor.normalization == "l2") catalogRequire(abs(norm - 1.0) <= 0.01, "Catalog vector declares invalid normalization.")
     }
-    private fun half(bits: Int): Float {
+    internal fun half(bits: Int): Float {
         val sign = if (bits and 0x8000 == 0) 1.0 else -1.0
         val exponent = bits ushr 10 and 31; val fraction = bits and 1023
         return when (exponent) { 0 -> (sign * Math.scalb(fraction.toDouble(), -24)).toFloat(); 31 -> if (fraction == 0) (sign * Double.POSITIVE_INFINITY).toFloat() else Float.NaN; else -> (sign * Math.scalb(1.0 + fraction / 1024.0, exponent - 15)).toFloat() }

@@ -33,6 +33,8 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -47,6 +49,8 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
     val audio by playback.state.collectAsState()
     val library by repository.state.collectAsState()
     val playlists by repository.playlists.state.collectAsState()
+    val journal by repository.journal.state.collectAsState()
+    val radio by repository.radio.state.collectAsState()
     val keyboard = LocalSoftwareKeyboardController.current
     val focus = LocalFocusManager.current
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri -> if (uri != null) repository.chooseFolder(uri) }
@@ -83,8 +87,10 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
     var query by rememberSaveable { mutableStateOf("") }
     var scrubMs by remember(audio.currentId) { mutableStateOf<Long?>(null) }
     val position = (scrubMs ?: audio.positionMs) / 1000f
-    var liked by rememberSaveable { mutableStateOf(false) }
-    var locked by rememberSaveable { mutableStateOf(false) }
+    val liked = journal.feedback[audio.currentId]?.favorite == true
+    val disliked = journal.feedback[audio.currentId]?.disliked == true
+    val locked = radio.vibeLocalId != null
+    var playerMenu by remember { mutableStateOf(false) }
     var showQueue by rememberSaveable { mutableStateOf(false) }
     var showSkip by rememberSaveable { mutableStateOf(false) }
     var showSleep by remember { mutableStateOf(false) }
@@ -130,7 +136,7 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
     LaunchedEffect(library.songs, library.accessLost, library.loading, library.scanning) {
         if (!library.loading && !library.scanning) playback.reconcileLibrary(library.songs, library.accessLost)
     }
-    LaunchedEffect(audio.currentId) { liked = false; locked = false }
+    LaunchedEffect(audio.currentId) { repository.radio.updatePlayback(audio) }
     val showBack = page == "Server" || page == "Matching" || page == "Search" || page == "Now playing" || (page == "Library" && (folder != null || category == "Playlists" && playlistId != null))
     BackHandler(showBack) { back() }
     RadioTheme(
@@ -144,7 +150,7 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
                     if (showBack) IconButton(onClick = { back() }) { RadioIcon(Symbol.Back, "Back") }
                     Column(Modifier.weight(1f).padding(start = if (!showBack) 12.dp else 0.dp)) {
                         Text(if (page == "Library" && category == "Playlists" && playlistId != null) playlists.playlists.firstOrNull { it.id == playlistId }?.name ?: "Playlist" else if (page == "Library" && folder != null) library.folders.firstOrNull { it.id == folder }?.name ?: "Folder" else if (page == "Now playing" && showQueue) "Queue" else page, style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Text(if (page == "Now playing" && showQueue) audio.source else if (page == "Library" && category == "Playlists" && playlistId != null) "${playlists.songIds(playlistId!!).size} songs · Playlist" else if (library.scanning) "Scanning…" else if (library.root == null) "Connect your music" else "${library.songs.count { it.available }} MP3s", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(if (page == "Now playing") if(audio.radioActive)"Radio · On this phone" else audio.source.ifBlank{"Local music"} else if (page == "Library" && category == "Playlists" && playlistId != null) "${playlists.songIds(playlistId!!).size} songs · Playlist" else if (library.scanning) "Scanning…" else if (library.root == null) "Connect your music" else "${library.songs.count { it.available }} MP3s", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     if (page == "Library") {
                         if (library.root != null) IconButton(onClick = { repository.rescan() }, enabled = !library.scanning && !library.loading) { RadioIcon(Symbol.Refresh, "Rescan library") }
@@ -153,7 +159,16 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
                     if (page == "Now playing" && !showQueue) IconButton(onClick = { minimal = !minimal; prefs.edit().putBoolean("minimal", minimal).apply() }) {
                         RadioIcon(if (minimal) Symbol.Expand else Symbol.Minimize, if (minimal) "Full controls" else "Minimal mode")
                     }
-                    if (page == "Now playing" && song != null) IconButton(onClick = { showSleep = true }) { RadioIcon(Symbol.Clock, "Sleep timer") }
+                    if (page == "Now playing" && song != null) Box {
+                        IconButton(onClick = { playerMenu = true }, modifier=Modifier.testTag("player-options")) { RadioIcon(Symbol.More, "Player options") }
+                        DropdownMenu(playerMenu,{playerMenu=false}) {
+                            DropdownMenuItem(text={Text("Replay")},onClick={playerMenu=false;playback.replay()},modifier=Modifier.testTag("replay-song"))
+                            DropdownMenuItem(text={Text("Skip reason")},onClick={playerMenu=false;showSkip=true})
+                            DropdownMenuItem(text={Text("Sleep timer")},onClick={playerMenu=false;showSleep=true})
+                            if(!audio.radioActive)DropdownMenuItem(text={Text(if(disliked)"Remove dislike" else "Dislike")},onClick={playerMenu=false;song?.let{repository.journal.setDisliked(it,!disliked)}},enabled=journal.feedbackLoaded && journal.pendingWrites==0,modifier=Modifier.testTag("dislike-song"))
+                            if(audio.radioActive)DropdownMenuItem(text={Text("Stop Radio after queue")},onClick={playerMenu=false;playback.stopRadio()})
+                        }
+                    }
                 }
             },
             bottomBar = {
@@ -182,6 +197,7 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
                     choose = { chooseFolder() }, rescan = { repository.rescan() }, cancel = { repository.cancelScan() }, modifier = Modifier.padding(insets), onSongAction = ::songAction,
                     playlistContent = { PlaylistBrowser(playlists, repository.playlists, library.songs, !library.accessLost, playlistId, { playlistId = it },
                         onPlay = { item, context, source -> playSong(item, context, source); navigate("Now playing") }, onSongAction = ::songAction) })
+                "Radio" -> RadioContent(radio,repository.radio,audio,playback,library,onLibrary={navigate("Library")},onPlayer={navigate("Now playing")},modifier=Modifier.padding(insets))
                 "Search" -> Column(Modifier.padding(insets).imePadding()) {
                     OutlinedTextField(query, onValueChange = { query = it }, placeholder = { Text("Search songs and filenames") }, singleLine = true, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp).testTag("search-input"))
                     val results = remember(songs, query) { songs.filter { query.isNotBlank() && (it.title + " " + it.fileName + " " + it.folderPath).contains(query, ignoreCase = true) } }
@@ -208,19 +224,29 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
                                 Spacer(Modifier.height(24.dp))
                                 Text(song.title, style = MaterialTheme.typography.headlineSmall, modifier = Modifier.fillMaxWidth())
                                 Text(songSubtitle(song), color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.fillMaxWidth().padding(top = 4.dp))
-                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    FilterChip(liked, onClick = { liked = !liked }, label = { Text("Like") }, leadingIcon = { RadioIcon(Symbol.Heart) })
-                                    FilterChip(locked, onClick = { locked = !locked }, label = { Text("Vibe lock") }, leadingIcon = { RadioIcon(Symbol.Lock) })
+                                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    FilterChip(liked, onClick = { repository.journal.setFavorite(song, !liked) }, enabled = journal.feedbackLoaded && journal.pendingWrites == 0,
+                                        modifier = Modifier.testTag("favorite-song"), label = { Text(if (liked) "Liked" else "Like", fontWeight = if (liked) FontWeight.Bold else FontWeight.Normal) },
+                                        colors = FilterChipDefaults.filterChipColors(selectedContainerColor = MaterialTheme.colorScheme.primary, selectedLabelColor = MaterialTheme.colorScheme.onPrimary, selectedLeadingIconColor = MaterialTheme.colorScheme.onPrimary),
+                                        leadingIcon = { RadioIcon(Symbol.Heart) })
+                                    if(audio.radioActive)FilterChip(disliked, onClick = { repository.journal.setDisliked(song, !disliked) }, enabled = journal.feedbackLoaded && journal.pendingWrites == 0,
+                                        modifier = Modifier.testTag("dislike-song"), label = { Text(if (disliked) "Disliked" else "Dislike", fontWeight = if (disliked) FontWeight.Bold else FontWeight.Normal) },
+                                        colors = FilterChipDefaults.filterChipColors(selectedContainerColor = MaterialTheme.colorScheme.error, selectedLabelColor = MaterialTheme.colorScheme.onError))
+                                    if(audio.radioActive)FilterChip(locked, onClick = { if(locked)repository.radio.clearVibe() else repository.radio.lockVibe() }, enabled=locked || radio.vibeAvailable,label = { Text(if(locked)"Vibe locked" else "Vibe lock") }, leadingIcon = { RadioIcon(Symbol.Lock) },modifier=Modifier.testTag("vibe-lock"))
                                 }
                                 if (!minimal) {
-                                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                                        TextButton(onClick = { message("Dislikes will affect recommendations in the radio phase.") }) { Text("Dislike") }
-                                        TextButton(onClick = { showSkip = true }) { Text("Skip reason") }
-                                        TextButton(onClick = { showSleep = true }) { Text("Sleep") }
-                                    }
+                                    if(audio.radioActive){Text("${radio.mood.replaceFirstChar{it.uppercase()}} · ${if(radio.vibeAvailable)"For your taste" else "Local music"}",Modifier.padding(top=8.dp),style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                                        if(locked)Text("${radio.vibeSongsLeft} songs left · up to 30 min",style=MaterialTheme.typography.bodySmall)
+                                        else if(!radio.vibeAvailable)Text("Vibe lock needs a matched song with recommendation data.",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)}
                                     HorizontalDivider(Modifier.padding(top = 8.dp))
                                     Text(audio.status + " · Local file\n" + song.folderPath.ifEmpty { library.root?.name ?: "Music" }, Modifier.fillMaxWidth().padding(vertical = 16.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
+                            }
+                        }
+                        journal.error?.let { failure ->
+                            Row(Modifier.fillMaxWidth().padding(horizontal = 24.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Text(failure, Modifier.weight(1f).testTag("journal-error"), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                                TextButton(onClick = { repository.journal.retry() }, modifier = Modifier.testTag("retry-journal")) { Text("Retry") }
                             }
                         }
                         if (audio.error != null) Text(audio.error!!, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp).testTag("playback-error"))
@@ -229,6 +255,10 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
                             onScrubFinished = { scrubMs?.let { playback.seek(it) }; scrubMs = null },
                             canRead = !library.accessLost && song.available, queueVisible = showQueue,
                             onQueueToggle = { showQueue = !showQueue }, modifier = Modifier.padding(horizontal = 24.dp), compact = compact)
+                        Row(Modifier.fillMaxWidth().padding(horizontal=24.dp),horizontalArrangement=Arrangement.SpaceEvenly,verticalAlignment=Alignment.CenterVertically){
+                            if(audio.radioActive)TextButton(onClick={navigate("Radio")},modifier=Modifier.testTag("tune-radio-player")){Text("Tune Radio")}
+                            else {TextButton(onClick={playback.setRepeat(when(audio.repeat){RepeatMode.OFF->RepeatMode.ALL;RepeatMode.ALL->RepeatMode.ONE;RepeatMode.ONE->RepeatMode.OFF})},modifier=Modifier.testTag("player-repeat")){Text("Repeat · ${audio.repeat.name.lowercase()}")};TextButton(onClick={showSleep=true},modifier=Modifier.semantics{contentDescription="Sleep timer"}){Text("Sleep")}}
+                        }
                     }
                 }
                 "Server" -> Column(Modifier.padding(insets).consumeWindowInsets(insets).imePadding().fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).testTag("server-scroll")) {
@@ -283,9 +313,9 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
             if (showSkip) AlertDialog(
                 onDismissRequest = { showSkip = false }, title = { Text("Skip reason") },
                 text = { Column {
-                    Text("This skips the song. Saving feedback arrives with radio recommendations.", style = MaterialTheme.typography.bodySmall)
+                    Text("This skips the song and helps tune future recommendations on this phone.", style = MaterialTheme.typography.bodySmall)
                     listOf("Too intense", "Too slow", "Too similar", "Wrong mood", "Just skip").forEach { reason ->
-                        TextButton(onClick = { showSkip = false; playback.next() }, enabled = audio.canNext) { Text(reason) }
+                        TextButton(onClick = { showSkip = false; playback.next(when(reason) { "Too intense" -> "too_intense"; "Too slow" -> "too_slow"; "Too similar" -> "too_samey"; "Wrong mood" -> "wrong_mood"; else -> "just_skip" }) }, enabled = audio.canNext) { Text(reason) }
                     }
                 } }, confirmButton = { TextButton(onClick = { showSkip = false }) { Text("Close") } }
             )

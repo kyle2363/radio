@@ -67,6 +67,7 @@ class MatchingRepository internal constructor(private val context:Context,privat
   return if(hash?.matches(Regex("[a-fA-F0-9]{64}"))==true) "sha256:"+hash.lowercase() else "payload:"+catalogSha256(row.payload.toByteArray())
  }
  private suspend fun refresh(readBytes:Boolean, localIds:Set<String>?=null) {
+  val journalGeneration=JournalIdentityProvider.invalidateMappings()
   val previousResults=mutable.value.results
   mutable.value=mutable.value.copy(busy=mutable.value.busy || readBytes,error=null)
 
@@ -120,6 +121,14 @@ class MatchingRepository internal constructor(private val context:Context,privat
   anchors=if(partial) (anchors-localIds!!)+currentAnchors else currentAnchors
   val merged=if(partial) {val updates=results.associateBy{it.localId};previousResults.map{updates[it.localId] ?: it}} else results
   mutable.value=MatchingState(loaded=true,busy=job!=null,results=merged,progress=if(readBytes) "Matched ${results.count{it.status=="confirmed" || it.status=="high_confidence"}} of ${local.size} local songs. ${local.size-currentAnchors.size} files could not be read." else "")
+  JournalIdentityProvider.publishMappings(journalGeneration,merged.mapNotNull { result ->
+   val song=allLocal.firstOrNull{it.id==result.localId}
+   val anchor=anchors[result.localId]
+   val target=result.songId
+   if(song==null || anchor==null || target==null || result.status !in setOf("confirmed","high_confidence")) null
+   else JournalIdentityProvider.Entry(song,catalog.serverId,catalog.catalogId,catalog.revision,target,
+    "${result.status}:${catalog.manifestSha256}:${anchor.sha256}")
+  })
  }
  suspend fun confirm(localId:String,songId:String)=decide(listOf(localId to songId),"confirm")
  suspend fun reject(localId:String,songId:String)=decide(listOf(localId to songId),"reject")
@@ -127,6 +136,7 @@ class MatchingRepository internal constructor(private val context:Context,privat
  suspend fun batchConfirm(selections:List<Pair<String,String>>)=decide(selections,"confirm")
  private suspend fun decide(selections:List<Pair<String,String>>,action:String?)=withContext(Dispatchers.IO){mutex.withLock {
   if(selections.isEmpty()) return@withLock
+  JournalIdentityProvider.invalidateMappings()
   val chosen=selections.distinct()
   if(chosen.distinctBy{it.first}.size!=chosen.size){mutable.value=mutable.value.copy(error="Choose one recording per local song.");return@withLock}
   job=currentCoroutineContext()[Job]

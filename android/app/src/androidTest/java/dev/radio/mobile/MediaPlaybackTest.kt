@@ -7,6 +7,7 @@ import androidx.test.core.app.ActivityScenario
 import androidx.test.platform.app.InstrumentationRegistry
 import dev.radio.mobile.data.LocalSong
 import dev.radio.mobile.playback.LocalPlaybackController
+import dev.radio.mobile.playback.RepeatMode
 import org.junit.*
 import org.junit.Assert.*
 
@@ -16,6 +17,9 @@ class MediaPlaybackTest {
     private lateinit var scenario: ActivityScenario<MainActivity>
     private lateinit var controller: LocalPlaybackController
     private val starts = mutableListOf<Pair<String, String>>()
+    private val outcomes = mutableListOf<Triple<String, String, Long>>()
+    private val outcomeDurations = mutableMapOf<String, Long?>()
+    private val outcomeReasons = mutableMapOf<String, String>()
     private fun main(block: () -> Unit) = instrumentation.runOnMainSync(block)
     private fun song(id: String, duration: Long = 8000) = LocalSong(id, FixtureDocumentsProvider.tree().toString(), "root",
         DocumentsContract.buildDocumentUriUsingTree(FixtureDocumentsProvider.tree(), id).toString(), "$id.mp3", "", 1, 1, 1, duration)
@@ -34,7 +38,11 @@ class MediaPlaybackTest {
         context.contentResolver.call(control, "grant", null, null)
         context.contentResolver.takePersistableUriPermission(FixtureDocumentsProvider.tree(), Intent.FLAG_GRANT_READ_URI_PERMISSION)
         scenario = ActivityScenario.launch(MainActivity::class.java)
-        main { controller = LocalPlaybackController(context) { track, attempt, _ -> starts += track.id to attempt } }
+        main { controller = LocalPlaybackController(context, onAttemptFinished = { _, attempt, kind, listened, duration, reason ->
+            outcomes += Triple(attempt, kind, listened)
+            outcomeDurations[attempt] = duration
+            outcomeReasons[attempt] = reason
+        }) { track, attempt, _ -> starts += track.id to attempt } }
     }
     @After fun cleanup() {
         main { controller.close() }; scenario.close()
@@ -127,6 +135,52 @@ class MediaPlaybackTest {
         main { assertFalse(controller.state.value.isPlaying); assertTrue(starts.isEmpty()); controller.next() }
         await("Next failed to recover") { controller.state.value.currentId == "long1" && controller.state.value.isPlaying }
         main { assertEquals(listOf("long1"), starts.map { it.first }); assertNull(controller.state.value.error) }
+    }
+    @Test fun repeatOneAndSingleItemRepeatAllCreateNewAttemptsAtNaturalBoundaries() {
+        for (mode in listOf(RepeatMode.ONE, RepeatMode.ALL)) {
+            var before = 0
+            main { before = starts.size; controller.setRepeat(mode); controller.playFrom(listOf(song("short1", 600)), "short1", "Repeat") }
+            await("Repeated cycle did not create a fresh audible attempt") { starts.size >= before + 3 }
+            main {
+                controller.pause()
+                assertEquals(starts.size, starts.map { it.second }.distinct().size)
+                assertTrue(outcomes.count { it.second == "song_completed" } >= 2)
+                assertEquals(outcomes.size, outcomes.map { it.first }.distinct().size)
+            }
+        }
+    }
+    @Test fun seekToEndDoesNotInventListenedTimeAndExplicitNextIsSingleSkip() {
+        main { controller.playFrom(listOf(song("long1").copy(durationMs = null), song("long2")), "long1", "Outcomes") }
+        await("First song did not start") { starts.size == 1 && controller.state.value.positionMs > 100 }
+        main { controller.seek(controller.state.value.durationMs!! - 100) }
+        await("Natural boundary did not complete") { starts.size == 2 && outcomes.isNotEmpty() }
+        main {
+            assertEquals("song_completed", outcomes.first().second)
+            assertTrue("Seek distance must not count as listening", outcomes.first().third < 2000)
+            assertTrue("Media3 duration must survive missing metadata", outcomeDurations[outcomes.first().first]!! > 2000)
+            controller.playFrom(listOf(song("long1")), "long1", "Replacement")
+        }
+        await("Replacement did not start") { starts.size == 3 }
+        main { assertEquals(1, outcomes.count { it.second == "song_skipped" }); assertEquals(outcomes.size, outcomes.map { it.first }.distinct().size) }
+    }
+    @Test fun previousAfterNaturalEndRecordsAnotherActualStart() {
+        main { controller.playFrom(listOf(song("short1", 600)), "short1", "Ended seek") }
+        await("Short track did not end") { controller.state.value.ended && starts.size == 1 }
+        main { controller.previous(); if (!controller.state.value.playWhenReady) controller.toggle() }
+        await("Previous after end did not create another attempt") { starts.size == 2 }
+        main { assertNotEquals(starts[0].second, starts[1].second) }
+    }
+    @Test fun chosenSkipReasonFinishesTheDisplacedAttemptOnlyOnce() {
+        main { controller.playFrom(listOf(song("long1"), song("long2")), "long1", "Skip feedback") }
+        await("First song did not start") { starts.size == 1 && controller.state.value.isPlaying }
+        var attempt = ""
+        main { attempt = starts.single().second; controller.next("wrong_mood") }
+        await("Next song did not start") { starts.size == 2 && controller.state.value.currentId == "long2" }
+        main {
+            assertEquals(1, outcomes.count { it.first == attempt })
+            assertEquals("song_skipped", outcomes.single { it.first == attempt }.second)
+            assertEquals("wrong_mood", outcomeReasons[attempt])
+        }
     }
     @Test fun queueEditsPreserveAudioPositionAndManualShuffleOrder() {
         val songs = List(5) { song("long1").copy(id = "edit$it") }

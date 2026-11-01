@@ -29,6 +29,8 @@ class LocalPlaybackController(
     context: Context,
     private val onCheckpoint: (PlaybackState) -> Unit = {},
     private val onQueueCleared: () -> Unit = {},
+    private val onAttemptFinished: (String, String, String, Long, Long?, String) -> Unit = { _, _, _, _, _, _ -> },
+    private val onExplicitReplay: (LocalSong, String) -> Unit = { _, _ -> },
     private val onAudibleStart: (LocalSong, String, Long) -> Unit = { _, _, _ -> }
 ) : PlaybackController {
     internal val normalizationProcessor = NormalizationAudioProcessor()
@@ -51,11 +53,18 @@ class LocalPlaybackController(
     private var cachedShuffle = false
     private var cachedOrder = emptyList<String>()
     private var source = ""
+    private var radioActive = false
+    private var queueRevision = 0L
+    internal var onRadioStart: () -> Unit = {}
+    override fun startRadio() = onRadioStart()
+    override fun stopRadio() { radioActive=false;queueRevision++;publish(checkpoint=true) }
     private var error: String? = null
     private var accessLost = false
     private var attemptSong: String? = null
     private var attemptId = ""
     private var started = false
+    private var listeningAttempt: ListeningAttempt? = null
+    private var attemptDurationMs: Long? = null
     private var ticker: Job? = null
     private var closed = false
     private var lastCheckpointAt = 0L
@@ -78,21 +87,31 @@ class LocalPlaybackController(
         override fun seekToPreviousMediaItem() = previous()
         override fun setShuffleModeEnabled(shuffleModeEnabled: Boolean) = shuffle(shuffleModeEnabled)
         override fun setRepeatMode(repeatMode: Int) = setRepeat(repeatMode.toRepeatMode())
-        override fun stop() { player.pause(); player.stop(); publish(checkpoint = true) }
+        override fun stop() { queueRevision++;finishAttempt("attempt_stopped", "system_stop"); player.pause(); player.stop(); publish(checkpoint = true) }
     }
 
     init {
         player.addListener(object : Player.Listener {
+            override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
+                if (reason == Player.DISCONTINUITY_REASON_AUTO_TRANSITION) {
+                    finishAttempt("song_completed", "natural_end")
+                    newPosition.mediaItem?.mediaId?.let { beginAttempt(it) }
+                }
+            }
             override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
-                if (!playWhenReady && sleepEndOfTrack && reason == Player.PLAY_WHEN_READY_CHANGE_REASON_END_OF_MEDIA_ITEM) cancelSleepTimer()
+                if (!playWhenReady && reason == Player.PLAY_WHEN_READY_CHANGE_REASON_END_OF_MEDIA_ITEM) { finishAttempt("song_completed", "natural_end"); if (sleepEndOfTrack) cancelSleepTimer() }
             }
             override fun onEvents(player: Player, events: Player.Events) {
                 val id = player.currentMediaItem?.mediaId
                 if (id != null && id != attemptSong) beginAttempt(id)
+                if (id != null && player.isPlaying && listeningAttempt?.isFinished == true) beginAttempt(id)
+                listeningAttempt?.observe(android.os.SystemClock.elapsedRealtime(), player.isPlaying)
+                if (player.playbackState == Player.STATE_ENDED) finishAttempt("song_completed", "natural_end")
                 // Preparing/prefetching, buffering, and pause/resume cannot manufacture starts.
                 if (player.isPlaying && player.playbackState == Player.STATE_READY && !started) {
                     queueById[id]?.let { song ->
                         started = true
+                        attemptDurationMs = player.duration.takeIf { it != C.TIME_UNSET && it > 0 } ?: song.durationMs
                         onAudibleStart(song, attemptId, player.currentPosition.coerceAtLeast(0))
                     }
                 }
@@ -104,6 +123,7 @@ class LocalPlaybackController(
                 } else if (!player.isPlaying) { ticker?.cancel(); ticker = null }
             }
             override fun onPlayerError(exception: PlaybackException) {
+                finishAttempt("attempt_stopped", "decoder_error")
                 error = "Couldn't play this file. It may be missing, unreadable or unsupported. Try Next, or check the Music folder and rescan."
                 player.pause()
                 publish(checkpoint = true)
@@ -111,7 +131,30 @@ class LocalPlaybackController(
         })
     }
 
-    private fun beginAttempt(id: String) { attemptSong = id; attemptId = UUID.randomUUID().toString(); started = false }
+    private fun finishAttempt(kind: String, reason: String) {
+        val attempt = listeningAttempt ?: return
+        val listened = attempt.finish(android.os.SystemClock.elapsedRealtime()) ?: return
+        val duration = attemptDurationMs ?: queueById[attempt.songId]?.durationMs
+        onAttemptFinished(attempt.songId, attempt.id, kind, listened, duration, reason)
+    }
+    private fun beginAttempt(id: String) {
+        val active = player.playWhenReady && started
+        finishAttempt(if (active) "song_skipped" else "attempt_stopped", if (active) "explicit_navigation" else "paused_navigation")
+        attemptSong = id; attemptId = UUID.randomUUID().toString(); started = false
+        attemptDurationMs = null
+        listeningAttempt = ListeningAttempt(attemptId, id)
+    }
+    override fun replay() {
+        queueRevision++
+        val song = queueById[player.currentMediaItem?.mediaId] ?: return
+        if (!canReadCurrent()) return
+        finishAttempt("attempt_stopped", "explicit_replay")
+        beginAttempt(song.id)
+        onExplicitReplay(song, attemptId)
+        player.seekTo(0)
+        if (player.playbackState == Player.STATE_IDLE) player.prepare()
+        player.play(); publish(checkpoint = true)
+    }
     private fun canReadCurrent() = !accessLost && queueById[player.currentMediaItem?.mediaId]?.available == true
     private fun validUri(song: LocalSong) = Uri.parse(song.uri).scheme == "content"
     private fun publish(checkpoint: Boolean = false) {
@@ -132,7 +175,7 @@ class LocalPlaybackController(
         val next = if (id != null) adjacent(true) else C.INDEX_UNSET
         val duration = player.duration.takeIf { it != C.TIME_UNSET && it > 0 } ?: current?.durationMs
         mutable.value = PlaybackState(
-            queue = queue, playOrder = cachedOrder, source = source, currentId = id,
+            queue = queue, playOrder = cachedOrder, source = source, currentId = id, radioActive = radioActive, queueRevision = queueRevision,
             positionMs = player.currentPosition.coerceAtLeast(0),
             durationMs = duration,
             isPlaying = player.isPlaying, playWhenReady = player.playWhenReady && player.playbackState != Player.STATE_ENDED,
@@ -170,9 +213,11 @@ class LocalPlaybackController(
     internal fun updateNormalization(profile: NormalizationProfile) { normalizationProcessor.profile = profile; publish() }
 
     override fun playFrom(items: List<LocalSong>, selectedId: String, source: String) {
+        radioActive=false;queueRevision++
         val snapshot = playbackQueue(items, selectedId).filter(::validUri)
         val index = snapshot.indexOfFirst { it.id == selectedId }
         if (accessLost || index < 0) { player.pause(); error = "This file is unavailable. Check folder access and rescan."; publish(); return }
+        finishAttempt(if (player.playWhenReady && started) "song_skipped" else "attempt_stopped", "queue_replacement")
         queue = snapshot; queueById = snapshot.associateBy { it.id }; this.source = source; error = null; beginAttempt(selectedId)
         player.setMediaItems(snapshot.map { song ->
             MediaItem.Builder().setMediaId(song.id).setUri(song.uri)
@@ -188,7 +233,9 @@ class LocalPlaybackController(
         resume()
     }
     private fun resume() {
+        queueRevision++
         if (!canReadCurrent()) { error = "This file is unavailable. Check folder access and rescan."; publish(); return }
+        if (listeningAttempt?.isFinished == true && player.playbackState != Player.STATE_ENDED) beginAttempt(player.currentMediaItem!!.mediaId)
         if (player.playbackState == Player.STATE_ENDED) { beginAttempt(player.currentMediaItem!!.mediaId); player.seekTo(0) }
         error = null
         if (player.playbackState == Player.STATE_IDLE) player.prepare()
@@ -196,9 +243,10 @@ class LocalPlaybackController(
     }
     private fun metadata(song: LocalSong) = MediaMetadata.Builder().setTitle(song.title).setArtist(song.artist)
         .setAlbumTitle(song.folderPath.ifEmpty { source }).build()
-    override fun pause() { if (!closed) { player.pause(); publish(checkpoint = true) } }
+    override fun pause() { if (!closed) { queueRevision++;player.pause(); publish(checkpoint = true) } }
     override fun seek(positionMs: Long) {
         if (!state.value.seekable) return
+        queueRevision++
         player.seekTo(positionMs.coerceIn(0, state.value.durationMs ?: Long.MAX_VALUE)); publish(checkpoint = true)
     }
     private fun adjacent(forward: Boolean): Int {
@@ -217,6 +265,7 @@ class LocalPlaybackController(
     }
     private fun move(index: Int) {
         if (accessLost || index == C.INDEX_UNSET) return
+        queueRevision++
         val continuePlaying = player.playWhenReady || error != null
         error = null
         beginAttempt(player.getMediaItemAt(index).mediaId)
@@ -226,6 +275,13 @@ class LocalPlaybackController(
         publish(checkpoint = true)
     }
     override fun next() { if (queue.isNotEmpty()) move(adjacent(true)) }
+    override fun next(reason: String) {
+        if (accessLost || adjacent(true) == C.INDEX_UNSET) return
+        if (started && player.playWhenReady) finishAttempt("song_skipped", reason.takeIf {
+            it in setOf("too_intense", "too_slow", "too_samey", "wrong_mood", "just_skip")
+        } ?: "just_skip")
+        next()
+    }
     override fun previous() {
         if (!canReadCurrent()) return
         val previous = adjacent(false)
@@ -234,6 +290,7 @@ class LocalPlaybackController(
     override fun jumpTo(songId: String) {
         val index = (0 until player.mediaItemCount).firstOrNull { player.getMediaItemAt(it).mediaId == songId } ?: return
         if (accessLost || queue.none { it.id == songId && it.available }) return
+        queueRevision++
         error = null; beginAttempt(songId); player.seekTo(index, 0)
         if (player.playbackState == Player.STATE_IDLE) player.prepare()
         player.play(); publish(checkpoint = true)
@@ -242,6 +299,7 @@ class LocalPlaybackController(
         if (index !in 0 until player.mediaItemCount || accessLost) return
         val id = player.getMediaItemAt(index).mediaId
         if (queueById[id]?.available != true) return
+        queueRevision++
         if (id != player.currentMediaItem?.mediaId) beginAttempt(id)
         error = null
         player.seekTo(index, positionMs.coerceAtLeast(0))
@@ -249,11 +307,13 @@ class LocalPlaybackController(
         publish(checkpoint = true)
     }
     override fun shuffle(enabled: Boolean) {
+        queueRevision++
         if (enabled && !player.shuffleModeEnabled) reshuffle()
         player.shuffleModeEnabled = enabled
         publish(checkpoint = true)
     }
     override fun setRepeat(mode: RepeatMode) {
+        queueRevision++
         player.repeatMode = when (mode) {
             RepeatMode.OFF -> Player.REPEAT_MODE_OFF
             RepeatMode.ALL -> Player.REPEAT_MODE_ALL
@@ -284,6 +344,35 @@ class LocalPlaybackController(
     }
 
     private fun mediaItem(song: LocalSong) = MediaItem.Builder().setMediaId(song.id).setUri(song.uri).setMediaMetadata(metadata(song)).build()
+    internal fun beginRadio(items: List<LocalSong>) {
+        val first=items.firstOrNull() ?: return
+        playFrom(items.take(5),first.id,"Radio")
+        radioActive=true
+        publish(checkpoint=true)
+    }
+    /** Main-thread atomic append. Retire only played Radio prefix; never seek or prepare. */
+    internal fun appendRadio(expected:PlaybackState,items:List<LocalSong>):Boolean {
+        val actual=state.value
+        if(!radioActive || accessLost || actual.queueRevision!=expected.queueRevision || actual.currentId!=expected.currentId || actual.playOrder!=expected.playOrder || actual.sleepTimer.active)return false
+        val current=actual.playOrder.indexOf(actual.currentId)
+        if(current<0)return false
+        val upcoming=actual.playOrder.drop(current+1).toSet()
+        val incoming=items.filter{it.available && validUri(it) && it.id!=actual.currentId && it.id !in upcoming}.distinctBy{it.id}.take((5-upcoming.size).coerceAtLeast(0))
+        if(incoming.isEmpty())return false
+        // Keep up to five played entries for Previous. Exclude any past identity being
+        // appended again so Media3's local identity remains unique in the timeline.
+        val retired=(actual.playOrder.take((current-5).coerceAtLeast(0))+incoming.map{it.id}).toSet()-upcoming-setOfNotNull(actual.currentId)
+        for(index in player.mediaItemCount-1 downTo 0)if(player.getMediaItemAt(index).mediaId in retired)player.removeMediaItem(index)
+        queue=queue.filterNot{it.id in retired};queueById=queue.associateBy{it.id}
+        val additions=incoming.filter{it.id !in queueById}
+        if(queue.size+additions.size>16)return false
+        val before=actual.playOrder.filterNot{it in retired}
+        queue=queue+additions;queueById=queue.associateBy{it.id}
+        player.addMediaItems(additions.map(::mediaItem))
+        if(player.shuffleModeEnabled)setVisibleOrder(before+additions.map{it.id})
+        queueRevision++;publish(checkpoint=true)
+        return additions.isNotEmpty()
+    }
     private fun nativeIndex(id: String) = (0 until player.mediaItemCount).firstOrNull { player.getMediaItemAt(it).mediaId == id }
     private fun setVisibleOrder(order: List<String>) {
         if (player.shuffleModeEnabled) {
@@ -295,6 +384,7 @@ class LocalPlaybackController(
         if (accessLost) return
         val incoming = items.filter { it.available && validUri(it) }.distinctBy { it.id }
         if (incoming.isEmpty()) return
+        queueRevision++
         val before = state.value.playOrder
         val wasEmpty = player.mediaItemCount == 0
         if (wasEmpty) player.pause()
@@ -303,7 +393,7 @@ class LocalPlaybackController(
         queue = queue.map { incomingById[it.id] ?: it } + additions.filter { added -> queue.none { it.id == added.id } }
         queueById = queue.associateBy { it.id }
         if (additions.isNotEmpty()) player.addMediaItems(additions.map(::mediaItem))
-        source = "Custom queue"; error = null
+        source = if(radioActive)"Radio" else "Custom queue"; error = null
         val combined = (before + additions.map { it.id }).distinct()
         if (playNext && !wasEmpty) {
             val current = player.currentMediaItem?.mediaId
@@ -326,18 +416,21 @@ class LocalPlaybackController(
         val order = state.value.playOrder.toMutableList()
         val from = order.indexOf(songId)
         if (from < 0 || target !in order.indices || from == target) return
+        queueRevision++
         order.add(target, order.removeAt(from))
         if (player.shuffleModeEnabled) setVisibleOrder(order)
         else {
             player.moveMediaItem(nativeIndex(songId) ?: return, target)
             queue = order.mapNotNull(queueById::get); queueById = queue.associateBy { it.id }
         }
-        source = "Custom queue"
+        source = if(radioActive)"Radio" else "Custom queue"
         publish(checkpoint = true)
     }
     override fun removeFromQueue(songId: String) {
         val index = nativeIndex(songId) ?: return
+        queueRevision++
         val current = player.currentMediaItem?.mediaId == songId
+        if (current) finishAttempt(if (player.isPlaying) "song_skipped" else "attempt_stopped", "queue_removal")
         val oldOrder = state.value.playOrder
         val successor = oldOrder.drop(oldOrder.indexOf(songId) + 1).firstOrNull { queueById[it]?.available == true }
             ?: oldOrder.take(oldOrder.indexOf(songId)).lastOrNull { queueById[it]?.available == true }
@@ -350,16 +443,18 @@ class LocalPlaybackController(
             player.playWhenReady = continuePlaying
         }
         if (queue.isEmpty() || player.mediaItemCount == 0) {
+            radioActive=false
             queue = emptyList(); queueById = emptyMap()
             player.pause(); player.clearMediaItems(); cancelSleepTimer(); source = ""; error = null
             onQueueCleared()
-        } else { source = "Custom queue"; error = null }
+        } else { source = if(radioActive)"Radio" else "Custom queue"; error = null }
         publish(checkpoint = true)
     }
     override fun clearUpcoming() {
+        radioActive=false;queueRevision++
         val order = state.value.playOrder
         val current = order.indexOf(state.value.currentId)
-        if (current < 0 || current == order.lastIndex) return
+        if (current < 0 || current == order.lastIndex) {publish(checkpoint=true);return}
         val keep = order.take(current + 1).toSet()
         queue = queue.filter { it.id in keep }; queueById = queue.associateBy { it.id }
         var index = player.mediaItemCount - 1
@@ -374,6 +469,7 @@ class LocalPlaybackController(
         publish(checkpoint = true)
     }
     override fun setSleepTimer(durationMs: Long, fade: Boolean) {
+        queueRevision++
         cancelSleepTimer()
         sleepDeadline = SleepDeadline(android.os.SystemClock.elapsedRealtime() + durationMs.coerceIn(100L, 24 * 60 * 60 * 1000L), fade)
         sleepJob = scope.launch {
@@ -381,7 +477,8 @@ class LocalPlaybackController(
                 val deadline = sleepDeadline ?: break
                 val now = android.os.SystemClock.elapsedRealtime()
                 if (deadline.remaining(now) == 0L) {
-                    player.pause(); sleepDeadline = null; player.volume = 1f
+                    queueRevision++
+                    finishAttempt("attempt_stopped", "sleep_timer"); player.pause(); sleepDeadline = null; player.volume = 1f
                     publish(checkpoint = true); break
                 }
                 player.volume = deadline.gain(now)
@@ -392,12 +489,14 @@ class LocalPlaybackController(
         publish()
     }
     override fun sleepAtTrackEnd() {
+        queueRevision++
         cancelSleepTimer()
         if (player.currentMediaItem == null) return
         sleepEndOfTrack = true; player.pauseAtEndOfMediaItems = true
         publish()
     }
     override fun cancelSleepTimer() {
+        queueRevision++
         sleepJob?.cancel(); sleepJob = null; sleepDeadline = null; sleepEndOfTrack = false
         player.pauseAtEndOfMediaItems = false; player.volume = 1f
         publish()
@@ -412,9 +511,11 @@ class LocalPlaybackController(
         queue = updated
         queueById = updated.associateBy { it.id }
         if (!canReadCurrent()) {
+            finishAttempt("attempt_stopped", "access_lost")
             player.stop()
             error = "Folder access or the current file is unavailable. Choose the Music folder again or rescan."
         } else if (uriChanged) {
+            finishAttempt("attempt_stopped", "source_uri_changed")
             bookmark?.let { restorePaused(it, queue, accessLost = false) }
         } else {
             for (index in player.mediaItemCount - 1 downTo 0) {

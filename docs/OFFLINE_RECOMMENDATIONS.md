@@ -1,7 +1,7 @@
 # Offline recommendation reference v1
 
 `backend/portable/recommender.py` is a standalone deterministic Python/NumPy
-reference for a future Kotlin implementation. It imports no application config,
+reference for the Kotlin implementation in `android/.../recommendation/OfflineRecommender.kt`. It imports no application config,
 database, ChromaDB, LLM, VLC, browser audio or network client. Taste constellations
 are deliberately excluded; the desktop implementation retains them.
 
@@ -197,7 +197,11 @@ does not justify adding ANN infrastructure. The benchmark writes its detailed
 result in disposable `.test-runtime/` and prints it with `-s`; no production
 library/model/embedding was modified or required.
 
-## First Android implementation
+## Android checkpoint 2B implementation
+
+The native portable-v1 scorer and local Radio integration are implemented. JVM tests use the shared golden catalog/scores/picks (Float32 tolerance 2e-6) and 120 Python-generated slot-stage cases. Imported catalog/vector validation, conservative matching, durable actual-start feedback, bounded service-owned refill, local-only fallback and persisted tuning/Vibe lock now feed the existing Media3 player. Preview/tuning never replace a committed queue. Android has no recommendation network requirement and no profile sync yet. See [ANDROID_APP_PLAN.md](ANDROID_APP_PLAN.md) for current verification, limits and phone acceptance steps.
+
+The following remains guidance for later synchronization/performance work:
 
 Implement catalog validation and local matching before playback. Keep native URI
 availability separate from server identity. Port the documented pure functions
