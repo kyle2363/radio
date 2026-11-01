@@ -741,16 +741,16 @@ def ingest_progress():
 @app.post("/api/ingest/run")
 def ingest_run():
     """Start the ingest pipeline in a background thread."""
-    if pipeline.get_ingest_progress()["running"]:
-        return {"status": "already_running"}
-
     def _run():
         try:
             pipeline.run_ingest()
         except Exception as e:
             logger.error("Ingest failed: %s", e)
 
-    _catalog_ingest_activity.start(_run)
+    started = pipeline.start_job(lambda: _catalog_ingest_activity.track(_run)())
+    if not started:
+        progress = pipeline.get_ingest_progress()
+        return {"status": "already_running", "phase": progress.get("phase")}
     return {"status": "started"}
 
 
@@ -761,6 +761,7 @@ def ingest_run():
 PHASE_PREREQUISITES = {
     "understand": None,  # checks internally
     "raw": None,
+    "analyze": lambda: database.get_by_ingest_phase("raw"),
     "normalize": lambda: [
         row["id"] for row in database.get_connection().execute(
             "SELECT id FROM songs WHERE raw_rms IS NOT NULL"
@@ -768,8 +769,8 @@ PHASE_PREREQUISITES = {
     ],
     "describe": lambda: database.get_by_ingest_phase("analyzed"),
     "embed": lambda: database.get_by_ingest_phase("described"),
-    "audio_embed": lambda: database.get_by_ingest_phase("embedded"),
-    "cluster": lambda: database.get_by_ingest_phase("embedded"),
+    "audio_embed": lambda: database.get_by_ingest_phase("embedded") + database.get_by_ingest_phase("clustered"),
+    "cluster": lambda: database.get_by_ingest_phase("embedded") + database.get_by_ingest_phase("clustered"),
     "lyrics_timing": lambda: database.get_connection().execute(
         "SELECT id FROM songs WHERE lyrics IS NOT NULL AND lyrics != '' AND lyrics != 'lyrics not found' AND lyrics != 'TODO'"
     ).fetchall(),
@@ -825,7 +826,10 @@ def ingest_run_phase(phase_name: str):
         except Exception as e:
             logger.error("Phase %s failed: %s", phase_name, e)
 
-    _catalog_ingest_activity.start(_run)
+    started = pipeline.start_job(lambda: _catalog_ingest_activity.track(_run)())
+    if not started:
+        progress = pipeline.get_ingest_progress()
+        return {"status": "already_running", "current_phase": progress.get("phase")}
     return {"status": "started", "phase": phase_name, "ready": ready_count}
 
 
@@ -838,6 +842,7 @@ def ingest_phase_status():
 
 
 @app.post("/api/ingest/reprocess/{song_id}")
+@pipeline.exclusive_job
 def ingest_reprocess(song_id: int):
     """Reset a single song to raw phase for re-processing."""
     song = database.get_song(song_id)
@@ -854,21 +859,38 @@ def ingest_failures():
 
 
 @app.post("/api/ingest/retry-failures")
+@pipeline.exclusive_job
 def ingest_retry_failures():
     """Reset all failed songs to raw phase for re-processing."""
     failures = database.get_ingest_failures()
     count = 0
     for f in failures:
-        if f.get("ingest_phase") in ("raw", "analyzed", "described", "embedded"):
-            continue  # not actually failed, just has old error
-        database.set_ingest_phase(f["id"], "raw")
-        database.set_ingest_error(f["id"], "")
-        count += 1
+        phase = f.get("ingest_phase")
+        if phase in ("raw", "analyzed", "described", "embedded"):
+            # Keep the valid phase so the normal pipeline retries at the point
+            # that failed; clear only the error marker.
+            conn = database.get_connection()
+            try:
+                conn.execute("UPDATE songs SET ingest_error = '' WHERE id = ?", (f["id"],))
+                conn.commit()
+            finally:
+                conn.close()
+            count += 1
+        elif phase == "clustered" or (phase and phase.endswith("failed")):
+            database.set_ingest_phase(f["id"], "raw")
+            conn = database.get_connection()
+            try:
+                conn.execute("UPDATE songs SET ingest_error = '' WHERE id = ?", (f["id"],))
+                conn.commit()
+            finally:
+                conn.close()
+            count += 1
     return {"status": "retried", "count": count}
 
 
 @app.post("/api/embed/rebuild-audio")
 @_catalog_ingest_activity.track
+@pipeline.exclusive_job
 def rebuild_audio_embeddings():
     """Rebuild MuQ-MuLan audio embeddings for all songs.
 
@@ -898,7 +920,8 @@ def rebuild_audio_embeddings():
         return {"error": "No songs available for audio embedding"}
 
     print(f"Rebuilding audio embeddings for {len(song_ids)} songs...")
-    embedded_ids = embedder.embed_audio_songs(song_ids)
+    with pipeline.model_stage(None):
+        embedded_ids = embedder.embed_audio_songs(song_ids)
     print(f"Audio-embedded {len(embedded_ids)} songs")
 
     return {
@@ -910,6 +933,7 @@ def rebuild_audio_embeddings():
 
 @app.post("/api/ingest/reembed-all")
 @_catalog_ingest_activity.track
+@pipeline.exclusive_job
 def reembed_all():
     """Re-embed all songs with updated embedding text (folder, collection, neighboring folder).
 
@@ -927,24 +951,27 @@ def reembed_all():
     if not song_ids:
         return {"error": "No songs available for re-embedding"}
 
-    # Track progress
-    _ingest_progress = {"phase": "reembed", "running": True, "total": len(song_ids), "current": 0, "current_song": ""}
+    progress = pipeline._ingest_progress
+    pipeline._reset_progress()
+    progress.update({"phase": "reembed", "running": True, "total": len(song_ids), "processed": 0, "current_song": ""})
 
     success = 0
     failed = 0
-    for i, song_id in enumerate(song_ids):
-        song = database.get_song(song_id)
-        if not song:
-            failed += 1
-            continue
-        _ingest_progress["current"] = i + 1
-        _ingest_progress["current_song"] = f"{song.get('artist', '?')} - {song.get('title', '?')}"
-        if embedder.embed_song(song_id, song):
-            success += 1
-        else:
-            failed += 1
-
-    _ingest_progress["running"] = False
+    try:
+        with pipeline.model_stage("llama_embed"):
+            for i, song_id in enumerate(song_ids):
+                song = database.get_song(song_id)
+                progress["processed"] = i + 1
+                if not song:
+                    failed += 1
+                    continue
+                progress["current_song"] = f"{song.get('artist', '?')} - {song.get('title', '?')}"
+                if embedder.embed_song(song_id, song):
+                    success += 1
+                else:
+                    failed += 1
+    finally:
+        progress["running"] = False
 
     # Invalidate constellation cache so it rebuilds with new embeddings
     qm = _get_queue_manager()
@@ -961,6 +988,7 @@ def reembed_all():
 
 @app.post("/api/ingest/reprocess-single/{song_id}")
 @_catalog_ingest_activity.track
+@pipeline.exclusive_job
 def ingest_reprocess_single(song_id: int):
     """Re-analyze a single song's audio features and re-normalize the library."""
     song = database.get_song(song_id)
@@ -977,23 +1005,16 @@ def ingest_reprocess_single(song_id: int):
     result["gain_db"] = gain_db
     database.update_song(song_id, **result)
 
-    # Re-normalize the full library
-    conn = database.get_connection()
-    try:
-        rows = conn.execute(
-            "SELECT id, raw_rms, crest_factor, spectral_contrast, spectral_rolloff, spectral_flatness "
-            "FROM songs WHERE raw_rms IS NOT NULL"
-        ).fetchall()
-        all_raw = [dict(r) for r in rows]
-    finally:
-        conn.close()
+    updates = audio_module.normalize_current_songs(database.get_all_raw_features())
+    pipeline.apply_normalization_updates(updates)
+    normalized = database.get_song(song_id)
 
-    if all_raw:
-        updates = audio_module.normalize_all_songs(all_raw)
-        for upd in updates:
-            database.update_song(upd["id"], energy=upd["energy"], valence=upd["valence"])
-
-    return {"status": "reprocessed", "song_id": song_id, "energy": result.get("energy"), "valence": result.get("valence")}
+    return {
+        "status": "reprocessed",
+        "song_id": song_id,
+        "energy": normalized.get("energy") if normalized else result.get("energy"),
+        "valence": normalized.get("valence") if normalized else result.get("valence"),
+    }
 
 
 # ============================================================
@@ -4680,7 +4701,10 @@ def api_reprocess_energy(payload: ReprocessRequest):
         except Exception as e:
             logger.error("Reprocess energy failed: %s", e)
 
-    _catalog_ingest_activity.start(_run)
+    started = pipeline.start_job(lambda: _catalog_ingest_activity.track(_run)())
+    if not started:
+        progress = pipeline.get_ingest_progress()
+        return {"status": "already_running", "phase": progress.get("phase")}
     return {"status": "started", "reembed": payload.reembed, "recluster": payload.recluster}
 
 

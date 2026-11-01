@@ -7,6 +7,9 @@ Two-pass audio analysis:
 
 import json
 import os
+import threading
+from functools import wraps
+from contextlib import contextmanager
 from tqdm import tqdm
 
 from db import database
@@ -23,11 +26,106 @@ _ingest_progress = {
     "results": None,
 }
 
+_job_lock = threading.Lock()
+_job_owner = None
+
+
+def _finish_job():
+    global _job_owner
+    _ingest_progress["running"] = False
+    _job_owner = None
+    _job_lock.release()
+
+
+def run_job(function):
+    """Own admission independently of phase progress; allow nested phases."""
+    global _job_owner
+    if _job_owner == threading.get_ident():
+        return function()
+    if not _job_lock.acquire(blocking=False):
+        return {"status": "already_running"}
+    _job_owner = threading.get_ident()
+    _reset_progress()
+    try:
+        return function()
+    except Exception as exc:
+        _ingest_progress["results"] = {"error": str(exc)}
+        raise
+    finally:
+        _finish_job()
+
+
+def exclusive_job(function):
+    @wraps(function)
+    def wrapped(*args, **kwargs):
+        return run_job(lambda: function(*args, **kwargs))
+    return wrapped
+
+
+def start_job(function):
+    """Reserve synchronously, before the background worker can be queued."""
+    global _job_owner
+    if not _job_lock.acquire(blocking=False):
+        return False
+    _reset_progress()
+    def worker():
+        global _job_owner
+        _job_owner = threading.get_ident()
+        try:
+            function()
+        except Exception as exc:
+            _ingest_progress["results"] = {"error": str(exc)}
+        finally:
+            _finish_job()
+    try:
+        threading.Thread(target=worker, daemon=True).start()
+    except BaseException:
+        _finish_job()
+        raise
+    return True
+
+
+@contextmanager
+def model_stage(name):
+    """Use one managed model at a time; never eagerly restore all models."""
+    from engine.process_manager import get_process_manager
+    import sys
+    muq = sys.modules.get("llm.muq_engine")
+    if muq:
+        muq.unload_model()
+    pm = get_process_manager()
+    for other in ("llama_chat", "llama_embed", "acestep"):
+        proc = pm.get(other)
+        if other != name and proc and proc.is_running:
+            pm.stop(other)
+    try:
+        proc = pm.get(name) if name else None
+        if proc and not pm.start(name):
+            raise RuntimeError(f"Could not start {name}")
+        yield
+    finally:
+        muq = sys.modules.get("llm.muq_engine")
+        if muq:
+            muq.unload_model()
+        proc = pm.get(name) if name else None
+        if proc and proc.is_running:
+            pm.stop(name)
+
+
+def apply_normalization_updates(updates):
+    """Invalidate text vectors when normalized embedding inputs change."""
+    for update in updates:
+        song = database.get_song(update["id"])
+        changed = song and any(song.get(k) != update[k] for k in ("energy", "valence") if k in update)
+        database.update_song(update["id"], **{k: v for k, v in update.items() if k != "id"})
+        if changed and song["ingest_phase"] in ("embedded", "clustered"):
+            database.set_ingest_phase(update["id"], "described")
+
 
 def _reset_progress():
     global _ingest_progress
     _ingest_progress.clear()
-    _ingest_progress["running"] = False
+    _ingest_progress["running"] = _job_lock.locked()
     _ingest_progress["phase"] = None
     _ingest_progress["current_song"] = None
     _ingest_progress["total"] = 0
@@ -37,7 +135,7 @@ def _reset_progress():
 
 def get_ingest_progress():
     """Return current ingest progress for API polling."""
-    return dict(_ingest_progress)
+    return {**_ingest_progress, "running": _job_lock.locked()}
 
 
 # ──────────────────────────────────────────────────────────
@@ -144,8 +242,7 @@ def run_phase_normalize():
     conn = database.get_connection()
     try:
         rows = conn.execute(
-            "SELECT id, raw_rms, crest_factor, spectral_contrast, spectral_rolloff, spectral_flatness "
-            "FROM songs WHERE raw_rms IS NOT NULL"
+            "SELECT * FROM songs WHERE raw_rms IS NOT NULL"
         ).fetchall()
         songs = [dict(r) for r in rows]
     finally:
@@ -158,10 +255,9 @@ def run_phase_normalize():
 
     _ingest_progress["total"] = len(songs)
     _ingest_progress["processed"] = len(songs)
-    updates = audio.normalize_all_songs(songs)
+    updates = audio.normalize_current_songs(songs)
 
-    for upd in updates:
-        database.update_song(upd["id"], energy=upd["energy"], valence=upd["valence"])
+    apply_normalization_updates(updates)
 
     print(f"  Normalized {len(updates)} songs")
     _ingest_progress["running"] = False
@@ -181,6 +277,10 @@ def run_phase_describe():
     print(f"  Loaded {len(ace_metadata)} acestep metadata entries")
 
     unprocessed = database.get_by_ingest_phase("analyzed")
+    # Legacy filename-only JSON cannot identify two distinct recordings.
+    from collections import Counter
+    stems = Counter(metadata.normalize_filename(os.path.splitext(os.path.basename(s["filepath"]))[0])
+                    for s in database.get_all_songs_filepaths())
     described_ids = []
     total_to_tag = len(unprocessed)
     _ingest_progress["total"] = total_to_tag
@@ -191,6 +291,9 @@ def run_phase_describe():
         try:
             # Load acestep metadata for this song
             ace_metadata_for_song = metadata.get_metadata_for_mp3(song["filepath"], ace_metadata)
+            legacy_stem = metadata.normalize_filename(os.path.splitext(os.path.basename(song["filepath"]))[0])
+            if stems[legacy_stem] > 1 and metadata.metadata_key(song["filepath"]) not in ace_metadata:
+                raise ValueError("Ambiguous legacy metadata; run Understand for path-specific metadata")
             caption = ace_metadata_for_song.get("caption", "") if ace_metadata_for_song else ""
 
             # Always write acestep metadata to DB (independent of LLM tag success)
@@ -214,7 +317,11 @@ def run_phase_describe():
 
             # Generate LLM tags from caption AND lyrics for richer analysis
             lyrics_for_tags = ace_metadata_for_song.get("lyrics", "") if ace_metadata_for_song else ""
+            if db_tags:
+                database.update_song(song["id"], **db_tags)
             tags = llm_tags.generate_tags(caption, lyrics=lyrics_for_tags)
+            if not tags:
+                raise ValueError("Tag generation returned no valid tags")
             if tags:
                 db_tags["emotional_tags"] = json.dumps(tags["emotional_tags"])
                 db_tags["genre_tags"] = json.dumps(tags["genre_tags"])
@@ -297,7 +404,7 @@ def run_phase_embed():
 
     _ingest_progress["running"] = False
     print("Phase 4 complete!")
-    return {"embedded": _ingest_progress["total"]}
+    return {"embedded": len(embedded_ids) if described_ids else 0}
 
 
 def run_phase_embed_audio():
@@ -438,11 +545,15 @@ def _find_unprocessed_mp3s():
     ace_index = metadata.build_json_index(config.ACESTEP_JSON_DIR)
     all_files = scanner.find_audio_files(config.MUSIC_DIR)
     dedup = scanner.deduplicate(all_files)
+    from collections import Counter
+    counts = Counter(metadata.normalize_filename(os.path.splitext(os.path.basename(fp))[0]) for fp in dedup["unique"])
     unprocessed = []
     for fp in dedup["unique"]:
         stem = os.path.splitext(os.path.basename(fp))[0]
-        normalized = metadata.normalize_filename(stem)
-        if normalized not in ace_index:
+        normalized = metadata.metadata_key(fp)
+        legacy = metadata.normalize_filename(stem)
+        same_stem = counts[legacy]
+        if normalized not in ace_index and not (same_stem == 1 and legacy in ace_index):
             unprocessed.append(fp)
     return unprocessed
 
@@ -529,7 +640,10 @@ def run_phase_understand():
                 continue
 
             # Poll until done
+            deadline = time.monotonic() + 1800
             while True:
+                if time.monotonic() > deadline:
+                    raise TimeoutError("Understanding job exceeded 30 minutes; retry this phase")
                 poll_resp = httpx.get(f"{server_url}/job?id={job_id}", timeout=10)
                 if poll_resp.status_code != 200:
                     break
@@ -588,9 +702,12 @@ def run_phase_understand():
 
             # Save JSON
             stem = os.path.splitext(os.path.basename(filepath))[0]
-            out_path = os.path.join(config.ACESTEP_JSON_DIR, f"{stem}.json")
-            with open(out_path, "w", encoding="utf-8") as f:
+            os.makedirs(config.ACESTEP_JSON_DIR, exist_ok=True)
+            out_path = metadata.metadata_path(filepath)
+            temporary = out_path + ".tmp"
+            with open(temporary, "w", encoding="utf-8") as f:
                 json.dump(result_data, f, indent=2, ensure_ascii=False)
+            os.replace(temporary, out_path)
 
             succeeded += 1
             print(f"  [{i+1}/{total}] OK: {stem}")
@@ -641,3 +758,22 @@ def run_ingest():
     _ingest_progress["running"] = False
     _ingest_progress["results"] = results
     return results
+
+
+def _managed_phase(function, model):
+    @wraps(function)
+    def wrapped(*args, **kwargs):
+        with model_stage(model):
+            return function(*args, **kwargs)
+    return wrapped
+
+
+# Entry points share one admission boundary, including direct CLI callers.
+for _phase in ("raw", "analyze", "normalize", "describe", "embed", "embed_audio", "cluster", "lyrics_timing", "understand"):
+    _name = "run_phase_" + _phase
+    _function = globals()[_name]
+    if _phase in ("describe", "embed", "understand", "embed_audio", "lyrics_timing"):
+        _model = {"describe": "llama_chat", "embed": "llama_embed", "understand": "acestep"}.get(_phase)
+        _function = _managed_phase(_function, _model)
+    globals()[_name] = exclusive_job(_function)
+run_ingest = exclusive_job(run_ingest)

@@ -72,3 +72,9 @@ The older local handoff listed disconnect/reclaim/handoff/tab-identity review fi
 ### Deferred OmniVoice cold-start investigation
 
 Recorded October 31 as future work only: initial OmniVoice requests reportedly time out and fall back to Piper, while later requests work. Model loading consuming the synthesis timeout is an unconfirmed hypothesis. Investigate readiness/loading separately from inference timeout, or warm-up before the first announcement, then verify cold startup and subsequent requests with TTS enabled. This note does not authorize implementation.
+
+### Ingest recovery checks (November 1)
+
+Run `backend\venv\Scripts\python -B scripts/run_tests.py -q backend/tests/test_ingest_jobs.py backend/tests/test_ingest_api_routes.py backend/tests/test_ingest_vectors.py backend/tests/test_ingest_metadata_audio.py` from the repository root. These tests use isolated storage and fake providers to check admission, failure recovery, metadata identity and complete clustering coverage. They do not establish model quality or GPU memory acceptance, and should not freeze a future model schedule or energy formula.
+
+Manual acceptance remains pending: run individual phases with the actual managed chat, embedding and acestep processes; verify the prior model exits before the next loads, failed work resumes at its retained phase, and progress/controls recover after completion. Understand remains an explicit manual phase. Newly generated JSON uses a path hash to distinguish same-named recordings; ambiguous legacy metadata requires Understand again. Managed models are released at phase completion rather than all restarted together. Externally launched servers must be managed separately. Check real audio and lyrics output by listening; automated tests do not cover their quality.

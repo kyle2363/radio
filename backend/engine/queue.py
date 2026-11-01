@@ -737,6 +737,7 @@ class QueueManager:
                 text_taste_vector=taste_vector,
                 audio_taste_vector=taste_vectors["audio"],
                 current_song_id=context_id,
+                exploration_level=self._db.get_setting_float("exploration_level", .3),
                 exclude_ids=exclude_ids,
                 mood_energy_range=mood_energy,
                 mood_valence_range=mood_valence,
@@ -827,16 +828,7 @@ class QueueManager:
                         c["score"] = min(1.0, c.get("score", 0.5) + boost)
 
             if not candidates:
-                # Fallback: neutral centroid
-                _log_step("No candidates, using neutral centroid fallback")
-                candidates = retriever.search_by_vector(
-                    taste_vector=[0.0] * retriever.get_embedding_dimension(),
-                    n=40,
-                    exclude_ids=exclude_ids,
-                    subfolder_filter=subfolder_filter,
-                    mtime_min=mtime_min, mtime_max=mtime_max,
-                    artist_mode=artist_mode, artists=artists,
-                )
+                _log_step("No eligible recommendation candidates")
 
             # --- Taste Constellations: reweight candidates + taste hopping ---
             hop_pocket = None
@@ -866,6 +858,7 @@ class QueueManager:
                                 if hop_emb:
                                     hop_candidates = retriever.search_by_vector(
                                         taste_vector=hop_emb,
+                                        exploration_level=self._db.get_setting_float("exploration_level", .3),
                                         n=10,
                                         exclude_ids=exclude_ids + [c["song_id"] for c in candidates],
                                         subfolder_filter=subfolder_filter,
@@ -1010,6 +1003,8 @@ class QueueManager:
                         "valence": song.get("valence", 0.5),
                         "bpm": song.get("bpm", 0),
                         "vibe_affected": is_vibe_affect,
+                        "recommendation": next((c.get("diagnostics", {}) for c in candidates
+                                                if c["song_id"] == pick["id"]), {}),
                     })
 
             # Ensure we have at least 4 items
@@ -1019,6 +1014,7 @@ class QueueManager:
                     text_taste_vector=taste_vector,
                     audio_taste_vector=taste_vectors["audio"],
                     current_song_id=self._current_song_id,
+                    exploration_level=self._db.get_setting_float("exploration_level", .3),
                     exclude_ids=[p["song_id"] for p in new_queue],
                     subfolder_filter=subfolder_filter,
                 )
@@ -1249,7 +1245,8 @@ class QueueManager:
                 session_id=self._current_session_id, skip_streak=self._skip_streak,
             )
             candidates = retriever.build_candidate_list(
-                text_taste_vector=taste_vectors["text"] or [0.0] * retriever.get_embedding_dimension(),
+                text_taste_vector=taste_vectors["text"],
+                exploration_level=self._db.get_setting_float("exploration_level", .3),
                 audio_taste_vector=taste_vectors["audio"],
                 current_song_id=self._current_song_id or 0, exclude_ids=[], **filters,
             )

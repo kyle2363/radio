@@ -14,6 +14,7 @@ const PHASES = [
 
 const PHASE_PROGRESS_MAP = {
   raw: "raw",
+  reembed: "embed",
   analyzed: "analyze",
   normalizing: "normalize",
   described: "describe",
@@ -71,7 +72,7 @@ function IngestPanel({ addToast }) {
         wasRunningRef.current = false;
       }
     } catch (e) {}
-  }, []);
+  }, [reprocessing, addToast]);
 
   useEffect(() => {
     fetchData();
@@ -103,7 +104,12 @@ function IngestPanel({ addToast }) {
   async function handleRunAll() {
     setRunningAll(true);
     try {
-      await api.runIngest();
+      const data = await api.runIngest();
+      if (data.status === "already_running") {
+        addToast?.("Another ingest task is already running", "info");
+        setRunningAll(false);
+        return;
+      }
       addToast?.("Full ingest started", "success");
     } catch (e) {
       addToast?.("Ingest failed: " + (e.message || "unknown error"), "error");
@@ -117,6 +123,8 @@ function IngestPanel({ addToast }) {
       const data = await api.reembedAll();
       if (data.error) {
         addToast?.("Re-embed failed: " + data.error, "error");
+      } else if (data.status === "already_running") {
+        addToast?.("Another ingest task is already running", "info");
       } else {
         addToast?.(`Re-embed complete: ${data.success}/${data.total} songs`, "success");
         fetchData();
@@ -133,7 +141,12 @@ function IngestPanel({ addToast }) {
     setShowReprocessConfirm(false);
     wasRunningRef.current = false;
     try {
-      await api.reprocessEnergy(reprocReembed, reprocRecluster);
+      const data = await api.reprocessEnergy(reprocReembed, reprocRecluster);
+      if (data.status === "already_running") {
+        addToast?.("Another ingest task is already running", "info");
+        setReprocessing(false);
+        return;
+      }
       addToast?.("Reprocess started (∼30-60 min) — progress shown below", "success");
       fetchData();
     } catch (e) {
@@ -340,16 +353,20 @@ function IngestPanel({ addToast }) {
                   {f.ingest_error && <div style={{ color: "var(--text-muted)", marginTop: "1px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.ingest_error}</div>}
                 </div>
               ))}
-              <button onClick={async () => {
+              <button disabled={isRunning} onClick={async () => {
                 try {
                   const data = await api.retryIngestFailures();
+                  if (data.status === "already_running") {
+                    addToast?.("Another ingest task is already running", "info");
+                    return;
+                  }
                   addToast?.("Retried " + data.count + " failed songs", "success");
                   const updated = await api.fetchIngestFailures();
                   setFailures(updated || []);
                   fetchData();
                 } catch (e) { addToast?.("Retry failed", "error"); }
               }}
-                style={{ marginTop: "4px", padding: "4px 8px", borderRadius: "4px", fontSize: "10px", background: "rgba(226,75,74,0.15)", border: "1px solid rgba(226,75,74,0.3)", color: "var(--danger)", cursor: "pointer" }}>
+                style={{ marginTop: "4px", padding: "4px 8px", borderRadius: "4px", fontSize: "10px", background: "rgba(226,75,74,0.15)", border: "1px solid rgba(226,75,74,0.3)", color: "var(--danger)", cursor: isRunning ? "default" : "pointer", opacity: isRunning ? 0.4 : 1 }}>
                 Retry all failures
               </button>
             </div>

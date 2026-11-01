@@ -26,5 +26,5 @@
   "local_tracks": [{"local_id":"phone-1","song_id":"1"},{"local_id":"phone-2","song_id":"2"},{"local_id":"phone-3","song_id":"3"},{"local_id":"phone-4","song_id":"4"},{"local_id":"phone-5","song_id":"5"},{"local_id":"phone-6","song_id":"6"},{"local_id":"extra","title":"Phone only","artist":"Phone","energy":0.5}],
   "history": [{"event_id":"start1","type":"started","song_id":"1","timestamp":0},{"event_id":"end1","type":"completed","song_id":"1","timestamp":180}],
   "settings": {"audio_blend":0.65,"mood":"neutral","exploration_level":0.3},
-  "expected": {"rank_ids":["3","2","6","local:extra","1","4","5"],"scores":[0.70800001,0.67200001,0.3,0.3,0.28,0.23,-0.38],"selection_ids":["3","2","6","local:extra","1"],"slots":["exploit","explore","wildcard","context","fallback"],"replay_current":"1","upcoming_after_replay":["3","2","6","local:extra","1"]}
+  "expected": {"rank_ids":["3","2","6","local:extra","1","4","5"],"scores":[0.70800001,0.67200001,0.3,0.3,0.28,0.23,-0.38],"selection_ids":["3","2","6","local:extra","1"],"slots":["exploit","exploit","exploit","explore","context"],"replay_current":"1","upcoming_after_replay":["3","2","6","local:extra","1"]}
 }

@@ -241,10 +241,32 @@ def fallback_assignment(candidates, slots_result):
     picks = []
     for slot_name, slot_songs in slots_result.items():
         for song in slot_songs:
+            details = song.get("diagnostics", {})
+            basis = details.get("audio", details.get("text", details)) or {}
+            modality = "Audio" if details.get("audio") or song.get("source") == "audio" else "Text"
+            explanation = basis.get("basis") or song.get("source") or "candidate ranking"
+            components = []
+            for label, key in (("song", "current_similarity"), ("taste", "taste_similarity")):
+                value = basis.get(key)
+                if value is not None:
+                    components.append(f"{modality} {label} similarity {value:.2f}")
+            reason = {
+                "current song and listening history": "Song + taste",
+                "current song": "Song match",
+                "listening history": "Taste match",
+                "metadata fallback": "Metadata fallback",
+            }.get(explanation, explanation.replace('_', ' ').capitalize())
+            if components:
+                reason = "; ".join(components)
+            if details.get("audio") and details.get("text"):
+                audio_weight = round(details['audio_blend'] * 100)
+                reason += f"; Audio/text: {audio_weight}/{100 - audio_weight}"
+            if details.get("recency_penalty"):
+                reason += f"; recency penalty {details['recency_penalty']:.2f}"
             picks.append({
                 "id": song["song_id"],
                 "slot": slot_name,
-                "reason": f"Selected as {slot_name} pick based on taste similarity and cluster diversity.",
+                "reason": reason + ".",
             })
     return picks
 

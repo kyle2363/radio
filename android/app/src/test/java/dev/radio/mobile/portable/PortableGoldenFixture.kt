@@ -43,7 +43,7 @@ internal object PortableGoldenFixture {
     val expectedRankIds = listOf("3", "2", "6", "local:extra", "1", "4", "5")
     val expectedScores = listOf(0.70800001, 0.67200001, 0.3, 0.3, 0.28, 0.23, -0.38)
     val expectedSelectionIds = listOf("3", "2", "6", "local:extra", "1")
-    val expectedSlots = listOf("exploit", "explore", "wildcard", "context", "fallback")
+    val expectedSlots = listOf("exploit", "exploit", "exploit", "explore", "context")
     const val replayCurrent = "1"
     val upcomingAfterReplay = listOf("3", "2", "6", "local:extra", "1")
 }

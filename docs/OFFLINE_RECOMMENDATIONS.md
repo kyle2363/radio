@@ -139,12 +139,15 @@ rounding before tie-breaking.
 
 `allocate_portable_slots` reproduces desktop's pure slot stage for supplied ranked
 candidates with no persona/archetype/constellation. Vibe lock selects four exploit
-and one explore. Normal allocation uses desktop's exploration formula (default
-0.3 produces one exploit), different-cluster explore/wildcard, and current-energy
-context, with deterministic rare-cluster/fallback rules. The existing desktop
-wildcard loop yields a wildcard even when its nominal count is zero; the reference
-preserves this observed behavior for stage parity. It does not claim that the
-desktop's nominal 2/1/1/1 description matches every actual setting.
+and one explore. Normal allocation has a fixed five-pick budget: at diversity
+0–40%, three exploit, one explore, no wildcard and one context; above 40%
+through 60%, two exploit, one explore, one wildcard and one context; above 60%,
+one exploit, two explore, one wildcard and one context. Disabled slots remain
+empty. Explore/wildcard prefer a different cluster, then fill from remaining
+ranked candidates; context prefers current-energy neighbors. Short candidate
+pools return all available unique picks up to five. Desktop archetypes adjust
+the same budget: comfort uses 4/0/0/1, explorer 1/2/1/1, and deep listener reserves
+two context picks. Folder and neighboring-folder embedding inputs are unchanged.
 
 After slot allocation the reference fills remaining requested picks with unused
 ranked playable tracks. It substitutes an unused different artist for repeats
@@ -212,3 +215,28 @@ preserving each device's active queue, mood, current track and position. Add
 device benchmarks, larger labeled matching/quality datasets and interrupted-write
 tests before selecting optional Float16 or acoustic matching. Server AI DJ remains
 an optional connected capability; offline recommendations never wait for it.
+
+
+## Desktop context retrieval (November 1, 2026)
+
+Desktop Radio now builds immediate/session memory from the active session when
+positive signals exist, and daily/long-term memory from shared desktop/mobile
+history. A new session falls back to that shared history without treating an
+actual start as positive feedback. Ordinary retrieval also uses the current
+song's text/audio vectors: current-song weight is `0.75 - 0.4 * diversity`, with
+unit-normalized profile and anchor vectors. Missing profile uses the anchor;
+missing anchor uses the profile. Missing both uses a bounded, explicitly labelled
+metadata fallback under the existing exclusions and caller filters.
+
+Retrieval unions continuity-query, profile and current-song neighborhoods, scores
+against the continuity query, then applies the existing text/audio blend,
+recency and cluster bonuses. Candidate sampling and noisy zero-vector queries
+are removed. Session diversity is passed explicitly through desktop queue and
+preview/refill paths. Queue entries expose a `recommendation` diagnostic object
+with available current/taste similarities, modality scores/blend, fallback basis
+and recency penalty; deterministic reasons describe the available evidence.
+These similarities are model scores, not calibrated confidence percentages.
+
+This desktop change does not change the Android portable scorer, source captions,
+embedding models, folder/neighbor-folder inputs or actual-start accounting.
+Audio and text score calibration and metadata correction remain separate work.

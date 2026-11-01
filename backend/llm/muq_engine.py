@@ -20,6 +20,20 @@ _inference_lock = threading.Lock()
 _device = None
 
 
+def unload_model():
+    """Release an ingest model before handing GPU memory to another phase."""
+    global _model
+    with _inference_lock, _model_lock:
+        if _model is None:
+            return
+        _model = None
+        import gc
+        import torch
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+
 def _check_deps():
     """Check if torch and muq are importable."""
     try:

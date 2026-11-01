@@ -6,6 +6,19 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class OfflineSlotParityTest {
+    @Test fun diversityHonorsFivePickBudgetIncludingSameClusterFallback() {
+        val ranked = (0..9).map { RadioPick("$it", "$it", 1-it/20.0, .5, 0) }
+        for ((level, expected) in listOf(
+            0.0 to listOf(3,1,0,1), .25 to listOf(3,1,0,1),
+            .4 to listOf(3,1,0,1), .4001 to listOf(2,1,1,1),
+            .6 to listOf(2,1,1,1), .6001 to listOf(1,2,1,1),
+            1.0 to listOf(1,2,1,1))) {
+            val picks = OfflineRecommender.allocateSlots(ranked, 0, .5, level)
+            assertEquals(expected, listOf("exploit","explore","wildcard","context").map { slot -> picks.count { it.slot == slot } })
+            assertEquals(5, picks.map { it.songId }.toSet().size)
+        }
+    }
+
     private fun CatalogJson.Obj.value(key: String): CatalogJson = this[key]
     private fun CatalogJson.Obj.string(key: String) = (value(key) as CatalogJson.Str).value
     private fun CatalogJson.Obj.number(key: String) = (value(key) as CatalogJson.Num).token.toDouble()

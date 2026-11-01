@@ -86,11 +86,15 @@ class OfflineRecommender(tracks:List<RadioTrack>,vectors:List<RadioVector>,priva
             val selected=mutableListOf<RadioPick>();val used=mutableSetOf<String>()
             fun take(slot:String,count:Int=1,predicate:(RadioPick)->Boolean={true}):Boolean {val candidates=ordered.filter{it.songId !in used && predicate(it)}.take(count);selected+=candidates.map{it.copy(slot=slot)};used+=candidates.map{it.songId};return candidates.isNotEmpty()}
             if(vibe){take("exploit",4);take("explore");return selected}
-            take("exploit",max(1,(2*(1-exploration*.5)).toInt()))
-            fun varied(slot:String,count:Int=1){if(take(slot,count){it.cluster!=currentCluster})return
-                if(currentCluster==null){val rare=ordered.filter{it.songId !in used}.groupingBy{it.cluster}.eachCount().minByOrNull{it.value}?.key
-                    if(take(slot){it.cluster==rare})return};take(slot)}
-            varied("explore",1+if(exploration>.6)1 else 0);varied("wildcard")
+            val explore=1+if(exploration>.6)1 else 0
+            val wildcard=if(exploration>.4)1 else 0
+            take("exploit",5-explore-wildcard-1)
+            fun varied(slot:String,count:Int) {
+                take(slot,count){it.cluster!=currentCluster}
+                val remaining=count-selected.count{it.slot==slot}
+                if(remaining>0) take(slot,remaining)
+            }
+            varied("explore",explore);varied("wildcard",wildcard)
             if(currentEnergy==null || !take("context"){abs(it.energy-currentEnergy)<.2}) take("context")
             return selected
         }

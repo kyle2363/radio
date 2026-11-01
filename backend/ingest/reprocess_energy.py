@@ -18,9 +18,10 @@ import config
 logger = logging.getLogger(__name__)
 
 # Reuse the ingest progress tracker from pipeline
-from ingest.pipeline import _ingest_progress, _reset_progress
+from ingest.pipeline import _ingest_progress, _reset_progress, exclusive_job, model_stage, apply_normalization_updates
 
 
+@exclusive_job
 def reprocess_energy(reembed=False, recluster=False):
     """Run the full energy reprocess pipeline.
 
@@ -42,6 +43,9 @@ def reprocess_energy(reembed=False, recluster=False):
     _ingest_progress["total"] = total
     logger.info("Found %d songs to re-analyze", total)
 
+    analyzed = 0
+    embedded_ids = []
+    clustered_ids = []
     for i, song in enumerate(songs):
         sid = song["id"]
         fp = song["filepath"]
@@ -53,8 +57,10 @@ def reprocess_energy(reembed=False, recluster=False):
             gain_db = audio.measure_loudness(fp)
             result["gain_db"] = gain_db
             database.update_song(sid, **result)
+            analyzed += 1
         except Exception as e:
             logger.warning("Failed to re-analyze song %d (%s): %s", sid, fp, e)
+            database.set_ingest_error(sid, f"analyze failed: {e}")
 
     logger.info("Reprocess Energy: Phase 2 — normalize v2 energy + v1 valence")
     _ingest_progress["phase"] = "reprocess:normalize"
@@ -65,13 +71,8 @@ def reprocess_energy(reembed=False, recluster=False):
         _ingest_progress["running"] = False
         return {"analyzed": 0, "normalized": 0}
 
-    v2_updates = audio.normalize_all_songs_v2(all_features)
-    for upd in v2_updates:
-        database.update_song(upd["id"], energy=upd["energy"])
-
-    v1_valence = audio.normalize_all_songs(all_features)
-    for upd in v1_valence:
-        database.update_song(upd["id"], valence=upd["valence"])
+    v2_updates = audio.normalize_current_songs(all_features)
+    apply_normalization_updates(v2_updates)
 
     logger.info("Reprocess Energy: Phase 3 — recompute recovery scores")
     _ingest_progress["phase"] = "reprocess:recovery"
@@ -89,13 +90,14 @@ def reprocess_energy(reembed=False, recluster=False):
         logger.info("Reprocess Energy: Phase 4 — re-embed all songs in ChromaDB")
         _ingest_progress["phase"] = "reprocess:embed"
         from ingest import embedder
-        embedder.embed_described_songs(all_ids)
+        with model_stage("llama_embed"):
+            embedded_ids = embedder.embed_described_songs(all_ids)
 
     if recluster:
         logger.info("Reprocess Energy: Phase 5 — re-cluster all songs")
         _ingest_progress["phase"] = "reprocess:cluster"
         from ingest import clusterer
-        clusterer.cluster_songs()
+        clustered_ids = clusterer.cluster_songs()
 
     logger.info("Reprocess Energy: Phase 6 — clear in-memory caches")
     _ingest_progress["phase"] = "reprocess:done"
@@ -109,10 +111,10 @@ def reprocess_energy(reembed=False, recluster=False):
 
     _ingest_progress["running"] = False
     result = {
-        "analyzed": total,
+        "analyzed": analyzed,
         "normalized": len(v2_updates),
-        "reembedded": total if reembed else 0,
-        "reclustered": total if recluster else 0,
+        "reembedded": len(embedded_ids),
+        "reclustered": len(clustered_ids),
     }
     logger.info("=== Reprocess Energy: complete === %s", result)
     return result

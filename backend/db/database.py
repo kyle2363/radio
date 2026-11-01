@@ -621,7 +621,7 @@ def set_ingest_phase(song_id, phase):
     conn = get_connection()
     try:
         conn.execute(
-            "UPDATE songs SET ingest_phase = ? WHERE id = ?", (phase, song_id)
+            "UPDATE songs SET ingest_phase = ?, ingest_error = NULL WHERE id = ?", (phase, song_id)
         )
         conn.commit()
     finally:
@@ -635,7 +635,7 @@ def set_ingest_phases(song_ids, phase):
     try:
         placeholders = ",".join(["?"] * len(song_ids))
         conn.execute(
-            f"UPDATE songs SET ingest_phase = ? WHERE id IN ({placeholders})",
+            f"UPDATE songs SET ingest_phase = ?, ingest_error = NULL WHERE id IN ({placeholders})",
             [phase] + song_ids,
         )
         conn.commit()
