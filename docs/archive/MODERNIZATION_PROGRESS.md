@@ -60,7 +60,7 @@ The final backend run passed **450 tests, 9 skipped**; the full frontend run pas
 
 ## Current architecture and manual QA references
 
-The current routing, browser audio, authenticated media, session context, and output transfer design is summarized in [ARCHITECTURE.md](ARCHITECTURE.md). Safe manual steps and expected behavior are in [APP_USAGE_CHECKLIST.md](APP_USAGE_CHECKLIST.md). The isolated launcher command is:
+The current routing, browser audio, authenticated media, session context, and output transfer design is summarized in [ARCHITECTURE.md](../ARCHITECTURE.md). Safe manual steps and expected behavior are in [APP_USAGE_CHECKLIST.md](../APP_USAGE_CHECKLIST.md). The isolated launcher command is:
 
 ```powershell
 backend\venv\Scripts\python scripts\run_isolated_app.py --port 18765

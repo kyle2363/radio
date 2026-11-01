@@ -15,7 +15,7 @@ Implementation update, November 1: the user accepted checkpoints 1A–1C and 2A 
 - Firebase Spark is for endpoint discovery only. No music, Radio bearer tokens, listening history or model hosting belongs there. No domain, VPS, VPN, billing activation or permanent tunnel service is required.
 - Complete one agreed checkpoint, provide evidence and acceptance steps, then stop for approval. This document does not authorize implementation or external account setup.
 
-## 2. Current implementation matrix
+## 2. Historical Phase 0 implementation matrix (October 30)
 
 | Area | Actual state | Source evidence and missing work |
 | --- | --- | --- |
@@ -38,7 +38,7 @@ Implementation update, November 1: the user accepted checkpoints 1A–1C and 2A 
 ### Discrepancies and prerequisites
 
 1. At audit start, `ANDROID_APP_PLAN.md` and the stable-map status in `AGENTS.md` still described local-player phone review as pending, and the Android plan assumed initial pairing over LAN. The user's latest acceptance and LAN deferral supersede those statements; the Android plan's current status is updated in this docs-only checkpoint.
-2. Early portions of `ARCHITECTURE.md` and `MODERNIZATION_PROGRESS.md` are historical baselines. Their later checkpoint sections supersede claims such as VLC-only output or unfixed browser recovery. Do not implement against the old descriptions.
+2. The original architecture baseline and modernization log are preserved in `docs/archive/`. Current boundaries are in [ARCHITECTURE.md](ARCHITECTURE.md); this Phase 0 matrix is historical and must not be used as the current implementation inventory.
 3. `MUSIC_MATCHING.md` describes Android scanning/playback as future work; those now exist. The portable matching algorithm is still only a reference.
 4. Export after ingestion settles. SQLite and Chroma lack a common snapshot transaction; unchanged collection counts do not prove unchanged vector contents. Do not claim cross-store transactional exports.
 5. Current portable handlers permit authenticated desktop administration as well as device credentials: `require()` can return no portable identity. They are not safe to expose through a loopback proxy without a mandatory device-authentication boundary.

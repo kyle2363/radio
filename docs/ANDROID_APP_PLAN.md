@@ -3,6 +3,12 @@
 Status: local playback and checkpoints 1A–1C are phone-tested and accepted and committed. The user accepted checkpoint 2A on November 1 and authorized 2B offline Radio. Checkpoint 2B is implemented below; its phone review remains pending. Direct LAN hosting and checkpoint 2C sync remain deferred.
 Branch: `android-app`, based on `stability-server-architecture`.
 
+## Proposed follow-up — cold-start taste bootstrap
+
+- When local listening history and favorites are insufficient to form a usable taste embedding, offer an optional prompt for the user to select a few songs from their local library. Use those selections to build an initial recommendation taste embedding and make the first Radio suggestions more coherent.
+- This is a bootstrap only: selected songs must not become a durable preference or ongoing taste signal. As actual listening data becomes sufficient, derive taste from that data and stop showing the prompt. Do not show it when a usable taste embedding can already be built.
+- Keep playback local and independent. Define and verify the sufficiency threshold, cancellation/empty-selection behavior, and how seed selection affects initial ranking before implementation. This is a proposal only; no checkpoint or implementation is authorized by this plan entry.
+
 ## Offline Radio checkpoint 2B — November 1, 2026
 
 The user accepted 2A, reviewed the Listening first Radio screen and separate Standard/Radio Now Playing mockups, then authorized implementation. Both presentations use the existing service, Media3 timeline and transport; there is no second player or server dependency.
