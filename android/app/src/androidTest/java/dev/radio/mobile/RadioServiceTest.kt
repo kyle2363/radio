@@ -41,6 +41,11 @@ class RadioServiceTest {
         fail("$message: ${playback.state.value}")
     }
     private fun starts() = runBlocking { db.library().playbackStarts().size }
+    private fun reservedSelections(): List<String> =
+        org.json.JSONArray(context.getSharedPreferences("radio_recommendations", Context.MODE_PRIVATE)
+            .getString("recentSelections", "[]")).let { rows ->
+            (0 until rows.length()).map(rows::getString)
+        }
 
     @Before fun setup() {
         val root = FixtureDocumentsProvider.tree()
@@ -51,7 +56,7 @@ class RadioServiceTest {
         context.getSharedPreferences("radio_recommendations", Context.MODE_PRIVATE).edit().clear().commit()
         context.getSharedPreferences(PlaybackPrefs.FILE, Context.MODE_PRIVATE).edit().clear().commit()
         db = Room.inMemoryDatabaseBuilder(context, LibraryDatabase::class.java).build()
-        songs = (0..6).map { index ->
+        songs = (0..99).map { index ->
             val sourceId = if (index % 2 == 0) "background1" else "background2"
             val source = DocumentsContract.buildDocumentUriUsingTree(root, sourceId).buildUpon()
                 .appendQueryParameter("radio_fixture", index.toString()).build().toString()
@@ -75,6 +80,7 @@ class RadioServiceTest {
 
     @After fun cleanup() {
         RadioPlaybackService.beforeRadioStartCommit = {}
+        RadioPlaybackService.beforeRadioRefillCommit = {}
         main { playback.pause(); playback.close() }
         scenario?.close(); scenario = null
         context.stopService(Intent(context, RadioPlaybackService::class.java))
@@ -121,7 +127,8 @@ class RadioServiceTest {
     @Test fun radioStartUsesServicePlayerAndRefillsWithoutChangingManualStateOnRefresh() {
         val manualStarts = starts()
         val manualQueue = playback.state.value
-        main { playback.startRadio() }
+        val seed = library.state.value.songs.last().id
+        main { playback.startRadio(seed) }
         await("Radio start didn't replace the manual queue with a playing Radio queue") {
             playback.state.value.radioActive && playback.state.value.isPlaying && playback.state.value.source == "Radio" &&
                 playback.state.value.queue.size >= 5
@@ -130,6 +137,8 @@ class RadioServiceTest {
         val radioState = playback.state.value
         assertNotEquals(manualQueue.playOrder, radioState.playOrder)
         assertEquals("Radio", radioState.source)
+        assertEquals(seed, radioState.currentId)
+        assertEquals(seed, radioState.playOrder.first())
 
         main { playback.pause(); playback.seek(5000) }
         await("Radio didn't pause at the requested position") {
@@ -162,5 +171,94 @@ class RadioServiceTest {
         main { playback.next() }
         Thread.sleep(700)
         assertEquals(stoppedOrder, playback.state.value.playOrder)
+    }
+
+    @Test fun acceptedRefillsKeepManualItemsAndReserveOnlyQueueSelections() {
+        main { playback.startRadio() }
+        await("Radio didn't install its initial recommendation sequence") {
+            playback.state.value.radioActive && playback.state.value.playOrder.size >= 5
+        }
+        val manualSong = songs.last { it.id !in playback.state.value.playOrder }
+        val manualId = manualSong.id
+        main { playback.addToQueue(listOf(manualSong)) }
+        await("Manual item wasn't added to the active Radio queue") { manualId in playback.state.value.playOrder }
+
+        val accepted = reservedSelections().toMutableSet()
+        assertEquals("Initial reservation should match the Radio queue", 5, accepted.size)
+        assertEquals(accepted, playback.state.value.playOrder.take(5).toSet())
+
+        repeat(3) { refill ->
+            val entered = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            RadioPlaybackService.beforeRadioRefillCommit = { entered.complete(Unit); release.await() }
+            var advances = 0
+            while (!entered.isCompleted && advances < 8) {
+                val state = playback.state.value
+                val current = state.playOrder.indexOf(state.currentId)
+                if (current >= 0 && state.playOrder.size - current - 1 <= 2) {
+                    await("Refill $refill didn't reach its commit barrier") { entered.isCompleted }
+                    break
+                }
+                val oldId = state.currentId
+                main { playback.next() }
+                await("Radio didn't advance while approaching refill $refill") {
+                    playback.state.value.currentId != oldId
+                }
+                advances++
+            }
+            assertTrue("Refill $refill reached its low-watermark within the navigation bound", entered.isCompleted)
+            val acceptedBefore = accepted.toSet()
+            release.complete(Unit)
+            await("Refill $refill didn't reserve accepted additions") {
+                reservedSelections().any { it !in acceptedBefore }
+            }
+            val after = playback.state.value
+            assertTrue("Manual queue item must survive recommendation refill", manualId in after.playOrder)
+            val newlyPresent = reservedSelections().filter { it !in acceptedBefore }
+            assertTrue("Refill $refill appended recommendation IDs", newlyPresent.isNotEmpty())
+            assertEquals("Refill IDs should be appended in one ordered suffix", newlyPresent,
+                after.playOrder.takeLast(newlyPresent.size))
+            newlyPresent.forEach { id ->
+                assertFalse("Recommendation repeated across accepted batches: $id", id in accepted)
+                accepted += id
+            }
+            assertEquals("Reservations should equal accepted Radio selections", accepted, reservedSelections().toSet())
+        }
+    }
+
+    @Test fun pauseDuringRefillComputationFencesTheBatchAndItsReservations() {
+        main { playback.startRadio() }
+        await("Radio didn't install its initial recommendation sequence") {
+            playback.state.value.radioActive && playback.state.value.playOrder.size >= 5
+        }
+        val acceptedBefore = reservedSelections().toSet()
+        val entered = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        RadioPlaybackService.beforeRadioRefillCommit = { entered.complete(Unit); release.await() }
+        var advances = 0
+        while (!entered.isCompleted && advances < 8) {
+            val state = playback.state.value
+            val current = state.playOrder.indexOf(state.currentId)
+            if (current >= 0 && state.playOrder.size - current - 1 <= 2) {
+                await("Refill didn't reach its pre-commit suspension point") { entered.isCompleted }
+                break
+            }
+            val oldId = state.currentId
+            main { playback.next() }
+            await("Radio didn't advance while approaching a deferred refill") {
+                playback.state.value.currentId != oldId
+            }
+            advances++
+        }
+        assertTrue("Refill reached its low-watermark within the navigation bound", entered.isCompleted)
+        val orderBeforePause = playback.state.value.playOrder
+        main { playback.pause() }
+        await("Pause didn't stop Radio playback") { !playback.state.value.playWhenReady }
+        release.complete(Unit)
+        // Let the service resume beyond the barrier and reject its stale queue snapshot.
+        Thread.sleep(350)
+        assertEquals("Rejected refill must leave the queue alone", orderBeforePause, playback.state.value.playOrder)
+        assertEquals("Rejected refill must not reserve recommendations", acceptedBefore, reservedSelections().toSet())
+        assertFalse(playback.state.value.playWhenReady)
     }
 }

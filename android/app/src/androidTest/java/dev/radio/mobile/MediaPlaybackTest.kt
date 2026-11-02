@@ -149,7 +149,7 @@ class MediaPlaybackTest {
             }
         }
     }
-    @Test fun seekToEndDoesNotInventListenedTimeAndExplicitNextIsSingleSkip() {
+    @Test fun seekToEndDoesNotInventListenedTimeAndLateReplacementIsNeutral() {
         main { controller.playFrom(listOf(song("long1").copy(durationMs = null), song("long2")), "long1", "Outcomes") }
         await("First song did not start") { starts.size == 1 && controller.state.value.positionMs > 100 }
         main { controller.seek(controller.state.value.durationMs!! - 100) }
@@ -161,7 +161,7 @@ class MediaPlaybackTest {
             controller.playFrom(listOf(song("long1")), "long1", "Replacement")
         }
         await("Replacement did not start") { starts.size == 3 }
-        main { assertEquals(1, outcomes.count { it.second == "song_skipped" }); assertEquals(outcomes.size, outcomes.map { it.first }.distinct().size) }
+        main { assertEquals(0, outcomes.count { it.second == "song_skipped" }); assertTrue(outcomeReasons.values.contains("late_navigation")); assertEquals(outcomes.size, outcomes.map { it.first }.distinct().size) }
     }
     @Test fun previousAfterNaturalEndRecordsAnotherActualStart() {
         main { controller.playFrom(listOf(song("short1", 600)), "short1", "Ended seek") }
@@ -170,7 +170,7 @@ class MediaPlaybackTest {
         await("Previous after end did not create another attempt") { starts.size == 2 }
         main { assertNotEquals(starts[0].second, starts[1].second) }
     }
-    @Test fun chosenSkipReasonFinishesTheDisplacedAttemptOnlyOnce() {
+    @Test fun lateNextFinishesDisplacedAttemptOnceWithoutNegativeFeedback() {
         main { controller.playFrom(listOf(song("long1"), song("long2")), "long1", "Skip feedback") }
         await("First song did not start") { starts.size == 1 && controller.state.value.isPlaying }
         var attempt = ""
@@ -178,8 +178,8 @@ class MediaPlaybackTest {
         await("Next song did not start") { starts.size == 2 && controller.state.value.currentId == "long2" }
         main {
             assertEquals(1, outcomes.count { it.first == attempt })
-            assertEquals("song_skipped", outcomes.single { it.first == attempt }.second)
-            assertEquals("wrong_mood", outcomeReasons[attempt])
+            assertEquals("attempt_stopped", outcomes.single { it.first == attempt }.second)
+            assertEquals("late_navigation", outcomeReasons[attempt])
         }
     }
     @Test fun queueEditsPreserveAudioPositionAndManualShuffleOrder() {

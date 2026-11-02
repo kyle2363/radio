@@ -61,6 +61,30 @@ class RadioQueueTest {
         }
     }
 
+    @Test fun startingRadioDisablesExistingShuffleAndKeepsRecommendationOrder() {
+        main { controller.playFrom(listOf(song("manual", "long1")), "manual", "Manual") }
+        await("Manual queue did not start") { controller.state.value.isPlaying && starts.size == 1 }
+        main { controller.shuffle(true) }
+        await("Manual shuffle did not activate") { controller.state.value.shuffled }
+
+        val recommendations = listOf(song("radio-a", "long1"), song("radio-b", "long2"), song("radio-c", "long1"))
+        main { controller.beginRadio(recommendations) }
+        await("Radio did not start its first recommendation") {
+            controller.state.value.isPlaying && controller.state.value.currentId == "radio-a" && starts.size == 2
+        }
+        main {
+            val started = controller.state.value
+            assertFalse("Radio must start with shuffle disabled", started.shuffled)
+            assertEquals(listOf("radio-a", "radio-b", "radio-c"), started.playOrder)
+
+            assertTrue(controller.appendRadio(started, listOf(song("radio-d", "long2"))))
+            val refilled = controller.state.value
+            assertFalse("Radio refill must remain unshuffled", refilled.shuffled)
+            assertEquals(listOf("radio-a", "radio-b", "radio-c", "radio-d"), refilled.playOrder)
+            assertEquals("Refill must not manufacture an audible start", 2, starts.size)
+        }
+    }
+
     @Test fun appendPreservesActivePlaybackAndRejectsStaleSnapshotsAfterManualEdits() {
         main { controller.beginRadio(listOf(song("long1"), song("long2"))) }
         await("Radio queue did not start") { controller.state.value.isPlaying }

@@ -273,6 +273,8 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
                     Text("${library.songs.count { it.available }} MP3s · ${library.songs.count { !it.available }} missing", style = MaterialTheme.typography.bodySmall)
                     LibraryStatus(library, { chooseFolder() }, { repository.rescan() }, { repository.cancelScan() })
                     Row { TextButton(onClick = { chooseFolder() }, enabled = !library.scanning && !library.loading) { Text("Choose folder") }; TextButton(onClick = { repository.rescan() }, enabled = library.root != null && !library.scanning && !library.loading && !library.accessLost) { Text("Rescan") } }
+                    SectionLabel("Radio")
+                    RadioSimilaritySettings(radio,repository.radio)
                     SectionLabel("Color scheme")
                     RadioPalette.entries.forEach { option ->
                         Row(Modifier.fillMaxWidth().selectable(selected = palette == option.name, role = Role.RadioButton, onClick = { palette = option.name; prefs.edit().putString("palette", palette).apply() }).heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically) {

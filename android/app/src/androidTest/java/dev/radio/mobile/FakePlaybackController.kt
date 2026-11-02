@@ -11,7 +11,8 @@ class FakePlaybackController : PlaybackController {
     var lastSkipReason: String? = null
     var replayCount = 0
     var startRadioCount = 0
-    override fun startRadio() { startRadioCount++; mutable.update { it.copy(radioActive = true) } }
+    var lastRadioSeed: String? = null
+    override fun startRadio(seedLocalId: String?) { lastRadioSeed = seedLocalId; startRadioCount++; mutable.update { it.copy(radioActive = true) } }
     override fun stopRadio() { mutable.update { it.copy(radioActive = false) } }
     override fun next(reason: String) { lastSkipReason = reason; next() }
     override fun replay() { replayCount++; seek(0) }

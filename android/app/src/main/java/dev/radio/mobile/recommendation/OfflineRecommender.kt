@@ -7,9 +7,10 @@ import kotlin.math.*
 data class RadioTrack(val songId:String,val localId:String,val artist:String="",val energy:Double=.5,val valence:Double=.5,val cluster:Int?=null,val folder:String="",val genres:Set<String> = emptySet(),val collections:Set<String> = emptySet(),val favorite:Boolean=false)
 data class RadioVector(val songId:String,val space:String,val model:String,val version:String,val values:FloatArray)
 data class RadioEvent(val id:String,val kind:String,val songId:String,val at:Double,val reason:String?=null)
-data class RadioProfile(val events:List<RadioEvent> = emptyList(),val hearts:Set<String> = emptySet(),val dislikes:Set<String> = emptySet(),val current:String?=null,val energyHistory:List<Double> = emptyList(),val skipStreak:Int=0,val userEnergy:Map<String,Double> = emptyMap())
+data class RadioProfile(val events:List<RadioEvent> = emptyList(),val hearts:Set<String> = emptySet(),val dislikes:Set<String> = emptySet(),val current:String?=null,val energyHistory:List<Double> = emptyList(),val skipStreak:Int=0,val userEnergy:Map<String,Double> = emptyMap(),val bootstrap:Set<String> = emptySet())
 data class RadioSettings(val mood:String="neutral",val audioBlend:Double=.65,val exploration:Double=.3,val vibeLock:String?=null,val folders:Set<String> = emptySet(),val genres:Set<String> = emptySet(),val collections:Set<String> = emptySet(),val favoritesOnly:Boolean=false,val energyTarget:Double?=null,val energyDirection:String="stable",val artistPenalty:Double=.12,val recentWindow:Double=1800.0,val skipWindow:Double=86400.0)
 data class RadioPick(val songId:String,val localId:String,val score:Double,val energy:Double,val cluster:Int?,val slot:String="fallback",val textSimilarity:Double?=null,val audioSimilarity:Double?=null,val energyMatch:Double=0.0,val moodMatch:Double=0.0,val recentPenalty:Double=0.0,val skipPenalty:Double=0.0,val artistPenalty:Double=0.0,val vectorFallback:Boolean=true,val reason:String="Local choice")
+data class RadioDiagnostics(val eligibleTracks:Int=0,val textVectorTracks:Int=0,val audioVectorTracks:Int=0,val tasteEvents:Int=0,val contributingTasteEvents:Int=0,val hasUsableTaste:Boolean=false,val bootstrapCandidates:Set<String> = emptySet())
 
 /** Pure portable v1 scorer. No Android, storage, player or network dependencies. */
 class OfflineRecommender(tracks:List<RadioTrack>,vectors:List<RadioVector>,private val seed:Int=0) {
@@ -17,42 +18,92 @@ class OfflineRecommender(tracks:List<RadioTrack>,vectors:List<RadioVector>,priva
     private data class Group(val space:String,val model:String,val version:String,val dimension:Int)
     private val groups=vectors.filter { it.space in setOf("text","audio") && it.values.isNotEmpty() && it.values.all(Float::isFinite) }
         .groupBy { Group(it.space,it.model,it.version,it.values.size) }.mapValues { (_,rows)->rows.mapNotNull { row->unit(row.values)?.let{row.songId to it} }.toMap() }
-    private fun unit(v:FloatArray):FloatArray? { val norm=sqrt(v.fold(0f){a,b->a+b*b}.toDouble()).toFloat();return if(norm>1e-12f) FloatArray(v.size){v[it]/norm} else null }
+    private fun unit(v:FloatArray):FloatArray? { val norm=sqrt(v.fold(0.0){a,b->a+b.toDouble()*b.toDouble()});return if(norm.isFinite() && norm>1e-12) FloatArray(v.size){(v[it]/norm).toFloat()} else null }
     private fun fold(s:String)=s.lowercase(Locale.ROOT)
-    private fun tie(s:String)=MessageDigest.getInstance("SHA-256").digest("$seed:$s".toByteArray(Charsets.UTF_8)).joinToString(""){"%02x".format(it)}
+    private val tieKeys=mutableMapOf<String,String>()
+    private fun tie(s:String)=tieKeys.getOrPut(s) {
+        val digest=MessageDigest.getInstance("SHA-256").digest("$seed:$s".toByteArray(Charsets.UTF_8))
+        val hex="0123456789abcdef"
+        buildString(64){for(byte in digest){val value=byte.toInt() and 255;append(hex[value ushr 4]);append(hex[value and 15])}}
+    }
     private fun energy(id:String,profile:RadioProfile):Double {val base=tracks[id]?.energy?.takeIf{it.isFinite()} ?: .5;return (profile.userEnergy[id]?.takeIf{it.isFinite()}?.let{base*.7+it*.3} ?: base).coerceIn(0.0,1.0)}
     private fun mood(name:String)=MOODS[name] ?: MOODS.getValue("neutral")
-    fun rank(profile:RadioProfile,settings:RadioSettings,now:Double):List<RadioPick> {
+    private fun eligible(row:RadioTrack,profile:RadioProfile,settings:RadioSettings):Boolean = row.songId !in profile.dislikes && (!settings.favoritesOnly || row.songId in profile.hearts) &&
+        (settings.folders.isEmpty() || fold(row.folder) in settings.folders.map(::fold)) &&
+        (settings.genres.isEmpty() || row.genres.map(::fold).intersect(settings.genres.map(::fold).toSet()).isNotEmpty()) &&
+        (settings.collections.isEmpty() || row.collections.map(::fold).intersect(settings.collections.map(::fold).toSet()).isNotEmpty())
+
+    private fun vectorExists(id:String,space:String)=groups.any{(group,vectors)->group.space==space && id in vectors}
+
+    private fun learnedTaste(group:Group,vectors:Map<String,FloatArray>,profile:RadioProfile,relevant:List<RadioEvent>):FloatArray? {
+        val blended=FloatArray(group.dimension)
+        val weights=if(profile.skipStreak>=3) listOf(.15,.20,.25,.40) else listOf(.40,.25,.20,.15)
+        listOf(10 to .85,50 to .92,200 to .96,2000 to .99).forEachIndexed { index,(window,decay)->
+            val total=FloatArray(group.dimension);var denominator=0.0
+            relevant.takeLast(window).asReversed().forEachIndexed { position,event->vectors[event.songId]?.let { vector->
+                val weight=SIGNALS.getValue(event.kind)*decay.pow(position); denominator+=abs(weight)
+                for(i in total.indices) total[i]+=vector[i]*weight.toFloat()
+            } }
+            if(denominator>0) for(i in blended.indices) blended[i]+=(total[i]/denominator.toFloat())*weights[index].toFloat()
+        }
+        val favorites=profile.hearts.mapNotNull(vectors::get)
+        if(favorites.isNotEmpty()) for(i in blended.indices) blended[i]+=favorites.sumOf{it[i].toDouble()}.toFloat()/favorites.size*.15f
+        return unit(blended)
+    }
+
+    fun diagnostics(profile:RadioProfile,settings:RadioSettings,now:Double):RadioDiagnostics {
+        require(now.isFinite())
+        val eligibleIds=tracks.values.filter{eligible(it,profile,settings)}.map{it.songId}.toSet()
+        val events=profile.events.filter{it.kind in SIGNALS}.distinctBy{it.id}.sortedWith(compareBy<RadioEvent>{it.at}.thenBy{it.id}).takeLast(2000)
+        val contributing=events.count{event->groups.any{(group,vectors)->
+            val enabled=if(group.space=="text") settings.audioBlend<1.0 else settings.audioBlend>0.0
+            enabled && event.songId in vectors
+        }}
+        val hasLearnedTaste=groups.any{(group,vectors)->
+            val enabled=if(group.space=="text") settings.audioBlend<1.0 else settings.audioBlend>0.0
+            enabled && learnedTaste(group,vectors,profile,events)!=null && eligibleIds.any{it in vectors}
+        }
+        val bootstrap=eligibleIds.filter{id->vectorExists(id,"text") || vectorExists(id,"audio")}.toSet()
+        return RadioDiagnostics(
+            eligibleTracks=eligibleIds.size,
+            textVectorTracks=eligibleIds.count{vectorExists(it,"text")},
+            audioVectorTracks=eligibleIds.count{vectorExists(it,"audio")},
+            tasteEvents=events.size,
+            contributingTasteEvents=contributing,
+            hasUsableTaste=hasLearnedTaste,
+            bootstrapCandidates=bootstrap
+        )
+    }
+    fun rank(profile:RadioProfile,settings:RadioSettings,now:Double):List<RadioPick> = rank(profile,settings,now,similarityOnly=false)
+
+    private fun rank(profile:RadioProfile,settings:RadioSettings,now:Double,similarityOnly:Boolean):List<RadioPick> {
         require(now.isFinite())
         val relevant=profile.events.filter{it.kind in SIGNALS}.distinctBy{it.id}.sortedWith(compareBy<RadioEvent>{it.at}.thenBy{it.id}).takeLast(2000)
         val similarities=mutableMapOf<String,MutableMap<String,Double>>()
         val bases=mutableMapOf<String,MutableMap<String,String>>()
-        val weights=if(profile.skipStreak>=3) listOf(.15,.20,.25,.40) else listOf(.40,.25,.20,.15)
         for((group,vectors) in groups) {
-            val blended=FloatArray(group.dimension)
-            listOf(10 to .85,50 to .92,200 to .96,2000 to .99).forEachIndexed { index,(window,decay)->
-                val total=FloatArray(group.dimension);var denominator=0.0
-                relevant.takeLast(window).asReversed().forEachIndexed { position,event->vectors[event.songId]?.let { vector->
-                    val weight=SIGNALS.getValue(event.kind)*decay.pow(position); denominator+=abs(weight)
-                    for(i in total.indices) total[i]+=vector[i]*weight.toFloat()
-                } }
-                if(denominator>0) for(i in blended.indices) blended[i]+=(total[i]/denominator.toFloat())*weights[index].toFloat()
+            val learned=learnedTaste(group,vectors,profile,relevant)
+            var taste=learned
+            var bootstrapWasUsed=false
+            if(taste==null && profile.bootstrap.isNotEmpty()) {
+                val seeds=profile.bootstrap.mapNotNull(vectors::get)
+                if(seeds.isNotEmpty()) {
+                    taste=unit(FloatArray(group.dimension){index->seeds.sumOf{it[index].toDouble()}.div(seeds.size).toFloat()})
+                    bootstrapWasUsed=taste!=null
+                }
             }
-            val favorites=profile.hearts.mapNotNull(vectors::get)
-            if(favorites.isNotEmpty()) for(i in blended.indices) blended[i]+=favorites.sumOf{it[i].toDouble()}.toFloat()/favorites.size*.15f
-            val taste=unit(blended)
             var query=taste
-            var basis="Matches listening taste"
+            var basis=if(bootstrapWasUsed) "Temporary starting songs" else "Matches listening taste"
             val vibe=vectors[settings.vibeLock]
             val current=vectors[profile.current]
             if(vibe!=null) {
                 // Explicit lock stays stronger and blends with taste, not ordinary continuity.
-                query=unit(FloatArray(group.dimension){vibe[it]*.8f+(taste?.get(it) ?: 0f)*.2f})
+                query=if(similarityOnly)vibe else unit(FloatArray(group.dimension){vibe[it]*.8f+(taste?.get(it) ?: 0f)*.2f})
                 basis="Matches locked vibe"
             } else if(current!=null) {
                 val weight=(.75-.4*settings.exploration.coerceIn(0.0,1.0)).toFloat()
-                query=if(taste==null)current else unit(FloatArray(group.dimension){(1f-weight)*taste[it]+weight*current[it]})
-                basis=if(taste==null)"Similar to current song" else "Current song + listening taste"
+                query=if(taste==null || similarityOnly)current else unit(FloatArray(group.dimension){(1f-weight)*taste[it]+weight*current[it]})
+                basis=if(taste==null || similarityOnly)"Similar to current song" else if(bootstrapWasUsed) "Current song + temporary starting songs" else "Current song + listening taste"
             }
             val q=query ?: continue
             for((id,v) in vectors) if(id in tracks) {
@@ -66,10 +117,7 @@ class OfflineRecommender(tracks:List<RadioTrack>,vectors:List<RadioVector>,priva
         val recent=profile.events.filter{it.kind=="started"}.groupBy{it.songId}.mapValues{it.value.maxOf{e->e.at}}
         val skipped=profile.events.filter{it.kind in setOf("skipped","disliked")}.groupBy{it.songId}.mapValues{it.value.maxOf{e->e.at}}
         val currentArtist=tracks[profile.current]?.artist?.let(::fold).orEmpty()
-        return tracks.values.filter { row->row.songId !in profile.dislikes && (!settings.favoritesOnly || row.songId in profile.hearts) &&
-            (settings.folders.isEmpty() || fold(row.folder) in settings.folders.map(::fold)) &&
-            (settings.genres.isEmpty() || row.genres.map(::fold).intersect(settings.genres.map(::fold).toSet()).isNotEmpty()) &&
-            (settings.collections.isEmpty() || row.collections.map(::fold).intersect(settings.collections.map(::fold).toSet()).isNotEmpty()) }.map { row->
+        return tracks.values.filter { row->eligible(row,profile,settings) }.map { row->
             val sims=similarities[row.songId].orEmpty();val text=sims["text"];val audio=sims["audio"]
             val similarity=if(text!=null && audio!=null) text*(1-settings.audioBlend.coerceIn(0.0,1.0))+audio*settings.audioBlend.coerceIn(0.0,1.0) else text ?: audio ?: 0.0
             val em=1-abs(energy(row.songId,profile)-target);val mm=1-abs(row.valence-valence)
@@ -103,6 +151,109 @@ class OfflineRecommender(tracks:List<RadioTrack>,vectors:List<RadioVector>,priva
             };if(artist.isNotEmpty()) seen.add(artist)
         }
         return selected
+    }
+
+    /** Builds an ordered queue whose transitions are re-scored from each preceding pick. */
+    fun recommendSequence(
+        profile:RadioProfile,
+        settings:RadioSettings,
+        now:Double,
+        count:Int=5,
+        excluded:Set<String> = emptySet(),
+        recentRecommendations:List<String> = emptyList(),
+        sequenceOffset:Int=0
+    ):List<RadioPick> {
+        require(now.isFinite())
+        require(count in 0..100)
+        require(sequenceOffset>=0)
+        if(count==0) return emptyList()
+        val hard=excluded + profile.dislikes
+        val cooldown=mutableListOf<String>()
+        // Caller order is oldest-to-newest. Preserve it when relaxing old recommendations.
+        recentRecommendations.asReversed().filter{it !in hard}.distinct().asReversed().forEach(cooldown::add)
+        val recentEvents=profile.events.filter{it.kind in setOf("started","skipped","disliked") && it.songId !in hard &&
+            now-it.at>=0 && now-it.at<=if(it.kind=="started")settings.recentWindow else settings.skipWindow}
+            .distinctBy{it.id}.sortedWith(compareBy<RadioEvent>{it.at}.thenBy{it.id})
+        recentEvents.forEach{if(it.songId !in cooldown) cooldown.add(it.songId)}
+
+        val exploration=settings.exploration.coerceIn(0.0,1.0)
+        val greedy=exploration==0.0
+        val schedule=if(greedy) listOf("exploit") else if(settings.vibeLock!=null) listOf("exploit","exploit","exploit","exploit","explore") else {
+            val exploreCount=1+if(exploration>.6)1 else 0
+            val wildcard=if(exploration>.4)1 else 0
+            val exploit=(5-exploreCount-wildcard-1).coerceAtLeast(1)
+            buildList { repeat(exploit){add("exploit")};repeat(exploreCount){add("explore")};if(wildcard>0)add("wildcard");add("context") }
+        }
+        val result=mutableListOf<RadioPick>()
+        val used=mutableSetOf<String>()
+        var current=profile.current
+        while(result.size<count) {
+            val currentProfile=profile.copy(current=current)
+            val available=rank(currentProfile,settings,now,similarityOnly=greedy).filter{
+                it.songId !in hard && it.songId !in used &&
+                    (!greedy || tracks.size==1 || (it.songId!=current && it.songId!=profile.current))
+            }
+            if(available.isEmpty()) break
+            var fresh=available.filter{it.songId !in cooldown}
+            while(fresh.isEmpty() && cooldown.isNotEmpty()) {
+                cooldown.removeAt(0)
+                fresh=available.filter{it.songId !in cooldown}
+            }
+            if(fresh.isEmpty()) fresh=available
+            val slot=schedule[(sequenceOffset+result.size)%schedule.size]
+            val currentTrack=current?.let(tracks::get)
+            fun transitionCost(pick:RadioPick):Double {
+                val row=tracks.getValue(pick.songId)
+                var cost=0.0
+                if(currentTrack!=null && currentTrack.cluster!=null && row.cluster!=currentTrack.cluster) cost+=.025
+                if(currentTrack!=null && abs(pick.energy-energy(current!!,currentProfile))>.4) cost+=.015
+                return (cost.coerceAtMost(.05) * if(settings.vibeLock!=null).4 else 1.0)
+            }
+            fun jitter(id:String):Double {
+                val hex=tie("sequence:$sequenceOffset:${result.size}:$id").take(8).toLong(16)
+                return (hex.toDouble()/0xffffffffL.toDouble()-.5)*.025
+            }
+            fun adjusted(pick:RadioPick)=pick.score-transitionCost(pick)+jitter(pick.songId)
+            // At zero exploration, mood, artist diversity and jitter cannot displace
+            // a closer vector neighbor. Use secondary scoring only for exact ties.
+            fun similarity(pick:RadioPick):Double {
+                val text=pick.textSimilarity;val audio=pick.audioSimilarity
+                val blend=settings.audioBlend.coerceIn(0.0,1.0)
+                return if(text!=null && audio!=null)text*(1-blend)+audio*blend else text ?: audio ?: Double.NEGATIVE_INFINITY
+            }
+            val scoreOrder=if(greedy)fresh.sortedWith(compareByDescending<RadioPick>{similarity(it)}
+                .thenByDescending{it.score}.thenBy{tie(it.songId)}.thenBy{it.songId})
+                else fresh.sortedWith(compareByDescending<RadioPick>{adjusted(it)}.thenBy{it.songId})
+            val best=adjusted(scoreOrder.first())
+            val ordered=when(slot) {
+                "explore" -> {
+                    val nearBest=scoreOrder.filter{adjusted(it)>=best-.10}
+                    val varied=nearBest.filter{currentTrack?.cluster!=null && it.cluster!=currentTrack.cluster}
+                    (if(varied.isNotEmpty())varied else nearBest).sortedWith(compareByDescending<RadioPick>{adjusted(it)}.thenBy{it.songId})
+                }
+                "wildcard" -> {
+                    val nearBest=scoreOrder.filter{adjusted(it)>=best-.15}
+                    nearBest.sortedWith(compareBy<RadioPick>{it.textSimilarity ?: it.audioSimilarity ?: 0.0}.thenByDescending{adjusted(it)}.thenBy{it.songId})
+                }
+                "context" -> {
+                    val nearBest=scoreOrder.filter{adjusted(it)>=best-.12}
+                    if(currentTrack==null) nearBest else nearBest.sortedWith(compareBy<RadioPick>{abs(it.energy-currentTrack.energy)}.thenByDescending{adjusted(it)}.thenBy{it.songId})
+                }
+                else -> scoreOrder
+            }
+            val rankedPick=ordered.first()
+            val reason=if(result.isEmpty()) rankedPick.reason else when(rankedPick.reason) {
+                "Similar to current song" -> "Similar to previous queued song"
+                "Current song + listening taste" -> "Previous queued song + listening taste"
+                "Current song + temporary starting songs" -> "Previous queued song + temporary starting songs"
+                else -> rankedPick.reason
+            }
+            val pick=rankedPick.copy(slot=slot,reason=reason)
+            result+=pick
+            used+=pick.songId
+            current=pick.songId
+        }
+        return result
     }
     companion object {
         val MOODS=linkedMapOf("chill" to (.25 to .55),"neutral" to (.5 to .5),"energetic" to (.8 to .65),"focus" to (.4 to .5),"melancholy" to (.3 to .25),"discovery" to (.55 to .55))

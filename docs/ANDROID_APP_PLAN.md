@@ -3,6 +3,87 @@
 Status: local playback and checkpoints 1A–1C are phone-tested and accepted and committed. The user accepted checkpoint 2A on November 1 and authorized 2B offline Radio. Checkpoint 2B is implemented below; its phone review remains pending. Direct LAN hosting and checkpoint 2C sync remain deferred.
 Branch: `android-app`, based on `stability-server-architecture`.
 
+## Radio controls refinement - November 2, 2026
+
+- **Pick for me** and searchable **Choose a song** both start service-owned Radio.
+  A chosen available, non-disliked song comes first; the next four choices use it
+  as their anchor. Existing queue replacement confirmation and stale-input fences
+  remain. Selection does not rate songs or create listening events.
+- Legacy desktop similarity consent and its explanation moved to Settings > Radio;
+  the saved catalog-scoped preference is preserved.
+- Navigation in the final 30 seconds (inclusive) records neutral local
+  `attempt_stopped` / `late_navigation`, without a negative skip or invented full
+  listen. Audible time remains independent of seeking. Unknown duration retains
+  ordinary skip handling. Active queue replacement/removal follows the same rule.
+- Explicit Refresh excludes its preceding visible batch from previews only.
+  Automatic recomputation retains those exclusions; start/refill ignores them.
+  Refresh never consumes recommendation reservations or writes listening history.
+  Small libraries show fewer choices and explain exhaustion; start remains usable.
+
+Verification: 69 JVM tests and 24 distinct focused emulator tests passed across
+repository, UI/settings, service and real Media3 playback. Debug APK/test builds
+and lint passed (0 errors, 41 warnings). Radio screenshots were visually reviewed.
+No phone installation/testing was performed. Artifacts and installable APK:
+`.test-runtime/android-radio-refinements/radio-refinements-debug.apk`.
+
+Phone review (pending):
+1. Update without clearing data. Try Pick for me and search/choose a song. Cancel
+   queue replacement, then confirm and check that the chosen song plays first.
+2. Check Settings > Radio retains desktop similarity. Toggling should change
+   future recommendations without interrupting current playback.
+3. Press Next before and within the last 30 seconds. Only the former contributes
+   negative skip feedback; seeking must not manufacture audible listening time.
+4. Refresh repeatedly: each batch excludes its immediate predecessor. Verify the
+   small-library explanation and that either start option still works afterward.
+
+Manual sync remains future work; checkpoint 2B phone review is still pending.
+
+## Phone recommendation follow-up - greedy similarity, November 2, 2026
+
+Read-only assessment of the connected phone confirmed exploration 0%, enabled
+legacy desktop similarity and a shuffled Radio bookmark. Initial recommendation
+order had been reshuffled; later refills retained order. The sequence policy also
+scheduled an explore and context slot at zero and allowed mood/energy, artist
+penalties and random variation to displace closer vector neighbors.
+
+- Starting Radio now disables inherited shuffle before installing its ordered
+  recommendations. Explicit manual shuffle and queue edits remain available.
+- At exactly 0%, sequence selection orders candidates by blended text/audio
+  cosine similarity first. Each predecessor is the direct query, or the explicit
+  Vibe lock when active; global taste/bootstrap guides queries without a usable
+  anchor. Mood, energy, favorites and artist penalties only break similarity ties.
+  There are no explore/context overrides, transition penalties or random jitter.
+- Dislikes, filters, explicit exclusions and rolling cooldowns still apply.
+  Already selected songs and the batch's starting anchor cannot be reselected;
+  the single-song library exception remains. Vectorless candidates remain a
+  fallback after candidates with similarity evidence. Exact similarity ties can
+  still vary between sessions. Positive exploration retains the existing policy.
+- Portable `rank`/`recommend` reference behavior remains unchanged; this is the
+  Android queue-selection policy in `recommendSequence`.
+
+Phone check: install without clearing app data, keep desktop similarity enabled,
+set exploration to 0%, and start a new Radio queue from a matched song. Confirm
+shuffle turns off and listen across at least three refill boundaries. Check
+intentional manual additions and a deliberate shuffle toggle separately. Existing
+queued suggestions are snapshots; changing tuning does not replace them.
+
+Assessment evidence: `.test-runtime/phone-recommendation-assessment/`.
+Verification/build evidence: `.test-runtime/radio-greedy-verification.log`.
+Passed 68 JVM tests, 17 focused emulator queue/service/repository tests, debug
+build and lint (0 errors / 41 warnings). The update was installed with data
+retained on the connected SM-S938U; readback confirmed 1,877 local songs, 1,912
+catalog songs, 3,824 vector descriptors, feedback/history and the existing
+0%/legacy-snapshot settings. Subjective phone listening remains pending.
+APK: `.test-runtime/android-greedy-similarity/radio-greedy-similarity-debug.apk`
+(SHA-256 `ac9536403b0bb0556cdcae17a93d02794029cf9b2a8572fa72b702e586e54697`).
+An offline Java harness invoked the compiled Kotlin scorer using 1,809 songs
+mapped from the phone snapshot and 3,618 checksum-validated desktop vector blobs.
+Across four five-song batches, independent cosine calculation confirmed all 20
+picks were the closest available blended-vector neighbor, with no repeats. This
+replay used the saved ten-song queue as cooldown, a fixed seed and no learned
+events; it verifies direct-anchor selection rather than reproducing the live
+service's full event/selection state or proving subjective musical fit.
+
 ## Catalog transfer follow-up — November 1, 2026
 
 - Grouped missing vectors into raw binary transfers capped at 8,000,000 bytes and
@@ -53,11 +134,115 @@ Vibe lock. Check reasons in light/dark mode and confirm Refresh/Tune preserve
 current audio and queue. Repeat with the laptop off and with unmatched music.
 Judge actual musical continuity and responsiveness on the phone.
 
-## Proposed follow-up — cold-start taste bootstrap
+## Phone recommendation feedback — legacy desktop vectors, November 2, 2026
+
+The phone showed 1,851 matched tracks but zero usable text/audio vectors and 64
+taste events with zero contributions. Read-only inspection of prepared desktop
+revision 3 found 1,912 songs and 3,824 valid vectors: every text descriptor was
+`legacy_unknown:songs` (2,560 dimensions), every audio descriptor
+`legacy_unknown:songs_audio` (512 dimensions), both version `unknown`. Older ingest
+writers recorded no model provenance; export retained that fact and Android
+discarded all such vectors. The earlier synthetic policy tests did not cover this
+real catalog shape. Sequence improvements were therefore operating without
+embedding similarity on this phone.
+
+- Radio now identifies valid, eligible legacy desktop vector coverage and clearly
+  reports when similarity is off. **Use desktop similarity** is an explicit local
+  compatibility choice for the existing imported catalog; no reimport, model call
+  or backend change is needed. Strict fallback remains the default.
+- Only the exporter's explicit `legacy_unknown:<collection>` / `unknown` shape
+  qualifies. Generic unknown/unsupported model identities remain blocked. The
+  original model label stays unknown, and the internal scoring namespace includes
+  the exact immutable manifest hash. Known-model and different-snapshot groups
+  never mix. Snapshot scoping does **not** prove the old collection was generated
+  by one compatible model; the UI states that compatibility cannot be verified.
+- Enabling/disabling fences pending batches and changes future suggestions only.
+  The preference persists for that snapshot. A new imported manifest requires a
+  new choice. Existing queue entries, catalog bytes, vectors, matches, likes and
+  journal identities are not rewritten. Local-only historical events stay local.
+- New regression fixtures mirror the real legacy descriptor shape and test
+  vector/taste activation, current-song continuity, restart persistence, disabling,
+  new-snapshot reset, strict generic-unknown rejection and group isolation.
+
+Verification: **64 JVM tests and 18 focused emulator tests passed**; debug app/test
+APK builds and lint passed (**0 errors / 41 warnings**). The complete 18-test
+rerun passed after correcting the synthetic matched-event fixture; the first run
+also exposed a Compose test-runner threading failure that did not recur in the
+focused or full reruns. No production database/audio/vector writes, model calls,
+backend startup, backend/frontend changes, or physical phone installation were
+performed. A read-only check validated all 3,824 exported vectors and inspected
+nearest neighbors for the phone's current Valley track. This establishes data
+availability and activation, not listening acceptance.
+
+The installable APK and evidence are under `.test-runtime/android-legacy-similarity/`:
+`radio-legacy-similarity-debug.apk` (40,202,701 bytes; SHA-256
+`b1ab9514aa4bfc57624987ba351f9f392397867a9453f65df31134cfd2f84b3b`).
+
+Phone check: install the new APK without clearing data. In Radio tap **Use desktop
+similarity**, then verify usable text/audio counts become nonzero. Play a matched
+song and compare recommendations at Neutral / Exploration 0%, then Vibe lock;
+listen across refills with the laptop off. Existing queued tracks stay fixed, so
+use Start Radio explicitly to replace the old fallback queue when ready. No phone
+installation or listening acceptance is claimed by automated checks.
+
+## Recommendation policy follow-up — November 2, 2026
+
+- Android Radio builds future sequences by rescoring each candidate against the
+  preceding selection. Service refill anchors the first addition to the last
+  visible queued song, including manual additions. Existing queue order, audio
+  position, actual-start accounting and offline playback ownership stay intact.
+- A session seed introduces bounded variation among near-equal candidates.
+  Exploration/context slots operate within a bounded score range rather than
+  forcing an unrelated cluster into the sequence. Vibe lock retains its stronger
+  anchor. The portable-v1 ranking/slot APIs remain the shared parity reference;
+  Android uses the additional sequence policy.
+- The latest 50 accepted Radio selections are retained as local-ID cooldown
+  reservations in `radio_recommendations`. Recent starts/skips also participate.
+  Small libraries relax cooldowns oldest-first; dislikes, explicit exclusions and
+  eligibility filters remain hard. A batch contains unique identities; the
+  single-song service still reaches the end without appending a duplicate.
+  Preview refreshes and rejected batches never consume reservations or create
+  listening events. Only entries accepted into the timeline advance rotation.
+- Recommendation details expose eligible tracks, matched/local-only coverage,
+  valid text/audio vector track counts and contributing taste-event counts.
+  Each suggestion retains an evidence-based reason.
+- Optional starting songs are limited to five eligible local tracks with usable
+  imported vectors. They are in-memory bootstrap context, never likes or journal
+  events. Cancel leaves selections untouched; empty Apply/Clear removes them.
+  Not now dismisses the prompt for this repository lifetime. Actual usable taste
+  supersedes the seeds; restarting the process drops them. No-vector libraries
+  keep metadata fallback without a seed prompt.
+
+Verification: **59 JVM tests passed**, including shared golden scores/slot parity
+and 11 sequence-policy tests; **17 focused emulator tests passed** across Radio
+repository, real playback service/refill, queue and UI. Debug app/test APK builds
+and lint passed (**0 errors / 41 warnings**). New coverage includes accepted-only
+reservation accounting, stale queue/paused-refill fencing, temporary seed purity,
+missing/invalid vectors, differing session seeds and a 20-track synthetic session
+crossing four batches. In that fixed 400-track cold-start fixture, unique choices
+rose from **12/20 to 20/20** (repeats **8 to 0**) and mean adjacent cosine rose from
+**0.9695 to 0.9895**. These synthetic metrics do not establish musical quality.
+No backend/frontend code changed, and their suites were not rerun. No phone was
+installed or tested; full Android instrumentation was not rerun.
+
+Installable APK and verification evidence: `.test-runtime/android-recommendation-policy/`.
+APK: `radio-recommendation-policy-debug.apk` (41,081,919 bytes; SHA-256
+`d8a10f58115112199bce73311d79ae4e892704d3b419c22b6b13375f44de1996`).
+
+Phone review: inspect Recommendation details before/after importing/matching;
+choose/cancel/edit/clear starting songs and confirm Likes stay unchanged. Listen
+through at least 20 Radio tracks across refills, including unmatched songs, with
+the laptop off. Add/reorder a manual future song and check new additions follow
+the queue tail without moving existing entries. Compare low/high exploration and
+Vibe lock, inspect repeat frequency and judge musical continuity by listening.
+
+## Cold-start taste bootstrap requirements
 
 - When local listening history and favorites are insufficient to form a usable taste embedding, offer an optional prompt for the user to select a few songs from their local library. Use those selections to build an initial recommendation taste embedding and make the first Radio suggestions more coherent.
 - This is a bootstrap only: selected songs must not become a durable preference or ongoing taste signal. As actual listening data becomes sufficient, derive taste from that data and stop showing the prompt. Do not show it when a usable taste embedding can already be built.
-- Keep playback local and independent. Define and verify the sufficiency threshold, cancellation/empty-selection behavior, and how seed selection affects initial ranking before implementation. This is a proposal only; no checkpoint or implementation is authorized by this plan entry.
+- Keep playback local and independent. The November 2 follow-up implements the
+  user-authorized bootstrap: a nonzero learned taste vector in a usable compatible
+  group is sufficient, while starting/playing a song alone is continuity context.
 
 ## Offline Radio checkpoint 2B — November 1, 2026
 

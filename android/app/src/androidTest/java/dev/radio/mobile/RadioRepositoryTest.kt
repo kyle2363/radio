@@ -17,6 +17,145 @@ import java.util.Base64
 import java.util.UUID
 
 class RadioRepositoryTest {
+    @Test fun refreshExcludesPreviousPreviewAndExplicitSeedStartsWithoutJournalWrites()=runBlocking {
+        val context=InstrumentationRegistry.getInstrumentation().targetContext
+        val prefs=context.getSharedPreferences("radio_recommendations",0)
+        prefs.edit().clear().commit()
+        val db=Room.inMemoryDatabaseBuilder(context,LibraryDatabase::class.java).build()
+        val scope=CoroutineScope(SupervisorJob()+Dispatchers.IO)
+        val songs=(1..12).map{LocalSong("fresh-$it","root","folder","content://fixture/$it","Song $it.mp3","Music",1,1,1,180000)}
+        val local=MutableStateFlow(LibraryState(songs=songs,loading=false))
+        try {
+            val journal=ListeningJournalRepository(context,db,scope)
+            val radio=RadioRepository(context,db,local,journal,scope)
+            withTimeout(10000){radio.state.first{it.loaded && !it.busy}}
+            val previous=radio.state.value.suggestions.map{it.song.id}.toSet()
+            val generation=radio.state.value.generation
+            radio.refreshSuggestions()
+            withTimeout(10000){radio.state.first{it.generation>generation && !it.busy}}
+            assertTrue(previous.intersect(radio.state.value.suggestions.map{it.song.id}.toSet()).isEmpty())
+            val batch=radio.startRecommendations(songs.first().id)!!
+            assertEquals(songs.first(),batch.suggestions.first().song)
+            assertEquals(5,batch.suggestions.map{it.song.id}.distinct().size)
+            assertTrue(radio.valid(batch.token))
+            assertNull(radio.startRecommendations("missing"))
+            assertTrue(db.journal().events().isEmpty())
+            assertFalse(prefs.contains("recentSelections"))
+            local.value=local.value.copy(songs=songs.take(2))
+            withTimeout(10000){radio.state.first{!it.busy && it.diagnostics.eligibleTracks==2}}
+            val smallPrevious=radio.state.value.suggestions.map{it.song.id}.toSet()
+            val smallGeneration=radio.state.value.generation
+            radio.refreshSuggestions()
+            withTimeout(10000){radio.state.first{!it.busy && it.generation>smallGeneration}}
+            assertTrue(smallPrevious.intersect(radio.state.value.suggestions.map{it.song.id}.toSet()).isEmpty())
+            assertNotNull(radio.state.value.error)
+            assertNotNull(radio.startRecommendations(songs.first().id))
+        } finally {scope.coroutineContext[Job]!!.cancelAndJoin();db.close();prefs.edit().clear().commit()}
+    }
+    @Test fun legacyDesktopVectorsRequireSnapshotOptInWithoutInventedProvenance()=runBlocking {
+        val instrument=InstrumentationRegistry.getInstrumentation();val context=instrument.targetContext
+        context.getSharedPreferences("radio_recommendations",0).edit().clear().commit()
+        val db=Room.inMemoryDatabaseBuilder(context,LibraryDatabase::class.java).build()
+        var scope=CoroutineScope(SupervisorJob()+Dispatchers.IO)
+        val directory=File(context.cacheDir,".test-runtime/legacy-radio/${UUID.randomUUID()}").apply{mkdirs()}
+        val songs=listOf("a","b").map{LocalSong("legacy-$it","root","folder","content://fixture/$it","Song $it.mp3","Music",1,1,1,10000)}
+        val local=MutableStateFlow(LibraryState(songs=songs,loading=false))
+        try {
+            val cases=JSONObject(instrument.context.assets.open("mobile_catalog_golden.json").bufferedReader().use{it.readText()}).getJSONArray("cases")
+            val fixture=(0 until cases.length()).map{cases.getJSONObject(it)}.first{it.getString("name")=="full_unicode_numeric"}
+            val original=CatalogJson.parse(fixture.getString("manifest_utf8").toByteArray()).obj()
+            val descriptors=original.array("embeddings").map { value ->
+                val row=value.obj()
+                CatalogJson.Obj(row.fields+mapOf("model" to CatalogJson.Str("legacy_unknown:"+if(row.text("space")=="text")"songs" else "songs_audio"),"model_version" to CatalogJson.Str("unknown")))
+            }
+            val unsigned=CatalogJson.Obj((original.fields-"manifest_sha256")+mapOf("embeddings" to CatalogJson.Arr(descriptors)))
+            val raw=CatalogJson.Obj(unsigned.fields+mapOf("manifest_sha256" to CatalogJson.Str(catalogSha256(unsigned.canonical().toByteArray())))).canonical()
+            val manifest=CatalogValidator.manifest(raw.toByteArray())
+            val record=PortableCatalogRevision(manifest.sha256,"legacy-server",manifest.catalogId,manifest.revision,raw,2,3,1)
+            db.catalogs().saveRevision(record);db.catalogs().activate(PortableCatalogActive(record.serverId,record.catalogId,record.revision,record.manifestSha256))
+            val blobs=fixture.getJSONObject("blobs")
+            blobs.keys().forEach{File(directory,"$it.bin").writeBytes(Base64.getDecoder().decode(blobs.getString(it)))}
+            JournalIdentityProvider.invalidateMappings()
+            var journal=ListeningJournalRepository(context,db,scope)
+            withTimeout(10000){JournalIdentityProvider.mappings.first{it.loaded}}
+            fun publish() {val generation=JournalIdentityProvider.invalidateMappings();JournalIdentityProvider.publishMappings(generation,songs.zip(listOf("a","b")).map{(song,id)->JournalIdentityProvider.Entry(song,record.serverId,record.catalogId,record.revision,id,"confirmed:${manifest.sha256}:hash")})}
+            publish()
+            var radio=RadioRepository(context,db,local,journal,scope,directory)
+            radio.updatePlayback(PlaybackState(queue=songs,currentId=songs.first().id))
+            withTimeout(10000){radio.state.first{it.loaded && !it.busy && it.legacyVectorTracks==2}}
+            assertEquals(0,radio.state.value.diagnostics.textVectorTracks)
+            assertFalse(radio.state.value.legacyVectorsEnabled)
+            val strict=radio.recommendations()!!
+            radio.setLegacyVectorsEnabled(true)
+            assertFalse(radio.valid(strict.token))
+            withTimeout(10000){radio.state.first{!it.busy && it.diagnostics.textVectorTracks==2 && it.legacyVectorsEnabled}}
+            assertEquals(1,radio.state.value.diagnostics.audioVectorTracks)
+            val choice=radio.recommendations(setOf(songs.first().id),1)!!.suggestions.single()
+            assertFalse(choice.pick.vectorFallback)
+            assertNotNull(choice.pick.textSimilarity)
+            assertTrue(db.journal().events().isEmpty());assertTrue(db.journal().allFeedback().isEmpty())
+            val identity=JournalIdentity(UUID.randomUUID().toString(),record.serverId,record.catalogId,"a",songs.first().id,"fixture-confirmed")
+            journal.started(songs.first(),"legacy-attempt",0,identity)
+            journal.finished(identity,"legacy-attempt","song_completed",10000,10000,null)
+            withTimeout(10000){radio.state.first{!it.busy && it.diagnostics.contributingTasteEvents==1 && it.diagnostics.hasUsableTaste}}
+            scope.coroutineContext[Job]!!.cancelAndJoin();scope=CoroutineScope(SupervisorJob()+Dispatchers.IO)
+            journal=ListeningJournalRepository(context,db,scope)
+            withTimeout(10000){JournalIdentityProvider.mappings.first{it.loaded}}
+            publish()
+            radio=RadioRepository(context,db,local,journal,scope,directory)
+            withTimeout(10000){radio.state.first{it.loaded && !it.busy && it.legacyVectorsEnabled}}
+            assertEquals(2,radio.state.value.diagnostics.textVectorTracks)
+            radio.setLegacyVectorsEnabled(false)
+            withTimeout(10000){radio.state.first{!it.busy && !it.legacyVectorsEnabled && it.diagnostics.textVectorTracks==0}}
+            assertEquals(raw,db.catalogs().latest()!!.manifest)
+            radio.setLegacyVectorsEnabled(true)
+            withTimeout(10000){radio.state.first{!it.busy && it.diagnostics.textVectorTracks==2}}
+            val nextUnsigned=CatalogJson.Obj(unsigned.fields+mapOf("revision" to CatalogJson.Num("2")))
+            val nextHash=catalogSha256(nextUnsigned.canonical().toByteArray())
+            val nextRaw=CatalogJson.Obj(nextUnsigned.fields+mapOf("manifest_sha256" to CatalogJson.Str(nextHash))).canonical()
+            val nextRecord=record.copy(manifestSha256=nextHash,revision=2,manifest=nextRaw,importedAt=2)
+            db.catalogs().saveRevision(nextRecord);db.catalogs().activate(PortableCatalogActive(record.serverId,record.catalogId,2,nextHash))
+            val generation=JournalIdentityProvider.invalidateMappings()
+            JournalIdentityProvider.publishMappings(generation,songs.zip(listOf("a","b")).map{(song,id)->JournalIdentityProvider.Entry(song,record.serverId,record.catalogId,2,id,"confirmed:$nextHash:hash")})
+            radio.refresh()
+            withTimeout(10000){radio.state.first{!it.busy && it.catalogSnapshot==nextHash && it.legacyVectorTracks==2}}
+            assertFalse("Compatibility is scoped to the explicitly selected snapshot",radio.state.value.legacyVectorsEnabled)
+            assertEquals(0,radio.state.value.diagnostics.textVectorTracks)
+        } finally {scope.coroutineContext[Job]!!.cancelAndJoin();db.close();directory.deleteRecursively();context.getSharedPreferences("radio_recommendations",0).edit().clear().commit()}
+    }
+    @Test fun previewsDoNotConsumeRotationButAcceptedBatchesDo()=runBlocking {
+        val context=InstrumentationRegistry.getInstrumentation().targetContext
+        context.getSharedPreferences("radio_recommendations",0).edit().clear().commit()
+        val db=Room.inMemoryDatabaseBuilder(context,LibraryDatabase::class.java).build()
+        val scope=CoroutineScope(SupervisorJob()+Dispatchers.IO)
+        val songs=(1..100).map{LocalSong("rotation-$it","root","folder","content://fixture/$it","Song $it.mp3","Music",1,1,1,10000)}
+        val local=MutableStateFlow(LibraryState(songs=songs,loading=false))
+        try {
+            val journal=ListeningJournalRepository(context,db,scope)
+            val radio=RadioRepository(context,db,local,journal,scope)
+            withTimeout(10000){radio.state.first{it.loaded && !it.busy}}
+            val first=radio.recommendations()!!
+            assertEquals(first.suggestions,radio.recommendations()!!.suggestions)
+            assertEquals(100,radio.state.value.diagnostics.eligibleTracks)
+            assertEquals(0,radio.state.value.diagnostics.textVectorTracks)
+            assertTrue(radio.state.value.bootstrapCandidates.isEmpty())
+            assertFalse(radio.committed(first,emptySet()))
+            val accepted=first.suggestions.take(2).map{it.song.id}.toSet()
+            assertTrue(radio.committed(first,accepted))
+            assertFalse(radio.committed(first))
+            val saved=org.json.JSONArray(context.getSharedPreferences("radio_recommendations",0).getString("recentSelections","[]"))
+            assertEquals(accepted,(0 until saved.length()).map{saved.getString(it)}.toSet())
+            val next=radio.recommendations()!!
+            assertTrue(accepted.intersect(next.suggestions.map{it.song.id}.toSet()).isEmpty())
+            radio.updatePlayback(PlaybackState(queue=songs.take(2),playOrder=songs.take(2).map{it.id},currentId=songs.first().id,queueRevision=1))
+            assertFalse(radio.valid(next.token))
+            val batch=radio.recommendations()!!
+            radio.updatePlayback(PlaybackState(queue=songs.take(3),playOrder=songs.take(3).map{it.id},currentId=songs.first().id,queueRevision=2))
+            assertFalse(radio.valid(batch.token))
+            assertTrue(db.journal().events().isEmpty())
+            assertTrue(db.library().playbackStarts().isEmpty())
+        } finally {scope.coroutineContext[Job]!!.cancelAndJoin();db.close();context.getSharedPreferences("radio_recommendations",0).edit().clear().commit()}
+    }
     @Test fun removingDislikesDoesNotConsumeTheTwoThousandSignalTasteWindow()=runBlocking {
         val context=InstrumentationRegistry.getInstrumentation().targetContext
         val db=Room.inMemoryDatabaseBuilder(context,LibraryDatabase::class.java).build()
@@ -52,6 +191,19 @@ class RadioRepositoryTest {
             radio.updatePlayback(PlaybackState(queue=listOf(song),currentId=song.id))
             withTimeout(10000){radio.state.first{it.loaded && !it.busy && it.vibeAvailable}}
             assertEquals(1,radio.state.value.matched)
+            assertEquals(setOf(song.id),radio.state.value.bootstrapCandidates)
+            assertFalse(radio.state.value.diagnostics.hasUsableTaste)
+            var proof=radio.recommendations()!!
+            radio.setBootstrap(setOf(song.id,"missing"))
+            assertFalse(radio.valid(proof.token))
+            withTimeout(10000){radio.state.first{!it.busy && it.bootstrapLocalIds==setOf(song.id)}}
+            assertTrue(db.journal().events().isEmpty())
+            assertTrue(db.journal().allFeedback().isEmpty())
+            proof=radio.recommendations()!!
+            radio.clearBootstrap()
+            assertFalse(radio.valid(proof.token))
+            radio.dismissBootstrap()
+            assertTrue(radio.state.value.bootstrapDismissed)
             radio.lockVibe();radio.actualStart("one");radio.actualStart("one")
             assertEquals(9,radio.state.value.vibeSongsLeft)
             scope.coroutineContext[Job]!!.cancelAndJoin();scope=CoroutineScope(SupervisorJob()+Dispatchers.IO)

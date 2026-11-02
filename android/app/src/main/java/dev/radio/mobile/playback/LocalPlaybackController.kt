@@ -55,8 +55,8 @@ class LocalPlaybackController(
     private var source = ""
     private var radioActive = false
     private var queueRevision = 0L
-    internal var onRadioStart: () -> Unit = {}
-    override fun startRadio() = onRadioStart()
+    internal var onRadioStart: (String?) -> Unit = {}
+    override fun startRadio(seedLocalId: String?) = onRadioStart(seedLocalId)
     override fun stopRadio() { radioActive=false;queueRevision++;publish(checkpoint=true) }
     private var error: String? = null
     private var accessLost = false
@@ -135,7 +135,8 @@ class LocalPlaybackController(
         val attempt = listeningAttempt ?: return
         val listened = attempt.finish(android.os.SystemClock.elapsedRealtime()) ?: return
         val duration = attemptDurationMs ?: queueById[attempt.songId]?.durationMs
-        onAttemptFinished(attempt.songId, attempt.id, kind, listened, duration, reason)
+        val late = kind == "song_skipped" && isLateNavigation(duration, player.currentPosition)
+        onAttemptFinished(attempt.songId, attempt.id, if (late) "attempt_stopped" else kind, listened, duration, if (late) "late_navigation" else reason)
     }
     private fun beginAttempt(id: String) {
         val active = player.playWhenReady && started
@@ -346,6 +347,9 @@ class LocalPlaybackController(
     private fun mediaItem(song: LocalSong) = MediaItem.Builder().setMediaId(song.id).setUri(song.uri).setMediaMetadata(metadata(song)).build()
     internal fun beginRadio(items: List<LocalSong>) {
         val first=items.firstOrNull() ?: return
+        // Radio recommendations are already ranked. Clear any manual queue shuffle
+        // before playFrom installs them so their recommendation order is preserved.
+        player.shuffleModeEnabled = false
         playFrom(items.take(5),first.id,"Radio")
         radioActive=true
         publish(checkpoint=true)

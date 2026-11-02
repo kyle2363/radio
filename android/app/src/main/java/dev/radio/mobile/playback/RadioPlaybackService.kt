@@ -62,14 +62,18 @@ class RadioPlaybackService : MediaSessionService() {
             library.radio.actualStart(attempt)
         }
         var radioRequest: Job? = null
-        engine.onRadioStart = {
+        engine.onRadioStart = { seedLocalId ->
             radioRequest?.cancel()
             val expected=engine.state.value
+            library.radio.updatePlayback(expected)
             radioRequest=scope.launch {
-                val batch=withContext(Dispatchers.IO){library.radio.recommendations()} ?: return@launch
+                val batch=withContext(Dispatchers.IO){library.radio.startRecommendations(seedLocalId)} ?: return@launch
                 beforeRadioStartCommit()
-                if(library.radio.valid(batch.token) && engine.state.value.queueRevision==expected.queueRevision && engine.state.value.currentId==expected.currentId)
+                if(batch.suggestions.isNotEmpty() && library.radio.valid(batch.token) && engine.state.value.queueRevision==expected.queueRevision && engine.state.value.currentId==expected.currentId) {
                     engine.beginRadio(batch.suggestions.map{it.song})
+                    if(engine.state.value.radioActive && engine.state.value.error==null)
+                        library.radio.committed(batch,engine.state.value.playOrder.toSet())
+                }
             }
         }
         scope.launch {
@@ -84,9 +88,14 @@ class RadioPlaybackService : MediaSessionService() {
                 val current=expected.playOrder.indexOf(expected.currentId)
                 val upcoming=expected.playOrder.drop(current+1).toSet()
                 if(initialized && expected.radioActive && expected.playWhenReady && !expected.sleepTimer.active && current>=0 && upcoming.size<=2){
-                    val batch=withContext(Dispatchers.IO){library.radio.recommendations(upcoming+setOfNotNull(expected.currentId),5-upcoming.size)}
+                    val batch=withContext(Dispatchers.IO){library.radio.recommendations(upcoming+setOfNotNull(expected.currentId),5-upcoming.size,expected.playOrder.lastOrNull())}
+                    if(batch!=null)beforeRadioRefillCommit()
                     if(batch!=null && library.radio.valid(batch.token) && engine.state.value.playWhenReady)
-                        engine.appendRadio(expected,batch.suggestions.map{it.song})
+                        if(engine.appendRadio(expected,batch.suggestions.map{it.song})) {
+                            val actual=engine.state.value
+                            val accepted=actual.playOrder.drop(actual.playOrder.indexOf(actual.currentId)+1).filter{it !in upcoming}.toSet()
+                            library.radio.committed(batch,accepted)
+                        }
                 }
             }
         }
@@ -210,5 +219,6 @@ class RadioPlaybackService : MediaSessionService() {
         // Dependency seam lets service instrumentation use an in-memory catalog and journal.
         internal var repositoryFactory: (android.content.Context) -> LibraryRepository = LibraryRepository::get
         internal var beforeRadioStartCommit: suspend () -> Unit = {}
+        internal var beforeRadioRefillCommit: suspend () -> Unit = {}
     }
 }

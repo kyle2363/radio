@@ -63,6 +63,6 @@ interface PlaybackController {
     fun setSleepTimer(durationMs: Long, fade: Boolean = true)
     fun sleepAtTrackEnd()
     fun cancelSleepTimer()
-    fun startRadio() = Unit
+    fun startRadio(seedLocalId: String? = null) = Unit
     fun stopRadio() = Unit
 }
