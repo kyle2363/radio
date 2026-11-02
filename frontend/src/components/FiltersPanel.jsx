@@ -477,13 +477,13 @@ function FiltersPanel({ addToast, onFiltersChange }) {
             <div style={{ fontSize: "10px", color: "var(--text-muted)", marginBottom: "8px" }}>Include or exclude specific artists.</div>
             {filters.artist_mode && (
               <div style={{ display: "flex", gap: "4px", marginBottom: "8px" }}>
-                <button onClick={() => setArtistMode("include")} style={{ padding: "4px 10px", borderRadius: "5px", fontSize: "10px", cursor: "pointer", border: "none",
+                <button onClick={() => setArtistMode("include")} style={{ padding: "4px 10px", borderRadius: "5px", fontSize: "10px", cursor: "pointer",
                   background: filters.artist_mode === "include" ? "rgba(72,187,120,0.15)" : "var(--bg-elevated)",
                   color: filters.artist_mode === "include" ? "#4ade80" : "var(--text-muted)",
                   border: `1px solid ${filters.artist_mode === "include" ? "rgba(72,187,120,0.3)" : "var(--border)"}` }}>
                   Include only
                 </button>
-                <button onClick={() => setArtistMode("exclude")} style={{ padding: "4px 10px", borderRadius: "5px", fontSize: "10px", cursor: "pointer", border: "none",
+                <button onClick={() => setArtistMode("exclude")} style={{ padding: "4px 10px", borderRadius: "5px", fontSize: "10px", cursor: "pointer",
                   background: filters.artist_mode === "exclude" ? "rgba(240,120,136,0.15)" : "var(--bg-elevated)",
                   color: filters.artist_mode === "exclude" ? "#f07888" : "var(--text-muted)",
                   border: `1px solid ${filters.artist_mode === "exclude" ? "rgba(240,120,136,0.3)" : "var(--border)"}` }}>

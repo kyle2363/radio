@@ -146,8 +146,14 @@ function createWindow() {
 
   if (process.env.NODE_ENV === "development" || !app.isPackaged) {
     const window = mainWindow;
-    loadDevelopmentWindow(window, session.defaultSession, {
-      isCancelled: () => app.isQuitting,
+    // The page immediately checks authentication. Wait for the backend as
+    // well as Vite so those first requests cannot race server startup.
+    waitForBackendReady(session.defaultSession, {
+      isCancelled: () => window.isDestroyed() || app.isQuitting,
+    }).then((ready) => {
+      if (ready) return loadDevelopmentWindow(window, session.defaultSession, {
+        isCancelled: () => app.isQuitting,
+      });
     }).catch(() => console.error('Unable to load the development window'));
   } else {
     const window = mainWindow;
