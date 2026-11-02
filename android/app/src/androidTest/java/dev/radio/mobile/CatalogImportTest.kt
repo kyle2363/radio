@@ -70,6 +70,8 @@ class CatalogImportTest {
         var renewedIdentity = false
         var identityValid = true
         var beforeDownload: suspend (String) -> Unit = {}
+        var batching = false
+        var batchTransform: (ByteArray) -> ByteArray = { it }
         val api: RadioTransport = object : RadioTransport, RadioBinaryTransport {
             override suspend fun request(endpoint: String, path: String, body: String?, bearer: String?): RadioResponse {
                 assertEquals("/identity", path); assertNull(bearer)
@@ -84,9 +86,25 @@ class CatalogImportTest {
                 beforeDownload(path)
                 val responseStatus = if (statuses.isEmpty()) status else statuses.removeFirst()
                 if (responseStatus != 200) return RadioBinaryResponse(responseStatus, ByteArray(0), retryAfter)
-                val content = when { path.contains("base_revision") -> delta ?: throw AssertionError("No synthetic delta"); path.startsWith("/catalog") -> manifest; else -> binary[path.removePrefix("/vectors/")] ?: return RadioBinaryResponse(404, ByteArray(0)) }
-                assertTrue(content.size <= maxBytes)
-                return RadioBinaryResponse(200, content)
+                val content = when {
+                    path.startsWith("/vector-batch?") -> {
+                        assertTrue(batching)
+                        val query = android.net.Uri.parse(path)
+                        val catalog = CatalogValidator.manifest(manifest)
+                        assertEquals(catalog.revision.toString(), query.getQueryParameter("revision"))
+                        assertEquals(catalog.sha256, query.getQueryParameter("manifest_sha256"))
+                        val digests = query.getQueryParameter("digests")!!.split(',')
+                        assertTrue(digests.size <= CatalogTransfers.MAX_COUNT)
+                        val content = digests.flatMap { binary.getValue(it).asIterable() }.toByteArray()
+                        assertTrue(content.size <= CatalogTransfers.MAX_BYTES)
+                        batchTransform(content)
+                    }
+                    path.contains("base_revision") -> delta ?: throw AssertionError("No synthetic delta")
+                    path.startsWith("/catalog") -> manifest
+                    else -> binary[path.removePrefix("/vectors/")] ?: return RadioBinaryResponse(404, ByteArray(0))
+                }
+                if (!path.startsWith("/vector-batch?")) assertTrue(content.size <= maxBytes)
+                return RadioBinaryResponse(200, content, catalogBatches = batching && path == "/catalog")
             }
         }
         val pairing = PairingRepository(store, api, policy) { currentTime }
@@ -113,6 +131,59 @@ class CatalogImportTest {
             assertEquals("unchanged bookmark", db.library().playbackSnapshot()!!.payload)
         }
         override fun close() { db.close(); directory.deleteRecursively() }
+    }
+
+    @Test fun batchesReduceRequestsAndCorruptTruncatedOrExtraBytesKeepPreviousCatalog() = runBlocking {
+        Environment().use { env ->
+            env.batching = true
+            val repo = env.repository(); repo.importCatalog()
+            assertNull(repo.state.value.error)
+            assertEquals(1, env.calls.count { it.startsWith("/vector-batch?") })
+            assertEquals(0, env.calls.count { it.startsWith("/vectors/") })
+            val old = env.db.catalogs().latest()
+            env.prepare(env.rows.getValue("float16"))
+            for (change in listOf<(ByteArray)->ByteArray>(
+                { it.copyOf(it.size - 1) }, { it + byteArrayOf(0) },
+                { it.clone().apply { this[lastIndex] = (this[lastIndex].toInt() xor 1).toByte() } })) {
+                env.batchTransform = change
+                repo.importCatalog()
+                assertNotNull(repo.state.value.error)
+                assertEquals(old, env.db.catalogs().latest())
+                assertTrue(repo.state.value.ready!!.usable)
+            }
+            env.batchTransform = { it }
+            repo.importCatalog()
+            assertNull(repo.state.value.error)
+            assertEquals(3L, repo.state.value.ready!!.revision)
+        }
+    }
+
+    @Test fun interruptedBatchesResumeVerifiedBlobsAfterRepositoryRestart() = runBlocking {
+        Environment().use { env ->
+            env.batching = true
+            val full = CatalogJson.parse(env.manifest).obj()
+            val template = full.array("embeddings").first().obj()
+            val descriptors = (1..130).map { index ->
+                val data = java.nio.ByteBuffer.allocate(4).order(java.nio.ByteOrder.LITTLE_ENDIAN).putFloat(index.toFloat()).array()
+                val digest = catalogSha256(data); env.binary[digest] = data
+                CatalogJson.Obj(template.fields + mapOf("song_id" to CatalogJson.Str("song-$index"), "dimension" to CatalogJson.Num("1"), "byte_length" to CatalogJson.Num("4"), "sha256" to CatalogJson.Str(digest), "blob" to CatalogJson.Str("vectors/$digest.bin"), "normalization" to CatalogJson.Str("none")))
+            }
+            env.manifest = resigned(full.fields + mapOf("songs" to CatalogJson.Arr((1..130).map { CatalogJson.Obj(mapOf("id" to CatalogJson.Str("song-$it"))) }), "embeddings" to CatalogJson.Arr(descriptors),
+                "included_blobs" to CatalogJson.Arr(descriptors.map { it["sha256"] }.sortedBy { it.text() })))
+            val blocked = CompletableDeferred<Unit>()
+            var batches = 0
+            env.beforeDownload = { path -> if (path.startsWith("/vector-batch?") && ++batches == 2) { blocked.complete(Unit); awaitCancellation() } }
+            val repo = env.repository()
+            val job = launch { repo.importCatalog() }
+            blocked.await(); repo.cancelImport(); job.join()
+            assertNull(env.db.catalogs().latest())
+            assertEquals(64, env.directory.listFiles()!!.count { it.name.endsWith(".bin") })
+            env.beforeDownload = {}; env.calls.clear()
+            val restarted = env.repository(); restarted.importCatalog()
+            assertNull(restarted.state.value.error)
+            assertEquals(2, env.calls.count { it.startsWith("/vector-batch?") })
+            assertTrue(restarted.state.value.ready!!.usable)
+        }
     }
 
     @Test fun explicitFullImportPublishesOnlyAfterEveryBlobThenRestartsOfflineWithoutLocalSongChanges() = runBlocking {

@@ -9,7 +9,7 @@ data class RadioVector(val songId:String,val space:String,val model:String,val v
 data class RadioEvent(val id:String,val kind:String,val songId:String,val at:Double,val reason:String?=null)
 data class RadioProfile(val events:List<RadioEvent> = emptyList(),val hearts:Set<String> = emptySet(),val dislikes:Set<String> = emptySet(),val current:String?=null,val energyHistory:List<Double> = emptyList(),val skipStreak:Int=0,val userEnergy:Map<String,Double> = emptyMap())
 data class RadioSettings(val mood:String="neutral",val audioBlend:Double=.65,val exploration:Double=.3,val vibeLock:String?=null,val folders:Set<String> = emptySet(),val genres:Set<String> = emptySet(),val collections:Set<String> = emptySet(),val favoritesOnly:Boolean=false,val energyTarget:Double?=null,val energyDirection:String="stable",val artistPenalty:Double=.12,val recentWindow:Double=1800.0,val skipWindow:Double=86400.0)
-data class RadioPick(val songId:String,val localId:String,val score:Double,val energy:Double,val cluster:Int?,val slot:String="fallback",val textSimilarity:Double?=null,val audioSimilarity:Double?=null,val energyMatch:Double=0.0,val moodMatch:Double=0.0,val recentPenalty:Double=0.0,val skipPenalty:Double=0.0,val artistPenalty:Double=0.0,val vectorFallback:Boolean=true)
+data class RadioPick(val songId:String,val localId:String,val score:Double,val energy:Double,val cluster:Int?,val slot:String="fallback",val textSimilarity:Double?=null,val audioSimilarity:Double?=null,val energyMatch:Double=0.0,val moodMatch:Double=0.0,val recentPenalty:Double=0.0,val skipPenalty:Double=0.0,val artistPenalty:Double=0.0,val vectorFallback:Boolean=true,val reason:String="Local choice")
 
 /** Pure portable v1 scorer. No Android, storage, player or network dependencies. */
 class OfflineRecommender(tracks:List<RadioTrack>,vectors:List<RadioVector>,private val seed:Int=0) {
@@ -26,6 +26,7 @@ class OfflineRecommender(tracks:List<RadioTrack>,vectors:List<RadioVector>,priva
         require(now.isFinite())
         val relevant=profile.events.filter{it.kind in SIGNALS}.distinctBy{it.id}.sortedWith(compareBy<RadioEvent>{it.at}.thenBy{it.id}).takeLast(2000)
         val similarities=mutableMapOf<String,MutableMap<String,Double>>()
+        val bases=mutableMapOf<String,MutableMap<String,String>>()
         val weights=if(profile.skipStreak>=3) listOf(.15,.20,.25,.40) else listOf(.40,.25,.20,.15)
         for((group,vectors) in groups) {
             val blended=FloatArray(group.dimension)
@@ -39,10 +40,25 @@ class OfflineRecommender(tracks:List<RadioTrack>,vectors:List<RadioVector>,priva
             }
             val favorites=profile.hearts.mapNotNull(vectors::get)
             if(favorites.isNotEmpty()) for(i in blended.indices) blended[i]+=favorites.sumOf{it[i].toDouble()}.toFloat()/favorites.size*.15f
-            var query=unit(blended)
-            vectors[settings.vibeLock]?.let { anchor->query=unit(FloatArray(group.dimension){anchor[it]*.8f+(query?.get(it) ?: 0f)*.2f}) }
+            val taste=unit(blended)
+            var query=taste
+            var basis="Matches listening taste"
+            val vibe=vectors[settings.vibeLock]
+            val current=vectors[profile.current]
+            if(vibe!=null) {
+                // Explicit lock stays stronger and blends with taste, not ordinary continuity.
+                query=unit(FloatArray(group.dimension){vibe[it]*.8f+(taste?.get(it) ?: 0f)*.2f})
+                basis="Matches locked vibe"
+            } else if(current!=null) {
+                val weight=(.75-.4*settings.exploration.coerceIn(0.0,1.0)).toFloat()
+                query=if(taste==null)current else unit(FloatArray(group.dimension){(1f-weight)*taste[it]+weight*current[it]})
+                basis=if(taste==null)"Similar to current song" else "Current song + listening taste"
+            }
             val q=query ?: continue
-            for((id,v) in vectors) if(id in tracks) similarities.getOrPut(id){mutableMapOf()}[group.space]=v.indices.fold(0f){a,i->a+v[i]*q[i]}.toDouble()
+            for((id,v) in vectors) if(id in tracks) {
+                similarities.getOrPut(id){mutableMapOf()}[group.space]=v.indices.fold(0f){a,i->a+v[i]*q[i]}.toDouble()
+                bases.getOrPut(id){mutableMapOf()}[group.space]=basis
+            }
         }
         var target=(settings.energyTarget ?: mood(settings.mood).first)+when(settings.energyDirection){"rising"->.15;"falling"->-.15;else->0.0}
         profile.energyHistory.lastOrNull()?.let{target=target.coerceIn(it-.25,it+.25)};target=target.coerceIn(0.0,1.0)
@@ -62,7 +78,17 @@ class OfflineRecommender(tracks:List<RadioTrack>,vectors:List<RadioVector>,priva
             val ap=if(currentArtist.isNotEmpty() && fold(row.artist)==currentArtist) settings.artistPenalty else 0.0
             val cp=if(row.songId==profile.current && tracks.size>1) .5 else 0.0
             val score=.6*similarity+.2*em+.1*mm+(if(row.songId in profile.hearts || row.favorite) .1 else 0.0)-rp-sp-ap-cp
-            RadioPick(row.songId,row.localId,Math.rint(score*1e8)/1e8,energy(row.songId,profile),row.cluster,textSimilarity=text,audioSimilarity=audio,energyMatch=em,moodMatch=mm,recentPenalty=rp,skipPenalty=sp,artistPenalty=ap,vectorFallback=sims.isEmpty())
+            // Describe the strongest contributing modality only when it supports similarity.
+            // Similarity is model evidence, never a calibrated confidence percentage.
+            val evidence=sims.entries.filter{(space,value)->similarity>.3 && value>.3 && (text==null || audio==null || if(space=="audio")settings.audioBlend>0 else settings.audioBlend<1)}
+                .maxByOrNull{(space,value)->value*if(text!=null && audio!=null){if(space=="audio")settings.audioBlend.coerceIn(0.0,1.0) else 1-settings.audioBlend.coerceIn(0.0,1.0)}else 1.0}
+            val reason=when {
+                evidence!=null->bases[row.songId]?.get(evidence.key) ?: "Local choice"
+                row.songId in profile.hearts || row.favorite->"Liked song"
+                sims.isEmpty()->"Local choice"
+                else->"Mood and energy ranking"
+            }
+            RadioPick(row.songId,row.localId,Math.rint(score*1e8)/1e8,energy(row.songId,profile),row.cluster,textSimilarity=text,audioSimilarity=audio,energyMatch=em,moodMatch=mm,recentPenalty=rp,skipPenalty=sp,artistPenalty=ap,vectorFallback=sims.isEmpty(),reason=reason)
         }.sortedWith(compareByDescending<RadioPick>{it.score}.thenBy{tie(it.songId)}.thenBy{it.songId})
     }
     fun recommend(profile:RadioProfile,settings:RadioSettings,now:Double,count:Int=5,excluded:Set<String> = emptySet()):List<RadioPick> {

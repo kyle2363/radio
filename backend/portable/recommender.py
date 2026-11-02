@@ -175,6 +175,11 @@ class OfflineRecommender:
             anchor = vectors.get(vibe)
             if anchor is not None:
                 query = _unit(anchor * .8 + (query * .2 if query is not None else 0))
+            else:
+                current = vectors.get(str(self.state["current"]))
+                if current is not None:
+                    weight = .75 - .4 * max(0., min(1., _number(self.settings["exploration_level"], .3)))
+                    query = current if query is None else _unit((1 - weight) * query + weight * current)
             if query is None:
                 continue
             ids = [sid for sid in self.tracks if sid in vectors]

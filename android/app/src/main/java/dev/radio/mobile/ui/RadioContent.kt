@@ -39,7 +39,7 @@ fun RadioContent(radio:RadioState,repository:RadioRepository,audio:PlaybackState
         }
         item {Row(Modifier.fillMaxWidth().padding(start=20.dp,end=8.dp),verticalAlignment=Alignment.CenterVertically){Text("Suggested next",Modifier.weight(1f),style=MaterialTheme.typography.titleMedium);TextButton(onClick=repository::refresh,enabled=!radio.busy,modifier=Modifier.testTag("refresh-radio")){Text(if(radio.busy)"Refreshing…" else "Refresh")}}}
         itemsIndexed(radio.suggestions,key={_,row->row.song.id}) { index,row->
-            LibraryRow(row.song.title,"${index+1} · ${if(row.pick.vectorFallback)"Local choice" else when(row.pick.slot){"exploit"->"For your taste";"explore"->"Explore";"wildcard"->"Something different";"context"->"Fits the mood";else->"Local choice"}}",Symbol.Music,trailing={IconButton(onClick={playback.addToQueue(listOf(row.song))},enabled=ready,modifier=Modifier.testTag("radio-add-${row.song.id}")){RadioIcon(Symbol.Add,"Add ${row.song.title} to queue")}}){if(ready)playback.addToQueue(listOf(row.song))}
+            LibraryRow(row.song.title,"${index+1} · ${row.pick.reason}",Symbol.Music,trailing={IconButton(onClick={playback.addToQueue(listOf(row.song))},enabled=ready,modifier=Modifier.testTag("radio-add-${row.song.id}")){RadioIcon(Symbol.Add,"Add ${row.song.title} to queue")}}){if(ready)playback.addToQueue(listOf(row.song))}
         }
         item {Column(Modifier.padding(horizontal=20.dp,vertical=8.dp)){
             if(radio.suggestions.isEmpty() && radio.loaded && !radio.busy){Text(if(library.accessLost)"Choose your Music folder again to continue." else "No eligible songs. Add local music or change feedback in Now Playing.",style=MaterialTheme.typography.bodyMedium);TextButton(onClick=onLibrary){Text("Browse music")}}

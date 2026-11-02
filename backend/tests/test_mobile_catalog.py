@@ -26,6 +26,51 @@ def finish(job):
     assert job.status()["state"] != "running"
 
 
+def test_vector_batches_are_revision_bound_ordered_and_bounded(tmp_path, monkeypatch):
+    import mobile_catalog
+    job, service = prepared(tmp_path)
+    job.prepare(); finish(job)
+    manifest = job.manifest()
+    digests = list(dict.fromkeys(d["sha256"] for d in manifest["embeddings"]))
+    assert digests
+    expected = b"".join(job.blob(digest) for digest in digests)
+    assert job.batch(manifest["revision"], manifest["manifest_sha256"], digests) == expected
+    for bad in ([], digests * 65, [digests[0], digests[0]], ["0" * 64]):
+        with pytest.raises((ValueError, KeyError)):
+            job.batch(manifest["revision"], manifest["manifest_sha256"], bad)
+    with pytest.raises(ValueError):
+        job.batch(manifest["revision"], "0" * 64, digests)
+    monkeypatch.setattr(mobile_catalog, "MOBILE_BATCH_BYTES", len(expected) - 1)
+    monkeypatch.setattr(service, "blob", lambda digest: pytest.fail("Oversize batch must reject before reading blobs"))
+    with pytest.raises(ValueError):
+        job.batch(manifest["revision"], manifest["manifest_sha256"], digests)
+
+
+def test_gateway_batch_auth_negotiation_and_strict_queries(tmp_path):
+    job, _ = prepared(tmp_path)
+    job.prepare(); finish(job)
+    store, identity, pairing = setup(tmp_path)
+    app = create_mobile_gateway(store, identity, pairing, catalog=job)
+    app.state.admission.enable(1)
+    prefix = "/api/portable/v1"
+    headers = {"Authorization": "Bearer " + store.issue_device("Phone", ["catalog:read"])["token"]}
+    response = request(app, "GET", prefix + "/catalog", headers)
+    assert response.headers["x-radio-catalog-batches"] == "1"
+    manifest = response.json()
+    digests = list(dict.fromkeys(d["sha256"] for d in manifest["embeddings"]))
+    path = prefix + "/vector-batch?revision=" + str(manifest["revision"]) + "&manifest_sha256=" + manifest["manifest_sha256"] + "&digests=" + ",".join(digests)
+    assert request(app, "GET", path).status_code == 401
+    other = {"Authorization": "Bearer " + store.issue_device("Other", ["profile:read"])["token"]}
+    assert request(app, "GET", path, other).status_code == 403
+    batch = request(app, "GET", path, headers)
+    assert batch.status_code == 200
+    assert batch.content == b"".join(job.blob(d) for d in digests)
+    assert len(batch.content) == int(batch.headers["content-length"])
+    for bad in (path + "&extra=1", path.replace("revision=1", "revision=01"), path + "," + digests[0], path.replace(manifest["manifest_sha256"], "0" * 64)):
+        assert request(app, "GET", bad, headers).status_code == 400
+    assert request(app, "POST", path, headers).status_code == 404
+
+
 def test_prepare_is_explicit_persistent_and_delta_is_read_only(tmp_path):
     job, service = prepared(tmp_path)
     assert job.status()["revision"] is None

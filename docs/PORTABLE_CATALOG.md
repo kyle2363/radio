@@ -12,6 +12,38 @@ The USB gateway now serves explicitly prepared full revisions, pinned historical
 
 The native transport requires the gateway's raw canonical Python JSON bytes and preserves numeric tokens while validating sorted Unicode keys and string escaping. It stores a full manifest as the active revision identity; a delta has a different self-hash even at the same target revision and is validated separately as a transfer plan. Provenance remains per descriptor, including when identical stored bytes are reused by compatible references. All descriptors are validated, even if their bytes share a cache entry.
 
+### Bounded mobile transfers
+
+The future per-transfer ceiling is **100 MB (100,000,000 bytes)**. Vector batches
+use a deliberately smaller **8,000,000-byte / 64-vector maximum** to limit phone
+memory and request size. Raw binary is used without base64 or archive overhead.
+The existing canonical manifest limit remains 16 MiB and individual vectors are
+at most 256 KiB, so legacy transfers also remain below the future ceiling.
+These are per-request limits; a complete catalog may span many requests.
+
+The prepared manifest response advertises `X-Radio-Catalog-Batches: 1`. Android
+then requests the gateway-only endpoint:
+
+```text
+GET /api/portable/v1/vector-batch?revision=R&manifest_sha256=H&digests=D1,D2,...
+```
+
+The query uses that exact field order, an immutable full-manifest hash and up to
+64 unique lowercase SHA-256 digests. The server requires `catalog:read`, verifies
+membership in the named prepared revision, checks total descriptor lengths before
+reading, and returns concatenated blobs in request order. The canonical manifest
+defines each blob's byte length and checksum; there is no independent framing or
+mutable batch index. Batch query bytes are capped at 4,500. Redirects, byte ranges
+and request bodies remain prohibited.
+
+Android requests only missing/corrupt blobs and caps the response at their exact
+combined length. It validates the entire batch, including every vector checksum,
+before publishing its private content-addressed blobs. Truncated, extra or corrupt
+bytes cannot activate a partial revision. Cancellation/restart reuses previously
+verified blobs; a partially received batch is downloaded again. The active catalog
+changes only after all vectors validate and the existing Room transaction commits.
+Servers without the advertisement retain the individual-vector import path.
+
 Android cache reclamation removes private inactive data while retaining every active catalog and the in-progress import. It does not delete source audio or change the Media3 timeline. Local content hashing and matching are implemented in checkpoint 1C; offline recommendation use of imported vectors is implemented in 2B, with phone review pending. See [ANDROID_APP_PLAN.md](ANDROID_APP_PLAN.md).
 
 ## Identity and song records

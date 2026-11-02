@@ -94,8 +94,15 @@ the four layer results. For three or more consecutive skips the four weights bec
 result. Layers are event-count timescales, not claims about calendar-day boundaries.
 The retained event log can be longer than the taste window. All operations are local.
 
-A vibe-lock song blends 80% anchor unit vector with 20% current taste and normalizes.
-Missing/incompatible anchors leave that group's taste unchanged. The caller sets
+Ordinary Radio blends current-song context with taste within each compatible
+vector group. Normalize both, set current-song weight to `0.75 - 0.4 * diversity`
+(diversity clamped to [0,1]), blend and normalize again. With no taste use the
+current vector; with no compatible current vector retain taste. With neither,
+use the existing metadata fallback. This temporary context never adds a positive
+listening event. Android and the Python reference implement this same formula.
+
+A vibe-lock song instead blends 80% anchor unit vector with 20% current taste and normalizes.
+Missing/incompatible lock anchors use ordinary current-song/taste context. The caller sets
 and clears `vibe_lock`; device timer/song-limit management belongs to the future
 player. It must not require a server or block local playback.
 
@@ -237,6 +244,13 @@ with available current/taste similarities, modality scores/blend, fallback basis
 and recency penalty; deterministic reasons describe the available evidence.
 These similarities are model scores, not calibrated confidence percentages.
 
-This desktop change does not change the Android portable scorer, source captions,
-embedding models, folder/neighbor-folder inputs or actual-start accounting.
+The Android follow-up now ports ordinary current-song blending into the Kotlin
+scorer and Python portable reference. Android suggestion labels describe the
+strongest contributing modality when both its cosine and the blended cosine
+exceed 0.3; this is a display heuristic, not a quality/confidence calibration.
+Zero-weight modalities cannot determine the label. Missing-vector choices remain
+labelled local choices, and conflicting/weak vector evidence does not claim a
+positive match. Session-specific taste windows, desktop neighborhood retrieval
+and full desktop ranking remain separate. Source captions, embedding models,
+folder/neighbor-folder inputs and actual-start accounting are unchanged.
 Audio and text score calibration and metadata correction remain separate work.

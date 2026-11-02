@@ -22,6 +22,9 @@ MAX_VECTOR_BYTES = 65536 * 4
 MAX_REVISION = 9223372036854775807
 MOBILE_MAX_MANIFEST_BYTES = 16 * 1024 * 1024
 MOBILE_MAX_VECTOR_TOTAL = 256 * 1024 * 1024
+# Decimal bytes: deliberately well below the future 100 MB transfer ceiling.
+MOBILE_BATCH_BYTES = 8_000_000
+MOBILE_BATCH_COUNT = 64
 logger = logging.getLogger(__name__)
 
 
@@ -235,6 +238,22 @@ class PreparedCatalog:
                 del manifest["manifest_sha256"]
                 manifest["manifest_sha256"] = sha256(canonical_json(manifest))
             return manifest
+
+    def batch(self, revision, manifest_sha256, digests):
+        """Concatenated raw blobs in request order; manifest defines framing/hashes."""
+        with self._lock:
+            if (not isinstance(digests, list) or not 1 <= len(digests) <= MOBILE_BATCH_COUNT
+                    or any(not isinstance(d, str) for d in digests) or len(set(digests)) != len(digests)):
+                raise ValueError("Invalid vector batch")
+            catalog = self._catalog(revision)
+            if manifest_sha256 != catalog.manifest["manifest_sha256"]:
+                raise ValueError("Batch must name its exact immutable manifest")
+            descriptors = {d["sha256"]: d for d in catalog.descriptors.values()}
+            if any(d not in descriptors for d in digests):
+                raise ValueError("Batch vector is not in the requested revision")
+            if sum(descriptors[d]["byte_length"] for d in digests) > MOBILE_BATCH_BYTES:
+                raise ValueError("Vector batch exceeds transfer limit")
+            return b"".join(self.blob(d) for d in digests)
 
     def blob(self, digest):
         with self._lock:

@@ -3,6 +3,56 @@
 Status: local playback and checkpoints 1A–1C are phone-tested and accepted and committed. The user accepted checkpoint 2A on November 1 and authorized 2B offline Radio. Checkpoint 2B is implemented below; its phone review remains pending. Direct LAN hosting and checkpoint 2C sync remain deferred.
 Branch: `android-app`, based on `stability-server-architecture`.
 
+## Catalog transfer follow-up — November 1, 2026
+
+- Grouped missing vectors into raw binary transfers capped at 8,000,000 bytes and
+  64 vectors, conservatively below the future 100 MB per-transfer limit. Existing
+  manifest (16 MiB), total catalog and private-cache quotas remain in force.
+- Batches name the exact prepared revision/full-manifest hash and ordered unique
+  vector digests. Android verifies exact combined length and every vector before
+  publishing any blob from that response; activation remains atomic after all
+  batches validate. Retry/restart reuses verified blobs, never partial responses.
+- Prepared gateways advertise batch support in the manifest response. Older
+  servers retain individual downloads. The same pairing, identity lease, scope,
+  rate-limit retry and cancellation checks protect both paths. Local playback is
+  independent. Wire details are in `PORTABLE_CATALOG.md`.
+- Verification: debug APK build, 48 JVM tests, 30 focused emulator catalog/pairing
+  tests, 36 isolated backend mobile tests, and lint (0 errors / 41 warnings).
+  Artifacts: `.test-runtime/android-catalog-batches/`. No phone installation/test.
+
+Phone check: restart the updated backend, install the updated APK without clearing
+data, prepare a catalog on desktop and import on the phone. Batch progress should
+appear when vectors are missing. Cancel during a multi-batch import and retry;
+the previous catalog must remain usable until completion and verified vectors
+should be reused. Keep local audio playing during import.
+
+## Recommendation follow-up — November 1, 2026
+
+- Ported desktop current-song/taste blending into ordinary offline Radio, using
+  current-song weight `0.75 - 0.4 * exploration` within compatible vector groups.
+  A current song can guide cold-start suggestions without becoming a positive
+  taste event. Missing/incompatible current vectors retain learned taste or local
+  fallback. Explicit Vibe lock retains its stronger 80/20 anchor/taste blend.
+- Suggestions now display evidence-based reasons for current-song continuity,
+  learned taste, Vibe lock, likes or local fallback. Text/audio weights and weak
+  or conflicting similarities are respected; no confidence percentages are shown.
+- Updated the Python portable reference and regression tests. Playback remains
+  local; preview/tuning still leave the committed queue and current position alone.
+  No session-history partitioning, sync or catalog processing was added.
+- Verification: 46 JVM tests (including golden scores and 120 slot-parity cases),
+  13 focused emulator tests across Radio UI/repository/service/queue, debug APK
+  build, and lint with 0 errors / 41 warnings passed. The focused backend suite
+  passed 80 tests, including portable continuity, desktop context/slot behavior and
+  OmniVoice's first-generation 60-second timeout (later generations remain 30).
+  Emulator: `emulator-5554`; no physical phone installed or tested. Artifacts are
+  under `.test-runtime/android-continuity/`. Checkpoint 2B phone review remains pending.
+
+Phone check: install the updated APK without clearing data. Start from a matched
+song with recommendation vectors and compare low/high exploration, then explicit
+Vibe lock. Check reasons in light/dark mode and confirm Refresh/Tune preserve
+current audio and queue. Repeat with the laptop off and with unmatched music.
+Judge actual musical continuity and responsiveness on the phone.
+
 ## Proposed follow-up — cold-start taste bootstrap
 
 - When local listening history and favorites are insufficient to form a usable taste embedding, offer an optional prompt for the user to select a few songs from their local library. Use those selections to build an initial recommendation taste embedding and make the first Radio suggestions more coherent.

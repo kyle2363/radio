@@ -46,6 +46,32 @@ def test_golden_scores_selection_queue_and_replay(tmp_path):
     assert engine.state["events"] == before["events"]
 
 
+def test_ordinary_continuity_uses_current_without_learning_from_start(tmp_path):
+    data, existing = golden(tmp_path)
+    engine = OfflineRecommender(existing.catalog, data["local_tracks"], settings={"audio_blend": 0})
+    assert engine.feedback({"event_id": "start", "type": "started", "song_id": "4", "timestamp": 0})
+    before = engine.export_state()
+    ranked = {row["song_id"]: row for row in engine.rank(now=2000)}
+    assert ranked["4"]["text_similarity"] == pytest.approx(1.)
+    assert ranked["1"]["text_similarity"] == pytest.approx(0.)
+    assert engine.state == before
+    assert all(vector is None for vector in engine._taste().values())
+
+
+def test_continuity_diversity_matches_desktop_formula_and_preserves_vibe(tmp_path):
+    from engine.recommendation_context import context_query
+    _, engine = golden(tmp_path, {"audio_blend": 0})
+    engine.feedback({"event_id": "current4", "type": "started", "song_id": "4", "timestamp": 2000})
+    for diversity in (.2, .9):
+        engine.settings["exploration_level"] = diversity
+        ranked = {row["song_id"]: row for row in engine.rank(now=2000)}
+        expected = context_query([1., 0., 0.], [0., 1., 0.], diversity)
+        assert ranked["4"]["text_similarity"] == pytest.approx(expected[1], abs=2e-6)
+    engine.settings["vibe_lock"] = "5"
+    ranked = {row["song_id"]: row for row in engine.rank(now=2000)}
+    assert ranked["5"]["text_similarity"] == pytest.approx(1.)
+
+
 def test_uses_both_spaces_and_feedback_learns_immediately(tmp_path):
     data, engine = golden(tmp_path)
     engine.settings["audio_blend"] = 0

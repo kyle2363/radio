@@ -65,6 +65,7 @@ class PairingRepository(
         internal var identityExpiresAt: Long = 0
         internal var identityGeneration: Long = -1
         internal var identityRevision: Long = -1
+        internal var catalogBatches: Boolean = false
         override fun toString() = "CatalogSession(redacted)"
     }
     /** A snapshot carries no authority unless rechecked against the current protected record. */
@@ -101,6 +102,7 @@ class PairingRepository(
         val binary = transport as? RadioBinaryTransport ?: throw ConnectionFailure("Catalog download transport is unavailable.")
         val response = binary.download(record.bundle.endpoint, path, record.bearer, maxBytes)
         sessionRecord(session)
+        if (path == "/catalog" && response.status == 200) session.catalogBatches = response.catalogBatches
         if (response.status == 401 || response.status == 403) {
             store.save(record.copy(authorizationBlocked = true)); publish(store.load())
             throw ConnectionFailure("Credential expired or revoked. Previous catalog kept. Pair again to retry.")

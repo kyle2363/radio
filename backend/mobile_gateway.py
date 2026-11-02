@@ -13,7 +13,7 @@ from starlette.responses import JSONResponse, Response
 
 from portable_sync import SyncConflict
 from portable.catalog import canonical_json
-from mobile_catalog import MAX_REVISION
+from mobile_catalog import MAX_REVISION, MOBILE_BATCH_COUNT, MOBILE_BATCH_BYTES
 
 ENDPOINT = "http://127.0.0.1:18766"
 PREFIX = "/api/portable/v1"
@@ -36,6 +36,18 @@ def catalog_query(raw):
             raise ValueError()
         result[key] = value
     return result
+
+
+def batch_query(raw):
+    if len(raw) > 4500:
+        raise ValueError()
+    match = re.fullmatch(rb"revision=([1-9][0-9]{0,18})&manifest_sha256=([0-9a-f]{64})&digests=([0-9a-f]{64}(?:,[0-9a-f]{64})*)", raw)
+    if not match or int(match[1]) > MAX_REVISION:
+        raise ValueError()
+    digests = match[3].decode("ascii").split(",")
+    if len(digests) > MOBILE_BATCH_COUNT or len(set(digests)) != len(digests):
+        raise ValueError()
+    return dict(revision=int(match[1]), manifest_sha256=match[2].decode("ascii"), digests=digests)
 
 
 class Admission:
@@ -94,12 +106,13 @@ class GatewayBoundary:
             return await reject(503, "Mobile gateway disabled")
         path = scope.get("path", "")
         is_catalog = path == PREFIX + "/catalog" and scope["method"] == "GET"
+        is_batch = path == PREFIX + "/vector-batch" and scope["method"] == "GET"
         is_vector = bool(re.fullmatch(re.escape(PREFIX) + r"/vectors/[0-9a-f]{64}", path)) and scope["method"] in ("GET", "HEAD")
         # The factory supplies this flag explicitly; middleware's inner app is
         # an exception wrapper rather than the FastAPI instance.
         catalog_enabled = self.catalog is not None
-        if (((scope["method"], path) not in ROUTES and not (catalog_enabled and (is_catalog or is_vector)))
-                or (scope.get("query_string") and not is_catalog)
+        if (((scope["method"], path) not in ROUTES and not (catalog_enabled and (is_catalog or is_vector or is_batch)))
+                or (scope.get("query_string") and not (is_catalog or is_batch))
                 or scope.get("raw_path", path.encode()) != path.encode("ascii", errors="replace")):
             return await reject(404, "Mobile route not found")
         try:
@@ -134,15 +147,20 @@ class GatewayBoundary:
                 if not identity:
                     return await reject(401, "Device credential invalid, expired or revoked")
                 scope["portable_identity"] = identity
-            if (path.endswith("/capabilities") or is_catalog or is_vector) and not scope.get("portable_identity"):
+            if (path.endswith("/capabilities") or is_catalog or is_vector or is_batch) and not scope.get("portable_identity"):
                 return await reject(401, "Device bearer required")
-            if (is_catalog or is_vector) and "catalog:read" not in scope["portable_identity"]["scopes"]:
+            if (is_catalog or is_vector or is_batch) and "catalog:read" not in scope["portable_identity"]["scopes"]:
                 return await reject(403, "Device token lacks catalog:read scope")
             if is_catalog:
                 try:
                     scope["catalog_query"] = catalog_query(scope.get("query_string", b""))
                 except ValueError:
                     return await reject(400, "Invalid catalog query")
+            if is_batch:
+                try:
+                    scope["batch_query"] = batch_query(scope.get("query_string", b""))
+                except ValueError:
+                    return await reject(400, "Invalid vector batch query")
             length = values.get(b"content-length", "0")
             if not re.fullmatch(r"0|[1-9][0-9]{0,8}", length):
                 return await reject(400, "Invalid content length")
@@ -221,13 +239,27 @@ def create_mobile_gateway(store, identity, pairing, *, catalog=None):
             try:
                 manifest = catalog.manifest(**request.scope["catalog_query"])
                 return Response(canonical_json(manifest), media_type="application/json",
-                                headers={"ETag": '"' + manifest["manifest_sha256"] + '"'})
+                                headers={"ETag": '"' + manifest["manifest_sha256"] + '"', "X-Radio-Catalog-Batches": "1"})
             except KeyError:
                 if catalog.status()["revision"] is None:
                     raise HTTPException(409, "catalog_not_prepared") from None
                 raise HTTPException(404, "Prepared revision not found") from None
             except (ValueError, OSError):
                 raise HTTPException(400, "Prepared catalog unavailable or invalid base") from None
+
+        @app.get(PREFIX + "/vector-batch")
+        def prepared_batch(request: Request):
+            try:
+                data = catalog.batch(**request.scope["batch_query"])
+                if len(data) > MOBILE_BATCH_BYTES:
+                    raise ValueError("Batch exceeds limit")
+                return Response(data, media_type="application/octet-stream")
+            except KeyError:
+                raise HTTPException(404, "Prepared batch revision not found") from None
+            except ValueError:
+                raise HTTPException(400, "Invalid prepared vector batch") from None
+            except OSError:
+                raise HTTPException(503, "Prepared vector batch unavailable") from None
 
         @app.api_route(PREFIX + "/vectors/{digest}", methods=["GET", "HEAD"])
         def prepared_vector(digest: str, request: Request):

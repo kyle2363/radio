@@ -15,7 +15,7 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
 data class RadioResponse(val status: Int, val body: String, val retryAfterSeconds: Int? = null)
-data class RadioBinaryResponse(val status: Int, val body: ByteArray, val retryAfterSeconds: Int? = null)
+data class RadioBinaryResponse(val status: Int, val body: ByteArray, val retryAfterSeconds: Int? = null, val catalogBatches: Boolean = false)
 interface RadioBinaryTransport {
     suspend fun download(endpoint: String, path: String, bearer: String, maxBytes: Int): RadioBinaryResponse
 }
@@ -76,7 +76,8 @@ class RadioApiClient(private val policy: EndpointPolicy, private val deadlineMs:
     private fun perform(endpoint: String, path: String, body: String?, bearer: String?, maxBytes: Int, binary: Boolean, connected: (HttpURLConnection) -> Unit, ensureActive: () -> Unit): RadioBinaryResponse {
         ensureActive()
         policy.validate(endpoint)
-        val catalogPath = path.matches(Regex("/catalog(?:\\?(?:revision=[1-9][0-9]{0,18})(?:&base_revision=[1-9][0-9]{0,18})?)?")) || path.matches(Regex("/vectors/[a-f0-9]{64}"))
+        val batchPath = path.length <= 4514 && path.matches(Regex("/vector-batch\\?revision=[1-9][0-9]{0,18}&manifest_sha256=[0-9a-f]{64}&digests=[0-9a-f]{64}(?:,[0-9a-f]{64}){0,63}"))
+        val catalogPath = batchPath || path.matches(Regex("/catalog(?:\\?(?:revision=[1-9][0-9]{0,18})(?:&base_revision=[1-9][0-9]{0,18})?)?")) || path.matches(Regex("/vectors/[a-f0-9]{64}"))
         if (if (binary) !catalogPath else path !in setOf("/identity", "/pairing/exchange", "/capabilities")) throw ConnectionFailure("Unsupported mobile request.")
         val connection = openConnection(URL("$endpoint/api/portable/v1$path"))
         try {
@@ -85,7 +86,7 @@ class RadioApiClient(private val policy: EndpointPolicy, private val deadlineMs:
             connection.connectTimeout = 5000
             connection.readTimeout = 10000
             connection.useCaches = false
-            connection.setRequestProperty("Accept", if (path.startsWith("/vectors/")) "application/octet-stream" else "application/json")
+            connection.setRequestProperty("Accept", if (path.startsWith("/vectors/") || batchPath) "application/octet-stream" else "application/json")
             connection.setRequestProperty("Accept-Encoding", "identity")
             ensureActive()
             if (bearer != null) {
@@ -122,7 +123,7 @@ class RadioApiClient(private val policy: EndpointPolicy, private val deadlineMs:
                 }
             }
             val retryAfter = connection.getHeaderField("Retry-After")?.takeIf { it.matches(Regex("[0-9]{1,2}")) }?.toIntOrNull()?.takeIf { it in 1..60 }
-            return RadioBinaryResponse(code, output.toByteArray(), retryAfter)
+            return RadioBinaryResponse(code, output.toByteArray(), retryAfter, binary && code == 200 && path == "/catalog" && connection.getHeaderField("X-Radio-Catalog-Batches") == "1")
         } catch (failure: ConnectionFailure) { throw failure }
         catch (_: Exception) { throw ConnectionFailure("Cannot reach the server. Check USB forwarding or the server address.") }
         finally { connection.disconnect() }

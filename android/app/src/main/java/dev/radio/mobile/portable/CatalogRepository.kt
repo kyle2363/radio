@@ -106,12 +106,18 @@ class CatalogRepository internal constructor(private val db: LibraryDatabase, pr
         // from an unrelated cached revision just because its digest was advertised.
         for (descriptor in next.descriptors) if (descriptor.sha256 !in next.included) catalogRequire(verified(descriptor), "Exact-base vector is missing or corrupt. Reimport a full prepared catalog.")
         var done = 0
-        for (descriptor in missing) {
+        val batches = if (session.catalogBatches) CatalogTransfers.batches(missing) else missing.map { listOf(it) }
+        for ((index, batch) in batches.withIndex()) {
             currentCoroutineContext().ensureActive()
-            mutable.value = mutable.value.copy(progress = "Importing vectors ${++done}/${missing.size}…")
-            val bytes = fetch(session, "/vectors/${descriptor.sha256}", descriptor.byteLength)
-            CatalogValidator.validateBlob(descriptor, bytes)
-            publishBlob(descriptor, bytes)
+            mutable.value = mutable.value.copy(progress = "Importing batch ${index + 1}/${batches.size} · $done/${missing.size} vectors…")
+            val path = if (session.catalogBatches) CatalogTransfers.path(next, batch) else "/vectors/${batch.single().sha256}"
+            val bytes = fetch(session, path, batch.sumOf { it.byteLength })
+            // Validate the whole bounded response before publishing any of its blobs.
+            for ((descriptor, vector) in CatalogTransfers.validate(batch, bytes)) {
+                currentCoroutineContext().ensureActive()
+                publishBlob(descriptor, vector)
+                done++
+            }
         }
         // Shared bytes can have distinct normalization/provenance declarations; verify every
         // descriptor, not only the representative used for download deduplication.

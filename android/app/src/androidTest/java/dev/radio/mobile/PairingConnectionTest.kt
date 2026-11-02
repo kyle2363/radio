@@ -25,6 +25,35 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 class PairingConnectionTest {
+    @Test fun binaryTransportNegotiatesCatalogBatchesAndUsesBoundedRawRequests() = runBlocking {
+        val opened = mutableListOf<String>()
+        val payload = byteArrayOf(1, 2, 3, 4)
+        val client = RadioApiClient(EndpointPolicy(true), openConnection = { url ->
+            opened += url.toString()
+            object : HttpURLConnection(url) {
+                override fun disconnect() {}
+                override fun usingProxy() = false
+                override fun connect() {}
+                override fun getResponseCode() = 200
+                override fun getContentLengthLong() = payload.size.toLong()
+                override fun getInputStream() = java.io.ByteArrayInputStream(payload)
+                override fun getHeaderField(name: String?): String? = if (name == "X-Radio-Catalog-Batches") "1" else null
+            }
+        })
+        val endpoint = "http://127.0.0.1:18766"
+        val bearer = WireBase64.encode(ByteArray(32) { 9 })
+        assertTrue(client.download(endpoint, "/catalog", bearer, 16).catalogBatches)
+        val digest = "a".repeat(64)
+        val path = "/vector-batch?revision=1&manifest_sha256=$digest&digests=$digest"
+        val response = client.download(endpoint, path, bearer, 4)
+        assertArrayEquals(payload, response.body)
+        assertFalse(response.catalogBatches)
+        assertEquals("$endpoint/api/portable/v1$path", opened.last())
+        assertThrows(ConnectionFailure::class.java) { runBlocking { client.download(endpoint, path, bearer, 3) } }
+        val before = opened.size
+        assertThrows(ConnectionFailure::class.java) { runBlocking { client.download(endpoint, path + "&extra=1", bearer, 4) } }
+        assertEquals(before, opened.size)
+    }
     private val instrumentation get() = InstrumentationRegistry.getInstrumentation()
     private val context get() = instrumentation.targetContext
     private val policy = EndpointPolicy(true)
