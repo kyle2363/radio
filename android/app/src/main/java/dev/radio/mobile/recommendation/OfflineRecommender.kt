@@ -9,7 +9,7 @@ data class RadioVector(val songId:String,val space:String,val model:String,val v
 data class RadioEvent(val id:String,val kind:String,val songId:String,val at:Double,val reason:String?=null)
 data class RadioProfile(val events:List<RadioEvent> = emptyList(),val hearts:Set<String> = emptySet(),val dislikes:Set<String> = emptySet(),val current:String?=null,val energyHistory:List<Double> = emptyList(),val skipStreak:Int=0,val userEnergy:Map<String,Double> = emptyMap(),val bootstrap:Set<String> = emptySet())
 data class RadioSettings(val mood:String="neutral",val audioBlend:Double=.65,val exploration:Double=.3,val vibeLock:String?=null,val folders:Set<String> = emptySet(),val genres:Set<String> = emptySet(),val collections:Set<String> = emptySet(),val favoritesOnly:Boolean=false,val energyTarget:Double?=null,val energyDirection:String="stable",val artistPenalty:Double=.12,val recentWindow:Double=1800.0,val skipWindow:Double=86400.0)
-data class RadioPick(val songId:String,val localId:String,val score:Double,val energy:Double,val cluster:Int?,val slot:String="fallback",val textSimilarity:Double?=null,val audioSimilarity:Double?=null,val energyMatch:Double=0.0,val moodMatch:Double=0.0,val recentPenalty:Double=0.0,val skipPenalty:Double=0.0,val artistPenalty:Double=0.0,val vectorFallback:Boolean=true,val reason:String="Local choice")
+data class RadioPick(val songId:String,val localId:String,val score:Double,val energy:Double,val cluster:Int?,val slot:String="fallback",val textSimilarity:Double?=null,val audioSimilarity:Double?=null,val energyMatch:Double=0.0,val moodMatch:Double=0.0,val recentPenalty:Double=0.0,val skipPenalty:Double=0.0,val artistPenalty:Double=0.0,val vectorFallback:Boolean=true,val reason:String="Local choice",val evidence:String?=null)
 data class RadioDiagnostics(val eligibleTracks:Int=0,val textVectorTracks:Int=0,val audioVectorTracks:Int=0,val tasteEvents:Int=0,val contributingTasteEvents:Int=0,val hasUsableTaste:Boolean=false,val bootstrapCandidates:Set<String> = emptySet())
 
 /** Pure portable v1 scorer. No Android, storage, player or network dependencies. */
@@ -136,7 +136,8 @@ class OfflineRecommender(tracks:List<RadioTrack>,vectors:List<RadioVector>,priva
                 sims.isEmpty()->"Local choice"
                 else->"Mood and energy ranking"
             }
-            RadioPick(row.songId,row.localId,Math.rint(score*1e8)/1e8,energy(row.songId,profile),row.cluster,textSimilarity=text,audioSimilarity=audio,energyMatch=em,moodMatch=mm,recentPenalty=rp,skipPenalty=sp,artistPenalty=ap,vectorFallback=sims.isEmpty(),reason=reason)
+            RadioPick(row.songId,row.localId,Math.rint(score*1e8)/1e8,energy(row.songId,profile),row.cluster,textSimilarity=text,audioSimilarity=audio,energyMatch=em,moodMatch=mm,recentPenalty=rp,skipPenalty=sp,artistPenalty=ap,vectorFallback=sims.isEmpty(),reason=reason,
+                evidence=evidence?.let { if(it.key=="audio") "Audio similarity" else "Musical description similarity" })
         }.sortedWith(compareByDescending<RadioPick>{it.score}.thenBy{tie(it.songId)}.thenBy{it.songId})
     }
     fun recommend(profile:RadioProfile,settings:RadioSettings,now:Double,count:Int=5,excluded:Set<String> = emptySet()):List<RadioPick> {
@@ -186,6 +187,9 @@ class OfflineRecommender(tracks:List<RadioTrack>,vectors:List<RadioVector>,priva
         }
         val result=mutableListOf<RadioPick>()
         val used=mutableSetOf<String>()
+        val anchorRanks=rank(profile,settings,now,similarityOnly=true).associateBy{it.songId}
+        val tasteRanks=rank(profile.copy(current=null),settings.copy(vibeLock=null),now,similarityOnly=false).associateBy{it.songId}
+        val hasTaste=diagnostics(profile,settings,now).hasUsableTaste
         var current=profile.current
         while(result.size<count) {
             val currentProfile=profile.copy(current=current)
@@ -213,16 +217,39 @@ class OfflineRecommender(tracks:List<RadioTrack>,vectors:List<RadioVector>,priva
                 val hex=tie("sequence:$sequenceOffset:${result.size}:$id").take(8).toLong(16)
                 return (hex.toDouble()/0xffffffffL.toDouble()-.5)*.025
             }
-            fun adjusted(pick:RadioPick)=pick.score-transitionCost(pick)+jitter(pick.songId)
-            // At zero exploration, mood, artist diversity and jitter cannot displace
-            // a closer vector neighbor. Use secondary scoring only for exact ties.
-            fun similarity(pick:RadioPick):Double {
+            fun blendedSimilarity(pick:RadioPick):Double? {
                 val text=pick.textSimilarity;val audio=pick.audioSimilarity
                 val blend=settings.audioBlend.coerceIn(0.0,1.0)
-                return if(text!=null && audio!=null)text*(1-blend)+audio*blend else text ?: audio ?: Double.NEGATIVE_INFINITY
+                return if(text!=null && audio!=null)text*(1-blend)+audio*blend else text ?: audio
             }
-            val scoreOrder=if(greedy)fresh.sortedWith(compareByDescending<RadioPick>{similarity(it)}
-                .thenByDescending{it.score}.thenBy{tie(it.songId)}.thenBy{it.songId})
+            fun anchoredSimilarity(pick:RadioPick):Double? {
+                val next=blendedSimilarity(pick) ?: return null
+                val anchor=anchorRanks[pick.songId]?.let(::blendedSimilarity) ?: return next
+                return if(result.isEmpty() || settings.vibeLock!=null) next else .65*next+.35*anchor
+            }
+            fun adjusted(pick:RadioPick):Double {
+                val continuity=blendedSimilarity(pick)
+                val anchored=anchoredSimilarity(pick)
+                return pick.score+(if(continuity!=null && anchored!=null).6*(anchored-continuity) else 0.0)-transitionCost(pick)+jitter(pick.songId)
+            }
+            // Keep zero-exploration transitions near the best remaining seed
+            // neighbors before ordering by continuity. Apply after cooldowns so
+            // sparse libraries still make progress without replaying recent songs.
+            val seedBest=if(greedy && profile.current!=null && settings.vibeLock==null)
+                fresh.mapNotNull{anchorRanks[it.songId]?.let(::blendedSimilarity)}.maxOrNull() else null
+            val selectionPool=if(seedBest!=null) fresh.filter {
+                val seedSimilarity=anchorRanks[it.songId]?.let(::blendedSimilarity)
+                seedSimilarity!=null && seedSimilarity>=seedBest-ZERO_SEED_WINDOW
+            } else fresh
+            // Taste only breaks near ties; a broad neighborhood can change style.
+            fun similarity(pick:RadioPick)=anchoredSimilarity(pick) ?: Double.NEGATIVE_INFINITY
+            val closest=selectionPool.maxOf(::similarity)
+            val close=if(greedy && hasTaste && closest.isFinite()) selectionPool.filter{similarity(it)>=closest-ZERO_TASTE_TIE} else selectionPool
+            val scoreOrder=if(greedy && hasTaste && closest.isFinite()) close.sortedWith(
+                compareByDescending<RadioPick>{tasteRanks[it.songId]?.let(::blendedSimilarity) ?: -1.0}
+                    .thenByDescending{similarity(it)}.thenBy{tie(it.songId)}.thenBy{it.songId})
+                else if(greedy)selectionPool.sortedWith(compareByDescending<RadioPick>{similarity(it)}
+                    .thenByDescending{it.score}.thenBy{tie(it.songId)}.thenBy{it.songId})
                 else fresh.sortedWith(compareByDescending<RadioPick>{adjusted(it)}.thenBy{it.songId})
             val best=adjusted(scoreOrder.first())
             val ordered=when(slot) {
@@ -242,13 +269,21 @@ class OfflineRecommender(tracks:List<RadioTrack>,vectors:List<RadioVector>,priva
                 else -> scoreOrder
             }
             val rankedPick=ordered.first()
-            val reason=if(result.isEmpty()) rankedPick.reason else when(rankedPick.reason) {
-                "Similar to current song" -> "Similar to previous queued song"
-                "Current song + listening taste" -> "Previous queued song + listening taste"
-                "Current song + temporary starting songs" -> "Previous queued song + temporary starting songs"
+            val reason=if(result.isEmpty()) when(rankedPick.reason) {
+                "Similar to current song" -> "Similar to starting song"
+                "Current song + listening taste" -> "Starting song + listening taste"
+                "Current song + temporary starting songs" -> "Starting song + temporary starting songs"
+                else -> rankedPick.reason
+            } else when(rankedPick.reason) {
+                "Similar to current song" -> "Similar to previous suggestion"
+                "Current song + listening taste" -> "Previous suggestion + listening taste"
+                "Current song + temporary starting songs" -> "Previous suggestion + temporary starting songs"
                 else -> rankedPick.reason
             }
-            val pick=rankedPick.copy(slot=slot,reason=reason)
+            val evidence=listOfNotNull(rankedPick.evidence,
+                if(greedy && hasTaste && closest.isFinite() && close.size>1) "Listening taste" else null)
+                .joinToString(" · ").ifEmpty{null}
+            val pick=rankedPick.copy(slot=slot,reason=reason,evidence=evidence)
             result+=pick
             used+=pick.songId
             current=pick.songId
@@ -256,6 +291,8 @@ class OfflineRecommender(tracks:List<RadioTrack>,vectors:List<RadioVector>,priva
         return result
     }
     companion object {
+        private const val ZERO_TASTE_TIE=0.0001
+        private const val ZERO_SEED_WINDOW=0.04
         val MOODS=linkedMapOf("chill" to (.25 to .55),"neutral" to (.5 to .5),"energetic" to (.8 to .65),"focus" to (.4 to .5),"melancholy" to (.3 to .25),"discovery" to (.55 to .55))
         private val SIGNALS=mapOf("completed" to 1.0,"skipped" to -.6,"replayed" to 1.3,"hearted" to 1.5,"unhearted" to -.3,"disliked" to -1.0)
         fun allocateSlots(ranked:List<RadioPick>,currentCluster:Int?,currentEnergy:Double?,exploration:Double=.3,vibe:Boolean=false):List<RadioPick> {

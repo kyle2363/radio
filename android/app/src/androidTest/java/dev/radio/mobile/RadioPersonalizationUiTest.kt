@@ -174,6 +174,22 @@ class RadioPersonalizationUiTest {
                 // The opt-in belongs to Settings, never the Radio screen.
                 scenario.onActivity { activity ->
                     activity.setContent {
+                        RadioContent(radio.copy(
+                            bootstrapCandidates=emptySet(),
+                            suggestionAnchorTitle="Quiet Shore.mp3",
+                            suggestions=listOf(dev.radio.mobile.recommendation.RadioSuggestion(songs.first(),
+                                dev.radio.mobile.recommendation.RadioPick("seed-one","seed-one",.9,.5,null,
+                                    reason="Similar to starting song",evidence="Audio similarity"))),
+                        ),repository,PlaybackState(),FakePlaybackController(),libraryState,{},{})
+                    }
+                }
+                compose.onNodeWithTag("radio-screen").performScrollToNode(hasText("Continues after Quiet Shore.mp3"))
+                compose.onNodeWithText("Continues after Quiet Shore.mp3").assertIsDisplayed()
+                compose.onNodeWithTag("radio-screen").performScrollToNode(hasText("1 · Similar to starting song · Audio similarity"))
+                compose.onNodeWithText("1 · Similar to starting song · Audio similarity").assertIsDisplayed()
+                capture("recommendation-anchor-evidence.png")
+                scenario.onActivity { activity ->
+                    activity.setContent {
                         RadioContent(radio.copy(legacyVectorTracks=3),repository,PlaybackState(),FakePlaybackController(),libraryState,{},{})
                     }
                 }

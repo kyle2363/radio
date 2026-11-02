@@ -50,8 +50,11 @@ class RadioUiTest {
                 compose.waitUntil(10000) { library.radio.state.value.loaded && !library.radio.state.value.busy && library.radio.state.value.suggestions.isNotEmpty() }
                 compose.onNodeWithTag("radio-screen").assertExists()
                 assertTrue(library.radio.state.value.suggestions.size <= 5)
-                compose.onNodeWithText("1 · ${library.radio.state.value.suggestions.first().pick.reason}").assertIsDisplayed()
+                val firstReason="1 · ${library.radio.state.value.suggestions.first().pick.reason}"
+                compose.onNodeWithTag("radio-screen").performScrollToNode(hasText(firstReason,substring=true))
+                compose.onNodeWithText(firstReason, substring=true).assertIsDisplayed()
                 capture("radio-light.png")
+                compose.onNodeWithTag("radio-screen").performScrollToIndex(0)
                 val baseline = playback.state.value
                 val generation = library.radio.state.value.generation
                 compose.onNodeWithTag("refresh-radio").performClick()

@@ -7,6 +7,58 @@ import org.junit.Test
 class RadioSelectionPolicyTest {
     private fun vec(id: String, x: Float, y: Float) = RadioVector(id, "text", "model", "1", floatArrayOf(x, y))
 
+    @Test fun `sequence balances predecessor with original anchor to limit drift`() {
+        fun angle(id: String, degrees: Double) = vec(id,
+            kotlin.math.cos(Math.toRadians(degrees)).toFloat(), kotlin.math.sin(Math.toRadians(degrees)).toFloat())
+        val ids = listOf("anchor", "first", "drift", "return")
+        val engine = OfflineRecommender(ids.map { RadioTrack(it, it) }, listOf(
+            angle("anchor", 0.0), angle("first", -10.0), angle("drift", -35.0), angle("return", 20.0)))
+        val picks = engine.recommendSequence(RadioProfile(current="anchor"), RadioSettings(exploration=0.0), 100.0, count=2)
+        assertEquals(listOf("first", "return"), picks.map { it.songId })
+    }
+
+    @Test fun `zero exploration does not let taste displace a meaningfully closer match`() {
+        val ids = listOf("anchor", "nearest", "preferred", "distant")
+        val engine = OfflineRecommender(ids.map { RadioTrack(it, it) }, listOf(
+            vec("anchor", 1f, 0f), vec("nearest", .999f, -.045f),
+            vec("preferred", .99f, .141f), vec("distant", 0f, 1f)))
+        val pick = engine.recommendSequence(RadioProfile(current="anchor", hearts=setOf("preferred", "distant")),
+            RadioSettings(exploration=0.0), 100.0, count=1).single()
+        assertEquals("nearest", pick.songId)
+        assertFalse(pick.evidence.orEmpty().contains("Listening taste"))
+    }
+
+    @Test fun `zero exploration uses taste for near ties only`() {
+        val ids=listOf("anchor","nearest","preferred")
+        val engine=OfflineRecommender(ids.map{RadioTrack(it,it)},listOf(
+            vec("anchor",1f,0f),vec("nearest",1f,0f),vec("preferred",.99995f,.01f)))
+        val pick=engine.recommendSequence(RadioProfile(current="anchor",hearts=setOf("preferred")),
+            RadioSettings(exploration=0.0),100.0,1).single()
+        assertEquals("preferred",pick.songId)
+        assertTrue(pick.evidence.orEmpty().contains("Listening taste"))
+    }
+
+    @Test fun `zero exploration rejects a smooth transition that leaves closer seed alternatives`() {
+        fun angle(id:String,deg:Double)=vec(id,kotlin.math.cos(Math.toRadians(deg)).toFloat(),kotlin.math.sin(Math.toRadians(deg)).toFloat())
+        val ids=listOf("anchor","first","drift","return")
+        val engine=OfflineRecommender(ids.map{RadioTrack(it,it)},listOf(
+            angle("anchor",0.0),angle("first",20.0),angle("drift",45.0),angle("return",-30.0)))
+        val picks=engine.recommendSequence(RadioProfile(current="anchor"),RadioSettings(exploration=0.0),100.0,2)
+        assertEquals(listOf("first","return"),picks.map{it.songId})
+    }
+
+    @Test fun `explanations identify the contributing similarity modality`() {
+        val ids = listOf("a", "b")
+        val vectors = ids.map { vec(it, 1f, 0f) }
+        val engine = OfflineRecommender(ids.map { RadioTrack(it, it) }, vectors)
+        val pick = engine.recommendSequence(RadioProfile(current="a"), RadioSettings(exploration=0.0), 10.0, 1).single()
+        assertEquals("Musical description similarity", pick.evidence)
+        val audio = OfflineRecommender(ids.map { RadioTrack(it, it) }, vectors.map{it.copy(space="audio")})
+        assertEquals("Audio similarity",audio.recommendSequence(RadioProfile(current="a"),RadioSettings(exploration=0.0),10.0,1).single().evidence)
+        assertNull(OfflineRecommender(ids.map { RadioTrack(it, it) },emptyList())
+            .recommendSequence(RadioProfile(),RadioSettings(),10.0,1).single().evidence)
+    }
+
     @Test fun `zero exploration follows closest similarity despite mood favorites artist and slot offset`() {
         val tracks = listOf(
             RadioTrack("anchor", "anchor", artist = "same", energy = .9, cluster = 1),
@@ -22,7 +74,7 @@ class RadioSelectionPolicyTest {
         }
     }
 
-    @Test fun `zero exploration uses predecessor directly rather than drifting toward global taste`() {
+    @Test fun `zero exploration lets taste reorder close neighbors without a distant detour`() {
         val tracks = listOf("anchor", "nearest", "taste", "taste-neighbor").map { RadioTrack(it, it) }
         val vectors = listOf(vec("anchor", 1f, 0f), vec("nearest", .999f, -.045f),
             vec("taste", 0f, 1f), vec("taste-neighbor", .98f, .2f))
@@ -30,8 +82,8 @@ class RadioSelectionPolicyTest {
         val picks = OfflineRecommender(tracks, vectors).recommendSequence(profile, RadioSettings(exploration = 0.0),
             100.0, count = 2, excluded = setOf("taste"))
         assertEquals(listOf("nearest", "taste-neighbor"), picks.map { it.songId })
-        assertEquals("Similar to current song", picks.first().reason)
-        assertEquals("Similar to previous queued song", picks.last().reason)
+        assertEquals("Similar to starting song", picks.first().reason)
+        assertEquals("Similar to previous suggestion", picks.last().reason)
     }
 
     @Test fun `zero exploration obeys modality blend and cooldown across refill boundaries`() {
@@ -73,9 +125,9 @@ class RadioSelectionPolicyTest {
             for (pick in batch) {
                 val previous = selected.last()
                 val available = tracks.filter { it.songId !in selected && it.songId !in setOf("s2", "s3") }
-                val best = available.maxOf { cosine(previous, it.songId) }
+                val best = available.maxOf { .65*cosine(previous, it.songId)+.35*cosine(anchor, it.songId) }
                 assertEquals("Not the nearest available transition from $previous to ${pick.songId}",
-                    best, cosine(previous, pick.songId), .000001)
+                    best, .65*cosine(previous, pick.songId)+.35*cosine(anchor, pick.songId), .000001)
                 assertEquals("exploit", pick.slot)
                 selected += pick.songId
             }
@@ -94,7 +146,7 @@ class RadioSelectionPolicyTest {
         assertEquals(3, picks.size)
         assertEquals(3, picks.map { it.songId }.toSet().size)
         assertEquals("first", picks[0].songId)
-        assertEquals("Previous queued song + listening taste", picks[1].reason)
+        assertEquals("Previous suggestion + listening taste", picks[1].reason)
         assertTrue(picks[1].songId in setOf("near-first", "near-near"))
         assertEquals(setOf("near-first", "near-near"), picks.drop(1).map { it.songId }.toSet())
         assertEquals(1, profile.events.size)

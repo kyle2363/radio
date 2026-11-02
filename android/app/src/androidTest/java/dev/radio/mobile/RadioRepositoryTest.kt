@@ -41,6 +41,18 @@ class RadioRepositoryTest {
             assertNull(radio.startRecommendations("missing"))
             assertTrue(db.journal().events().isEmpty())
             assertFalse(prefs.contains("recentSelections"))
+            val anchoredGeneration=radio.state.value.generation
+            radio.updatePlayback(PlaybackState(queue=songs.take(3),playOrder=songs.take(3).map{it.id},currentId=songs.first().id,radioActive=true))
+            withTimeout(10000){radio.state.first{it.generation>anchoredGeneration && !it.busy}}
+            assertEquals(songs[2].title,radio.state.value.suggestionAnchorTitle)
+            // Computing a start batch must not relabel the independently published preview.
+            assertNotNull(radio.startRecommendations(songs[1].id))
+            assertEquals(songs[2].title,radio.state.value.suggestionAnchorTitle)
+            val manualGeneration=radio.state.value.generation
+            radio.updatePlayback(PlaybackState(queue=songs.take(3),playOrder=songs.take(3).map{it.id},currentId=songs[1].id))
+            withTimeout(10000){radio.state.first{it.generation>manualGeneration && !it.busy}}
+            assertEquals(songs[1].title,radio.state.value.suggestionAnchorTitle)
+            assertTrue(db.journal().events().isEmpty())
             local.value=local.value.copy(songs=songs.take(2))
             withTimeout(10000){radio.state.first{!it.busy && it.diagnostics.eligibleTracks==2}}
             val smallPrevious=radio.state.value.suggestions.map{it.song.id}.toSet()

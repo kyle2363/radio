@@ -80,8 +80,14 @@ fun RadioContent(radio:RadioState,repository:RadioRepository,audio:PlaybackState
             }
         }
         item {Row(Modifier.fillMaxWidth().padding(start=20.dp,end=8.dp),verticalAlignment=Alignment.CenterVertically){Text("Suggested next",Modifier.weight(1f),style=MaterialTheme.typography.titleMedium);TextButton(onClick=repository::refreshSuggestions,enabled=!radio.busy,modifier=Modifier.testTag("refresh-radio")){Text(if(radio.busy)"Refreshing…" else "Refresh")}}}
+        item {
+            radio.suggestionAnchorTitle?.let { title ->
+                Text("Continues after $title",Modifier.padding(horizontal=20.dp).padding(bottom=8.dp),
+                    style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
         itemsIndexed(radio.suggestions,key={_,row->row.song.id}) { index,row->
-            LibraryRow(row.song.title,"${index+1} · ${row.pick.reason}",Symbol.Music,trailing={IconButton(onClick={playback.addToQueue(listOf(row.song))},enabled=ready,modifier=Modifier.testTag("radio-add-${row.song.id}")){RadioIcon(Symbol.Add,"Add ${row.song.title} to queue")}}){if(ready)playback.addToQueue(listOf(row.song))}
+            LibraryRow(row.song.title,"${index+1} · ${row.pick.reason}" + (row.pick.evidence?.let { " · $it" } ?: ""),Symbol.Music,subtitleMaxLines=2,trailing={IconButton(onClick={playback.addToQueue(listOf(row.song))},enabled=ready,modifier=Modifier.testTag("radio-add-${row.song.id}")){RadioIcon(Symbol.Add,"Add ${row.song.title} to queue")}}){if(ready)playback.addToQueue(listOf(row.song))}
         }
         item {Column(Modifier.padding(horizontal=20.dp,vertical=8.dp)){
             if(radio.suggestions.isEmpty() && radio.loaded && !radio.busy){Text(if(library.accessLost)"Choose your Music folder again to continue." else if(radio.diagnostics.eligibleTracks>0) "No different suggestions left. Pick for me or choose a song to start Radio." else "No eligible songs. Add local music or change feedback in Now Playing.",style=MaterialTheme.typography.bodyMedium);TextButton(onClick=onLibrary){Text("Browse music")}}
@@ -119,6 +125,7 @@ fun RadioContent(radio:RadioState,repository:RadioRepository,audio:PlaybackState
             var exploration by remember(radio.exploration){mutableFloatStateOf(radio.exploration.toFloat())}
             Slider(exploration,onValueChange={exploration=it},onValueChangeFinished={repository.setExploration(exploration.toDouble())},modifier=Modifier.testTag("radio-exploration"))
             Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween){Text("Familiar",style=MaterialTheme.typography.bodySmall);Text("Adventurous",style=MaterialTheme.typography.bodySmall)}
+            Text("At 0%, Radio prioritizes similarity and stays near the starting song. Listening taste breaks near ties.",Modifier.padding(top=8.dp),style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
             Text("Applies to future suggestions. Your current song and queue stay in place.",Modifier.padding(top=16.dp),style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
             TextButton(onClick={tuning=false},modifier=Modifier.align(Alignment.End)){Text("Done")}
         }

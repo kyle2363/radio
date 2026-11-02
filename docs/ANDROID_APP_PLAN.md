@@ -3,6 +3,103 @@
 Status: local playback and checkpoints 1A–1C are phone-tested and accepted and committed. The user accepted checkpoint 2A on November 1 and authorized 2B offline Radio. Checkpoint 2B is implemented below; its phone review remains pending. Direct LAN hosting and checkpoint 2C sync remain deferred.
 Branch: `android-app`, based on `stability-server-architecture`.
 
+## Zero-exploration correction after Skele review - November 2, 2026
+
+Supersedes the broad taste window in the recommendation-clarity entry below.
+The phone's Skele seed had valid matched text/audio vectors; this was ranking
+behavior, not vector fallback. Lauv ranked ninth against the seed but qualified
+for the old 0.02 taste window, after which the sequence moved toward synth-pop.
+
+- At 0%, taste now orders only near ties within 0.0001 cosine similarity of the
+  best continuity score. Mood, artist penalties, slots and jitter cannot move a
+  meaningfully worse match above that neighborhood.
+- Before continuity ordering, restrict candidates to within 0.04 cosine similarity
+  of the best remaining seed match. Apply this after hard exclusions/cooldowns,
+  and recompute as picks are used, so sparse libraries still progress. This is a
+  relative constraint, not an absolute musical-quality threshold. It applies per
+  batch; refill still establishes a new anchor.
+- Retain 65% predecessor / 35% batch-anchor continuity. Positive exploration,
+  explicit Vibe lock and portable reference rank/recommend behavior are unchanged.
+  Missing-seed-vector cases retain their existing taste/local fallback.
+- Keep named anchors, modality explanations and two-line Radio subtitles. Tune
+  now describes near ties rather than a broad close-match neighborhood.
+
+Red tests reproduced taste overriding a closer match and a smooth predecessor
+transition drifting despite closer seed alternatives. The corrected 74-test JVM
+suite passes, including near-tie taste, seed guard, cooldown, sparse/vectorless
+fallback, Vibe and multi-refill cases. A saved-phone Kotlin replay used 1,851
+matched tracks, 3,700 vectors, reconstructed journal/likes and prior reservations.
+Its four picks were paradise, this ain't love, i've felt so much worse…, and
+Said The Sky's Change Your Mind. Independent cosine calculations verified every
+pick obeyed the seed window and near-tie limit. This is a reconstructed replay,
+not a guarantee of exact live ordering or subjective musical fit.
+
+Debug app/test APK builds and lint passed (0 errors, 41 warnings). All 19 focused
+emulator repository/UI/service/queue tests passed after fixing a text-encoding
+regression and making the first-row UI assertion scroll-aware. Light/dark
+screenshots were reviewed. Installed on SM-S938U with data retained: readback
+confirmed songs, playlists, feedback, catalog/vectors, listening events, Radio
+preferences and queue/order/current song were preserved. Phone screen was locked
+after installation; subjective listening and an unlocked-device UI check remain.
+
+Verification artifacts and APK: `.test-runtime/android-zero-similarity-correction/`.
+Phone listening remains pending: start a new Radio queue from Skele at 0%, compare
+its first four recommendations and listen through a refill. Existing queues are
+snapshots and are not rewritten by the update. No next checkpoint is started.
+
+## Recommendation clarity and drift follow-up - November 2, 2026
+
+Supersedes the strict predecessor-only 0% policy described in the earlier greedy
+similarity entry below; portable reference `rank`/`recommend` remain unchanged.
+
+- Suggested next names its actual anchor: the queue tail during active Radio,
+  otherwise the current song. The title and preview publish together; computing
+  a separate start/refill batch cannot relabel the visible preview.
+- Sequence selection balances 65% predecessor similarity with 35% batch-start
+  similarity after the first pick. This discourages drift within each batch;
+  refills establish a new batch anchor. Vibe lock retains its explicit query.
+- At 0%, learned taste can order candidates within 0.02 blended cosine similarity
+  of the closest anchored match. Without usable learned taste, similarity order
+  remains primary. Exploration/context slots and jitter remain disabled at zero.
+  Existing filters, dislikes, exclusions and cooldown relaxation are unchanged.
+- Labels distinguish the starting song from the previous suggestion. Reasons
+  identify audio versus musical-description evidence, plus listening taste when
+  it orders close candidates. Radio rows allow two subtitle lines.
+- Text/audio weighting remains 35%/65%; no model, schema or source-media changes.
+
+Verification: 72 JVM tests passed; 14 focused emulator tests passed across
+repository, UI/personalization and actual Media3 service behavior. Debug app/test
+APK builds and lint passed (0 errors, 41 existing warnings). The final additional
+listening-taste label passed JVM/build/lint and was inspected on the real phone.
+Light-theme emulator and phone screenshots were reviewed; focused Radio UI tests
+also exercised dark theme. Subjective phone listening remains pending.
+
+A fixed-seed Kotlin replay on the earlier phone snapshot (1,809 mapped songs,
+3,618 vectors, no learned events) compared four five-song batches: mean similarity
+to each batch anchor increased from 0.96311 to 0.97247, while adjacent similarity
+changed from 0.97902 to 0.97535. Both runs produced 20 distinct picks. These model
+scores support reduced batch drift, not a claim of audible musical quality or an
+exact reproduction of the live phone state.
+
+Installed the verified update on SM-S938U with data retained. Readback confirmed
+1,877 songs, playlists, feedback, catalog/vectors, listening events and Radio
+preferences were identical across installation. Queue, order and current song
+were retained; the saved position advanced by 15 seconds before installation.
+Restored playback was
+paused; no song was started for verification. The phone was left on Radio with
+the new anchor and audio/taste explanations visible.
+
+Artifacts, comparison, retention report and APK:
+`.test-runtime/android-radio-continuity-review/`.
+
+Phone check (pending):
+1. Inspect Suggested next and its named anchor, then choose a familiar starting
+   song and confirm a new Radio queue when ready to listen.
+2. At 0%, listen through five songs and at least one refill. Check that the
+   sequence stays related while likes still help choose among close matches.
+3. Compare positive exploration and Vibe lock. Tuning/Refresh must leave the
+   current song and queue alone; disliked tracks must remain excluded.
+
 ## Radio controls refinement - November 2, 2026
 
 - **Pick for me** and searchable **Choose a song** both start service-owned Radio.

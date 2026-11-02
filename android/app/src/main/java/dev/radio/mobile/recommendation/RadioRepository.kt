@@ -19,7 +19,7 @@ data class RadioInputToken(val library:LibraryState,val mappings:JournalIdentity
 data class RadioBatch(val suggestions:List<RadioSuggestion>,val token:RadioInputToken)
 data class RadioState(val loaded:Boolean=false,val busy:Boolean=false,val suggestions:List<RadioSuggestion> = emptyList(),val mood:String="neutral",val exploration:Double=.3,val matched:Int=0,val localOnly:Int=0,val status:String="Loading local Radio…",val error:String?=null,val vibeLocalId:String?=null,val vibeUntil:Long=0,val vibeSongsLeft:Int=0,val generation:Long=0,val vibeAvailable:Boolean=false,
     val diagnostics:RadioDiagnostics=RadioDiagnostics(),val bootstrapLocalIds:Set<String> = emptySet(),val bootstrapCandidates:Set<String> = emptySet(),val bootstrapDismissed:Boolean=false,
-    val catalogSnapshot:String?=null,val legacyVectorTracks:Int=0,val legacyVectorsEnabled:Boolean=false)
+    val suggestionAnchorTitle:String?=null,val catalogSnapshot:String?=null,val legacyVectorTracks:Int=0,val legacyVectorsEnabled:Boolean=false)
 
 /** Local-only recommendation snapshots. Publishing a preview never calls playback. */
 class RadioRepository internal constructor(context:Context,private val db:LibraryDatabase,private val library:StateFlow<LibraryState>,private val journal:ListeningJournalRepository,private val scope:CoroutineScope,
@@ -113,7 +113,7 @@ class RadioRepository internal constructor(context:Context,private val db:Librar
         val local=library.value;val mapping=JournalIdentityProvider.mappings.value
         val inputs=token()
         if(local.loading || local.scanning || !journal.state.value.feedbackLoaded || journal.state.value.pendingWrites>0)return@withLock null
-        if(local.accessLost){mutable.update{it.copy(loaded=true,busy=false,suggestions=emptyList(),diagnostics=RadioDiagnostics(),bootstrapCandidates=emptySet(),bootstrapLocalIds=emptySet(),catalogSnapshot=null,legacyVectorTracks=0,legacyVectorsEnabled=false,status="Music folder access is unavailable.",generation=it.generation+1)};return@withLock emptyList()}
+        if(local.accessLost){mutable.update{it.copy(loaded=true,busy=false,suggestions=emptyList(),suggestionAnchorTitle=null,diagnostics=RadioDiagnostics(),bootstrapCandidates=emptySet(),bootstrapLocalIds=emptySet(),catalogSnapshot=null,legacyVectorTracks=0,legacyVectorsEnabled=false,status="Music folder access is unavailable.",generation=it.generation+1)};return@withLock emptyList()}
         mutable.update{it.copy(busy=true,error=null)}
         try {
             val available=local.songs.filter{it.available && it.uri.startsWith("content:")}
@@ -179,7 +179,7 @@ class RadioRepository internal constructor(context:Context,private val db:Librar
             if(!valid(inputs) || db.catalogs().latest()!=record){mutable.update{it.copy(busy=false)};refresh();return@withLock null}
             val status=when{available.isEmpty()->"Choose music in Library to start Radio.";damaged->"Local recommendations · imported vectors need reimport";record==null->"Local recommendations · no catalog imported";accepted.isEmpty()->"Local recommendations · match songs to use imported metadata";legacyVectorTracks>0 && !legacyEnabled && diagnostics.textVectorTracks+diagnostics.audioVectorTracks==0->"Similarity is off · desktop vectors have unrecorded model provenance";legacyEnabled->"${accepted.size} matched · using legacy desktop similarity";else->"${accepted.size} matched · ${available.size-accepted.size} local only"}
             val vibeAvailable=accepted[playback.currentId]?.let{sid->vectors.any{it.songId==sid}}==true
-            mutable.update{it.copy(loaded=true,busy=false,suggestions=if(publishPreview)suggestions else it.suggestions,mood=effectiveMood,matched=accepted.size,localOnly=available.size-accepted.size,status=status,error=if(publishPreview && suggestions.size<count && previewExclusions.isNotEmpty())"Not enough different eligible songs for a full preview." else null,generation=it.generation+1,vibeAvailable=vibeAvailable,
+            mutable.update{it.copy(loaded=true,busy=false,suggestions=if(publishPreview)suggestions else it.suggestions,suggestionAnchorTitle=if(publishPreview)available.firstOrNull{song->song.id==anchorLocalId}?.title else it.suggestionAnchorTitle,mood=effectiveMood,matched=accepted.size,localOnly=available.size-accepted.size,status=status,error=if(publishPreview && suggestions.size<count && previewExclusions.isNotEmpty())"Not enough different eligible songs for a full preview." else null,generation=it.generation+1,vibeAvailable=vibeAvailable,
                 diagnostics=diagnostics,bootstrapCandidates=bootstrapCandidates,
                 bootstrapLocalIds=if(diagnostics.hasUsableTaste)emptySet() else it.bootstrapLocalIds.intersect(bootstrapCandidates),
                 catalogSnapshot=if(damaged)null else record?.manifestSha256,legacyVectorTracks=legacyVectorTracks,legacyVectorsEnabled=legacyEnabled)}
