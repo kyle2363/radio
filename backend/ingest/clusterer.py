@@ -12,6 +12,7 @@ from sklearn.cluster import KMeans
 
 import config
 from db import database
+from db.chroma_sync import sync_cluster_metadata
 
 _cluster_model = None
 _cluster_centroids = None
@@ -249,6 +250,13 @@ def cluster_songs() -> list:
             )
     except Exception as e:
         print(f"  Warning: could not save centroids to ChromaDB: {e}")
+
+    try:
+        refreshed = sync_cluster_metadata(dict(zip(song_ids, map(int, cluster_labels))))
+        print(f"  Refreshed cluster metadata: {refreshed}")
+    except Exception as exc:
+        raise RuntimeError('Clusters saved in SQLite, but embedding metadata refresh failed; '
+                           'rerun Cluster to retry. Recommendations use SQLite assignments.') from exc
 
     # Print cluster sizes
     unique, counts = np.unique(cluster_labels, return_counts=True)

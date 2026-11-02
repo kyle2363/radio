@@ -1,5 +1,6 @@
 import json
 import math
+import ntpath
 import os
 import re
 import sqlite3
@@ -381,20 +382,38 @@ def _row_to_dict(row):
     return dict(row)
 
 
+def _find_song_by_filepath(conn, filepath):
+    # Windows paths are case insensitive, while SQLite's default TEXT UNIQUE
+    # constraint is case sensitive. Accept both slash styles from older scans.
+    if ntpath.splitdrive(filepath)[0]:
+        return conn.execute(
+            "SELECT * FROM songs WHERE replace(filepath, '/', char(92)) = ? COLLATE NOCASE ORDER BY id LIMIT 1",
+            (ntpath.normpath(filepath),),
+        ).fetchone()
+    return conn.execute("SELECT * FROM songs WHERE filepath = ?", (filepath,)).fetchone()
+
+
 def add_song(filepath, file_hash, file_mtime=None):
+    """Register a path once; return whether a row was inserted."""
     conn = get_connection()
     try:
+        # Serialize lookup + insert so simultaneous registrations cannot create
+        # casing variants even though the legacy UNIQUE constraint allows them.
+        conn.execute("BEGIN IMMEDIATE")
+        if _find_song_by_filepath(conn, filepath) is not None:
+            return False
         if file_mtime is not None:
-            conn.execute(
+            cursor = conn.execute(
                 "INSERT OR IGNORE INTO songs (filepath, file_hash, file_mtime) VALUES (?, ?, ?)",
                 (filepath, file_hash, file_mtime),
             )
         else:
-            conn.execute(
+            cursor = conn.execute(
                 "INSERT OR IGNORE INTO songs (filepath, file_hash) VALUES (?, ?)",
                 (filepath, file_hash),
             )
         conn.commit()
+        return cursor.rowcount == 1
     finally:
         conn.close()
 
@@ -460,7 +479,7 @@ def get_songs_by_ids(song_ids):
 def get_song_by_filepath(filepath):
     conn = get_connection()
     try:
-        row = conn.execute("SELECT * FROM songs WHERE filepath = ?", (filepath,)).fetchone()
+        row = _find_song_by_filepath(conn, filepath)
         return _row_to_dict(row)
     finally:
         conn.close()

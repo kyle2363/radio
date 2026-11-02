@@ -78,3 +78,20 @@ Recorded October 31 as future work only: initial OmniVoice requests reportedly t
 Run `backend\venv\Scripts\python -B scripts/run_tests.py -q backend/tests/test_ingest_jobs.py backend/tests/test_ingest_api_routes.py backend/tests/test_ingest_vectors.py backend/tests/test_ingest_metadata_audio.py` from the repository root. These tests use isolated storage and fake providers to check admission, failure recovery, metadata identity and complete clustering coverage. They do not establish model quality or GPU memory acceptance, and should not freeze a future model schedule or energy formula.
 
 Manual acceptance remains pending: run individual phases with the actual managed chat, embedding and acestep processes; verify the prior model exits before the next loads, failed work resumes at its retained phase, and progress/controls recover after completion. Understand remains an explicit manual phase. Newly generated JSON uses a path hash to distinguish same-named recordings; ambiguous legacy metadata requires Understand again. Managed models are released at phase completion rather than all restarted together. Externally launched servers must be managed separately. Check real audio and lyrics output by listening; automated tests do not cover their quality.
+
+### Cluster metadata consistency
+
+SQLite owns current cluster IDs. Vector, cold-start and Vibe lock retrieval hydrate
+those IDs from SQLite; missing library rows are excluded. Clustering refreshes
+existing text/audio embedding metadata after saving assignments. A failed refresh
+is reported and can be retried without rebuilding vectors.
+
+Regressions: `backend\venv\Scripts\python -B scripts/run_tests.py -q backend/tests/test_cluster_metadata.py backend/tests/test_ingest_vectors.py backend/tests/test_recommendation_context.py`.
+
+Existing installations can preview mismatches with
+`backend\venv\Scripts\python -B scripts/refresh_cluster_metadata.py`.
+Stop the backend before adding `--apply`. The repair backs up SQLite and Chroma
+under `.test-runtime/cluster-metadata-backups/`, updates only cluster metadata,
+and verifies agreement. It does not run tagging, embedding, clustering, or lyrics
+alignment. This repairs cached IDs; it does not preserve cluster identities
+between different clustering runs.

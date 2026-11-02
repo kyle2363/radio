@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 from db import database
 from ingest import clusterer, embedder
@@ -157,11 +158,18 @@ def test_zero_scalar_values_are_not_replaced_by_defaults(monkeypatch):
     assert np.all(matrix[1, :] > 0.0)
 
 
-def test_single_song_uses_one_cluster(monkeypatch):
+@pytest.mark.parametrize('refresh_fails', [False, True])
+def test_single_song_uses_one_cluster(monkeypatch, refresh_fails):
     songs = [{"id": 1}]
     monkeypatch.setattr(clusterer, "_get_all_embedded_songs", lambda: songs)
     monkeypatch.setattr(clusterer, "_build_feature_matrix", lambda _: (np.array([[0.0, 0.0, 0.0]]), [1], (0, 0)))
     created = []
+    refreshed = []
+    def refresh(assignments):
+        refreshed.append(assignments)
+        if refresh_fails:
+            raise RuntimeError('Chroma unavailable')
+    monkeypatch.setattr(clusterer, 'sync_cluster_metadata', refresh)
 
     class FakeKMeans:
         def __init__(self, n_clusters, **kwargs):
@@ -193,5 +201,10 @@ def test_single_song_uses_one_cluster(monkeypatch):
     monkeypatch.setitem(__import__("sys").modules, "chromadb", SimpleNamespace(PersistentClient=lambda **kwargs: Client()))
     monkeypatch.setattr(clusterer.config, "CHROMA_PATH", "unused-test-path")
 
-    assert clusterer.cluster_songs() == [1]
+    if refresh_fails:
+        with pytest.raises(RuntimeError, match='Clusters saved in SQLite'):
+            clusterer.cluster_songs()
+    else:
+        assert clusterer.cluster_songs() == [1]
     assert created == [1]
+    assert refreshed == [{1: 0}]

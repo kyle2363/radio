@@ -20,7 +20,7 @@ export function localPlaybackState(state = current?.getState?.(), clientId = cur
       !session.instance_id || audio?.instance_id !== session.instance_id || !item?.item_id || audio.item_id !== item.item_id ||
       !['playing', 'paused', 'interrupted', 'awaiting_user_gesture'].includes(audio.status)) return null;
   return { instance_id: audio.instance_id, item_id: audio.item_id, song_id: item.song_id,
-    status: audio.status, is_playing: audio.status === 'playing', position_ms: audio.position_ms };
+    status: audio.status, is_playing: audio.status === 'playing', position_ms: audio.position_ms, duration_ms: audio.duration_ms };
 }
 
 function visible(state) {
@@ -77,7 +77,7 @@ export function createPlaybackFacade({ fetchStatus = () => {}, onConnected = () 
           const session = current.getState().session;
           const item = session.items?.[session.active_index || 0];
           facade._positionHandler?.({ elapsed_ms: physical.position_ms, position_ms: physical.position_ms,
-            duration_ms: item?.duration_ms || 0, is_playing: physical.is_playing });
+            duration_ms: physical.duration_ms || item?.duration_ms || 0, is_playing: physical.is_playing });
           return;
         }
         Promise.resolve(fetchStatus()).then(status => {
@@ -107,7 +107,7 @@ export function createPlaybackFacade({ fetchStatus = () => {}, onConnected = () 
     const changedSong = item?.kind === 'song' && item.started &&
       (item.item_id !== before?.item_id || session.instance_id !== previous?.instance_id || !before?.started);
     const position = state.audio?.position_ms ?? session.position_ms ?? 0;
-    const duration = item?.duration_ms || 0;
+    const duration = state.audio?.duration_ms || item?.duration_ms || 0;
     if (changedSong) facade._songStartedHandler?.({ event: 'song_started', song_id: item.song_id, elapsed_ms: position });
     facade._positionHandler?.({ elapsed_ms: position, position_ms: position, duration_ms: duration,
       ...(state.audio ? { is_playing: state.audio.is_playing } : {}) });

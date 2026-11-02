@@ -1511,10 +1511,10 @@ def library_verify():
     # 2) Unregistered files — MP3s on disk not in DB
     from ingest.scanner import find_audio_files, compute_file_hash
     disk_files = find_audio_files(music_dir)
-    known_paths = {fp for _, fp in all_filepaths}
+    known_paths = {compute_file_hash(fp) for _, fp in all_filepaths}
     unregistered = []
     for fp in disk_files:
-        if fp not in known_paths:
+        if compute_file_hash(fp) not in known_paths:
             fsize = 0
             try:
                 fsize = os.path.getsize(fp)
@@ -1544,10 +1544,11 @@ def library_verify():
 def library_auto_match():
     """Attempt to match orphaned DB entries to unregistered files by filename similarity."""
     from ingest.metadata import normalize_filename, _find_best_match
+    from ingest.scanner import compute_file_hash
 
     # Get current orphaned and unregistered
     all_filepaths = database.get_all_filepaths()
-    known_paths = {fp for _, fp in all_filepaths}
+    known_paths = {compute_file_hash(fp) for _, fp in all_filepaths}
 
     # Build orphan list
     orphaned = []
@@ -1568,7 +1569,7 @@ def library_auto_match():
     unregistered_stems = {}  # normalized_stem -> filepath
     unregistered_by_path = {}
     for fp in disk_files:
-        if fp not in known_paths:
+        if compute_file_hash(fp) not in known_paths:
             stem = os.path.splitext(os.path.basename(fp))[0]
             norm = normalize_filename(stem)
             unregistered_stems[norm] = fp
@@ -1596,7 +1597,6 @@ def library_auto_match():
                 unmatched_orphans.append(o_with_reason)
                 continue
             try:
-                from ingest.scanner import compute_file_hash
                 new_hash = compute_file_hash(best_path)
                 database.update_song(o["id"], filepath=best_path, file_hash=new_hash)
             except Exception as e:
@@ -1615,14 +1615,15 @@ def library_auto_match():
                 "artist": o["artist"],
                 "title": o["title"],
             })
-            matched_file_paths.add(best_path)
+            matched_file_paths.add(compute_file_hash(best_path))
         else:
             unmatched_orphans.append(o)
 
     # Remaining unregistered files after matches
     remaining_unregistered = []
     for fp in disk_files:
-        if fp not in known_paths and fp not in matched_file_paths:
+        path_hash = compute_file_hash(fp)
+        if path_hash not in known_paths and path_hash not in matched_file_paths:
             fsize = 0
             try:
                 fsize = os.path.getsize(fp)

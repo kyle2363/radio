@@ -152,11 +152,11 @@ def run_phase_raw():
     print(f"  Found {scan_result['unique_files']} unique files, {scan_result['duplicates']} duplicates")
 
     new_ids = []
+    added_count = 0
     for detail in scan_result.get("duplicate_details", []):
         print(f"  Duplicate skipped: {detail['file']} (kept: {detail['kept']})")
 
-    # Use deduplicated file list — prevents adding the same file twice
-    # when it exists in multiple folders with different paths
+    # Deduplicate path variants; separate copies at different paths stay distinct.
     all_files = scanner.find_audio_files(config.MUSIC_DIR)
     dedup = scanner.deduplicate(all_files)
     kept_paths = set(dedup["unique"])
@@ -169,7 +169,13 @@ def run_phase_raw():
         else:
             import os as _os
             file_mtime = _os.path.getmtime(filepath)
-            database.add_song(filepath, file_hash, file_mtime=file_mtime)
+            inserted = database.add_song(filepath, file_hash, file_mtime=file_mtime)
+            if not inserted:
+                song = database.get_song_by_filepath(filepath)
+                if song:
+                    new_ids.append(song['id'])
+                continue
+            added_count += 1
             parsed = scanner.parse_filename(filepath)
             update = {"filepath": filepath}
             if parsed.get("artist"):
@@ -183,7 +189,8 @@ def run_phase_raw():
 
     _ingest_progress["total"] = len(new_ids)
     _ingest_progress["processed"] = len(new_ids)
-    print(f"  {len(new_ids)} songs in database")
+    existing_count = len(new_ids) - added_count
+    print(f"  {added_count} new songs added, {existing_count} already registered")
 
     # Phase 1b: Extract album art from ID3 tags
     print("Phase 1b: Extracting album art...")
@@ -200,7 +207,7 @@ def run_phase_raw():
 
     _ingest_progress["running"] = False
     print("Phase 1 complete!")
-    return {"added": len(new_ids), "art_extracted": art_count}
+    return {"added": added_count, "existing": existing_count, "art_extracted": art_count}
 
 
 def run_phase_analyze():
@@ -302,8 +309,8 @@ def run_phase_describe():
                 db_tags["ai_description"] = ace_metadata_for_song.get("caption")
                 if ace_metadata_for_song.get("bpm"):
                     db_tags["bpm"] = ace_metadata_for_song["bpm"]
-                if ace_metadata_for_song.get("duration"):
-                    db_tags["duration_secs"] = ace_metadata_for_song["duration"]
+                # Playback duration belongs to the source file (tag scan), not
+                # the analysis metadata, which may describe a trimmed excerpt.
                 if ace_metadata_for_song.get("lyrics"):
                     db_tags["lyrics"] = ace_metadata_for_song["lyrics"]
                 if ace_metadata_for_song.get("keyscale"):
