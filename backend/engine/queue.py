@@ -928,13 +928,14 @@ class QueueManager:
             )
             _log_step(f"Slots allocated: {slots_result}")
 
-            # Enrich candidates with lyrics for reranker
-            _log_step("Enriching candidates with lyrics")
+            # Hydrate song text in one batch; retrieval diagnostics stay attached.
+            _log_step("Enriching candidates with lyrics and tags")
+            candidate_songs = self._db.get_songs_by_ids([c["song_id"] for c in candidates])
             for c in candidates:
-                if not c.get("lyrics"):
-                    cs = self._db.get_song(c["song_id"])
-                    if cs and cs.get("lyrics"):
-                        c["lyrics"] = cs["lyrics"]
+                cs = candidate_songs.get(c["song_id"])
+                if cs:
+                    for key in ("lyrics", "genre_tags", "emotional_tags", "instrument_tags"):
+                        c[key] = cs.get(key)
 
             # Check play_mode (ai/shuffle/sequential) — bypasses full recommendation engine
             mode = self._db.get_setting("current_mode") or "radio"
@@ -974,6 +975,7 @@ class QueueManager:
                     hour=datetime.now().hour,
                     skip_streak=self._skip_streak,
                     vibe_lock=vibe_lock,
+                    exploration_level=exploration_level,
                 )
                 _log_step(f"Reranker returned: {len(picks) if picks else None} picks")
                 if picks is None:

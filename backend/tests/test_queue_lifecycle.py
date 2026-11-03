@@ -230,6 +230,21 @@ def test_reranking_gate_leaves_dj_scheduling_independent(manager, ranking_pipeli
     talk.assert_called_once()
 
 
+def test_queue_passes_song_tags_and_exploration_to_reranker(manager, ranking_pipeline):
+    llm, _, _ = ranking_pipeline
+    database.set_setting('exploration_level', '0.7')
+    with database.get_connection_cm() as conn:
+        conn.execute("UPDATE songs SET genre_tags = ?, emotional_tags = ?, instrument_tags = ? WHERE id = 1",
+                     ('["electronic"]', '["reflective"]', '["synth"]'))
+        conn.commit()
+    manager._rebuild_queue()
+    assert llm.call_args.kwargs['exploration_level'] == .7
+    song = next(c for c in llm.call_args.kwargs['candidates'] if c['song_id'] == 1)
+    assert song['genre_tags'] == '["electronic"]'
+    assert song['emotional_tags'] == '["reflective"]'
+    assert song['instrument_tags'] == '["synth"]'
+
+
 def test_toggle_fences_inflight_ranking_preserving_queue_preview_and_session(manager, ranking_pipeline):
     llm, _, talk = ranking_pipeline
     manager._queue = [{'song_id': 20}]
