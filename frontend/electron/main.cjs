@@ -109,6 +109,8 @@ function createWindow() {
     minWidth: 440,
     minHeight: 110,
     title: "Radio",
+    show: false,
+    backgroundColor: "#070a10",
     frame: true,
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
@@ -116,6 +118,10 @@ function createWindow() {
       nodeIntegration: false,
     },
     autoHideMenuBar: true,
+  });
+
+  mainWindow.once("ready-to-show", () => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.show();
   });
 
   const contentSize = mainWindow.getContentSize();

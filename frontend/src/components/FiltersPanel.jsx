@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { Filter, X, ChevronDown, RotateCcw } from "lucide-react";
 import * as api from "../api";
+import { createFolderGesture, applyFolderRange } from '../ui/folderSelection.js';
+import { createFilterSaver } from '../ui/filterSaver.js';
 
 function FiltersPanel({ addToast, onFiltersChange }) {
   const [filters, setFilters] = useState({
@@ -19,7 +21,13 @@ function FiltersPanel({ addToast, onFiltersChange }) {
   const [sliderDrag, setSliderDrag] = useState({ active: false, handle: null });
   const [tooltipValue, setTooltipValue] = useState(null);
   const [hoveredTick, setHoveredTick] = useState(null);
-  const debounceRef = useRef(null);
+  const [saveStatus, setSaveStatus] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [filtersLoaded, setFiltersLoaded] = useState(false);
+  const [folderError, setFolderError] = useState(false);
+  const saverRef = useRef(null);
+  const callbacksRef = useRef({ addToast, onFiltersChange });
+  callbacksRef.current = { addToast, onFiltersChange };
   const filtersRef = useRef(filters);
   const dragActiveRef = useRef(false);
   const dragValuesRef = useRef({ min: 0, max: 0 });
@@ -28,79 +36,86 @@ function FiltersPanel({ addToast, onFiltersChange }) {
   filtersRef.current = filters;
 
   useEffect(() => {
-    api.fetchSubfolders().then((d) => setSubfolders(d.subfolders || [])).catch(() => {});
+    let active = true;
+    api.fetchSubfolders().then((d) => { if (active) setSubfolders(d.subfolders || []); }).catch(() => { if (active) setFolderError(true); });
     api.fetchFolderTicks().then((d) => {
+      if (!active) return;
       setFolderTicks(d.ticks || []);
       setSliderMaxDays(d.slider_max_days || 1825);
     }).catch(() => {});
     api.fetchRecommendationFilters().then((d) => {
+      if (!active) return;
+      filtersRef.current = d;
       setFilters(d);
       setMtimeMin(d.mtime_min_days);
       setMtimeMax(d.mtime_max_days);
       setArtistInput((d.artists || []).join(", "));
-    }).catch(() => {});
+      setFiltersLoaded(true);
+    }).catch(() => { if (active) { setSaveStatus('Couldn’t load filters'); callbacksRef.current.addToast?.('Couldn’t load filters. Reopen the Filters tab to retry.', 'error'); } })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
   }, []);
 
   useEffect(() => {
-    return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
+    saverRef.current = createFilterSaver({
+      save: api.setRecommendationFilters,
+      onSaved: updated => { setSaveStatus('Saved'); callbacksRef.current.onFiltersChange?.(updated); },
+      onError: () => { setSaveStatus('Not saved'); callbacksRef.current.addToast?.('Failed to save filters', 'error'); },
+    });
+    return () => { saverRef.current.dispose(); };
   }, []);
 
   const doSave = useCallback((updated) => {
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(async () => {
-      try {
-        await api.setRecommendationFilters(updated);
-        setFilters(updated);
-        onFiltersChange?.(updated);
-      } catch (e) {
-        addToast?.("Failed to save filters", "error");
-      }
-    }, 300);
-  }, [addToast, onFiltersChange]);
+    filtersRef.current = updated;
+    setSaveStatus('Saving…');
+    saverRef.current?.submit(updated);
+  }, []);
 
   // ── Folder grid: click-drag-select ──────────────────────
 
   const applyDragRange = useCallback((fromIdx, toIdx, mode) => {
-    const lo = Math.min(fromIdx, toIdx);
-    const hi = Math.max(fromIdx, toIdx);
-    const cur = new Set(filtersRef.current.folders || []);
-    for (let i = lo; i <= hi; i++) {
-      const name = subfolders[i]?.name;
-      if (!name) continue;
-      if (mode) cur.add(name);
-      else cur.delete(name);
-    }
-    const next = Array.from(cur).sort();
+    const next = applyFolderRange(filtersRef.current.folders || [], subfolders.map(f => f.name), { fromIdx, toIdx, mode });
     const updated = { ...filtersRef.current, folders: next };
     setFilters(updated);
     doSave(updated);
   }, [subfolders, doSave]);
 
+  const applyRangeRef = useRef(applyDragRange);
+  applyRangeRef.current = applyDragRange;
+  const gestureRef = useRef(null);
+  if (!gestureRef.current) gestureRef.current = createFolderGesture(range => applyRangeRef.current(range.fromIdx, range.toIdx, range.mode));
+
   const handleGridMouseDown = useCallback((e, idx) => {
+    if (e.button !== 0) return;
     e.preventDefault();
+    e.currentTarget.focus();
     const name = subfolders[idx]?.name;
     if (!name) return;
     const cur = filtersRef.current.folders || [];
     const mode = !cur.includes(name);
+    gestureRef.current.begin(idx, mode);
     dragActiveRef.current = true;
     setDragState({ active: true, fromIdx: idx, toIdx: idx, mode });
   }, [subfolders]);
 
   const handleGridMouseEnter = useCallback((idx) => {
     if (!dragActiveRef.current) return;
+    gestureRef.current.enter(idx);
     setDragState(prev => ({ ...prev, toIdx: idx }));
   }, []);
 
   useEffect(() => {
-    if (!dragState.active) return;
     const handleUp = () => {
+      if (!dragActiveRef.current) return;
       dragActiveRef.current = false;
-      applyDragRange(dragState.fromIdx, dragState.toIdx, dragState.mode);
+      gestureRef.current.release();
       setDragState({ active: false, fromIdx: 0, toIdx: 0, mode: false });
     };
+    const cancel = () => { dragActiveRef.current = false; gestureRef.current.cancel(); setDragState({ active: false, fromIdx: 0, toIdx: 0, mode: false }); };
     window.addEventListener("mouseup", handleUp);
-    return () => window.removeEventListener("mouseup", handleUp);
-  }, [dragState, applyDragRange]);
+    window.addEventListener('blur', cancel);
+    return () => { window.removeEventListener("mouseup", handleUp); window.removeEventListener('blur', cancel); };
+  }, []);
 
   const handleSingleToggle = useCallback((name) => {
     const cur = filtersRef.current.folders || [];
@@ -120,6 +135,7 @@ function FiltersPanel({ addToast, onFiltersChange }) {
   }, [sliderMaxDays]);
 
   const handleTrackDown = useCallback((e, handle) => {
+    if (!filtersLoaded) return;
     activeTrackRef.current = e.currentTarget;
     const v = valueFromEvent(e, activeTrackRef.current);
     const min = mtimeMin ?? 0;
@@ -133,17 +149,14 @@ function FiltersPanel({ addToast, onFiltersChange }) {
     setSliderDrag({ active: true, handle });
     setTooltipValue(handle === "min" ? newMin : newMax);
     debouncedMtimeSave(newMin, newMax);
-  }, [mtimeMin, mtimeMax, sliderMaxDays, valueFromEvent]);
+  }, [mtimeMin, mtimeMax, sliderMaxDays, valueFromEvent, filtersLoaded]);
 
   const debouncedMtimeSave = useCallback((min, max) => {
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => {
-      const saveMin = min === 0 ? null : min;
-      const saveMax = max >= sliderMaxDays ? null : max;
-      const updated = { ...filtersRef.current, mtime_min_days: saveMin, mtime_max_days: saveMax };
-      setFilters(updated);
-      doSave(updated);
-    }, 150);
+    const saveMin = min === 0 ? null : min;
+    const saveMax = max >= sliderMaxDays ? null : max;
+    const updated = { ...filtersRef.current, mtime_min_days: saveMin, mtime_max_days: saveMax };
+    setFilters(updated);
+    doSave(updated);
   }, [sliderMaxDays, doSave]);
 
   useEffect(() => {
@@ -214,14 +227,13 @@ function FiltersPanel({ addToast, onFiltersChange }) {
 
   const clearAll = async () => {
     try {
-      await api.clearRecommendationFilters();
       const def = { folders: [], mtime_min_days: null, mtime_max_days: null, artist_mode: null, artists: [] };
       setFilters(def);
       setMtimeMin(null);
       setMtimeMax(null);
       setArtistInput("");
-      onFiltersChange?.(def);
-      addToast?.("All filters cleared", "success");
+      doSave(def);
+      await saverRef.current.flush();
     } catch (e) {
       addToast?.("Failed to clear filters", "error");
     }
@@ -243,12 +255,13 @@ function FiltersPanel({ addToast, onFiltersChange }) {
   }
 
   return (
-    <div style={{ userSelect: "none" }}>
+    <fieldset disabled={!filtersLoaded} style={{ userSelect: "none", border: 0, padding: 0, margin: 0, minWidth: 0 }}>
       {/* Header */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 14px 4px" }}>
         <span style={{ fontSize: "12px", fontWeight: 500, color: "var(--text-primary)", display: "flex", alignItems: "center", gap: "6px" }}>
           <Filter size={12} /> Filters
           {hasActive && <span style={{ fontSize: "10px", padding: "1px 6px", borderRadius: "4px", background: "rgba(72,187,120,0.15)", color: "#4ade80" }}>active</span>}
+          <span role="status" style={{ fontSize: '10px', color: 'var(--text-secondary)' }}>{saveStatus}</span>
         </span>
         {hasActive && (
           <button onClick={clearAll} style={{ fontSize: "10px", padding: "3px 8px", borderRadius: "4px", background: "#1e0808", border: "1px solid #3a1010", color: "var(--danger)", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: "4px" }}>
@@ -269,18 +282,21 @@ function FiltersPanel({ addToast, onFiltersChange }) {
         </div>
         {showFolder && (
           <div style={{ padding: "0 14px 10px" }}>
-            <div style={{ fontSize: "10px", color: "var(--text-muted)", marginBottom: "6px" }}>Select folders. Click to toggle; click-drag to select a range.</div>
+            <div style={{ fontSize: "10px", color: "var(--text-secondary)", marginBottom: "6px" }}>Choose folders for Radio recommendations. None selected means all folders. Click to toggle; drag to select a range.</div>
             {subfolders.length === 0 ? (
-              <div style={{ fontSize: "11px", color: "var(--text-muted)", padding: "4px 0" }}>No subfolders found</div>
+              <div style={{ fontSize: "11px", color: "var(--text-muted)", padding: "4px 0" }}>{folderError ? 'Couldn’t load folders. Reopen the Filters tab to retry.' : loading ? 'Loading folders…' : 'No subfolders found'}</div>
             ) : (
               <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: "3px", marginBottom: "6px" }}>
                 {subfolders.map((sf, idx) => {
-                  const sel = (filters.folders || []).includes(sf.name);
+                  const inRange = dragState.active && idx >= Math.min(dragState.fromIdx, dragState.toIdx) && idx <= Math.max(dragState.fromIdx, dragState.toIdx);
+                  const sel = inRange ? dragState.mode : (filters.folders || []).includes(sf.name);
                   return (
-                    <div key={sf.name}
+                    <button type="button" key={sf.name} disabled={loading}
+                      aria-pressed={sel} aria-label={`${sf.name}, ${sf.count} songs`}
                       onMouseDown={(e) => handleGridMouseDown(e, idx)}
                       onMouseEnter={() => handleGridMouseEnter(idx)}
-                      onClick={(e) => { if (!dragState.active) handleSingleToggle(sf.name); }}
+                      onClick={(e) => { if (gestureRef.current.shouldToggle(e.detail)) handleSingleToggle(sf.name); }}
+                      onKeyDown={e => e.stopPropagation()}
                       style={{
                         padding: "5px 2px", borderRadius: "5px", fontSize: "10px", cursor: "pointer", textAlign: "center",
                         background: sel ? "rgba(72,187,120,0.12)" : "var(--bg-elevated)",
@@ -290,7 +306,7 @@ function FiltersPanel({ addToast, onFiltersChange }) {
                       }}>
                       <div style={{ fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{sf.name}</div>
                       <div style={{ fontSize: "8px", opacity: 0.5 }}>{sf.count}</div>
-                    </div>
+                    </button>
                   );
                 })}
               </div>
@@ -522,7 +538,7 @@ function FiltersPanel({ addToast, onFiltersChange }) {
           </div>
         )}
       </div>
-    </div>
+    </fieldset>
   );
 }
 

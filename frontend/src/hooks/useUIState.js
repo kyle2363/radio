@@ -8,7 +8,7 @@ export default function useUIState(fetchStatusCb) {
   const [currentMode, setCurrentMode] = useState("radio");
   const [talkSegmentActive, setTalkSegmentActive] = useState(null);
   const [talkGenerating, setTalkGenerating] = useState(false);
-  const [ttsReady, setTtsReady] = useState(false);
+  const [ttsReady, setTtsReady] = useState(null);
   const [sleepTimer, setSleepTimer] = useState(null);
   const [showQuickSearch, setShowQuickSearch] = useState(false);
 

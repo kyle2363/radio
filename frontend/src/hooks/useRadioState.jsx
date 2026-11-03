@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useCallback, useRef, useEffect } from "react";
 import * as api from "../api";
 import usePoll from "./usePoll";
+import { appendToast } from "../ui/feedback.js";
 import { createPlaybackFacade } from "../api/sessionBridge.js";
 
 const ARCHETYPE_DESC = {
@@ -19,7 +20,7 @@ export function RadioProvider({ children }) {
 
   const addToast = useCallback((message, type = "error", actionLabel = null, onAction = null) => {
     const id = ++toastIdRef.current;
-    setToasts((prev) => [...prev, { id, message, type, actionLabel, onAction }]);
+    setToasts((prev) => appendToast(prev, { id, message, type, actionLabel, onAction }));
   }, []);
 
   const removeToast = useCallback((id) => {

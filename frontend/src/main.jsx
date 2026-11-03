@@ -1,107 +1,28 @@
-import React, { useState, useEffect, useRef } from "react";
-import ReactDOM from "react-dom/client";
-import App from "./App";
-import ErrorBoundary from "./components/ErrorBoundary";
-import BootScreen from "./components/BootScreen";
-import AuthenticationGate from "./components/AuthenticationGate";
-import { API_BASE_URL } from "./api/index.js";
-import "./styles/global.css";
-
-const HEALTH_URL = `${API_BASE_URL}/api/health`;
-const POLL_INTERVAL = 500;
-const TIMEOUT_MS = 30000;
-const FADE_DELAY_MS = 1000;
-const FADE_DURATION_MS = 400;
+import React, { useState, useEffect } from 'react';
+import ReactDOM from 'react-dom/client';
+import App from './App';
+import ErrorBoundary from './components/ErrorBoundary';
+import BootScreen from './components/BootScreen';
+import AuthenticationGate from './components/AuthenticationGate';
+import TooltipLayer from './components/TooltipLayer';
+import { API_BASE_URL } from './api/index.js';
+import { connectToServer } from './ui/bootConnection.js';
+import './styles/global.css';
 
 function AppWithBoot() {
   const [ready, setReady] = useState(false);
-  const [fading, setFading] = useState(false);
-  const [faded, setFaded] = useState(false);
   const [error, setError] = useState(null);
-  const [bootProgress, setBootProgress] = useState(0);
-  const shouldPoll = useRef(true);
-
-  useEffect(() => {
-    const startTime = Date.now();
-    const interval = setInterval(() => {
-      if (Date.now() - startTime >= TIMEOUT_MS) {
-        setError("Backend unreachable — check if server is running");
-        return;
-      }
-      setBootProgress(Math.min(85, ((Date.now() - startTime) / TIMEOUT_MS) * 85));
-    }, POLL_INTERVAL);
-
-    const poll = () => {
-      if (!shouldPoll.current) return;
-      fetch(HEALTH_URL, { signal: AbortSignal.timeout(3000), credentials: 'include' })
-        .then((r) => {
-          if (r.ok) {
-            setReady(true);
-            setBootProgress(100);
-            clearInterval(interval);
-            clearInterval(pollTimer);
-            setTimeout(() => {
-              setFading(true);
-              setTimeout(() => {
-                setFaded(true);
-              }, FADE_DURATION_MS);
-            }, FADE_DELAY_MS);
-          } else {
-            throw new Error("not ready");
-          }
-        })
-        .catch(() => {
-          if (Date.now() - startTime >= TIMEOUT_MS) {
-            setError("Backend unreachable — check if server is running");
-            clearInterval(interval);
-            clearInterval(pollTimer);
-          }
-        });
-    };
-
-    poll();
-    const pollTimer = setInterval(poll, POLL_INTERVAL);
-
-    return () => {
-      shouldPoll.current = false;
-      clearInterval(interval);
-      clearInterval(pollTimer);
-    };
-  }, []);
-
-  useEffect(() => {
-    if (faded) {
-      shouldPoll.current = false;
-    }
-  }, [faded]);
-
-  if (error) {
-    return <BootScreen onError={error} onReady={() => setError(null)} initialProgress={bootProgress} />;
-  }
-
-  return (
-    <React.StrictMode>
-      <ErrorBoundary>
-        <div style={{ position: "relative", width: "100vw", height: "100vh" }}>
-          {!faded && (
-            <div style={{
-              position: "absolute", inset: 0, zIndex: 10,
-              opacity: fading ? 0 : 1,
-              transition: "opacity 400ms ease-in",
-              pointerEvents: fading ? "none" : "auto",
-            }}>
-              <BootScreen initialProgress={bootProgress} />
-            </div>
-          )}
-          {faded && (
-            <div className="fade-in" style={{ width: "100%", height: "100%" }}>
-              <App />
-            </div>
-          )}
-        </div>
-      </ErrorBoundary>
-    </React.StrictMode>
-  );
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => connectToServer({
+    probe: () => fetch(`${API_BASE_URL}/api/health`, { signal: AbortSignal.timeout(3000), credentials: 'include' }),
+    onReady: () => setReady(true), onError: setError,
+  }), [attempt]);
+  return <ErrorBoundary><div style={{ position: 'relative', width: '100vw', height: '100vh' }}>
+    {ready ? <App /> : <BootScreen error={error} onRetry={() => { setError(null); setReady(false); setAttempt(n => n + 1); }} />}
+    <TooltipLayer />
+  </div></ErrorBoundary>;
 }
 
-ReactDOM.createRoot(document.getElementById("root")).render(<AuthenticationGate><AppWithBoot /></AuthenticationGate>);
+ReactDOM.createRoot(document.getElementById('root')).render(
+  <React.StrictMode><AuthenticationGate><AppWithBoot /></AuthenticationGate></React.StrictMode>
+);

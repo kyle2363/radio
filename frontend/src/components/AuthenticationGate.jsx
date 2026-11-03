@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { createAuthClient, watchAuthentication } from '../api/auth.js';
 import { API_BASE_URL } from '../api/index.js';
+import BootScreen from './BootScreen';
 
 export default function AuthenticationGate({ children }) {
   const client = useMemo(() => createAuthClient(window.fetch.bind(window), API_BASE_URL), []);
@@ -34,6 +35,7 @@ export default function AuthenticationGate({ children }) {
   }
 
   if (state.phase === 'ready') return children;
+  if (state.phase !== 'locked') return <BootScreen />;
 
   return (
     <main className="min-h-screen flex items-center justify-center bg-[var(--bg-page)] text-[var(--text-primary)] p-6">

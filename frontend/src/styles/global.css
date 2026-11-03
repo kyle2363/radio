@@ -1459,3 +1459,30 @@ body {
   background: var(--bg-sunken) !important;
   border-radius: 0 !important;
 }
+/* Small feedback surfaces share the app palette in both themes. */
+.feedback-stack { position: fixed; right: 16px; bottom: 16px; z-index: 100; width: min(280px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow-y: auto; display: flex; flex-direction: column; gap: 10px; pointer-events: none; }
+.toast-stack { display: flex; flex-direction: column; gap: 8px; }
+.feedback-surface { pointer-events: auto; background: var(--bg-surface); border: 1px solid var(--border-strong); border-radius: 10px; padding: 12px 14px; color: var(--text-primary); box-shadow: 0 4px 18px rgb(0 0 0 / 16%); }
+.toast { animation: feedbackIn 160ms ease-out both; }
+.toast.toast-leaving { animation: feedbackOut 160ms ease-in both; pointer-events: none; }
+.toast-row { display: flex; align-items: center; gap: 10px; }
+.toast-message { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 13px; line-height: 1.45; margin: 0; }
+.toast-count { font-size: 11px; color: var(--text-secondary); font-variant-numeric: tabular-nums; flex-shrink: 0; }
+.feedback-close { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; width: 28px; height: 28px; margin: -4px -5px -4px 0; border: 0; border-radius: 6px; background: transparent; color: var(--text-secondary); cursor: pointer; }
+.feedback-close:hover, .skip-options button:hover { background: var(--bg-elevated); color: var(--text-primary); }
+.feedback-action { flex-shrink: 0; background: var(--accent-muted); color: var(--accent); padding: 4px 8px; border-radius: 5px; font-size: 12px; border: 0; cursor: pointer; }
+.feedback-track { margin-top: 10px; height: 2px; background: var(--bg-elevated); border-radius: 2px; overflow: hidden; }
+.feedback-track > div { height: 100%; background: var(--accent); transition: width 100ms linear; }
+.skip-feedback { animation: feedbackIn 160ms ease-out both; }
+.skip-feedback h2 { font-size: 13px; font-weight: 500; flex: 1; margin: 0; }
+.feedback-hint { margin: 4px 0 10px; font-size: 11px; color: var(--text-secondary); }
+.skip-options { display: flex; flex-direction: column; gap: 2px; }
+.skip-options button { text-align: left; padding: 7px 9px; border: 0; border-radius: 6px; background: transparent; color: var(--text-secondary); font-size: 12px; cursor: pointer; transition: background 120ms; }
+.feedback-back { display: flex; align-items: center; gap: 6px; margin-top: 10px; padding: 4px 0; border: 0; background: transparent; color: var(--text-secondary); font-size: 12px; cursor: pointer; }
+.feedback-stack button:focus-visible, [data-tooltip]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.radio-tooltip { position: fixed; z-index: 20000; pointer-events: none; max-width: min(280px, calc(100vw - 16px)); padding: 6px 9px; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--bg-elevated); color: var(--text-primary); box-shadow: 0 3px 12px rgb(0 0 0 / 15%); font-size: 12px; line-height: 1.4; overflow-wrap: anywhere; }
+.boot-overlay { position: absolute; inset: 0; z-index: 10; opacity: 1; transition: opacity 200ms ease-out; }
+.boot-overlay-leaving { opacity: 0; pointer-events: none; }
+@keyframes feedbackIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes feedbackOut { to { opacity: 0; transform: translateY(3px); } }
+@media (prefers-reduced-motion: reduce) { .toast, .toast.toast-leaving, .skip-feedback { animation: none; } .toast.toast-leaving { opacity: 0; } .feedback-track > div, .skip-options button, .boot-overlay { transition: none; } }

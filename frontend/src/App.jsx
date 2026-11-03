@@ -2,6 +2,7 @@ import React, { useEffect, useState, useCallback, useRef, useLayoutEffect } from
 import useTransition from "./hooks/useTransition";
 import usePlaybackSession from './hooks/usePlaybackSession.js';
 import PlaybackOutputSelector from './components/PlaybackOutputSelector.jsx';
+import BootScreen from './components/BootScreen';
 import * as api from "./api";
 import { Loader2, Mic, Sparkles, Sun, Moon, Library, HelpCircle, Settings } from "lucide-react";
 
@@ -691,7 +692,7 @@ function AppInner({ outputPlayback }) {
                 <HeaderStatusPill dotColor={
                   talkSegmentActive ? "#60a5fa" : ttsReady ? "#4ade80" : "#5f6b7a"
                 }>
-                  DJ
+                  {talkSegmentActive ? "DJ speaking" : ttsReady == null ? "DJ" : ttsReady ? "DJ ready" : "DJ unavailable"}
                 </HeaderStatusPill>
 
                 {talkGenerating && (
@@ -738,7 +739,7 @@ function AppInner({ outputPlayback }) {
                 )}
               </HeaderButton>
             )}
-            <HeaderButton onClick={() => setShowShortcuts(true)} title="Keyboard shortcuts">
+            <HeaderButton onClick={() => setShowShortcuts(true)} title="Keyboard shortcuts · ?">
               <HelpCircle size={18} />
             </HeaderButton>
             <HeaderButton onClick={() => { setShowLibrary(true); setLibraryTab("settings"); }} title="Settings">
@@ -879,6 +880,7 @@ function AppInner({ outputPlayback }) {
         </div>
       )}
 
+      <ToastContainer toasts={toasts} onRemove={removeToast}>
       <SkipFeedback visible={showSkipFeedback} onReason={(reason, duration) => {
         if (duration) {
           handleSkipFeedbackWithDuration(reason, duration, () => setShowSkipFeedback(false));
@@ -886,9 +888,9 @@ function AppInner({ outputPlayback }) {
           handleSkipFeedback(reason, () => setShowSkipFeedback(false));
         }
       }} onDismiss={() => setShowSkipFeedback(false)} />
+      </ToastContainer>
       <QuickSearch visible={showQuickSearch} onClose={() => setShowQuickSearch(false)} addToast={addToast} />
       <CommandPalette visible={showCommandPalette} onClose={() => setShowCommandPalette(false)} addToast={addToast} onCommandSent={wrappedHandleCommandSent} />
-      <ToastContainer toasts={toasts} onRemove={removeToast} />
       <ShortcutsModal isOpen={showShortcuts} onClose={() => setShowShortcuts(false)} />
     </div>
   );
@@ -906,12 +908,7 @@ export default function App() {
     return () => { window.electron?.setPlaybackSession?.(null).catch(console.error); };
   }, [outputPlayback.session?.id]);
   if (!outputPlayback.session) {
-    return <div className="min-h-screen bg-gray-950 text-gray-200 flex flex-col gap-4 items-center justify-center" role="status">
-      <p>{outputPlayback.error || 'Connecting listening session…'}</p>
-      {outputPlayback.error && <button className="rounded border px-4 py-2" onClick={() => outputPlayback.retry().catch(() => {})}>
-        {outputPlayback.retryNeeded ? 'Start a new listening session' : 'Retry connection'}
-      </button>}
-    </div>;
+    return <BootScreen error={outputPlayback.error} onRetry={() => outputPlayback.retry().catch(() => {})} />;
   }
   return (
     <RadioProvider>

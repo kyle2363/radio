@@ -137,23 +137,23 @@ function PlayerControls({ isPlaying, onPlay, onPause, onNext, onHeart, onThumbsD
 
   const controls = (
     <div className="flex justify-center items-center gap-1">
-      <button onClick={onReplay} className="ctrl-btn ctrl-ter" title="Replay (R)">
+      <button onClick={onReplay} className="ctrl-btn ctrl-ter" aria-label="Replay" data-tooltip="Replay · R">
         <RotateCcw size={13} />
       </button>
-      <button onClick={isPlaying ? onPause : onPlay} className="ctrl-btn ctrl-main" title="Play/Pause (Space)"
+      <button onClick={isPlaying ? onPause : onPlay} className="ctrl-btn ctrl-main" aria-label={isPlaying ? "Pause" : "Play"} data-tooltip={isPlaying ? "Pause · Space" : "Play · Space"}
         style={{ background: "var(--accent-muted)", border: "1px solid rgba(78,204,196,0.3)", color: "var(--accent)" }}>
         <span className={`icon-wrap ${playPauseFlip ? "flipping" : ""}`}>
           {isPlaying ? <Pause size={22} /> : <Play size={22} />}
         </span>
       </button>
-      <button onClick={onNext} className="ctrl-btn ctrl-sec" title="Next (N)">
+      <button onClick={onNext} className="ctrl-btn ctrl-sec" aria-label="Next song" data-tooltip="Next song · N">
         <SkipForward size={15} />
       </button>
       <button onClick={handleHeart}
         className={`ctrl-btn ctrl-ter ${heartAnim ? "heart-pop" : ""}`}
         onAnimationEnd={() => setHeartAnim(false)}
         disabled={isHearted}
-        title={isHearted ? "Already hearted (H)" : "Heart (H)"}
+        aria-label={isHearted ? "Already liked" : "Like"} data-tooltip={isHearted ? "Already hearted (H)" : "Heart (H)"}
         style={{ color: "#f472b6", opacity: isHearted ? 0.45 : 1, cursor: isHearted ? "default" : undefined }}>
         <Heart size={13} fill={isHearted ? "#f472b6" : "none"} />
         <ParticleBurst active={heartAnim} color="#f078a8" />
@@ -162,7 +162,7 @@ function PlayerControls({ isPlaying, onPlay, onPause, onNext, onHeart, onThumbsD
         className={`ctrl-btn ctrl-ter ${dislikeAnim ? "shake" : ""}`}
         onAnimationEnd={() => setDislikeAnim(false)}
         disabled={isThumbedDown}
-        title={isThumbedDown ? "Already thumbed down (D)" : "Dislike (D)"}
+        aria-label={isThumbedDown ? "Already disliked" : "Dislike"} data-tooltip={isThumbedDown ? "Already thumbed down (D)" : "Dislike (D)"}
         style={{ opacity: isThumbedDown ? 0.45 : 1, cursor: isThumbedDown ? "default" : undefined }}>
         <ThumbsDown size={13} fill={isThumbedDown ? "currentColor" : "none"} />
         <ParticleBurst active={dislikeAnim} color="#f09060" />
@@ -173,7 +173,7 @@ function PlayerControls({ isPlaying, onPlay, onPause, onNext, onHeart, onThumbsD
           style={{
             color: vibeLock?.active ? "#a870f0" : "var(--text-muted)",
           }}
-          title={vibeLock?.active ? "Unlock vibe (V)" : "Lock to this song's vibe (V)"}>
+          aria-label={vibeLock?.active ? "Unlock vibe" : "Lock vibe"} data-tooltip={vibeLock?.active ? "Unlock vibe (V)" : "Lock to this song's vibe (V)"}>
           {vibeLock?.active ? <Lock size={13} /> : <Unlock size={13} />}
         </button>
       )}

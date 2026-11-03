@@ -4,9 +4,9 @@ export default function HeaderStatusPill({ dotColor, children, style, ...props }
   return (
     <span className="hidden sm:inline-flex items-center gap-[5px] px-[10px] py-[4px] rounded-full text-[12px] whitespace-nowrap"
       style={{
-        background: "rgba(255,255,255,0.04)",
-        border: "0.5px solid rgba(255,255,255,0.08)",
-        color: "#aab4c0",
+        background: "var(--bg-muted)",
+        border: "1px solid var(--border)",
+        color: "var(--text-secondary)",
         ...style,
       }}
       {...props}>
