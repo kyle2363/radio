@@ -1,7 +1,23 @@
 # Android app plan
 
-Status: local playback and checkpoints 1A–1C are phone-tested and accepted and committed. The user accepted checkpoint 2A on November 1 and authorized 2B offline Radio. Checkpoint 2B is implemented below; its phone review remains pending. Direct LAN hosting and checkpoint 2C sync remain deferred.
-Branch: `android-app`, based on `stability-server-architecture`.
+Status: local playback and checkpoints 1A–1C, 2A and 2B are accepted. The user confirmed the current app works on November 3, 2026 and authorized review, tests and integration into main. Direct LAN hosting and checkpoint 2C sync remain deferred.
+Integration: `android-app`, based on `stability-server-architecture`, reviewed for integration into `main` on November 3. Earlier pending-review notes below are historical checkpoint records, superseded by the November 3 acceptance.
+
+## Checkpoint 2B acceptance and main integration — November 3, 2026
+
+The user reports the current app works and accepts checkpoint 2B. Manual profile sync (2C), remote hosting, connected recommendations and speech remain deferred. No further checkpoint is authorized by this integration.
+
+Focused source review covered Android actual-start journaling, paused restoration, queue/refill fencing, additive migrations and pairing credential/endpoint boundaries; desktop review covered recent retrieval, ingest admission, reranking, talk variation and the outstanding queue-loading edits. No merge-blocking finding was identified. This is a focused review, not an exhaustive audit of every line added by the branch.
+
+Verification on the integration source:
+
+- Backend guarded full suite: **693 passed, 9 skipped**. Skips cover unavailable rating/energy fixtures, Windows symlink privileges and opt-in native VLC checks. The first sandboxed run stalled at Windows asyncio and was interrupted; the completed rerun retained the runner's storage/network guards outside that sandbox.
+- Frontend: **129 tests passed**; production build passed.
+- Android: **74 JVM tests passed with forced re-execution**; debug app/test APK builds passed; lint passed with **0 errors, 41 existing warnings**. Full API 37 emulator instrumentation passed **118 tests, 0 failed, 0 ignored** using synthetic fixtures. The emulator was started headlessly for this run; no physical phone was connected or modified.
+- Outstanding queue-loading edits expose live rebuild state in the session snapshot and keep the empty-queue loading UI tied to request/server state. Their snapshot regression passes in the full backend suite.
+- Installable debug APK and verification summary: `.test-runtime/main-integration-2026-11-03/`. Gradle's detailed HTML reports remain under `android/app/build/reports/`.
+
+The user's phone acceptance is separate from these automated results. Live GPU/TTS quality, real ingest model lifecycle and the extended desktop listening checklist were not rerun. Integration preserves branch history and does not publish a release or push remote branches.
 
 ## Zero-exploration correction after Skele review - November 2, 2026
 

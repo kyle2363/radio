@@ -3,7 +3,7 @@
 Date: October 30, 2026. Audited source: `a6715a8813aaf658f379cd156918168b8b0c8d8e`, branch `android-app`.
 The working tree was clean at the start. The Phase 0 checkpoint changed documentation and added one exact `.gitignore` exception so this plan could be tracked; it made no production code changes. The sections below record that audit and its proposals; current implementation updates are linked next.
 
-Implementation update, November 1: the user accepted checkpoints 1A–1C and 2A local journal/feedback, then authorized 2B offline Radio after reviewing screen/player mockups. 2B implementation and verification are recorded in [ANDROID_APP_PLAN.md](ANDROID_APP_PLAN.md); phone review remains pending. [MOBILE_PAIRING.md](MOBILE_PAIRING.md) covers setup. The matrix below remains the historical Phase 0 baseline. Checkpoint 2C manual sync and subsequent checkpoints remain proposals.
+Implementation update, November 3, 2026: checkpoints 1A–1C, 2A local journal/feedback and 2B offline Radio are accepted. The user confirmed the current app works and authorized review, tests and integration into main. Implementation and verification are recorded in [ANDROID_APP_PLAN.md](ANDROID_APP_PLAN.md). [MOBILE_PAIRING.md](MOBILE_PAIRING.md) covers setup. The matrix below remains the historical Phase 0 baseline. Checkpoint 2C manual sync and subsequent checkpoints remain proposals.
 
 ## 1. Scope and decisions from the user
 

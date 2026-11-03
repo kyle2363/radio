@@ -2,9 +2,9 @@
 
 An intelligent radio station that listens to your taste, learns your mood, and recommends music from your local MP3 library. Built with FastAPI + React/Electron and a separate native Android app.
 
-The active branch is `android-app`, based on `stability-server-architecture`. Desktop playback uses authenticated browser audio or server VLC. Android plays the phone's local music independently through Media3.
+The integration branch is `main`. Desktop playback uses authenticated browser audio or server VLC. Android plays the phone's local music independently through Media3.
 
-Android checkpoints 1A–1C and 2A are accepted; offline Radio 2B is implemented with phone review pending. Manual profile sync is future work. See [the Android checkpoint log](docs/ANDROID_APP_PLAN.md), [documentation index](docs/README.md), and [current architecture](docs/ARCHITECTURE.md).
+Android checkpoints 1A–1C, 2A and offline Radio 2B are accepted (2B accepted November 3, 2026). Manual profile sync is future work. See [the Android checkpoint log](docs/ANDROID_APP_PLAN.md), [documentation index](docs/README.md), and [current architecture](docs/ARCHITECTURE.md).
 
 ## Android quick start
 

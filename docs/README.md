@@ -19,7 +19,7 @@ Start with [the repository README](../README.md) for setup and the application m
 | [ANDROID_APP_PLAN.md](ANDROID_APP_PLAN.md) | Checkpoint delivery, verification, acceptance and proposed app follow-ups |
 | [MOBILE_CONNECTION_PLAN.md](MOBILE_CONNECTION_PLAN.md) | Future connection/sync architecture and explicitly dated Phase 0 audit |
 
-Checkpoints 1A–1C and 2A are accepted. Offline Radio 2B is implemented with phone review pending. Manual sync 2C is future work. Plans are not authorization to begin another checkpoint.
+Checkpoints 1A–1C, 2A and offline Radio 2B are accepted (2B accepted November 3, 2026). Manual sync 2C is future work. Plans are not authorization to begin another checkpoint.
 
 ## Technical contracts
 

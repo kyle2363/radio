@@ -28,7 +28,7 @@ const QueuePreview = React.memo(function QueuePreview({ queue, isRebuilding, onP
   const handleRebuild = async () => {
     setRebuilding(true);
     try { await onRebuild?.(); } catch (e) {}
-    setTimeout(() => setRebuilding(false), 2000);
+    setRebuilding(false);
   };
 
   const count = queue?.length || 0;
@@ -50,7 +50,7 @@ const QueuePreview = React.memo(function QueuePreview({ queue, isRebuilding, onP
     </div>
   );
 
-  if ((isRebuilding && count === 0) || (queueLoading && count === 0)) {
+  if (count === 0 && (isRebuilding || queueLoading || rebuilding)) {
     if (compact) {
       return (
         <div>
