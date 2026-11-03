@@ -436,6 +436,8 @@ def _get_tool_system_prompt(context: dict) -> str:
         "",
         "You have tools available. Use them to help the user:",
         "- If they want to play specific songs/artists: search_songs first, then use the IDs with add_to_queue or play_song",
+        "- Requests to queue, add, or queue up more songs mean search_songs then add_to_queue, without interrupting playback. Do not substitute an artist/genre filter or play_song for a queue request.",
+        "- Preserve complete artist names, including apostrophes (for example I'm Geist). Search the requested artist before broadening; never shorten a name to a fragment.",
         "- For complex requests (e.g. 'play 5 chill songs from Radiohead'): search with artist + valence/energy filters, then add_to_queue",
         "- For simple mood changes or playback controls: call the appropriate tool directly",
         "- If a search returns no results, try a broader search and tell the user what you found",
@@ -512,7 +514,7 @@ def _call_llm_with_tools(text: str, context: dict) -> dict:
 
 
 # ═══════════════════════════════════════════════════════════
-#  DIRECT PATTERN MATCHING (fast path, unchanged)
+#  DIRECT PATTERN MATCHING (complete, unambiguous controls only)
 # ═══════════════════════════════════════════════════════════
 
 _COMMAND_PATTERNS = [
@@ -533,7 +535,7 @@ _COMMAND_PATTERNS = [
     (r'\b(what|who|which) (is|was|coming up|next|playing)\b', {"action": "queue_info"}),
     (r'\b(replay|again|play again|one more time)\b', {"action": "replay"}),
     (r'\b(skip|next|pass|next song|skip this)\b', {"action": "skip"}),
-    (r'\b(clear|empty|flush) (the |queue|playlist)\b', {"action": "clear_queue"}),
+    (r'\b(clear|empty|flush) (?:the )?(queue|playlist)\b', {"action": "clear_queue"}),
     (r'\b(rebuild|refresh|reload) (queue|playlist)\b', {"action": "rebuild"}),
     (r'\b(go back|undo|previous|never mind)\b', {"action": "undo_skip"}),
 
@@ -610,32 +612,25 @@ _MOOD_PATTERN = re.compile(
 
 
 def _match_direct(text: str) -> dict | None:
-    """Try to match the command against direct keyword patterns."""
+    """Fast-path whole controls; leave free-text music intent to the LLM.
+
+    Searching for keywords inside a sentence can truncate artist names or turn
+    queue requests into filters, mood changes, or immediate playback.
+    """
     lower = text.lower().strip()
 
     # Use pre-compiled regex instead of 50 substring checks
-    if _MOOD_PATTERN.search(lower):
+    if _MOOD_PATTERN.fullmatch(lower):
         for mood, keywords in _MOOD_KEYWORDS.items():
-            if any(kw in lower for kw in keywords):
+            if lower in keywords:
                 return {"action": "mood_shift", "target_mood": mood}
 
     for pattern, action in _COMMAND_PATTERNS:
-        m = re.search(pattern, lower)
+        if action['action'] in {'artist_filter', 'genre_filter', 'play_song', 'crossmodal_search'}:
+            continue
+        m = re.fullmatch(pattern, lower)
         if m:
             result = dict(action)
-            if "genre" in result:
-                genre_match = re.search(r'\b(jazz|rock|pop|hip.?hop|rap|classical|electronic|ambient|lo.?fi|soul|funk|disco|country|folk|metal|punk|indie)\b', lower)
-                if genre_match:
-                    result["genre"] = genre_match.group(1)
-            if "artist" in result:
-                captured = m.groups()
-                if len(captured) >= 2 and captured[1]:
-                    artist = captured[1].strip()
-                    artist = re.sub(r'\b(songs?|tracks?|music|please|now|for me)\b', '', artist, flags=re.IGNORECASE).strip()
-                    if artist:
-                        result["artist"] = artist
-                if result.get("artist") is None:
-                    return None  # Fall through to LLM tool-calling
             if "level" in result and result["level"] is None:
                 for g in m.groups():
                     if g and g.isdigit():
@@ -646,18 +641,9 @@ def _match_direct(text: str) -> dict | None:
                     if g and g.isdigit():
                         result["minutes"] = int(g)
                         break
-            if "query" in result:
-                captured = m.groups()
-                if len(captured) >= 2:
-                    result["query"] = captured[1].strip()
-                query = result.get("query", "")
-                if query and re.search(r'\b(\d+\s+song|songs?\s+from|something\s+like|like\s+this)\b', query):
-                    return None  # Complex → fall through to tool-calling
-                if query and len(query.split()) > 1:
-                    return None  # Multi-word → fall through to LLM for better parsing
             return result
 
-    genre_match = re.search(r'\b(jazz|rock|pop|hip.?hop|rap|classical|electronic|ambient|lo.?fi|soul|funk|disco|country|folk|metal|punk|indie)\b', lower)
+    genre_match = re.fullmatch(r'\b(jazz|rock|pop|hip.?hop|rap|classical|electronic|ambient|lo.?fi|soul|funk|disco|country|folk|metal|punk|indie)\b', lower)
     if genre_match:
         return {"action": "genre_filter", "genre": genre_match.group(1)}
 
