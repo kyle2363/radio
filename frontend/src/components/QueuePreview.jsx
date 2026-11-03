@@ -146,9 +146,7 @@ const QueuePreview = React.memo(function QueuePreview({ queue, isRebuilding, onP
                   )}
                 </div>
               </div>
-              {item.reason && (
-                <div style={{ fontSize: 10, color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginBottom: 4 }}>{item.reason}</div>
-              )}
+              <div style={{ fontSize: 10, minHeight: 12, color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginBottom: 4 }}>{item.reason}</div>
               <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 3 }}>
                   <span style={{ fontSize: 9, color: "var(--text-muted)" }}>E</span>
@@ -207,9 +205,7 @@ const QueuePreview = React.memo(function QueuePreview({ queue, isRebuilding, onP
                 )}
               </div>
             </div>
-            {item.reason && (
-              <div className="text-[11px] truncate" style={{ color: "var(--text-muted)" }}>{item.reason}</div>
-            )}
+            <div className="text-[11px] truncate" style={{ minHeight: 14, color: "var(--text-muted)" }}>{item.reason}</div>
           </div>
         );
       })}

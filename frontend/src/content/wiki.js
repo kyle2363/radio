@@ -47,7 +47,7 @@ export const WIKI_SECTIONS = [
       "ChromaDB retrieves a broad candidate pool near the current taste vector.",
       "SQLite filters remove recent plays, blacklisted songs, and other poor fits.",
       "The slot allocator creates a mixed queue instead of just picking five nearest neighbors.",
-      "The reranker can add a DJ-style judgment pass and a short reason for each pick.",
+      "The reranker can add a DJ-style judgment pass and a short reason for its first two picks.",
     ],
     details: [
       "Skip streaks shift weight toward immediate taste so the station can recover quickly when the current direction feels wrong.",

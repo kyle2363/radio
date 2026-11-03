@@ -36,16 +36,18 @@ CANDIDATES (id | artist - title | energy | genre | lyrics):
 Return a JSON object with a \"picks\" array containing exactly 5 entries:
 {{
   "picks": [
-    {{"id": <song_id>, "slot": "exploit", "reason": "<1 sentence why>"}},
-    {{"id": <song_id>, "slot": "exploit", "reason": "<1 sentence why>"}},
-    {{"id": <song_id>, "slot": "explore", "reason": "<1 sentence why>"}},
-    {{"id": <song_id>, "slot": "wildcard", "reason": "<1 sentence why>"}},
-    {{"id": <song_id>, "slot": "context", "reason": "<1 sentence why>"}}
+    {{"id": <song_id>, "slot": "exploit", "reason": "<one-sentence reason, 12 words max>"}},
+    {{"id": <song_id>, "slot": "exploit", "reason": "<one-sentence reason, 12 words max>"}},
+    {{"id": <song_id>, "slot": "explore"}},
+    {{"id": <song_id>, "slot": "wildcard"}},
+    {{"id": <song_id>, "slot": "context"}}
   ]
 }}
 
 Rules:
-- Each reason must be specific to the song — you can reference lyrics
+- Include a specific, one-sentence reason of 12 words or fewer only for the first two picks; you can reference lyrics
+- Do not mention the song title in a reason; the title is shown separately
+- Do not include a "reason" field for picks 3, 4, or 5
 - Slots must match: 2 exploit, 1 explore, 1 wildcard, 1 context
 - Return ONLY the JSON object, no preamble
 """
@@ -223,6 +225,16 @@ def rerank(candidates, current_song=None, mood_state=None, energy_trajectory="st
                                 slot_counts[slot] = slot_counts.get(slot, 0) + 1
                                 if slot_counts[slot] >= count:
                                     break
+
+                # Reasons are useful for the first two queue cards only. Enforce
+                # that shape even if the model ignores the prompt or slot repair
+                # had to append picks.
+                for index, pick in enumerate(unique_picks):
+                    if index < 2:
+                        if not isinstance(pick.get("reason"), str) or not pick["reason"].strip():
+                            pick["reason"] = "Recommended by the AI reranker."
+                    else:
+                        pick.pop("reason", None)
 
                 return unique_picks
 

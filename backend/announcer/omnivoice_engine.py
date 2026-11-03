@@ -286,6 +286,8 @@ class OmniVoiceTTSEngine:
                     ref_audio=ref_audio,
                     ref_text=ref_text,
                     speed=actual_speed,
+                    pad_duration=0.25,
+                    fade_duration=0.05,
                 )
 
             _talk_debug(f"calling model.generate...")
