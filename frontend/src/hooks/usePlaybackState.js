@@ -29,6 +29,7 @@ export default function usePlaybackState() {
     if (!audio) return;
     setIsPlaying(audio.is_playing);
     if (audio.position_ms != null) setPositionMs(audio.position_ms);
+    if (audio.duration_ms > 0) setDurationMs(audio.duration_ms);
   }), []);
 
   const applyPlaybackStatus = useCallback((data) => {
@@ -38,7 +39,7 @@ export default function usePlaybackState() {
     const local = physical?.song_id === data.current_song?.id ? physical : null;
     setIsPlaying(local?.is_playing ?? data.is_playing);
     setPositionMs(local?.position_ms ?? data.position_ms ?? 0);
-    setDurationMs(data.duration_ms || 0);
+    setDurationMs(local?.duration_ms || data.duration_ms || 0);
     if (data.audio_rms != null) setAudioRms(data.audio_rms);
     if (data.skip_streak != null) {
       window._skipStreak = data.skip_streak;

@@ -20,6 +20,24 @@ from engine.utils import cosine_similarity
 logger = logging.getLogger(__name__)
 
 
+def _get_song_info(song_ids):
+    """Hydrate live identities from SQLite, never cached vector metadata."""
+    song_ids = list(set(song_ids))
+    if not song_ids:
+        return {}
+    conn = database.get_connection()
+    try:
+        placeholders = ','.join('?' for _ in song_ids)
+        rows = conn.execute(
+            f'SELECT id, artist, title, cluster_id FROM songs WHERE id IN ({placeholders})', song_ids
+        ).fetchall()
+        return {r['id']: dict(artist=r['artist'] or '', title=r['title'] or '',
+                               cluster_id=r['cluster_id'] if r['cluster_id'] is not None else -1)
+                for r in rows}
+    finally:
+        conn.close()
+
+
 def get_embedding_dimension(collection_name: str = "songs") -> int:
     """Get the embedding dimension from a ChromaDB collection."""
     try:
@@ -62,7 +80,7 @@ def search_by_vector(taste_vector, n=60, exclude_ids=None,
                      subfolder_filter=None,
                      mtime_min=None, mtime_max=None,
                      artist_mode=None, artists=None,
-                     collection_name="songs"):
+                     collection_name="songs", exploration_level=None, anchor_vector=None, profile_vector=None):
     """Search ChromaDB by embedding vector with optional filters.
 
     When subfolder_filter is set (list of folder names), only songs from
@@ -75,13 +93,10 @@ def search_by_vector(taste_vector, n=60, exclude_ids=None,
         exclude_ids = []
 
     collection = get_chroma_collection(collection_name)
-    jitter_override = database._get_cached_setting("jitter_override")
-    if jitter_override:
-        jitter_setting = float(jitter_override)
-    else:
-        exploration = float(database._get_cached_setting("exploration_level") or "0.3")
-        jitter_setting = 0.03 + exploration * 0.13
-    query_vector = _jitter_vector(taste_vector, strength=jitter_setting)
+    # Session callers pass their own diversity; legacy callers retain defaults.
+    exploration = float(exploration_level if exploration_level is not None else
+                        database._get_cached_setting("exploration_level") or .3)
+    query_vector = taste_vector
 
     where_clause = None
     if subfolder_filter:
@@ -92,8 +107,21 @@ def search_by_vector(taste_vector, n=60, exclude_ids=None,
         query_embeddings=[query_vector],
         n_results=inflated_n,
         where=where_clause,
-        include=["distances", "metadatas"],
+        include=["distances", "metadatas", "embeddings"],
     )
+
+    # Union profile and current-song neighborhoods before continuity scoring.
+    for neighborhood in (profile_vector, anchor_vector):
+        if neighborhood is None:
+            continue
+        extra = collection.query(query_embeddings=[neighborhood], n_results=inflated_n,
+                                 where=where_clause, include=["distances", "metadatas", "embeddings"])
+        seen = set(results["ids"][0])
+        for i, sid in enumerate(extra["ids"][0]):
+            if sid not in seen:
+                for key in ("ids", "distances", "metadatas", "embeddings"):
+                    results[key][0] = list(results[key][0]) + [extra[key][0][i]]
+                seen.add(sid)
 
     song_ids = []
     ids_row = results["ids"][0] if results and results.get("ids") else []
@@ -103,19 +131,7 @@ def search_by_vector(taste_vector, n=60, exclude_ids=None,
             continue
         song_ids.append(song_id)
 
-    # Fetch artist/title from SQLite
-    song_info = {}
-    if song_ids:
-        conn = database.get_connection()
-        try:
-            placeholders = ",".join("?" for _ in song_ids)
-            rows = conn.execute(
-                f"SELECT id, artist, title FROM songs WHERE id IN ({placeholders})",
-                song_ids,
-            ).fetchall()
-            song_info = {r["id"]: {"artist": r["artist"] or "", "title": r["title"] or ""} for r in rows}
-        finally:
-            conn.close()
+    song_info = _get_song_info(song_ids)
 
     # Fetch effective energies (blends base + user_energy into one score)
     effective_map = {}
@@ -128,12 +144,20 @@ def search_by_vector(taste_vector, n=60, exclude_ids=None,
     candidates = []
     for i in range(len(ids_row)):
         song_id = int(ids_row[i])
-        if song_id in exclude_ids:
+        if song_id in exclude_ids or song_id not in song_info:
             continue
 
         meta = results["metadatas"][0][i]
         distance = results["distances"][0][i]
-        score = 1.0 - distance
+        vector = results["embeddings"][0][i]
+        score = float(cosine_similarity(query_vector, vector))
+        diagnostics = {
+            "current_similarity": float(cosine_similarity(anchor_vector, vector)) if anchor_vector is not None else None,
+            "taste_similarity": float(cosine_similarity(profile_vector, vector)) if profile_vector is not None else None,
+            "basis": "current song and listening history" if anchor_vector is not None and profile_vector is not None else
+                     "current song" if anchor_vector is not None else "listening history",
+            "fallback": False,
+        }
 
         energy = effective_map.get(song_id, float(meta.get("energy", 0.5)))
         valence = float(meta.get("valence", 0.5))
@@ -151,9 +175,10 @@ def search_by_vector(taste_vector, n=60, exclude_ids=None,
         candidates.append({
             "song_id": song_id,
             "score": score,
+            "diagnostics": diagnostics,
             "energy": energy,
             "valence": valence,
-            "cluster_id": int(meta.get("cluster_id", -1)),
+            "cluster_id": info['cluster_id'],
             "artist": info.get("artist", meta.get("artist", "")),
             "title": info.get("title", meta.get("title", "")),
         })
@@ -224,14 +249,10 @@ def search_by_vector(taste_vector, n=60, exclude_ids=None,
             if hours_ago > 6 and cid >= 0:
                 boost = min(0.08, hours_ago * 0.005)
                 c["score"] = min(1.0, c.get("score", 0.5) + boost)
+                c.setdefault("diagnostics", {})["cluster_staleness_boost"] = boost
 
-    if len(candidates) > n + 40:
-        pool = candidates[:n + 40]
-        random.shuffle(pool)
-        candidates = pool[:n]
-    else:
-        candidates = candidates[:n]
-    return candidates
+    candidates.sort(key=lambda c: (-c["score"], c["song_id"]))
+    return candidates[:n]
 
 
 def _merge_duo_candidates(text_cands, audio_cands, blend):
@@ -264,6 +285,8 @@ def _merge_duo_candidates(text_cands, audio_cands, blend):
                 "artist": tc.get("artist") or ac.get("artist", ""),
                 "title": tc.get("title") or ac.get("title", ""),
                 "source": "blended",
+                "diagnostics": {"text": tc.get("diagnostics"), "audio": ac.get("diagnostics"),
+                                "text_score": ts, "audio_score": as_, "audio_blend": blend},
             })
         elif tc:
             # Text only — apply blend as discount
@@ -298,20 +321,25 @@ def search_by_centroid(centroid_energy=0.5, centroid_valence=0.5, n=60):
             {"valence": {"$lte": centroid_valence + 0.2}},
         ]},
         limit=min(n, 200),
-        include=["metadatas", "ids"],
+        include=["metadatas"],
     )
 
+    song_info = _get_song_info([int(sid) for sid in results['ids']])
     candidates = []
     for i in range(len(results["ids"])):
+        sid = int(results['ids'][i])
+        if sid not in song_info:
+            continue
+        info = song_info[sid]
         meta = results["metadatas"][i]
         candidates.append({
-            "song_id": int(meta.get("song_id", 0)),
+            "song_id": sid,
             "score": 0.5,
             "energy": float(meta.get("energy", 0.5)),
             "valence": float(meta.get("valence", 0.5)),
-            "cluster_id": int(meta.get("cluster_id", -1)),
-            "artist": meta.get("artist", ""),
-            "title": meta.get("title", ""),
+            "cluster_id": info['cluster_id'],
+            "artist": info['artist'],
+            "title": info['title'],
         })
 
     return candidates[:n]
@@ -359,7 +387,7 @@ def build_candidate_list(text_taste_vector=None, audio_taste_vector=None,
                          mtime_min=None, mtime_max=None,
                          artist_mode=None, artists=None,
                          # Legacy params for backward compatibility
-                         taste_vector=None, repulsion_vector=None):
+                         taste_vector=None, repulsion_vector=None, exploration_level=None):
     """Build a candidate list for slot allocation.
 
     Runs two ChromaDB searches (text + audio) when both vectors are available,
@@ -458,6 +486,51 @@ def build_candidate_list(text_taste_vector=None, audio_taste_vector=None,
         mood_energy_range, mood_valence_range, skip_feedback,
     )
 
+    from engine.recommendation_context import context_query, unit
+    exploration = float(exploration_level if exploration_level is not None else
+                        database._get_cached_setting("exploration_level") or .3)
+    text_profile, audio_profile = unit(text_taste_vector), unit(audio_taste_vector)
+    def anchor(collection_name):
+        if not current_song_id:
+            return None
+        try:
+            result = get_chroma_collection(collection_name).get(ids=[str(current_song_id)], include=["embeddings"])
+            vectors = result.get("embeddings")
+            return unit(vectors[0]) if vectors is not None and len(vectors) else None
+        except Exception:
+            return None
+    text_anchor = anchor("songs")
+    audio_anchor = anchor(config.MUQ_AUDIO_COLLECTION) if config.MUQ_ENABLED else None
+    text_taste_vector = context_query(text_profile, text_anchor, exploration)
+    audio_taste_vector = context_query(audio_profile, audio_anchor, exploration)
+    if text_taste_vector is None and audio_taste_vector is None:
+        # Metadata fallback is explicitly labelled and obeys all caller filters.
+        rows = []
+        for candidate in database.get_neutral_centroid_songs(200):
+            sid = candidate.get("song_id", candidate.get("id"))
+            if sid in exclude_ids:
+                continue
+            song = database.get_song(sid) or {}
+            if subfolder_filter and song.get("subfolder") not in subfolder_filter:
+                continue
+            e, v = song.get("energy") or 0., song.get("valence") or 0.
+            if mood_energy_range and not mood_energy_range[0] <= e <= mood_energy_range[1]:
+                continue
+            if mood_valence_range and not mood_valence_range[0] <= v <= mood_valence_range[1]:
+                continue
+            if artists and artist_mode:
+                matches = any(a.strip().lower() in (song.get("artist") or "").lower() for a in artists if a.strip())
+                if matches != (artist_mode == "include"):
+                    continue
+            if mtime_min is not None or mtime_max is not None:
+                mtime = song.get("file_mtime")
+                if mtime is None:
+                    continue
+                age = (datetime.now().timestamp() - mtime) / 86400
+                if mtime_min is not None and age < mtime_min or mtime_max is not None and age > mtime_max:
+                    continue
+            rows.append(dict(song, song_id=sid, score=0., diagnostics={"basis": "metadata fallback", "fallback": True}))
+        return rows[:40]
     blend = config.MUQ_AUDIO_BLEND if config.MUQ_ENABLED else 0.0
     has_audio = (audio_taste_vector is not None and blend > 0)
 
@@ -496,8 +569,8 @@ def build_candidate_list(text_taste_vector=None, audio_taste_vector=None,
             subfolder_filter=subfolder_filter,
             mtime_min=mtime_min, mtime_max=mtime_max,
             artist_mode=artist_mode, artists=artists,
-            collection_name="songs",
-        )
+            collection_name="songs", exploration_level=exploration, anchor_vector=text_anchor, profile_vector=text_profile,
+        ) if text_taste_vector is not None else []
 
         try:
             audio_candidates = search_by_vector(
@@ -510,7 +583,7 @@ def build_candidate_list(text_taste_vector=None, audio_taste_vector=None,
                 subfolder_filter=subfolder_filter,
                 mtime_min=mtime_min, mtime_max=mtime_max,
                 artist_mode=artist_mode, artists=artists,
-                collection_name=config.MUQ_AUDIO_COLLECTION,
+                collection_name=config.MUQ_AUDIO_COLLECTION, exploration_level=exploration, anchor_vector=audio_anchor, profile_vector=audio_profile,
             )
         except Exception:
             audio_candidates = []
@@ -533,22 +606,10 @@ def build_candidate_list(text_taste_vector=None, audio_taste_vector=None,
                 subfolder_filter=subfolder_filter,
                 mtime_min=mtime_min, mtime_max=mtime_max,
                 artist_mode=artist_mode, artists=artists,
-                collection_name="songs",
+                collection_name="songs", exploration_level=exploration, anchor_vector=text_anchor, profile_vector=text_profile,
             )
         else:
-            candidates = search_by_vector(
-                [0.0] * get_embedding_dimension("songs"),
-                n=60,
-                exclude_ids=list(exclude_ids),
-                min_energy=mood_energy_range[0] if mood_energy_range else None,
-                max_energy=mood_energy_range[1] if mood_energy_range else None,
-                min_valence=mood_valence_range[0] if mood_valence_range else None,
-                max_valence=mood_valence_range[1] if mood_valence_range else None,
-                subfolder_filter=subfolder_filter,
-                mtime_min=mtime_min, mtime_max=mtime_max,
-                artist_mode=artist_mode, artists=artists,
-                collection_name="songs",
-            )
+            candidates = []
 
     # Apply vibe lock audio similarity boost
     if vibe_lock and vibe_lock.get("active") and vibe_lock.get("audio_embedding"):
@@ -568,7 +629,9 @@ def build_candidate_list(text_taste_vector=None, audio_taste_vector=None,
                 else:
                     penalty = 0.03
                 c["score"] = max(0.0, c.get("score", 0.5) - penalty)
+                c.setdefault("diagnostics", {})["recency_penalty"] = penalty
 
+    candidates.sort(key=lambda c: (-c.get("score", 0), c["song_id"]))
     return candidates[:40]
 
 
@@ -599,9 +662,13 @@ def _apply_vibe_lock_boost(candidates, vibe_lock, exclude_ids):
             vibe_scores[sid] = 1.0 - dist
 
         # Boost existing candidates and add high-scoring new ones
+        song_info = _get_song_info(set(vibe_scores) | {c['song_id'] for c in candidates})
+        candidates[:] = [c for c in candidates if c['song_id'] in song_info]
+        for candidate in candidates:
+            candidate['cluster_id'] = song_info[candidate['song_id']]['cluster_id']
         candidate_map = {c["song_id"]: c for c in candidates}
         for sid, vibe_score in vibe_scores.items():
-            if sid in exclude_ids:
+            if sid in exclude_ids or sid not in song_info:
                 continue
             if sid in candidate_map:
                 # Boost existing candidate: 70% vibe similarity weight
@@ -615,16 +682,16 @@ def _apply_vibe_lock_boost(candidates, vibe_lock, exclude_ids):
                         if int(vibe_results["ids"][0][i]) == sid:
                             meta = vibe_results["metadatas"][0][i]
                             break
-                    song_info = database.get_song(sid)
-                    if song_info:
+                    info = song_info[sid]
+                    if info:
                         candidates.append({
                             "song_id": sid,
                             "score": vibe_score * 0.85,
                             "energy": database.get_effective_energy(sid),
                             "valence": float((meta or {}).get("valence", 0.5)),
-                            "cluster_id": int((meta or {}).get("cluster_id", -1)),
-                            "artist": song_info.get("artist", ""),
-                            "title": song_info.get("title", ""),
+                            "cluster_id": info['cluster_id'],
+                            "artist": info['artist'],
+                            "title": info['title'],
                             "source": "vibe_lock",
                         })
 

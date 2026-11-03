@@ -143,14 +143,15 @@ class MemorySystem:
         total = sum(weights)
         return [w / total for w in weights]
 
-    def get_layer_vectors(self, signals, layers):
+    def get_layer_vectors(self, signals, layers, session_signals=None):
         """Compute a centroid vector for each layer.
 
         Returns dict: {layer_name: centroid_vector}
         """
         layer_vectors = {}
         for layer in layers:
-            layer_signals = signals[:layer.window]
+            source = session_signals if layer.name in ("immediate", "session") and session_signals else signals
+            layer_signals = source[:layer.window]
             if not layer_signals:
                 continue
             layer_weights = self.compute_layer_weights(len(layer_signals))
@@ -197,6 +198,8 @@ class MemorySystem:
             skip_streak=skip_streak,
             collection_name=collection_name,
         )
+        session_signals = signals
+        signals = self.get_recent_signals(collection_name=collection_name)
         if not signals:
             return None, 0.0
 
@@ -212,7 +215,7 @@ class MemorySystem:
         for layer in layers:
             layer.weight /= total_weight
 
-        layer_vectors = self.get_layer_vectors(signals, layers)
+        layer_vectors = self.get_layer_vectors(signals, layers, session_signals)
         drift = self.detect_drift(layer_vectors)
 
         blended = None

@@ -5,6 +5,8 @@ transfer active playback, implement Android, upload music, or delete local media
 The implementation is `portable_api.py`, `portable_server.py`, and
 `portable_sync.py`. Run one API worker per instance, as for existing playback.
 
+The optional [USB gateway](MOBILE_PAIRING.md) exposes identity, ticket exchange, authenticated capabilities and checkpoint 1B prepared catalog/vector reads. It registers client-generated bearer digests in this same device authority, with atomic retry receipts and local Electron-administered revocation. Catalog reads require `catalog:read`; preparation stays local and explicit. The events/profile/device-administration routes below remain existing server APIs and are not exposed through this gateway.
+
 ## Authentication
 
 Existing cookies and trusted-loopback policy still protect administration.

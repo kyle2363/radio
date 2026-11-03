@@ -39,12 +39,12 @@ routes through an active player's commands or changes its current queue.
 
 ## Delivered contracts
 
-- [Portable catalog and vectors](PORTABLE_CATALOG.md)
-- [Reranking, browser defaults and quieter logging](RERANKING_AND_DESKTOP_DEFAULTS.md)
-- [Matching protocol and confidence](MUSIC_MATCHING.md)
-- [Offline scoring, golden fixtures and measured parity](OFFLINE_RECOMMENDATIONS.md)
-- [Authentication, manual sync, conflicts and errors](PORTABLE_SYNC_API.md)
-- [Connected/offline optional speech](PORTABLE_MEDIA_PLAN.md)
+- [Portable catalog and vectors](../PORTABLE_CATALOG.md)
+- [Reranking, browser defaults and quieter logging](../ARCHITECTURE.md#song-selection-and-desktop-defaults)
+- [Matching protocol and confidence](../MUSIC_MATCHING.md)
+- [Offline scoring, golden fixtures and measured parity](../OFFLINE_RECOMMENDATIONS.md)
+- [Authentication, manual sync, conflicts and errors](../PORTABLE_SYNC_API.md)
+- [Connected/offline optional speech](../PORTABLE_MEDIA_PLAN.md)
 
 Fresh Electron sessions now start with browser audio. Existing explicit output
 restoration remains supported. Successful routine requests are quiet by default;

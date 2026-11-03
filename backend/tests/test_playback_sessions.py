@@ -760,3 +760,12 @@ def test_shutdown_retains_lease_for_interrupted_generated_plan(domain):
     service.shutdown()
     assert service.store.snapshot(sid, owner)['status'] == 'interrupted'
     assert all(call.args[0] != lease for call in media.release_session.call_args_list)
+
+
+def test_snapshot_exposes_live_queue_rebuild_state(domain):
+    service, sid, owner, *_ = domain
+    queue = service.context_for(sid, owner).queue
+    queue._rebuilding = True
+    assert service.snapshot(sid, owner)['queue_rebuilding'] is True
+    queue._rebuilding = False
+    assert service.snapshot(sid, owner)['queue_rebuilding'] is False

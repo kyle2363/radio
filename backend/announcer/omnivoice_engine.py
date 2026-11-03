@@ -131,6 +131,12 @@ class OmniVoiceTTSEngine:
         self._voice_mp3s: dict[str, str] = {}
         self._gpu_available: bool | None = None  # None = not checked yet
         self._load_lock = threading.Lock()
+        self._generation_started = False
+
+    @property
+    def synthesis_timeout(self) -> int:
+        """First generation includes cold model/kernel initialization each boot."""
+        return 30 if self._generation_started else 60
 
     def _detect_gpu(self) -> bool:
         """Check if CUDA GPU is available.
@@ -231,6 +237,11 @@ class OmniVoiceTTSEngine:
 
         logger.info(f"OmniVoiceTTSEngine.synthesize: voice={voice_id}, text_len={len(text)}, speed={actual_speed:.2f}")
 
+        # Capture before loading: VoiceManager's outer deadline includes model load.
+        with self._model_lock:
+            timeout = self.synthesis_timeout
+            self._generation_started = True
+
         # Load model if not already loaded
         if not self._load_model():
             logger.warning("OmniVoice: model not available, cannot synthesize")
@@ -275,15 +286,17 @@ class OmniVoiceTTSEngine:
                     ref_audio=ref_audio,
                     ref_text=ref_text,
                     speed=actual_speed,
+                    pad_duration=0.25,
+                    fade_duration=0.05,
                 )
 
             _talk_debug(f"calling model.generate...")
-            ok, result_or_err = run_with_timeout(_do_generate, timeout=30)
+            ok, result_or_err = run_with_timeout(_do_generate, timeout=timeout)
             _talk_debug(f"model.generate returned: ok={ok}")
             if not ok:
                 if isinstance(result_or_err, TimeoutError):
-                    _talk_debug(f"FAILED: synthesis timed out after 30s")
-                    logger.error("OmniVoice: synthesis timed out after 30s")
+                    _talk_debug(f"FAILED: synthesis timed out after {timeout}s")
+                    logger.error("OmniVoice: synthesis timed out after %ss", timeout)
                 else:
                     _talk_debug(f"FAILED: synthesis error: {result_or_err}")
                     logger.error(f"OmniVoice: synthesis failed: {result_or_err}")

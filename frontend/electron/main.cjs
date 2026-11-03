@@ -6,11 +6,17 @@ const http = require("http");
 const { shutdownOwnedBackend } = require("./backend-shutdown.cjs");
 const { BACKEND_URL, backendFetch, backendCookieHeader, waitForBackendReady, createPlaybackBinding } = require("./backend-session.cjs");
 const { loadDevelopmentWindow, setThumbnailButtons } = require('./window-startup.cjs');
+const { createMobilePairingControl, registerMobilePairingIPC } = require('./mobile-pairing.cjs');
 
 let mainWindow;
 let uvicornProcess;
 let tray;
 let isMiniMode = false;
+const mobilePairing = createMobilePairingControl({
+  enabled: !app.isPackaged,
+  isBackendAlive: () => Boolean(uvicornProcess && uvicornProcess.exitCode == null && uvicornProcess.signalCode == null),
+  request: (apiPath, options) => backendFetch(session.defaultSession, apiPath, options),
+});
 const playbackBinding = createPlaybackBinding();
 const backendRequest = (apiPath, options = {}) => {
   const headers = playbackBinding.headers();
@@ -140,8 +146,14 @@ function createWindow() {
 
   if (process.env.NODE_ENV === "development" || !app.isPackaged) {
     const window = mainWindow;
-    loadDevelopmentWindow(window, session.defaultSession, {
-      isCancelled: () => app.isQuitting,
+    // The page immediately checks authentication. Wait for the backend as
+    // well as Vite so those first requests cannot race server startup.
+    waitForBackendReady(session.defaultSession, {
+      isCancelled: () => window.isDestroyed() || app.isQuitting,
+    }).then((ready) => {
+      if (ready) return loadDevelopmentWindow(window, session.defaultSession, {
+        isCancelled: () => app.isQuitting,
+      });
     }).catch(() => console.error('Unable to load the development window'));
   } else {
     const window = mainWindow;
@@ -746,6 +758,7 @@ function setupJumpList() {
 
 // ── IPC Handlers ──────────────────────────────────────────────
 function setupIPC() {
+  registerMobilePairingIPC(ipcMain, mobilePairing, () => mainWindow);
   ipcMain.handle('widget-playback-status', async (event) => {
     if (!widgetWindow || event.sender !== widgetWindow.webContents || event.senderFrame !== widgetWindow.webContents.mainFrame) {
       throw Error('Untrusted widget');
@@ -876,10 +889,13 @@ function startBackend() {
   const python = useVenv ? venvPython : (process.platform === "win32" ? "python" : "python3");
   const serverScript = path.join(__dirname, "..", "..", "backend", "main.py");
 
+  const mobileLaunch = mobilePairing.launchOptions();
   uvicornProcess = spawn(python, [serverScript], {
     cwd: path.join(__dirname, "..", "..", "backend"),
-    env: { ...process.env, PYTHONIOENCODING: "utf-8" },
+    stdio: mobileLaunch.stdio,
+    env: { ...process.env, PYTHONIOENCODING: "utf-8", ...mobileLaunch.env },
   });
+  mobilePairing.attach(uvicornProcess);
 
   uvicornProcess.stdout.on("data", (data) => console.log(`[Backend] ${data}`));
   uvicornProcess.stderr.on("data", (data) => console.error(`[Backend] ${data}`));
@@ -910,6 +926,9 @@ function shutdownBackend() {
   if (backendShutdownPromise) return backendShutdownPromise;
   const ownedProcess = uvicornProcess;
   backendShutdownPromise = (async () => {
+    // Close mobile admission before the normal owned-backend shutdown. Even if
+    // local authorization was lost, terminating our child closes its gateway.
+    try { await mobilePairing.shutdown(); } catch (_) {}
     let cookieHeader = '';
     if (ownedProcess) {
       try { cookieHeader = await backendCookieHeader(session.defaultSession); } catch (_) {}

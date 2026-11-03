@@ -44,6 +44,9 @@ jobs:
           backend/tests/test_portable_security.py
           backend/tests/test_portable_client.py
           backend/tests/test_portable_media.py
+          backend/tests/test_mobile_pairing.py
+          backend/tests/test_mobile_hosting.py
+          backend/tests/test_mobile_catalog.py
           -q
 
   frontend:

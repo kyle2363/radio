@@ -274,7 +274,9 @@ export class BrowserAudioEngine {
     };
     listen('loadedmetadata', () => {
       if (record.pendingSeek != null) this._seek(record.pendingSeek);
+      this._setState({});
     });
+    listen('durationchange', () => this._setState({}));
     listen('playing', () => {
       if (!this._leaseCurrent()) return;
       if (record.audio.paused || record.playing || record.completed || record.failed) return;
@@ -418,6 +420,11 @@ export class BrowserAudioEngine {
     return Math.max(0, Math.round(number(record?.audio.currentTime) * 1000));
   }
 
+  _durationMs(record = this.active) {
+    const seconds = record?.audio.duration;
+    return Number.isFinite(seconds) && seconds > 0 ? Math.round(seconds * 1000) : number(record?.item.duration_ms);
+  }
+
   _position(record) {
     if (!this._leaseCurrent()) return;
     this._setState({ position_ms: this._positionMs(record) });
@@ -541,7 +548,7 @@ export class BrowserAudioEngine {
   _seek(positionMs) {
     const record = this.active;
     if (!record) return;
-    const limit = number(record.item.duration_ms, Infinity) || Infinity;
+    const limit = this._durationMs(record) || Infinity;
     const target = clamp(number(positionMs), 0, limit);
     try { record.audio.currentTime = target / 1000; record.pendingSeek = null; }
     catch { record.pendingSeek = target; }
@@ -657,6 +664,7 @@ export class BrowserAudioEngine {
 
   _setState(change) {
     this.state = { ...this.state, ...change, instance_id: this.snapshot?.instance_id ?? null,
+      duration_ms: this._durationMs(),
       item_id: this.active?.item.item_id ?? null,
       ...(change.position_ms === undefined ? { position_ms: this._positionMs() } : {}) };
     if (!this.disposed) this.onState(this.getState());

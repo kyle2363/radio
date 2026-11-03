@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 
 import config
+from ingest.scanner import compute_file_hash
 
 
 def normalize_filename(name: str) -> str:
@@ -47,6 +48,30 @@ def normalize_filename(name: str) -> str:
     return normalized.lower()
 
 
+def metadata_key(filepath: str) -> str:
+    """Return a stable metadata key for one audio path."""
+    stem = normalize_filename(Path(filepath).stem)
+    return f"{stem}--{compute_file_hash(filepath)}"
+
+
+def metadata_path(filepath: str, json_dir: str | None = None) -> str:
+    """Return the flat JSON path uniquely associated with an audio path."""
+    directory = json_dir if json_dir is not None else config.ACESTEP_JSON_DIR
+    stem = Path(filepath).stem
+    return str(Path(directory) / f"{stem}--{compute_file_hash(filepath)}.json")
+
+
+def _append_index_value(index: dict, key: str, value: object) -> None:
+    """Keep collisions so callers can reject ambiguous legacy matches."""
+    current = index.get(key)
+    if current is None:
+        index[key] = value
+    elif isinstance(current, list):
+        current.append(value)
+    else:
+        index[key] = [current, value]
+
+
 def build_json_index(json_dir: str) -> dict:
     """Build a lookup from normalized filename to JSON data."""
     index = {}
@@ -58,8 +83,12 @@ def build_json_index(json_dir: str) -> dict:
         if f.name == "batch_manifest.json":
             continue
         stem = f.stem
-        normalized = normalize_filename(stem)
-        index[normalized] = str(f)
+        hashed = re.fullmatch(r"(.+)--([0-9a-f]{64})", stem, flags=re.IGNORECASE)
+        if hashed:
+            key = f"{normalize_filename(hashed.group(1))}--{hashed.group(2).lower()}"
+        else:
+            key = normalize_filename(stem)
+        _append_index_value(index, key, str(f))
     return index
 
 
@@ -68,7 +97,7 @@ def load_acestep_json(json_file: str) -> dict | None:
     try:
         with open(json_file, "r", encoding="utf-8") as f:
             data = json.load(f)
-        if not data or not isinstance(data, list) or len(data) == 0:
+        if not data or not isinstance(data, list) or not isinstance(data[0], dict):
             return None
         entry = data[0]
         return {
@@ -81,7 +110,7 @@ def load_acestep_json(json_file: str) -> dict | None:
             "vocal_language": entry.get("vocal_language"),
             "dj_effect_eligible": entry.get("dj_effect_eligible"),
         }
-    except (json.JSONDecodeError, KeyError, IndexError):
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, KeyError, IndexError, TypeError, AttributeError):
         return None
 
 
@@ -96,49 +125,60 @@ def _token_overlap(a: str, b: str) -> float:
     return len(intersection) / len(union)
 
 
-def _find_best_match(normalized: str, items: dict) -> tuple[str | None, float]:
+def _find_best_match(normalized: str, items: dict) -> tuple[object | None, float]:
     """Find the best matching value for *normalized* among dict keys.
 
     Returns ``(value, score)``.  The dict maps *key → value* where *key*
     has already been normalised.  Matching strategy (in priority order):
 
     1. Exact key match
-    2. Substring match (longest match wins)
-    3. Token overlap (Jaccard ≥ 0.6)
+    2. Substring match (similarity ≥ 0.8)
+    3. Token overlap (Jaccard ≥ 0.8)
     """
-    # Direct match
+    # Direct match is safe only when the normalized name is unique.
     if normalized in items:
-        return items[normalized], 1.0
+        value = items[normalized]
+        if isinstance(value, list):
+            return (value[0], 1.0) if len(value) == 1 else (None, 1.0)
+        return value, 1.0
 
-    best_value = None
-    best_score = 0.0
+    candidates = []
     for key, value in items.items():
-        # Require minimum substring length to avoid false positives
+        # Path-hashed entries are exact-only. Fuzzy legacy matching must not
+        # accidentally select another same-basename track's metadata.
+        if re.search(r"--[0-9a-f]{64}$", key, flags=re.IGNORECASE):
+            continue
+        score = 0.0
         if len(normalized) >= 5 and normalized in key:
-            score = len(normalized) / len(key)
-            if score > best_score:
-                best_score = score
-                best_value = value
+            score = max(score, len(normalized) / len(key))
         if len(key) >= 5 and key in normalized:
-            score = len(key) / len(normalized)
-            if score > best_score:
-                best_score = score
-                best_value = value
-        # Token overlap as a tiebreaker for ambiguous cases
-        if best_score < 0.5:
-            overlap = _token_overlap(normalized, key)
-            if overlap >= 0.6 and overlap > best_score:
-                best_score = overlap
-                best_value = value
+            score = max(score, len(key) / len(normalized))
+        overlap = _token_overlap(normalized, key)
+        if overlap >= 0.8:
+            score = max(score, overlap)
+        if score >= 0.8:
+            values = value if isinstance(value, list) else [value]
+            candidates.extend((score, candidate) for candidate in values)
 
-    return best_value, best_score
+    if not candidates:
+        return None, 0.0
+    best_score = max(score for score, _ in candidates)
+    best_values = [value for score, value in candidates if score == best_score]
+    if len(best_values) != 1:
+        return None, best_score
+    return best_values[0], best_score
 
 
 def find_matching_json(mp3_filepath: str, json_index: dict) -> str | None:
     """Find the matching acestep JSON file path for an MP3 file."""
-    stem = Path(mp3_filepath).stem
-    normalized = normalize_filename(stem)
-    value, _ = _find_best_match(normalized, json_index)
+    exact_key = metadata_key(mp3_filepath)
+    if exact_key in json_index:
+        value = json_index[exact_key]
+        return value[0] if isinstance(value, list) and len(value) == 1 else (value if not isinstance(value, list) else None)
+    normalized = normalize_filename(Path(mp3_filepath).stem)
+    legacy_index = {key: value for key, value in json_index.items()
+                    if not re.search(r"--[0-9a-f]{64}$", key, flags=re.IGNORECASE)}
+    value, _ = _find_best_match(normalized, legacy_index)
     return value
 
 
@@ -146,16 +186,22 @@ def load_all_metadata() -> dict:
     """Load all acestep metadata indexed by MP3 stem."""
     json_index = build_json_index(config.ACESTEP_JSON_DIR)
     metadata = {}
-    for key, json_file in json_index.items():
-        data = load_acestep_json(json_file)
-        if data:
-            metadata[key] = data
+    for key, json_files in json_index.items():
+        for json_file in json_files if isinstance(json_files, list) else [json_files]:
+            data = load_acestep_json(json_file)
+            if data:
+                _append_index_value(metadata, key, data)
     return metadata
 
 
 def get_metadata_for_mp3(mp3_filepath: str, metadata: dict) -> dict | None:
     """Get acestep metadata for a specific MP3 file."""
-    stem = Path(mp3_filepath).stem
-    normalized = normalize_filename(stem)
-    value, _ = _find_best_match(normalized, metadata)
-    return value
+    exact_key = metadata_key(mp3_filepath)
+    if exact_key in metadata:
+        value = metadata[exact_key]
+        return value[0] if isinstance(value, list) and len(value) == 1 else (value if not isinstance(value, list) else None)
+    normalized = normalize_filename(Path(mp3_filepath).stem)
+    legacy_index = {key: value for key, value in metadata.items()
+                    if not re.search(r"--[0-9a-f]{64}$", key, flags=re.IGNORECASE)}
+    value, _ = _find_best_match(normalized, legacy_index)
+    return value if isinstance(value, dict) else None

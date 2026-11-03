@@ -365,11 +365,15 @@ export class PlaybackSessionController {
     if (this.disposed || !this.leaseInstanceId) return;
     this.leaseTimer = setTimeout(() => {
       const session = this.state.session;
-      if (!session || session.instance_id !== this.leaseInstanceId || session.mode !== 'browser' || session.output_client_id !== this.clientId) return;
+      if (!session || session.instance_id !== this.leaseInstanceId || session.mode !== 'browser' ||
+          session.output_client_id !== this.clientId || !['ready', 'playing', 'paused'].includes(session.status)) return;
       this.ensureLease(session, true).catch(error => {
+        const current = this.state.session;
+        if (this.disposed || current?.instance_id !== session.instance_id ||
+            current?.output_client_id !== this.clientId ||
+            !['ready', 'playing', 'paused'].includes(current?.status)) return;
         this.fail(error);
-        if (!this.disposed && this.state.session?.instance_id === session.instance_id &&
-            this.state.session?.output_client_id === this.clientId) this.armLeaseRenewal();
+        this.armLeaseRenewal();
       });
     }, 3000);
     this.leaseTimer.unref?.();

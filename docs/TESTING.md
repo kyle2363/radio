@@ -56,3 +56,42 @@ renewal, lease expiry, copied tab storage, and original-identity handoff recover
 Backend regressions cover connection generations, exact-instance retirement,
 persisted restart permits, reclaim receipts, cancellation/admission cleanup, and
 replay with the real queue helper to detect duplicate durable feedback.
+
+## Outstanding desktop acceptance and follow-ups
+
+Carried forward from [the October 28 reliability record](archive/MODERNIZATION_PROGRESS.md#remaining-gates-and-risks-in-priority-order); this cleanup did not rerun application checks or establish a new acceptance result.
+
+- Supervised real-library browser, Electron and VLC listening acceptance remains unclaimed, including sixty minutes per mode, audible controls, natural advance, both handoff directions, timers, independent sessions, DJ/TTS/effects, tray/media keys, restart and OS sleep/lock. A positive initial app retest is recorded historically; it is not the complete listening log.
+- Verify page crash/reload during outages, explicit recovery and loss of unsent in-memory observations. Same-page retry coverage does not guarantee crash recovery.
+- Verify frozen/background pages and HTML-only output fallback. Persisted permits assume a sane server wall clock; backend restart recovery does not promise uninterrupted audio.
+- Live model quality, GPU speech, processed-audio quality and deployment checks remain manual gates. Phone direct LAN hosting is deferred; this list does not authorize exposing the server.
+- The historical hosted CI failure and local fixes need a current hosted result before claiming hosted acceptance. Old test counts and CI status are evidence for their recorded revision only.
+
+The older local handoff listed disconnect/reclaim/handoff/tab-identity review findings. Later reliability regression contracts above cover those areas; do not promote the older list to current defects without checking the later implementation and reproducing the concern.
+
+### Deferred OmniVoice cold-start investigation
+
+Recorded October 31 as future work only: initial OmniVoice requests reportedly time out and fall back to Piper, while later requests work. Model loading consuming the synthesis timeout is an unconfirmed hypothesis. Investigate readiness/loading separately from inference timeout, or warm-up before the first announcement, then verify cold startup and subsequent requests with TTS enabled. This note does not authorize implementation.
+
+### Ingest recovery checks (November 1)
+
+Run `backend\venv\Scripts\python -B scripts/run_tests.py -q backend/tests/test_ingest_jobs.py backend/tests/test_ingest_api_routes.py backend/tests/test_ingest_vectors.py backend/tests/test_ingest_metadata_audio.py` from the repository root. These tests use isolated storage and fake providers to check admission, failure recovery, metadata identity and complete clustering coverage. They do not establish model quality or GPU memory acceptance, and should not freeze a future model schedule or energy formula.
+
+Manual acceptance remains pending: run individual phases with the actual managed chat, embedding and acestep processes; verify the prior model exits before the next loads, failed work resumes at its retained phase, and progress/controls recover after completion. Understand remains an explicit manual phase. Newly generated JSON uses a path hash to distinguish same-named recordings; ambiguous legacy metadata requires Understand again. Managed models are released at phase completion rather than all restarted together. Externally launched servers must be managed separately. Check real audio and lyrics output by listening; automated tests do not cover their quality.
+
+### Cluster metadata consistency
+
+SQLite owns current cluster IDs. Vector, cold-start and Vibe lock retrieval hydrate
+those IDs from SQLite; missing library rows are excluded. Clustering refreshes
+existing text/audio embedding metadata after saving assignments. A failed refresh
+is reported and can be retried without rebuilding vectors.
+
+Regressions: `backend\venv\Scripts\python -B scripts/run_tests.py -q backend/tests/test_cluster_metadata.py backend/tests/test_ingest_vectors.py backend/tests/test_recommendation_context.py`.
+
+Existing installations can preview mismatches with
+`backend\venv\Scripts\python -B scripts/refresh_cluster_metadata.py`.
+Stop the backend before adding `--apply`. The repair backs up SQLite and Chroma
+under `.test-runtime/cluster-metadata-backups/`, updates only cluster metadata,
+and verifies agreement. It does not run tagging, embedding, clustering, or lyrics
+alignment. This repairs cached IDs; it does not preserve cluster identities
+between different clustering runs.

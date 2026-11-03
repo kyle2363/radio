@@ -44,63 +44,10 @@ def _labels(value):
 
 
 def allocate_portable_slots(candidates, current_song=None, *, vibe_lock=False, exploration_level=.3):
-    """Portable copy of desktop slot semantics (including existing fallback quirks).
-
-    Inputs already ranked; no application imports. With no constellation/persona/
-    archetype and effective current energy supplied, this matches allocate_slots.
-    Selection diversity and seeded tie breaks happen before this function.
-    """
-    result = {name: [] for name in ("exploit", "explore", "wildcard", "context")}
-    ordered = sorted(candidates, key=lambda c: c.get("score", .5), reverse=True)
-    used = set()
-    def take(slot, count=1, predicate=lambda c: True):
-        for candidate in ordered:
-            sid = candidate["song_id"]
-            if sid not in used and predicate(candidate):
-                result[slot].append(candidate)
-                used.add(sid)
-                if len(result[slot]) >= count:
-                    break
-    if vibe_lock:
-        take("exploit", 4)
-        take("explore")
-        return result
-    take("exploit", max(1, int(2 * (1 - exploration_level * .5))))
-    cluster = current_song.get("cluster_id") if current_song else None
-    different = lambda c: c.get("cluster_id") != cluster
-    take("explore", 1 + int(exploration_level > .6), different)
-    if not result["explore"]:
-        if cluster is None:
-            remaining = [c for c in ordered if c["song_id"] not in used]
-            counts = {}
-            for c in remaining:
-                cid = c.get("cluster_id", -1)
-                counts[cid] = counts.get(cid, 0) + 1
-            if counts:
-                rarest = min(counts, key=counts.get)
-                take("explore", predicate=lambda c: c.get("cluster_id") == rarest)
-        if not result["explore"]:
-            take("explore")
-    # Desktop currently chooses one wildcard even when its nominal target is zero.
-    take("wildcard", predicate=different)
-    if not result["wildcard"]:
-        if cluster is None:
-            remaining = [c for c in ordered if c["song_id"] not in used]
-            counts = {}
-            for c in remaining:
-                cid = c.get("cluster_id", -1)
-                counts[cid] = counts.get(cid, 0) + 1
-            if counts:
-                rarest = min(counts, key=counts.get)
-                take("wildcard", predicate=lambda c: c.get("cluster_id") == rarest)
-        if not result["wildcard"]:
-            take("wildcard")
-    if current_song:
-        target = _number(current_song.get("energy"))
-        take("context", predicate=lambda c: abs(_number(c.get("energy")) - target) < .2)
-    if not result["context"]:
-        take("context")
-    return result
+    """Apply the shared five-pick slot budget to already ranked candidates."""
+    from .slots import allocate_ranked_slots
+    return allocate_ranked_slots(candidates, current_song, vibe_lock=vibe_lock,
+                                 exploration_level=exploration_level)
 
 
 class OfflineRecommender:
@@ -228,6 +175,11 @@ class OfflineRecommender:
             anchor = vectors.get(vibe)
             if anchor is not None:
                 query = _unit(anchor * .8 + (query * .2 if query is not None else 0))
+            else:
+                current = vectors.get(str(self.state["current"]))
+                if current is not None:
+                    weight = .75 - .4 * max(0., min(1., _number(self.settings["exploration_level"], .3)))
+                    query = current if query is None else _unit((1 - weight) * query + weight * current)
             if query is None:
                 continue
             ids = [sid for sid in self.tracks if sid in vectors]

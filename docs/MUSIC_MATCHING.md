@@ -1,8 +1,9 @@
 # Local music matching protocol v1
 
 Implemented reference: `backend/portable/matching.py`. The phone's selected music
-directories are authoritative for playable media. Android directory selection,
-MediaStore, permissions and audio playback are future work. Matching never moves,
+directories are authoritative for playable media. Android uses folder grants,
+content URIs and its local Media3 player; checkpoint 1C implements local hashing,
+matching and review. See [MOBILE_PAIRING.md](MOBILE_PAIRING.md). Matching never moves,
 retags, deletes or uploads files. Audio upload/ingestion requires a separate future
 user-authorized operation.
 
@@ -10,8 +11,8 @@ user-authorized operation.
 
 `match_catalog(catalog_songs, local_tracks, decisions=())` accepts song records or
 an ID-keyed dictionary, local records, and previously persisted decisions. Invoke
-it within one `catalog_id` namespace. A future native scanner supplies stable
-device-local document identities and fields such as `local_id`, artist/title/album,
+it within one `catalog_id` namespace. The native scanner supplies stable device-local document identities; the protocol
+accepts fields such as `local_id`, artist/title/album,
 duration seconds, basename, actual `content_sha256`, ISRC/recording ID and optional
 fingerprint. Server paths/filenames need not match. No audio bytes are required by
 the matching algorithm itself.

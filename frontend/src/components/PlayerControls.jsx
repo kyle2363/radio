@@ -20,7 +20,7 @@ function PlayerControls({ isPlaying, onPlay, onPause, onNext, onHeart, onThumbsD
   const barRef = useRef(null);
   const ghostRef = useRef(null);
 
-  const progress = durationMs > 0 ? (isDragging ? dragProgress : positionMs) / durationMs : 0;
+  const progress = durationMs > 0 ? Math.max(0, Math.min(1, (isDragging ? dragProgress : positionMs) / durationMs)) : 0;
   const displayProgress = isDragging ? dragProgress : positionMs;
 
   // Ghost waveform under progress bar

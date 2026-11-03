@@ -17,6 +17,20 @@ const song = (id) => ({ item_id: `item-${id}`, kind: 'song', song_id: id, url: `
 const snapshot = (changes = {}) => ({ id: 'session-1', mode: 'browser', instance_id: 'instance-1', output_client_id: 'client-1', status: 'ready', items: [song(1), song(2), song(3)], active_index: 0, position_ms: 2000, context: { volume: 70, normalization: true, talk_volume: 50, eq: 'flat' }, revision: 1, ...changes });
 const tick = () => new Promise(setImmediate);
 
+test('decoded duration replaces stale catalog duration and bounds seeking', () => {
+  const f = fixture();
+  f.engine.loadSnapshot(snapshot());
+  f.audios[0].duration = 24.5;
+  f.audios[0].emit('loadedmetadata');
+  assert.equal(f.engine.getState().duration_ms, 24500);
+  f.engine.seek(20000);
+  assert.equal(f.audios[0].currentTime, 20);
+  f.audios[0].duration = Infinity;
+  f.audios[0].emit('durationchange');
+  assert.equal(f.engine.getState().duration_ms, 10000);
+  f.engine.dispose();
+});
+
 test('lease audio gate is armed on initial decode and each promoted element', () => {
   const gates = [];
   const node = () => ({ connect() {}, disconnect() {} });

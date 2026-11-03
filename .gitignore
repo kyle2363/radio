@@ -36,18 +36,16 @@ backend/announcer/voices
 docs/*
 !docs/ARCHITECTURE.md
 !docs/SERVER_ACCESS.md
-!docs/BASELINE.md
-!docs/MODERNIZATION_PROGRESS.md
 !docs/TESTING.md
 !docs/APP_USAGE_CHECKLIST.md
-!docs/RERANKING_AND_DESKTOP_DEFAULTS.md
-!docs/PRE_ANDROID_HANDOFF.md
 !docs/PORTABLE_CATALOG.md
 !docs/OFFLINE_RECOMMENDATIONS.md
 !docs/MUSIC_MATCHING.md
 !docs/PORTABLE_SYNC_API.md
 !docs/PORTABLE_MEDIA_PLAN.md
-!docs/CODEX_HANDOFF.md
+!docs/ANDROID_APP_PLAN.md
+!docs/MOBILE_CONNECTION_PLAN.md
+!docs/MOBILE_PAIRING.md
 
 #audio files
 audio_files
@@ -55,4 +53,14 @@ audio_files
 
 out.wav
 .test-runtime/
-docs/CODEX_HANDOFF.md
+docs/archive/CODEX_HANDOFF.md
+
+# Active documentation index and explicitly preserved historical records
+!docs/README.md
+!docs/archive/
+docs/archive/*
+!docs/archive/README.md
+!docs/archive/BASELINE.md
+!docs/archive/ARCHITECTURE_2026-10-28.md
+!docs/archive/MODERNIZATION_PROGRESS.md
+!docs/archive/PRE_ANDROID_HANDOFF.md

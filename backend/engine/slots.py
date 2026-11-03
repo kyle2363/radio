@@ -89,203 +89,27 @@ def allocate_slots(candidates, current_song, vibe_lock=None, exploration_level=0
     if not filtered:
         return {"exploit": [], "explore": [], "wildcard": [], "context": []}
 
-    # Sort candidates by score (descending)
-    sorted_candidates = sorted(filtered, key=lambda x: x.get("score", 0.5), reverse=True)
+    from portable.slots import allocate_ranked_slots
 
-    # Track assigned song IDs to prevent duplicates
-    assigned_ids = set()
-
-    # Vibe lock mode: 4 exploit, 1 explore, 0 wildcard, 0 context
-    if vibe_lock and vibe_lock.get("active"):
-        exploit = []
-        for c in sorted_candidates:
-            sid = _get_song_id(c)
-            if sid not in assigned_ids:
-                exploit.append(c)
-                assigned_ids.add(sid)
-                if len(exploit) >= 4:
-                    break
-
-        explore = []
-        for c in sorted_candidates:
-            sid = _get_song_id(c)
-            if sid not in assigned_ids:
-                explore.append(c)
-                assigned_ids.add(sid)
-                break
-
-        return {
-            "exploit": exploit,
-            "explore": explore,
-            "wildcard": [],
-            "context": [],
-        }
-
-    # Normal mode: 2 exploit, 1 explore, 1 wildcard, 1 context
-    # Adjust based on exploration_level and archetype
-    exploit_count_target = max(1, int(2 * (1 - exploration_level * 0.5)))
-    explore_count_target = 1 + (1 if exploration_level > 0.6 else 0)
-    wildcard_count_target = 1 if exploration_level > 0.4 else 0
-    context_count_target = 1
-
-    # Archetype overrides
-    if archetype == "explorer":
-        explore_count_target = max(2, explore_count_target + 1)
-        wildcard_count_target = max(1, wildcard_count_target)
-        exploit_count_target = max(1, exploit_count_target - 1)
-    elif archetype == "comfort_listener":
-        exploit_count_target = min(4, exploit_count_target + 2)
-        explore_count_target = 0
-        wildcard_count_target = 0
-    elif archetype == "deep_listener":
-        context_count_target = 2
-        exploit_count_target = min(3, exploit_count_target + 1)
-    elif archetype == "mood_listener":
-        context_count_target = max(1, context_count_target)
-
-    result = {
-        "exploit": [],
-        "explore": [],
-        "wildcard": [],
-        "context": [],
-    }
-
-    # Exploit: top similarity to taste vector
-    exploit_count = 0
-    for c in sorted_candidates:
-        sid = _get_song_id(c)
-        if sid not in assigned_ids:
-            result["exploit"].append(c)
-            assigned_ids.add(sid)
-            exploit_count += 1
-            if exploit_count >= exploit_count_target:
-                break
-
-    # Explore: different cluster than current song and not already assigned
-    # Use explore_weight if slot_bias has explore_boost
+    # Preserve constellation weighting and effective-energy context on desktop.
     current_cluster = current_song.get("cluster_id") if current_song else None
-
-    # Constellation-aware explore: boost candidates from same pocket but different cluster
-    if active_pocket:
-        for c in sorted_candidates:
-            sid = _get_song_id(c)
-            if sid not in assigned_ids and c.get("cluster_id") != current_cluster:
-                if sid in active_pocket.song_ids:
-                    c["_explore_weight"] = c.get("score", 0.5) * 1.2  # soft boost
-
-    explore_sorted = sorted(
-        sorted_candidates,
-        key=lambda x: x.get("_explore_weight", x.get("score", 0.5)),
-        reverse=True,
-    )
-    explore_count = 0
-    for c in explore_sorted:
-        sid = _get_song_id(c)
-        if sid not in assigned_ids and c.get("cluster_id") != current_cluster:
-            result["explore"].append(c)
-            assigned_ids.add(sid)
-            explore_count += 1
-            if explore_count >= explore_count_target:
-                break
-
-    # Fallback explore: when current_cluster is None, pick from most different cluster
-    if not result["explore"]:
-        if current_cluster is None and sorted_candidates:
-            # Find the cluster with the fewest candidates (most different from taste)
-            from collections import Counter
-            cluster_counts = Counter(c.get("cluster_id", -1) for c in sorted_candidates if _get_song_id(c) not in assigned_ids)
-            if cluster_counts:
-                rarest_cluster = min(cluster_counts, key=cluster_counts.get)
-                for c in explore_sorted:
-                    sid = _get_song_id(c)
-                    if sid not in assigned_ids and c.get("cluster_id") == rarest_cluster:
-                        result["explore"].append(c)
-                        assigned_ids.add(sid)
-                        break
-        # Ultimate fallback: any unassigned song
-        if not result["explore"]:
-            for c in explore_sorted:
-                sid = _get_song_id(c)
-                if sid not in assigned_ids:
-                    result["explore"].append(c)
-                    assigned_ids.add(sid)
-                    break
-
-    # Wildcard: different cluster than current song, not already assigned
-    # Use wildcard_weight if slot_bias has wildcard_boost
-    # Constellation hop: prefer candidates from the hop pocket
-    if hop_pocket:
-        for c in sorted_candidates:
-            sid = _get_song_id(c)
-            if sid not in assigned_ids and c.get("cluster_id") != current_cluster:
-                if sid in hop_pocket.song_ids:
-                    c["_wildcard_weight"] = c.get("score", 0.5) * 1.3  # strong hop boost
-
-    wildcard_sorted = sorted(
-        sorted_candidates,
-        key=lambda x: x.get("_wildcard_weight", x.get("score", 0.5)),
-        reverse=True,
-    )
-    wildcard_count = 0
-    for c in wildcard_sorted:
-        sid = _get_song_id(c)
-        if sid not in assigned_ids and c.get("cluster_id") != current_cluster:
-            result["wildcard"].append(c)
-            assigned_ids.add(sid)
-            wildcard_count += 1
-            if wildcard_count >= wildcard_count_target:
-                break
-
-    # Fallback wildcard: when current_cluster is None, pick from most different cluster
-    if not result["wildcard"]:
-        if current_cluster is None and sorted_candidates:
-            from collections import Counter
-            cluster_counts = Counter(c.get("cluster_id", -1) for c in sorted_candidates if _get_song_id(c) not in assigned_ids)
-            if cluster_counts:
-                rarest_cluster = min(cluster_counts, key=cluster_counts.get)
-                for c in wildcard_sorted:
-                    sid = _get_song_id(c)
-                    if sid not in assigned_ids and c.get("cluster_id") == rarest_cluster:
-                        result["wildcard"].append(c)
-                        assigned_ids.add(sid)
-                        break
-        # Ultimate fallback: any remaining unassigned song
-        if not result["wildcard"]:
-            for c in wildcard_sorted:
-                sid = _get_song_id(c)
-                if sid not in assigned_ids:
-                    result["wildcard"].append(c)
-                    assigned_ids.add(sid)
-                    break
-
-    # Context: matches energy trajectory, not already assigned
-    if current_song:
-        target_energy = current_song.get("energy", 0.5)
-        if current_song.get("id"):
-            try:
-                from db import database as _db
-                target_energy = _db.get_effective_energy(current_song["id"])
-            except Exception:
-                pass
-        for c in sorted_candidates:
-            sid = _get_song_id(c)
-            if sid not in assigned_ids:
-                energy_diff = abs(c.get("energy", 0.5) - target_energy)
-                if energy_diff < 0.2:
-                    result["context"].append(c)
-                    assigned_ids.add(sid)
-                    break
-
-    # Fallback context: any remaining unassigned song
-    if not result["context"]:
-        for c in sorted_candidates:
-            sid = _get_song_id(c)
-            if sid not in assigned_ids:
-                result["context"].append(c)
-                assigned_ids.add(sid)
-                break
-
-    return result
+    for candidate in filtered:
+        sid = _get_song_id(candidate)
+        if candidate.get("cluster_id") != current_cluster:
+            if active_pocket and sid in active_pocket.song_ids:
+                candidate["_explore_weight"] = candidate.get("score", .5) * 1.2
+            if hop_pocket and sid in hop_pocket.song_ids:
+                candidate["_wildcard_weight"] = candidate.get("score", .5) * 1.3
+    effective_current = dict(current_song) if current_song else None
+    if effective_current and effective_current.get("id"):
+        try:
+            from db import database
+            effective_current["energy"] = database.get_effective_energy(effective_current["id"])
+        except Exception:
+            pass
+    return allocate_ranked_slots(filtered, effective_current,
+                                 vibe_lock=bool(vibe_lock and vibe_lock.get("active")),
+                                 exploration_level=exploration_level, archetype=archetype)
 
 
 def score_candidate(candidate, current_song, vibe_lock=None):

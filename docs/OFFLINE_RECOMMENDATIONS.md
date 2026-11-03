@@ -1,9 +1,24 @@
 # Offline recommendation reference v1
 
 `backend/portable/recommender.py` is a standalone deterministic Python/NumPy
-reference for a future Kotlin implementation. It imports no application config,
+reference for the Kotlin implementation in `android/.../recommendation/OfflineRecommender.kt`. It imports no application config,
 database, ChromaDB, LLM, VLC, browser audio or network client. Taste constellations
 are deliberately excluded; the desktop implementation retains them.
+
+## Android zero-exploration sequence policy (November 2, 2026)
+
+Android `recommendSequence` treats exactly 0% as greedy similarity: direct
+predecessor (or explicit Vibe lock) queries, text/audio cosine blend as primary
+ordering, and ordinary score only for exact similarity ties. No random jitter,
+explore/context slot override or transition penalty applies. Learned taste or
+temporary bootstrap supplies a query when an anchor vector is unavailable.
+Cooldowns, dislikes, filters and exclusions remain enforced; vectorless songs
+remain a fallback. The starting anchor and selected songs are excluded within a
+batch, except for the single-song library. Positive exploration retains the
+previous sequence policy. Radio startup disables inherited shuffle so the player
+retains the generated order; users can still explicitly shuffle afterward.
+
+This queue policy does not change the portable v1 `rank`/`recommend` contract.
 
 ## Public contract and state
 
@@ -94,8 +109,15 @@ the four layer results. For three or more consecutive skips the four weights bec
 result. Layers are event-count timescales, not claims about calendar-day boundaries.
 The retained event log can be longer than the taste window. All operations are local.
 
-A vibe-lock song blends 80% anchor unit vector with 20% current taste and normalizes.
-Missing/incompatible anchors leave that group's taste unchanged. The caller sets
+Ordinary Radio blends current-song context with taste within each compatible
+vector group. Normalize both, set current-song weight to `0.75 - 0.4 * diversity`
+(diversity clamped to [0,1]), blend and normalize again. With no taste use the
+current vector; with no compatible current vector retain taste. With neither,
+use the existing metadata fallback. This temporary context never adds a positive
+listening event. Android and the Python reference implement this same formula.
+
+A vibe-lock song instead blends 80% anchor unit vector with 20% current taste and normalizes.
+Missing/incompatible lock anchors use ordinary current-song/taste context. The caller sets
 and clears `vibe_lock`; device timer/song-limit management belongs to the future
 player. It must not require a server or block local playback.
 
@@ -139,12 +161,15 @@ rounding before tie-breaking.
 
 `allocate_portable_slots` reproduces desktop's pure slot stage for supplied ranked
 candidates with no persona/archetype/constellation. Vibe lock selects four exploit
-and one explore. Normal allocation uses desktop's exploration formula (default
-0.3 produces one exploit), different-cluster explore/wildcard, and current-energy
-context, with deterministic rare-cluster/fallback rules. The existing desktop
-wildcard loop yields a wildcard even when its nominal count is zero; the reference
-preserves this observed behavior for stage parity. It does not claim that the
-desktop's nominal 2/1/1/1 description matches every actual setting.
+and one explore. Normal allocation has a fixed five-pick budget: at diversity
+0–40%, three exploit, one explore, no wildcard and one context; above 40%
+through 60%, two exploit, one explore, one wildcard and one context; above 60%,
+one exploit, two explore, one wildcard and one context. Disabled slots remain
+empty. Explore/wildcard prefer a different cluster, then fill from remaining
+ranked candidates; context prefers current-energy neighbors. Short candidate
+pools return all available unique picks up to five. Desktop archetypes adjust
+the same budget: comfort uses 4/0/0/1, explorer 1/2/1/1, and deep listener reserves
+two context picks. Folder and neighboring-folder embedding inputs are unchanged.
 
 After slot allocation the reference fills remaining requested picks with unused
 ranked playable tracks. It substitutes an unused different artist for repeats
@@ -197,7 +222,58 @@ does not justify adding ANN infrastructure. The benchmark writes its detailed
 result in disposable `.test-runtime/` and prints it with `-s`; no production
 library/model/embedding was modified or required.
 
-## First Android implementation
+## Android checkpoint 2B implementation
+
+### Legacy desktop vector recovery (phone feedback, November 2)
+
+Phone diagnostics revealed zero usable vectors despite almost complete matching.
+The prepared catalog contained valid legacy_unknown:songs and
+legacy_unknown:songs_audio descriptors with version unknown; Android had skipped
+all of them. Older ingest writes contain no recorded model identity. Never infer
+that identity from current configuration or retrospectively relabel old vectors.
+
+Strict fallback remains the default. An explicit Use desktop similarity action
+opts into the exporter-tagged legacy collection vectors for the exact imported
+manifest hash. CatalogVectorPolicy preserves the original unknown model and adds
+a snapshot scope to its runtime scoring version. Space, collection label and
+dimension still partition groups; known models, other snapshots and generic
+unknown identities never join these groups. The manifest and vector bytes stay
+unchanged. Scoping isolates data but cannot prove model homogeneity inside an
+old collection; the UI discloses that compatibility cannot be verified.
+
+The flag persists only for that manifest. Reimporting a different snapshot needs
+a new choice; disabling immediately fences in-flight recommendations. This is
+local-only and uses already imported blobs, requiring no server/model call.
+Legacy-vector coverage is validated even while compatibility is off, so missing
+or corrupt files produce the existing reimport fallback instead of a misleading
+recovery count. Existing queued items and recorded event identities stay fixed.
+
+### Android sequence policy (November 2 follow-up)
+
+Android Radio uses recommendSequence around the portable-v1 rank/recommend APIs.
+Each selection becomes continuity context for the next; service refill starts
+from the last visible queued song, including manual additions. Learned taste
+and Vibe lock remain active. Near-equal choices vary by session seed; exploration
+and context slots stay within bounded score bands. Existing queue order stays
+fixed. Shared portable golden scores/slots retain their default behavior.
+
+Cooldown combines the last 50 accepted Radio selections with recent starts/skips,
+relaxing oldest entries only when fresh candidates run out. Explicit exclusions,
+dislikes and filters remain hard. Only entries accepted into the timeline consume
+rotation; preview refreshes and rejected batches never record listening events.
+Local-ID reservations persist in radio_recommendations separately from history;
+the random session seed and slot offset are in memory.
+
+Diagnostics distinguish eligibility, vector coverage and contributing taste
+events. Optional bootstrap uses up to five eligible vector-bearing local songs
+as temporary context only where learned taste is absent. Seeds never become
+likes/events; learned taste supersedes them and repository recreation drops them.
+
+
+
+The native portable-v1 scorer and local Radio integration are implemented. JVM tests use the shared golden catalog/scores/picks (Float32 tolerance 2e-6) and 120 Python-generated slot-stage cases. Imported catalog/vector validation, conservative matching, durable actual-start feedback, bounded service-owned refill, local-only fallback and persisted tuning/Vibe lock now feed the existing Media3 player. Preview/tuning never replace a committed queue. Android has no recommendation network requirement and no profile sync yet. See [ANDROID_APP_PLAN.md](ANDROID_APP_PLAN.md) for current verification, limits and phone acceptance steps.
+
+The following remains guidance for later synchronization/performance work:
 
 Implement catalog validation and local matching before playback. Keep native URI
 availability separate from server identity. Port the documented pure functions
@@ -208,3 +284,46 @@ preserving each device's active queue, mood, current track and position. Add
 device benchmarks, larger labeled matching/quality datasets and interrupted-write
 tests before selecting optional Float16 or acoustic matching. Server AI DJ remains
 an optional connected capability; offline recommendations never wait for it.
+
+
+## Desktop context retrieval (November 1, 2026)
+
+Desktop Radio now builds immediate/session memory from the active session when
+positive signals exist, and daily/long-term memory from shared desktop/mobile
+history. A new session falls back to that shared history without treating an
+actual start as positive feedback. Ordinary retrieval also uses the current
+song's text/audio vectors: current-song weight is `0.75 - 0.4 * diversity`, with
+unit-normalized profile and anchor vectors. Missing profile uses the anchor;
+missing anchor uses the profile. Missing both uses a bounded, explicitly labelled
+metadata fallback under the existing exclusions and caller filters.
+
+Retrieval unions continuity-query, profile and current-song neighborhoods, scores
+against the continuity query, then applies the existing text/audio blend,
+recency and cluster bonuses. Candidate sampling and noisy zero-vector queries
+are removed. Session diversity is passed explicitly through desktop queue and
+preview/refill paths. Queue entries expose a `recommendation` diagnostic object
+with available current/taste similarities, modality scores/blend, fallback basis
+and recency penalty; deterministic reasons describe the available evidence.
+These similarities are model scores, not calibrated confidence percentages.
+
+The Android follow-up now ports ordinary current-song blending into the Kotlin
+scorer and Python portable reference. Android suggestion labels describe the
+strongest contributing modality when both its cosine and the blended cosine
+exceed 0.3; this is a display heuristic, not a quality/confidence calibration.
+Zero-weight modalities cannot determine the label. Missing-vector choices remain
+labelled local choices, and conflicting/weak vector evidence does not claim a
+positive match. Session-specific taste windows, desktop neighborhood retrieval
+and full desktop ranking remain separate. Source captions, embedding models,
+folder/neighbor-folder inputs and actual-start accounting are unchanged.
+Audio and text score calibration and metadata correction remain separate work.
+
+### Android Radio controls (November 2, 2026)
+
+A chosen starting song is prepended to a four-song sequence anchored to it, using
+existing service start fences. Pick for me uses taste/bootstrap without forcing
+the playing song as anchor. Legacy vector consent lives in Settings > Radio.
+Explicit Refresh excludes its preceding visible batch from previews only; these
+in-memory exclusions do not affect start/refill reservations or listening history.
+Small libraries may return fewer choices with an explanation. Navigation with
+known duration and 0-30 seconds remaining produces neutral late_navigation,
+retaining audible time without a skip penalty or fabricated completion.

@@ -1,11 +1,16 @@
 # Radio — AI-Powered Music Station
 
-An intelligent radio station that listens to your taste, learns your mood, and recommends music from your local MP3 library. Built with FastAPI + React + VLC.
+An intelligent radio station that listens to your taste, learns your mood, and recommends music from your local MP3 library. Built with FastAPI + React/Electron and a separate native Android app.
 
-Playback can use authenticated browser audio or server VLC output. The current
-`stability-server-architecture` branch is still undergoing listening acceptance.
-See [the reliability checkpoint](docs/MODERNIZATION_PROGRESS.md#playback-reliability-completion--october-28-2026)
-for fixes, verification, remaining acceptance checks, and rollback guidance.
+The integration branch is `main`. Desktop playback uses authenticated browser audio or server VLC. Android plays the phone's local music independently through Media3.
+
+Android checkpoints 1A–1C, 2A and offline Radio 2B are accepted (2B accepted November 3, 2026). Manual profile sync is future work. See [the Android checkpoint log](docs/ANDROID_APP_PLAN.md), [documentation index](docs/README.md), and [current architecture](docs/ARCHITECTURE.md).
+
+## Android quick start
+
+From `android/` on Windows, use `./gradlew.bat assembleDebug` to build, `./gradlew.bat installDebug` to install, `./gradlew.bat testDebugUnitTest` for unit tests and `./gradlew.bat lintDebug` for lint. Instrumented tests use `./gradlew.bat connectedDebugAndroidTest` with an emulator/device. This is a standalone Gradle project; desktop Python/Node dependencies are not required for local phone playback. See [USB pairing](docs/MOBILE_PAIRING.md) for optional server catalog import.
+
+The setup and feature list below describe the desktop/backend surfaces. Use [TESTING.md](docs/TESTING.md) for isolated checks; normal backend startup mutates state and is not a test fixture.
 
 ## Features
 
@@ -29,7 +34,7 @@ for fixes, verification, remaining acceptance checks, and rollback guidance.
 
 - **Python 3.11+** (the project includes `backend/venv/`; if missing, create it with `python -m venv backend/venv`)
 - **Node.js 20+** with npm
-- **[VLC](https://www.videolan.org/vlc/)** media player (required for audio playback)
+- **[VLC](https://www.videolan.org/vlc/)** media player (required for server-side VLC output; browser audio works without it)
 - **llama.cpp** — must be installed separately (see [External Dependencies](#external-dependencies))
 - **acestep.cpp** — must be installed separately (only needed for the "understand" ingest phase)
 
@@ -212,11 +217,12 @@ Once JSONs are generated, run the ingest pipeline (see [Manual Ingest Phases](#m
 
 ```
 radio/
+├── android/                 # Standalone Kotlin/Compose local player (Media3 + Room)
 ├── backend/                 # FastAPI Python backend (port 8765)
-│   ├── main.py              # ~130 API endpoints + WebSocket
+│   ├── main.py              # API entry and router integration
 │   ├── config.py            # Paths, model names, thresholds, provider config
 │   ├── ingest.py            # Manual phase execution shortcut
-│   ├── db/                  # SQLite schema (12 tables) + CRUD helpers
+│   ├── db/                  # SQLite schema, playback store and CRUD helpers
 │   ├── ingest/               # 7-phase ingest pipeline (scanner → clusterer)
 │   ├── engine/               # Recommendation engine
 │   │   ├── player.py         # VLC MediaListPlayer wrapper, gapless chaining
@@ -249,7 +255,7 @@ radio/
 │   ├── electron/             # Electron main process (tray, mini player, widget)
 │   └── src/
 │       ├── components/       # ~50 React components
-│       ├── hooks/            # 8 custom hooks (state, playback, mood, UI, etc.)
+│       ├── hooks/            # State, playback, mood and UI hooks
 │       ├── api/              # HTTP + WebSocket client
 │       └── styles/           # Tailwind v4 + dark/light theme
 │

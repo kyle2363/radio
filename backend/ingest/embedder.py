@@ -8,8 +8,6 @@ Supports two embedding types:
 import json
 import os
 import logging
-import concurrent.futures
-from threading import Lock
 
 # Suppress ChromaDB telemetry noise
 os.environ["CHROMA_NO_ANALYTICS"] = "1"
@@ -134,12 +132,8 @@ def embed_song(song_id: int, song: dict) -> bool:
             metadata={"hnsw:space": "cosine"},
         )
 
-        # Delete any existing entry first to prevent ChromaDB duplicate ID issues
-        try:
-            collection.delete(ids=[str(song_id)])
-        except Exception:
-            pass
-
+        # Chroma upsert replaces existing IDs. Keep the old vector intact if a
+        # replacement fails (for example, because its dimension is incompatible).
         collection.upsert(
             ids=[str(song_id)],
             embeddings=[embedding],
@@ -156,48 +150,40 @@ def embed_song(song_id: int, song: dict) -> bool:
         return True
     except Exception as e:
         print(f"  Failed to embed song {song_id}: {e}")
+        try:
+            database.set_ingest_error(song_id, f"embedding failed: {e}")
+        except Exception:
+            logger.exception("Could not record embedding failure for song %s", song_id)
         return False
 
 
 def embed_described_songs(song_ids: list) -> list:
-    """Embed all described songs that aren't yet embedded. Returns list of embedded IDs."""
-    chroma_client = _get_chroma_client()
-    collection = chroma_client.get_or_create_collection(
-        "songs",
-        metadata={"hnsw:space": "cosine"},
-    )
+    """Embed requested songs sequentially and return successfully embedded IDs.
 
-    # Check which songs are already in ChromaDB
-    embedded_in_chroma = set()
-    try:
-        existing = collection.get(ids=[str(sid) for sid in song_ids])
-        if existing:
-            seen = set()
-            for eid in existing["ids"]:
-                if eid not in seen:
-                    seen.add(eid)
-                    embedded_in_chroma.add(eid)
-    except Exception as e:
-        print(f"  Warning: Could not check ChromaDB for existing songs: {e}")
-
-    to_embed = [sid for sid in song_ids if str(sid) not in embedded_in_chroma]
+    Always re-upsert requested IDs so a vector written before an interrupted
+    phase update cannot strand a song at ``described``. Sequential calls also
+    avoid concurrent access to local model/provider clients during ingest.
+    """
     embedded_ids = []
-    embed_lock = Lock()
-
-    def _embed_one(song_id):
-        song = database.get_song(song_id)
-        if song and embed_song(song_id, song):
-            database.set_ingest_phase(song_id, "embedded")
-            with embed_lock:
-                embedded_ids.append(song_id)
-            return True
-        print(f"  Failed to embed song {song_id}, will retry on next run")
-        return False
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
-        futures = {executor.submit(_embed_one, sid): sid for sid in to_embed}
-        for future in concurrent.futures.as_completed(futures):
-            pass
+    for song_id in song_ids:
+        try:
+            song = database.get_song(song_id)
+            if not song:
+                logger.error("Cannot embed song %s: song row was not found", song_id)
+                continue
+            if not embed_song(song_id, song):
+                logger.error("Failed to embed song %s; it will be retried on the next run", song_id)
+                continue
+            # Promote new embeddings and clear errors on successful re-embeds,
+            # without rewinding songs already beyond this checkpoint.
+            phase = song.get("ingest_phase")
+            if phase == "described":
+                phase = "embedded"
+            if phase:
+                database.set_ingest_phase(song_id, phase)
+            embedded_ids.append(song_id)
+        except Exception:
+            logger.exception("Failed to embed song %s; it will be retried on the next run", song_id)
 
     return embedded_ids
 
@@ -224,12 +210,8 @@ def embed_audio_song(song_id: int, filepath: str, song: dict = None) -> bool:
 
         audio_collection = get_audio_collection()
 
-        # Delete first to avoid ChromaDB duplicate ID issues
-        try:
-            audio_collection.delete(ids=[str(song_id)])
-        except Exception:
-            pass
-
+        # Upsert replaces existing IDs; do not delete the last good vector
+        # before a potentially failing replacement.
         # Use provided song dict or fetch from SQLite
         if song is None:
             song = database.get_song(song_id)

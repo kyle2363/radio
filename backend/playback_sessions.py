@@ -412,6 +412,7 @@ class PlaybackSessions:
             state.update(status="paused", awaiting_output=True)
         return {**state, "producer_lease_remaining_ms": self.store.producer_lease_remaining(state),
                 "session_id": session_id, "queue": self._queue_snapshot(context), "mood": context.mood.get_state(),
+                "queue_rebuilding": bool(getattr(context.queue, "_rebuilding", False)),
                 "context": public_context, "vibe_lock": public_vibe, "preferences": preferences,
                 "energy": {"direction": context.energy.get_direction(), "current": context.energy.get_current_energy()}}
 

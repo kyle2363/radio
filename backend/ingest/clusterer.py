@@ -12,6 +12,7 @@ from sklearn.cluster import KMeans
 
 import config
 from db import database
+from db.chroma_sync import sync_cluster_metadata
 
 _cluster_model = None
 _cluster_centroids = None
@@ -44,6 +45,32 @@ def _get_chroma_collection(name="songs"):
     return client.get_or_create_collection(name, metadata={"hnsw:space": "cosine"})
 
 
+def _normalize_columns(values: np.ndarray) -> np.ndarray:
+    """Scale each scalar feature independently, preserving real zero values."""
+    values = np.asarray(values, dtype=float)
+    minima = values.min(axis=0)
+    ranges = values.max(axis=0) - minima
+    ranges[ranges == 0] = 1
+    return (values - minima) / ranges
+
+
+def _scalar_feature_matrix(songs: list) -> np.ndarray:
+    """Return normalized energy, valence and BPM columns for every song."""
+    energy = np.array([
+        0.5 if song.get("energy") is None else song["energy"]
+        for song in songs
+    ], dtype=float)
+    valence = np.array([
+        0.5 if song.get("valence") is None else song["valence"]
+        for song in songs
+    ], dtype=float)
+    bpm = np.array([
+        120.0 if song.get("bpm") is None else song["bpm"]
+        for song in songs
+    ], dtype=float) / 180.0
+    return _normalize_columns(np.column_stack([energy, valence, bpm]))
+
+
 def _build_feature_matrix(songs: list) -> tuple:
     """Build a feature matrix from song data.
 
@@ -74,83 +101,58 @@ def _build_feature_matrix(songs: list) -> tuple:
     except Exception as e:
         print(f"  Text embedding lookup failed: {e}")
 
-    has_audio = audio_data and audio_data.get("embeddings") is not None and len(audio_data["embeddings"]) > 0
-    has_text = text_data and text_data.get("embeddings") is not None and len(text_data["embeddings"]) > 0
+    def _embedding_map(data):
+        if not data or data.get("embeddings") is None:
+            return {}
+        return {
+            str(song_id): embedding
+            for song_id, embedding in zip(data.get("ids", []), data["embeddings"])
+        }
 
-    if has_audio and has_text:
-        # Blend: audio + text carries artist info for same-artist grouping
-        audio_map = dict(zip(audio_data["ids"], audio_data["embeddings"]))
-        text_map = dict(zip(text_data["ids"], text_data["embeddings"]))
-        valid_songs = [s for s in songs if str(s["id"]) in audio_map and str(s["id"]) in text_map]
+    audio_map = _embedding_map(audio_data)
+    text_map = _embedding_map(text_data)
+    ids = set(all_ids)
+    has_full_audio = bool(ids) and ids.issubset(audio_map)
+    has_full_text = bool(ids) and ids.issubset(text_map)
+    scalar_features = _scalar_feature_matrix(songs)
 
-        if valid_songs:
-            audio_embs = np.array([audio_map[str(s["id"])] for s in valid_songs])
-            text_embs = np.array([text_map[str(s["id"])] for s in valid_songs])
-            audio_dim = audio_embs.shape[1]
-            text_dim = text_embs.shape[1]
-            print(f"  Blending MuQ audio ({audio_dim}-dim) + text ({text_dim}-dim) embeddings ({len(valid_songs)} songs)")
-
-            energy = np.array([(s.get("energy") or 0.5) for s in valid_songs]).reshape(-1, 1)
-            valence = np.array([(s.get("valence") or 0.5) for s in valid_songs]).reshape(-1, 1)
-            bpm_norm = np.array([(s.get("bpm") or 120) / 180.0 for s in valid_songs]).reshape(-1, 1)
-
-            feature_matrix = np.hstack([
-                audio_embs * 0.60,
-                text_embs * 0.30,
-                energy * 0.05,
-                valence * 0.03,
-                bpm_norm * 0.02,
-            ])
-            return feature_matrix, [s["id"] for s in valid_songs], (audio_dim, text_dim)
-
-    if has_audio:
-        # Audio only
-        audio_map = dict(zip(audio_data["ids"], audio_data["embeddings"]))
-        valid_songs = [s for s in songs if str(s["id"]) in audio_map]
-        audio_embs = np.array([audio_map[str(s["id"])] for s in valid_songs])
+    if has_full_audio and has_full_text:
+        audio_embs = np.asarray([audio_map[sid] for sid in all_ids], dtype=float)
+        text_embs = np.asarray([text_map[sid] for sid in all_ids], dtype=float)
         audio_dim = audio_embs.shape[1]
-        print(f"  Using MuQ audio embeddings only ({audio_dim}-dim, {len(valid_songs)} songs)")
+        text_dim = text_embs.shape[1]
+        print(f"  Blending MuQ audio ({audio_dim}-dim) + text ({text_dim}-dim) embeddings ({len(songs)} songs)")
+        feature_matrix = np.hstack([
+            audio_embs * 0.60,
+            text_embs * 0.30,
+            scalar_features * np.array([0.05, 0.03, 0.02]),
+        ])
+        return feature_matrix, [s["id"] for s in songs], (audio_dim, text_dim)
 
-        energy = np.array([(s.get("energy") or 0.5) for s in valid_songs]).reshape(-1, 1)
-        valence = np.array([(s.get("valence") or 0.5) for s in valid_songs]).reshape(-1, 1)
-        bpm_norm = np.array([(s.get("bpm") or 120) / 180.0 for s in valid_songs]).reshape(-1, 1)
-
+    if has_full_audio:
+        audio_embs = np.asarray([audio_map[sid] for sid in all_ids], dtype=float)
+        audio_dim = audio_embs.shape[1]
+        print(f"  Using MuQ audio embeddings only ({audio_dim}-dim, {len(songs)} songs)")
         feature_matrix = np.hstack([
             audio_embs * 0.90,
-            energy * 0.05,
-            valence * 0.03,
-            bpm_norm * 0.02,
+            scalar_features * np.array([0.05, 0.03, 0.02]),
         ])
-        return feature_matrix, [s["id"] for s in valid_songs], (audio_dim, 0)
+        return feature_matrix, [s["id"] for s in songs], (audio_dim, 0)
 
-    if has_text:
-        # Text only
-        text_map = dict(zip(text_data["ids"], text_data["embeddings"]))
-        valid_songs = [s for s in songs if str(s["id"]) in text_map]
-        text_embs = np.array([text_map[str(s["id"])] for s in valid_songs])
+    if has_full_text:
+        text_embs = np.asarray([text_map[sid] for sid in all_ids], dtype=float)
         text_dim = text_embs.shape[1]
-        print(f"  Using text embeddings only ({text_dim}-dim, {len(valid_songs)} songs)")
-
-        energy = np.array([(s.get("energy") or 0.5) for s in valid_songs]).reshape(-1, 1)
-        valence = np.array([(s.get("valence") or 0.5) for s in valid_songs]).reshape(-1, 1)
-        bpm_norm = np.array([(s.get("bpm") or 120) / 180.0 for s in valid_songs]).reshape(-1, 1)
-
+        print(f"  Using text embeddings only ({text_dim}-dim, {len(songs)} songs)")
         feature_matrix = np.hstack([
             text_embs * 0.85,
-            energy * 0.10,
-            valence * 0.03,
-            bpm_norm * 0.02,
+            scalar_features * np.array([0.10, 0.03, 0.02]),
         ])
-        return feature_matrix, [s["id"] for s in valid_songs], (0, text_dim)
+        return feature_matrix, [s["id"] for s in songs], (0, text_dim)
 
-    # Fallback: audio features only
-    print("  WARNING: no embeddings found, using energy/valence/BPM only")
-    energy = np.array([(s.get("energy") or 0.5) for s in songs]).reshape(-1, 1)
-    valence = np.array([(s.get("valence") or 0.5) for s in songs]).reshape(-1, 1)
-    bpm_norm = np.array([(s.get("bpm") or 120) / 180.0 for s in songs]).reshape(-1, 1)
-
-    feature_matrix = np.hstack([energy, valence, bpm_norm])
-    return feature_matrix, [s["id"] for s in songs], (0, 0)
+    # Never cluster a subset: use metadata features for every song until at
+    # least one embedding collection covers the complete eligible song set.
+    print("  WARNING: no complete embedding coverage, using energy/valence/BPM for all songs")
+    return scalar_features, [s["id"] for s in songs], (0, 0)
 
 
 def cluster_songs() -> list:
@@ -165,23 +167,13 @@ def cluster_songs() -> list:
 
     if len(songs) < config.N_CLUSTERS:
         # Can't cluster fewer songs than clusters
-        n_clusters = max(2, len(songs) // 2)
+        n_clusters = 1 if len(songs) == 1 else max(2, len(songs) // 2)
         print(f"  Only {len(songs)} songs, using {n_clusters} clusters")
     else:
         n_clusters = config.N_CLUSTERS
 
     print(f"  Building feature matrix for {len(songs)} songs...")
     feature_matrix, song_ids, emb_dims = _build_feature_matrix(songs)
-
-    # Normalize features to [0, 1] range for better clustering
-    # Embeddings are already near-normalized, but audio features need scaling
-    audio_mask = slice(feature_matrix.shape[1] - 3, feature_matrix.shape[1])
-    audio_features = feature_matrix[:, audio_mask]
-    audio_min = audio_features.min(axis=0)
-    audio_max = audio_features.max(axis=0)
-    audio_range = audio_max - audio_min
-    audio_range[audio_range == 0] = 1  # avoid division by zero
-    feature_matrix[:, audio_mask] = (audio_features - audio_min) / audio_range
 
     print(f"  Running KMeans with {n_clusters} clusters on {len(song_ids)} songs...")
     kmeans = KMeans(
@@ -258,6 +250,13 @@ def cluster_songs() -> list:
             )
     except Exception as e:
         print(f"  Warning: could not save centroids to ChromaDB: {e}")
+
+    try:
+        refreshed = sync_cluster_metadata(dict(zip(song_ids, map(int, cluster_labels))))
+        print(f"  Refreshed cluster metadata: {refreshed}")
+    except Exception as exc:
+        raise RuntimeError('Clusters saved in SQLite, but embedding metadata refresh failed; '
+                           'rerun Cluster to retry. Recommendations use SQLite assignments.') from exc
 
     # Print cluster sizes
     unique, counts = np.unique(cluster_labels, return_counts=True)

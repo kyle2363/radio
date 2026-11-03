@@ -544,10 +544,11 @@ class VoiceManager:
                     piper_text = text.replace(".,.", "")
                     return eng.synthesize(piper_text, voice_id, output_path)
 
-                ok, result_or_err = run_with_timeout(_do_synthesize, timeout=30)
+                timeout = eng.synthesis_timeout if engine_id == "omnivoice" else 30
+                ok, result_or_err = run_with_timeout(_do_synthesize, timeout=timeout)
                 if not ok:
                     if isinstance(result_or_err, TimeoutError):
-                        logger.warning("VoiceManager: synthesize timed out after 30s")
+                        logger.warning("VoiceManager: synthesize timed out after %ss", timeout)
                     else:
                         logger.error(f"VoiceManager: synthesize failed: {result_or_err}")
                     if engine_id != "piper":

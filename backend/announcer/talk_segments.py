@@ -310,7 +310,12 @@ def _pick_caller_reason(session_state: dict | None) -> str:
 
 def _pick_caller_opening() -> str:
     """Pick a caller opening style."""
-    return random.choice(CALLER_OPENINGS)
+    with _talk_lock:
+        available = [s for s in CALLER_OPENINGS if s not in _recent_caller_openings]
+        weights = [0.3 if s in ("mid_thought", "already_talking") else 1.0 for s in available]
+        chosen = random.choices(available, weights=weights, k=1)[0]
+        _recent_caller_openings.append(chosen)
+        return chosen
 
 
 CALLER_PROMPT_TEMPLATE = """You are writing a short phone-in exchange for a radio show.
@@ -338,18 +343,12 @@ Return valid JSON only with this exact structure:
 Rules:
 - The reason they called shapes everything: their energy, what they lead with, what they leave unsaid
 - The opening style must be audible in the first line — it defines how the caller enters the conversation
-- Opening style '{caller_opening_style}' means:
-  * mid_thought: caller is already mid-sentence, continuing a thought (Example only: "...and that's when I realized")
-  * nervous: caller is hesitant, says "um", "hey is this...", "sorry to bother you"
-  * already_talking: caller jumps in without introduction (Example only: "No no no, but listen—")
-  * raw_reaction: caller blurts out an emotional reaction (Example only: "Oh MAN, that track—")
-  * quiet_reflection: caller starts slow and thoughtful (Example only: "I've been sitting here thinking about...")
-  * none: your choice to decide how it starts!
-  * standard: start with a generic greeting then proceed
+- Follow only this opening instruction: {caller_opening_instruction}
+- Otherwise begin with a complete, self-contained sentence.
 - Caller MUST reference at least one actual song or artist from what's been playing
 - Caller can echo a specific lyric fragment naturally (not as a direct quote)
 - The DJ should respond in character — warm but not identical each time
-- Use filler words, restarts, and incomplete thoughts where natural
+- Use occasional natural hesitations; do not make every entrance an interrupted sentence
 - The caller_request should feel like something they arrived at, not something they planned to say
 - mood_shift: set to "energetic", "chill", "focus", "melancholy" or null
 - energy_direction: set to "up", "down" or null
@@ -443,6 +442,15 @@ def generate_caller_segment(
         caller_name=caller.name,
         call_reason=call_reason,
         caller_opening_style=caller_opening,
+        caller_opening_instruction={
+            "mid_thought": "Continue a thought already in progress; this is an occasional special entrance.",
+            "already_talking": "Jump directly into your point without an introduction.",
+            "nervous": "Introduce yourself hesitantly but with a complete thought.",
+            "raw_reaction": "Give a direct reaction to a song in a complete sentence.",
+            "quiet_reflection": "Begin with a quiet, specific observation.",
+            "none": "Choose a fresh complete-sentence entrance.",
+            "standard": "Give a simple greeting and explain why you called.",
+        }[caller_opening],
         recent_songs_str=recent_str,
         recent_lyrics_str=recent_lyrics_str or "(no lyrics available)",
         mood_state=mood_state,
@@ -535,6 +543,30 @@ def generate_caller_segment(
 # ---- DJ Monologue ----
 
 MONOLOGUE_TYPES = {
+    "musical_detail": {
+        "instruction": "Notice one musical detail supported by supplied song context. Do not invent instruments, samples, or recording facts. If context is insufficient, offer a subjective listening impression.",
+        "tone": "curious, concise, attentive",
+    },
+    "everyday_observation": {
+        "instruction": "Share one small, relatable everyday observation sparked by the music. Allow humor; avoid turning it into a confession.",
+        "tone": "light, conversational, playful",
+    },
+    "listener_question": {
+        "instruction": "Ask one interesting question connected to the music. Leave room for the listener's answer instead of supplying a long imagined answer.",
+        "tone": "curious, direct, inviting",
+    },
+    "unexpected_connection": {
+        "instruction": "Connect two recent songs through a detail supported by the supplied context. Treat interpretations as subjective, not verified artist intentions.",
+        "tone": "observant, surprised, conversational",
+    },
+    "mini_opinion": {
+        "instruction": "Offer a playful musical preference or mild disagreement, clearly as personal opinion, then get back to the music.",
+        "tone": "opinionated, warm, humorous",
+    },
+    "set_direction": {
+        "instruction": "Briefly explain the next change in energy or atmosphere using available context. Avoid a grand emotional journey.",
+        "tone": "clear, relaxed, purposeful",
+    },
     "memory": {
         "instruction": "A specific personal memory or story that one of tonight's songs triggered. Be concrete and vivid — a place, a person, a moment. The music is the doorway in.",
         "tone": "nostalgic, specific, unhurried",
@@ -561,7 +593,7 @@ MONOLOGUE_TYPES = {
     },
 }
 
-MONOLOGUE_PROMPT_TEMPLATE = """You are a late-night radio DJ delivering a personal monologue.
+MONOLOGUE_PROMPT_TEMPLATE = """You are a radio DJ delivering a personal monologue appropriate to the actual time of day.
 
 Context:
 - Session duration: {session_minutes} minutes
@@ -577,11 +609,13 @@ Monologue type: {monologue_type}
 What this means: {monologue_instruction}
 Tone to aim for: {monologue_tone}
 
-Write a 45-90 second spoken monologue.
+Write a 30-75 second spoken monologue.
 
 Rules:
 - Write for one listener, not a crowd
-- Use natural spoken rhythm: incomplete sentences, "you know", "I mean", trailing thoughts
+- Use natural spoken rhythm. Start with a complete, self-contained sentence.
+- Develop one observation with a concrete detail, then return to the music.
+- Vary the subject; warmth does not require a confession or an emotional journey.
 - DO NOT open with: "You know,", "It's [time]", "Tonight", or "Welcome back"
 - Weave in lyric references naturally — don't quote them like recitation
 - End with something that makes the next song feel like it had to come next
@@ -747,6 +781,9 @@ def generate_dj_monologue(
 # ---- Guest Takeover Segments ----
 
 GUEST_INTRO_STYLES = [
+    "offer a straightforward welcome and explain your intention for the set",
+    "open with a specific musical observation grounded in the supplied context",
+    "ask the listener a short, interesting question",
     "jump straight into the energy — no preamble",
     "build anticipation slowly before revealing what's coming",
     "open with a personal confession or memory",
@@ -767,10 +804,12 @@ Context:
 Write a 15-25 second spoken intro for your takeover.
 
 Rules:
-- Reference the transition from what just played — agree with it, contrast it, or riff off it
+- Reference what just played only when it supports this opening style
 - Hint at the vibe without listing track names
 - Opening style this time: {intro_style}
-- DO NOT open with your own name or "Hey everyone" or "What's up"
+- Usually start with a complete, self-contained sentence; a simple greeting is welcome
+- Avoid repeating recent openings: {recent_openings}
+- Treat musical descriptions as observations only when supported by supplied context; invent no production facts
 - Sound like yourself, not a generic hype voice
 - If next song is provided, tease its energy or feel as a natural lead-in
 - No quotes, no labels, no stage directions — just the spoken words"""
@@ -841,7 +880,11 @@ def generate_guest_takeover_intro(
         _talk_debug(f"generate_guest_intro: persona '{guest_persona_id}' not found")
         return None
 
-    intro_style = random.choice(GUEST_INTRO_STYLES)
+    with _talk_lock:
+        available = [s for s in GUEST_INTRO_STYLES if s not in _recent_guest_styles]
+        intro_style = random.choice(available)
+        _recent_guest_styles.append(intro_style)
+        recent_openings = "; ".join(_recent_guest_openings) or "none yet"
     hour = datetime.now().hour
     greeting = _build_greeting(hour)
 
@@ -859,6 +902,7 @@ def generate_guest_takeover_intro(
         upcoming_songs_hint=upcoming_hint,
         next_song_str=f"{next_song.get('artist', 'Unknown')} - {next_song.get('title', 'Unknown')}" if next_song else "(not yet known)",
         intro_style=intro_style,
+        recent_openings=recent_openings,
     )
 
     _talk_debug(f"generate_guest_intro: prompt ({len(prompt)} chars):\n{prompt}")
@@ -873,6 +917,8 @@ def generate_guest_takeover_intro(
         text = text.strip('"\'').strip()
         text = text.encode('ascii', 'ignore').decode('ascii')
         _talk_debug(f"generate_guest_intro: LLM response ({len(text)} chars):\n{text[:300]}{'...' if len(text) > 300 else ''}")
+        with _talk_lock:
+            _recent_guest_openings.append(" ".join(text.split()[:8]))
 
         _talk_debug(f"generate_guest_intro: TTS voice={guest.voice_id} speed={guest.speed_base:.2f}")
         wav = tts_say(text, voice_id=guest.voice_id, speed=guest.speed_base)
@@ -980,6 +1026,9 @@ _recent_guests: list[str] = []        # last N guest persona IDs used
 _recent_segment_types: list[str] = [] # last N segment types used
 _recent_monologue_openings = deque(maxlen=4)  # first 6 words of generated monologues
 _recent_monologue_types = deque(maxlen=3)     # last N monologue type keys
+_recent_caller_openings = deque(maxlen=3)
+_recent_guest_styles = deque(maxlen=3)
+_recent_guest_openings = deque(maxlen=4)
 _last_segment_mood = None                    # mood from the most recent segment
 
 
@@ -1250,6 +1299,9 @@ def reset_talk_counters():
     global _recent_monologue_openings, _recent_monologue_types, _last_segment_mood
     with _talk_lock:
         _song_counter = 0
+        _recent_caller_openings.clear()
+        _recent_guest_styles.clear()
+        _recent_guest_openings.clear()
         _current_guest_takeover = None
         _recent_callers = []
         _recent_guests = []

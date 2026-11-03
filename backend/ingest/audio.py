@@ -62,15 +62,11 @@ def analyze_audio(filepath: str) -> dict:
         y, sr = librosa.load(filepath, duration=90, sr=22050)
     except Exception as e:
         logger.warning("Could not load audio %s: %s", filepath, e)
-        return {
-            "energy": 0.5, "valence": 0.5, "bpm": None,
-            "raw_rms": None, "crest_factor": None,
-            "spectral_contrast": None, "spectral_rolloff": None,
-            "spectral_flatness": None,
-            "onset_density": None, "spectral_flux": None,
-            "spectral_centroid": None, "rms_envelope_variance": None,
-            "lufs": None,
-        }
+        raise RuntimeError(f"Could not load audio {filepath}: {e}") from e
+
+    analyzed_duration = len(y) / sr if sr else 0.0
+    if analyzed_duration <= 0:
+        raise ValueError(f"Audio has no samples: {filepath}")
 
     # --- RMS (loudness) ---
     rms = librosa.feature.rms(y=y)[0]
@@ -110,7 +106,7 @@ def analyze_audio(filepath: str) -> dict:
     # --- v2 features: onset density and spectral flux ---
     try:
         onset_frames = librosa.onset.onset_detect(y=y, sr=sr)
-        onset_density = len(onset_frames) / 90.0
+        onset_density = len(onset_frames) / analyzed_duration
     except Exception as e:
         logger.debug("Onset detection failed: %s", e)
         onset_density = 0.0
@@ -172,7 +168,8 @@ def normalize_all_songs(songs: list) -> list:
     Returns:
         list of {id, energy, valence} dicts ready for DB update.
     """
-    valid = [s for s in songs if s.get("raw_rms") is not None]
+    v1_features = ("raw_rms", "crest_factor", "spectral_contrast", "spectral_rolloff", "spectral_flatness")
+    valid = [s for s in songs if all(s.get(key) is not None for key in v1_features)]
     if not valid:
         return []
 
@@ -215,7 +212,8 @@ def normalize_all_songs_v2(songs: list) -> list:
         list of {id, energy} dicts ready for DB update (v2 energy only).
         Valence is unchanged from v1.
     """
-    valid = [s for s in songs if s.get("onset_density") is not None]
+    required = ("onset_density", "spectral_centroid", "lufs", "rms_envelope_variance")
+    valid = [s for s in songs if all(s.get(key) is not None for key in required)]
     if not valid:
         return []
 
@@ -236,6 +234,29 @@ def normalize_all_songs_v2(songs: list) -> list:
         results.append({
             "id": s["id"],
             "energy": round(float(energy[i]), 4),
+        })
+    return results
+
+
+def normalize_current_songs(songs: list) -> list:
+    """Normalize current ingest rows with v1 valence and v2 energy fallback.
+
+    Songs with the complete v2 feature set use v2 energy. Older or partial
+    rows use the established v1 energy formula when its raw features exist.
+    """
+    v1 = {item["id"]: item for item in normalize_all_songs(songs)}
+    v2 = {item["id"]: item for item in normalize_all_songs_v2(songs)}
+    results = []
+    for song in songs:
+        song_id = song.get("id")
+        legacy = v1.get(song_id)
+        modern = v2.get(song_id)
+        if legacy is None:
+            continue
+        results.append({
+            "id": song_id,
+            "energy": modern["energy"] if modern is not None else legacy["energy"],
+            "valence": legacy["valence"],
         })
     return results
 

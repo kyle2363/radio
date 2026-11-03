@@ -71,3 +71,21 @@ def test_revision_and_blob_paths_cannot_escape_catalog_root(tmp_path):
         service.load("../radio.db")
     with pytest.raises(ValueError):
         service.blob("../radio.db")
+
+
+def test_publication_retries_temporary_windows_directory_locks(tmp_path, monkeypatch):
+    import portable_server
+    from pathlib import Path
+    service, _ = source(tmp_path)
+    rename = portable_server.os.rename
+    failures = []
+    def temporarily_locked(src, dst):
+        if Path(dst).parent == service.root and Path(dst).name.isdecimal() and len(failures) < 2:
+            failures.append(True)
+            error = PermissionError("Temporary Windows indexer lock")
+            error.winerror = 5
+            raise error
+        return rename(src, dst)
+    monkeypatch.setattr(portable_server.os, "rename", temporarily_locked)
+    assert service.snapshot().manifest["revision"] == 1
+    assert len(failures) == 2

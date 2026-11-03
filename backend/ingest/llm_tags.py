@@ -32,8 +32,12 @@ Rules:
 """
 
 
-def generate_tags(caption: str, lyrics: str = "", retries: int = 3, options: dict | None = None) -> dict | None:
-    """Call Ollama to generate tags from a song caption and optional lyrics."""
+def generate_tags(caption: str, lyrics: str = "", retries: int = 3, options: dict | None = None) -> dict:
+    """Call the configured chat provider and validate its tag response.
+
+    Provider, parsing, and validation failures are retried. Exhaustion raises
+    ValueError so callers cannot mistake a failed tagging attempt for success.
+    """
     import config
     lyrics_block = ""
     if lyrics:
@@ -41,6 +45,9 @@ def generate_tags(caption: str, lyrics: str = "", retries: int = 3, options: dic
         lyrics_block = " ".join(words)
     prompt = TAG_PROMPT.format(caption=caption[:500], lyrics=lyrics_block or "(no lyrics available)")
     opts = {**config.OLLAMA_CHAT_OPTIONS, **(options or {})}
+    if retries < 1:
+        raise ValueError("retries must be at least 1")
+    last_error = None
     for attempt in range(retries):
         try:
             response = llm_chat().chat(
@@ -49,7 +56,10 @@ def generate_tags(caption: str, lyrics: str = "", retries: int = 3, options: dic
                 options=opts,
                 think=False,
             )
-            content = response.content.strip()
+            content = response.content
+            if not isinstance(content, str):
+                raise ValueError("LLM response content must be text")
+            content = content.strip()
 
             # Extract JSON from possible markdown code block
             if content.startswith("```"):
@@ -61,20 +71,26 @@ def generate_tags(caption: str, lyrics: str = "", retries: int = 3, options: dic
                     pass
 
             result = json.loads(content)
-            return {
-                "emotional_tags": result.get("emotional_tags", []),
-                "genre_tags": result.get("genre_tags", []),
-                "instrument_tags": result.get("instrument_tags", []),
-            }
-        except (json.JSONDecodeError, KeyError) as e:
-            if attempt < retries - 1:
-                continue
-    return None
+            if not isinstance(result, dict):
+                raise ValueError("LLM response must be a JSON object")
+            tags = {}
+            for key in ("emotional_tags", "genre_tags", "instrument_tags"):
+                values = result.get(key)
+                if not isinstance(values, list) or any(not isinstance(value, str) for value in values):
+                    raise ValueError(f"LLM response field {key} must be a list of strings")
+                tags[key] = values
+            return tags
+        except Exception as e:
+            last_error = e
+    raise ValueError(f"Could not generate valid song tags after {retries} attempts: {last_error}") from last_error
 
 
 def generate_tags_batch(caption: str) -> list:
     """Generate tags for a single song, returns list of JSON strings with fallback."""
-    result = generate_tags(caption)
+    try:
+        result = generate_tags(caption)
+    except ValueError:
+        result = None
     if result:
         return [
             json.dumps(result["emotional_tags"]),
