@@ -589,6 +589,18 @@ def _delete_child_rows(conn, song_ids):
     if not song_ids:
         return
     ph = ",".join("?" * len(song_ids))
+    # Playback support is installed separately from the base schema. Attempts
+    # own song foreign keys, while receipts intentionally remain for dedupe.
+    tables = {
+        row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name IN (?, ?)",
+            ("playback_attempts", "song_suppression"),
+        ).fetchall()
+    }
+    if "playback_attempts" in tables:
+        conn.execute(f"DELETE FROM playback_attempts WHERE song_id IN ({ph})", song_ids)
+    if "song_suppression" in tables:
+        conn.execute(f"DELETE FROM song_suppression WHERE song_id IN ({ph})", song_ids)
     conn.execute(f"DELETE FROM play_events WHERE song_id IN ({ph})", song_ids)
     conn.execute(f"DELETE FROM transitions WHERE from_song_id IN ({ph}) OR to_song_id IN ({ph})", song_ids + song_ids)
     conn.execute(f"DELETE FROM queue_history WHERE song_id IN ({ph})", song_ids)
@@ -1738,36 +1750,49 @@ def get_archetype_metrics():
     """Get aggregated metrics for archetype detection."""
     conn = get_connection()
     try:
-        # Total plays per signal type
         rows = conn.execute(
             """SELECT signal, COUNT(*) as cnt FROM play_events
-               GROUP BY signal"""
+               WHERE COALESCE(undone, 0) = 0 GROUP BY signal"""
         ).fetchall()
         signal_counts = {r["signal"]: r["cnt"] for r in rows}
 
-        # Unique songs played
-        unique_songs = conn.execute(
-            "SELECT COUNT(DISTINCT song_id) as cnt FROM play_events"
-        ).fetchone()["cnt"]
-
-        # Total plays
-        total_plays = conn.execute(
-            "SELECT COUNT(*) as cnt FROM play_events"
-        ).fetchone()["cnt"]
-
-        # Completion rate
+        # Only actual starts contribute to unique-song and cluster coverage.
+        starts = conn.execute(
+            """SELECT COUNT(DISTINCT pe.song_id) AS songs,
+                      COUNT(DISTINCT CASE WHEN s.cluster_id >= 0 THEN s.cluster_id END) AS clusters
+               FROM play_events pe LEFT JOIN songs s ON s.id = pe.song_id
+               WHERE pe.signal = 'playing' AND COALESCE(pe.undone, 0) = 0"""
+        ).fetchone()
+        unique_clusters = starts["clusters"]
+        unique_songs = starts["songs"]
+        terminal_outcomes = sum(signal_counts.get(signal, 0) for signal in ("completed", "skip_early", "skip_late"))
+        playing_starts = signal_counts.get("playing", 0)
+        # Legacy history may contain only terminal events, without start rows.
+        total_plays = playing_starts or terminal_outcomes
         completed = signal_counts.get("completed", 0)
         skip_early = signal_counts.get("skip_early", 0)
         skip_late = signal_counts.get("skip_late", 0)
-        total_signals = total_plays
+        wildcard_rows = conn.execute(
+            """SELECT signal, COUNT(*) AS cnt FROM play_events
+               WHERE queue_slot = 'wildcard' AND COALESCE(undone, 0) = 0
+                 AND signal IN ('hearted', 'replayed', 'skip_early', 'skip_late')
+               GROUP BY signal"""
+        ).fetchall()
+        wildcard_counts = {r["signal"]: r["cnt"] for r in wildcard_rows}
+        wildcard_positive = wildcard_counts.get("hearted", 0) + wildcard_counts.get("replayed", 0)
+        wildcard_negative = wildcard_counts.get("skip_early", 0) + wildcard_counts.get("skip_late", 0)
 
         return {
             "total_plays": total_plays,
             "unique_songs": unique_songs,
+            "unique_clusters": unique_clusters,
             "completed": completed,
             "skip_early": skip_early,
             "skip_late": skip_late,
-            "completion_rate": completed / max(1, total_signals),
+            "terminal_outcomes": terminal_outcomes,
+            "completion_rate": completed / max(1, terminal_outcomes),
+            "wildcard_positive": wildcard_positive,
+            "wildcard_negative": wildcard_negative,
             "signal_counts": signal_counts,
         }
     finally:

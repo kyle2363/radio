@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, Tray, Menu, globalShortcut, nativeImage, nativeTheme, Notification, powerMonitor, powerSaveBlocker, session, safeStorage } = require("electron");
+const { app, BrowserWindow, ipcMain, Tray, Menu, globalShortcut, nativeImage, nativeTheme, Notification, powerMonitor, powerSaveBlocker, session, safeStorage, dialog } = require("electron");
 const path = require("path");
 const { spawn, execSync } = require("child_process");
 const fs = require("fs");
@@ -9,6 +9,7 @@ const { loadDevelopmentWindow, setThumbnailButtons } = require('./window-startup
 const { createMobilePairingControl, registerMobilePairingIPC } = require('./mobile-pairing.cjs');
 const { createRemoteHostingControl, createWindowsTunnelProcess, probeTunnelEndpoint, registerRemoteHostingIPC } = require('./remote-hosting.cjs');
 const { createDiscoveryPublisher, registerDiscoveryIPC } = require('./discovery-publisher.cjs');
+const { resolveBackendLaunch, reportBackendSpawnError } = require('./backend-launch.cjs');
 
 let mainWindow;
 let uvicornProcess;
@@ -971,22 +972,20 @@ function setupIPC() {
 
 // ── Backend Process ───────────────────────────────────────────
 function startBackend() {
-  const venvPython = path.join(
-    __dirname, "..", "..", "backend", "venv",
-    process.platform === "win32" ? "Scripts" : "bin",
-    process.platform === "win32" ? "python.exe" : "python"
-  );
-
-  const useVenv = fs.existsSync(venvPython);
-  const python = useVenv ? venvPython : (process.platform === "win32" ? "python" : "python3");
-  const serverScript = path.join(__dirname, "..", "..", "backend", "main.py");
+  const launch = resolveBackendLaunch({ packaged: app.isPackaged, resourcesPath: process.resourcesPath,
+    dirname: __dirname, userDataDir: app.getPath('userData'), dataDir: process.env.RADIO_DATA_DIR });
 
   const mobileLaunch = mobilePairing.launchOptions();
-  uvicornProcess = spawn(python, [serverScript], {
-    cwd: path.join(__dirname, "..", "..", "backend"),
+  uvicornProcess = spawn(launch.python, [launch.serverScript], {
+    cwd: launch.cwd,
     stdio: mobileLaunch.stdio,
-    env: { ...process.env, PYTHONIOENCODING: "utf-8", ...mobileLaunch.env },
+    env: { ...process.env, PYTHONIOENCODING: "utf-8", ...launch.env, ...mobileLaunch.env },
   });
+  uvicornProcess.on("error", error => reportBackendSpawnError(error, {
+    showErrorBox: (title, message) => dialog.showErrorBox(title, message),
+    stopWaiting: () => { app.isQuitting = true; },
+    quit: () => app.quit(),
+  }));
   mobilePairing.attach(uvicornProcess);
 
   uvicornProcess.stdout.on("data", (data) => console.log(`[Backend] ${data}`));

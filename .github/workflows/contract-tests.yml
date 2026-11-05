@@ -36,6 +36,10 @@ jobs:
           backend/tests/test_replay_feedback.py
           backend/tests/test_replay_queue.py
           backend/tests/test_access_logging.py
+          backend/tests/test_desktop_review.py
+          backend/tests/test_archetype_metric_edges.py
+          backend/tests/test_metadata_edit_safety.py
+          backend/tests/test_websocket_delivery.py
           backend/tests/test_portable_catalog.py
           backend/tests/test_portable_matching.py
           backend/tests/test_portable_recommender.py

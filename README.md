@@ -94,6 +94,13 @@ npm install
 # From frontend/ — starts Vite + Electron (Electron spawns the FastAPI backend automatically)
 npm run dev
 ```
+
+### Packaged desktop runtime
+
+`npm run electron:build` packages the Electron UI and copies the frontend build and backend source to the application's resources directory. It does not bundle Python or the backend's installed dependencies. A packaged install therefore requires a compatible Python runtime available on `PATH` with the backend requirements installed, or a compatible `backend/venv` placed beside the copied backend. VLC and optional model servers remain separate dependencies. If Python cannot be started, Radio shows a startup error with the runtime requirement.
+
+Packaged runtime data defaults to `data` inside Electron's per-user application-data directory, so installation under Program Files does not require write access to the installation directory. `RADIO_DATA_DIR` overrides that default; configure `RADIO_MUSIC_DIR` and `RADIO_METADATA_DIR` for an existing library and metadata directory.
+
 Electron app should auto start with 'npm run dev'
 
 For browser verions open `http://localhost:3000` in your browser. The backend runs on `http://localhost:8765`.

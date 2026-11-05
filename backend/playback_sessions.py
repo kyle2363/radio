@@ -535,6 +535,8 @@ class PlaybackSessions:
             for item in private.items:
                 entry = {"kind": item.kind, "song_id": item.song_id, "duration_ms": item.duration_ms,
                          "gain_db": item.gain_db, "role": item.role, "preparation_id": prep}
+                if item.kind == "song":
+                    entry.update(queue_slot=pick.get("slot"), mood_state=context.mood.get_state())
                 original = self.media.lookup_song(item.song_id) if item.kind == "song" else None
                 same = bool(original and original.get("filepath") and
                             Path(item.filepath).resolve() == Path(original["filepath"]).resolve())

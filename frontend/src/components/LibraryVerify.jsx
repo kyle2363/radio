@@ -14,7 +14,6 @@ function LibraryVerify({ addToast }) {
 
   const fetchVerify = useCallback(async () => {
     setLoading(true);
-    setMatchedResults(null);
     try {
       const data = await api.verifyLibrary();
       setOrphaned(data.orphaned || []);

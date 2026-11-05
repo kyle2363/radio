@@ -7,6 +7,7 @@ import SessionHistory from "./SessionHistory";
 import MoodTimeline from "./MoodTimeline";
 import FiltersPanel from "./FiltersPanel";
 import CalibrationPanel from "./CalibrationPanel";
+import { buildMetadataPayload, metadataSaveMessage } from "./songListHelpers";
 
 const COLUMNS = [
   { key: null, label: "", sortable: false },
@@ -23,6 +24,8 @@ function SongList({ addToast, currentSongId, onPlay }) {
   const [songs, setSongs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [loadError, setLoadError] = useState("");
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const [sortBy, setSortBy] = useState("title");
@@ -42,11 +45,19 @@ function SongList({ addToast, currentSongId, onPlay }) {
     keyscale: "", timesignature: "", vocal_language: "", lyrics: "", caption: "",
   });
   const [savingMetadata, setSavingMetadata] = useState(false);
+  const [loadingMetadata, setLoadingMetadata] = useState(false);
   const [missingMetadata, setMissingMetadata] = useState(false);
   const [missingCaption, setMissingCaption] = useState(false);
   const [openMenuId, setOpenMenuId] = useState(null);
   const [flashedId, setFlashedId] = useState(null);
   const menuRef = useRef(null);
+  const listRequestId = useRef(0);
+  const metadataRequestId = useRef(0);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearch(search), 250);
+    return () => clearTimeout(timer);
+  }, [search]);
 
   useEffect(() => {
     fetchStats();
@@ -62,9 +73,12 @@ function SongList({ addToast, currentSongId, onPlay }) {
   }, []);
 
   useEffect(() => {
-    if (tab === "library") fetchSongs();
-    else if (tab === "recent") fetchRecentlyPlayed();
-  }, [tab, page, search, sortBy, sortDir, missingMetadata, missingCaption, artistInclude, artistExclude, mtimeMinDays, mtimeMaxDays]);
+    if (tab === "library") {
+      const timer = setTimeout(() => fetchSongs(), 0);
+      return () => { clearTimeout(timer); listRequestId.current += 1; };
+    }
+    if (tab === "recent") fetchRecentlyPlayed();
+  }, [tab, page, debouncedSearch, sortBy, sortDir, missingMetadata, missingCaption, artistInclude, artistExclude, mtimeMinDays, mtimeMaxDays]);
 
   useEffect(() => {
     const handleClick = (e) => {
@@ -84,27 +98,30 @@ function SongList({ addToast, currentSongId, onPlay }) {
   };
 
   const fetchSongs = useCallback(async () => {
+    const id = ++listRequestId.current;
     setLoading(true);
+    setLoadError("");
     try {
-      const params = { page: String(page), page_size: "50", search, sort_by: sortBy, sort_dir: sortDir, missing_metadata: String(missingMetadata), missing_caption: String(missingCaption) };
+      const params = { page: String(page), page_size: "50", search: debouncedSearch, sort_by: sortBy, sort_dir: sortDir, missing_metadata: String(missingMetadata), missing_caption: String(missingCaption), summary: "true" };
       if (artistInclude) params.artist_include = artistInclude;
       if (artistExclude) params.artist_exclude = artistExclude;
       if (mtimeMinDays != null) params.mtime_min_days = String(mtimeMinDays);
       if (mtimeMaxDays != null) params.mtime_max_days = String(mtimeMaxDays);
       const data = await api.fetchSongs(params);
-      setSongs(data.items || []);
-      setTotalPages(data.total_pages || 1);
-    } catch (err) {}
-    setLoading(false);
-  }, [page, search, sortBy, sortDir, missingMetadata, missingCaption, artistInclude, artistExclude, mtimeMinDays, mtimeMaxDays]);
+      if (id === listRequestId.current) { setSongs(data.items || []); setTotalPages(data.total_pages || 1); }
+    } catch (err) { if (id === listRequestId.current) setLoadError("Could not load songs. Please retry."); }
+    finally { if (id === listRequestId.current) setLoading(false); }
+  }, [page, debouncedSearch, sortBy, sortDir, missingMetadata, missingCaption, artistInclude, artistExclude, mtimeMinDays, mtimeMaxDays]);
 
   const fetchRecentlyPlayed = useCallback(async () => {
+    const id = ++listRequestId.current;
     setLoading(true);
+    setLoadError("");
     try {
       const data = await api.fetchRecentlyPlayed();
-      setRecentlyPlayed(data || []);
-    } catch (err) {}
-    setLoading(false);
+      if (id === listRequestId.current) setRecentlyPlayed(data || []);
+    } catch (err) { if (id === listRequestId.current) setLoadError("Could not load recently played songs. Please retry."); }
+    finally { if (id === listRequestId.current) setLoading(false); }
   }, []);
 
   const handleColumnClick = (colKey) => {
@@ -196,7 +213,9 @@ function SongList({ addToast, currentSongId, onPlay }) {
   const handleOpenMetadata = useCallback(async (e, song) => {
     e.stopPropagation();
     setOpenMenuId(null);
+    const id = ++metadataRequestId.current;
     setEditingMetadata(song);
+    setLoadingMetadata(true);
     setMetaForm({
       artist: song.artist || "",
       title: song.title || "",
@@ -208,26 +227,29 @@ function SongList({ addToast, currentSongId, onPlay }) {
       lyrics: song.lyrics || "",
       caption: song.ai_description || "",
     });
-  }, []);
+    try {
+      const full = await api.fetchSong(song.id);
+      if (id !== metadataRequestId.current) return;
+      setEditingMetadata(full);
+      setMetaForm({ artist: full.artist ?? "", title: full.title ?? "", album: full.album ?? "", bpm: full.bpm ?? "", keyscale: full.keyscale ?? "", timesignature: full.timesignature ?? "", vocal_language: full.vocal_language ?? "", lyrics: full.lyrics ?? "", caption: full.ai_description ?? "" });
+    } catch (err) {
+      if (id === metadataRequestId.current) { setEditingMetadata(null); addToast?.("Could not load full metadata", "error"); }
+    } finally { if (id === metadataRequestId.current) setLoadingMetadata(false); }
+  }, [addToast]);
 
   const handleSaveMetadata = useCallback(async () => {
     if (!editingMetadata) return;
     setSavingMetadata(true);
     try {
-      const payload = {};
-      if (metaForm.artist?.trim()) payload.artist = metaForm.artist.trim();
-      if (metaForm.title?.trim()) payload.title = metaForm.title.trim();
-      if (metaForm.album?.trim()) payload.album = metaForm.album.trim();
-      if (metaForm.bpm !== "") payload.bpm = parseInt(metaForm.bpm, 10);
-      if (metaForm.keyscale?.trim()) payload.keyscale = metaForm.keyscale.trim();
-      if (metaForm.timesignature?.trim()) payload.timesignature = metaForm.timesignature.trim();
-      if (metaForm.vocal_language?.trim()) payload.vocal_language = metaForm.vocal_language.trim();
-      if (metaForm.lyrics !== undefined) payload.lyrics = metaForm.lyrics;
-      if (metaForm.caption !== undefined) payload.caption = metaForm.caption;
-
-      await api.updateSongMetadata(editingMetadata.id, payload);
+      const payload = buildMetadataPayload(metaForm);
+      const changingName = payload.artist !== (editingMetadata.artist || "") || payload.title !== (editingMetadata.title || "");
+      if (changingName && !window.confirm("Changing the artist or title will rename the source MP3 and matching metadata file. Continue?")) return;
+      const response = await api.updateSongMetadata(editingMetadata.id, payload);
+      if (response?.error || (response?.status && response.status !== "updated")) throw new Error(response.error || "Metadata update failed");
       const title = metaForm.title.trim() || editingMetadata.title || "Song";
-      addToast?.(`Metadata saved for "${title}"`, "success");
+      const writeMessage = metadataSaveMessage(response);
+      addToast?.(writeMessage || `Metadata saved for "${title}"`, writeMessage ? "error" : "success");
+      metadataRequestId.current += 1;
       setEditingMetadata(null);
       fetchSongs();
     } catch (err) {
@@ -314,7 +336,7 @@ function SongList({ addToast, currentSongId, onPlay }) {
               <circle cx="11" cy="11" r="8" /><path d="m21 21-4.35-4.35" />
             </svg>
             <input className="search-input" placeholder="Search songs, artists…" value={search}
-              onChange={(e) => { setSearch(e.target.value); setPage(1); }} />
+              onChange={(e) => { listRequestId.current += 1; setSearch(e.target.value); setPage(1); }} />
             <select className="sort-sel" value={missingMetadata ? "__missing__" : missingCaption ? "__missing_caption__" : `${sortBy}-${sortDir}`}
               onChange={(e) => {
                 setMissingMetadata(false);
@@ -368,6 +390,8 @@ function SongList({ addToast, currentSongId, onPlay }) {
           <div>
             {loading ? (
               <SkeletonRow count={8} />
+            ) : loadError ? (
+              <div role="alert" style={{ padding: "24px 14px", textAlign: "center", color: "var(--danger)" }}>{loadError} <button onClick={() => tab === "library" ? fetchSongs() : fetchRecentlyPlayed()}>Retry</button></div>
             ) : displaySongs.length === 0 ? (
               <div style={{ padding: "24px 14px", textAlign: "center" }}>
                 <div style={{ fontSize: "24px", color: "var(--text-muted)", marginBottom: "8px" }}>
@@ -425,7 +449,9 @@ function SongList({ addToast, currentSongId, onPlay }) {
             <div className="col-hdr-cell">Cmp</div>
           </div>
           <div>
-            {loading ? (
+            {loadError ? (
+              <div role="alert" style={{ padding: "24px 14px", textAlign: "center", color: "var(--danger)" }}>{loadError} <button onClick={fetchRecentlyPlayed}>Retry</button></div>
+            ) : loading ? (
               <SkeletonRow count={5} />
             ) : displaySongs.length === 0 ? (
               <div style={{ padding: "24px 14px", textAlign: "center" }}>
@@ -502,17 +528,19 @@ function SongList({ addToast, currentSongId, onPlay }) {
       {/* Metadata Editor Modal */}
       {editingMetadata && (
         <div style={{ position: "fixed", inset: 0, zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.6)" }}
-          onClick={() => setEditingMetadata(null)}>
+          onClick={() => { metadataRequestId.current += 1; setEditingMetadata(null); }}>
           <div onClick={(e) => e.stopPropagation()}
             style={{ background: "var(--bg-surface)", borderRadius: "12px", border: "1px solid var(--border)", padding: "24px", width: "480px", maxHeight: "85vh", overflow: "auto", boxShadow: "0 8px 32px rgba(0,0,0,0.4)" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px" }}>
               <h3 style={{ fontSize: "16px", fontWeight: 600, color: "var(--text-primary)", margin: 0 }}>Edit Metadata</h3>
-              <button onClick={() => setEditingMetadata(null)} style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", fontSize: "18px", padding: "4px" }}>×</button>
+              <button onClick={() => { metadataRequestId.current += 1; setEditingMetadata(null); }} style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", fontSize: "18px", padding: "4px" }}>×</button>
             </div>
 
             <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
+              {loadingMetadata && <p role="status" style={{ color: "var(--text-muted)", fontSize: "12px" }}>Loading full metadata…</p>}
               <div>
                 <label style={{ display: "block", fontSize: "11px", color: "var(--text-muted)", marginBottom: "4px" }}>Artist</label>
+                {(metaForm.artist !== (editingMetadata.artist || "") || metaForm.title !== (editingMetadata.title || "")) && <p role="status" style={{ fontSize: "11px", color: "var(--warning, #f59e0b)", margin: "0 0 6px" }}>Saving a changed artist or title renames the MP3 and its matching metadata file.</p>}
                 <input type="text" value={metaForm.artist} onChange={(e) => setMetaForm({ ...metaForm, artist: e.target.value })}
                   style={{ width: "100%", padding: "8px 12px", borderRadius: "8px", background: "var(--bg-elevated)", border: "1px solid var(--border)", color: "var(--text-primary)", fontSize: "12px", outline: "none", boxSizing: "border-box" }} />
               </div>
@@ -565,11 +593,11 @@ function SongList({ addToast, currentSongId, onPlay }) {
             </div>
 
             <div style={{ display: "flex", justifyContent: "flex-end", gap: "8px", marginTop: "20px" }}>
-              <button onClick={() => setEditingMetadata(null)} disabled={savingMetadata}
+              <button onClick={() => { metadataRequestId.current += 1; setEditingMetadata(null); }} disabled={savingMetadata}
                 style={{ padding: "8px 16px", borderRadius: "8px", background: "var(--bg-elevated)", border: "1px solid var(--border)", color: "var(--text-muted)", fontSize: "12px", cursor: "pointer" }}>
                 Cancel
               </button>
-              <button onClick={handleSaveMetadata} disabled={savingMetadata}
+              <button onClick={handleSaveMetadata} disabled={savingMetadata || loadingMetadata}
                 style={{ padding: "8px 16px", borderRadius: "8px", background: "var(--accent-muted)", border: "1px solid var(--border)", color: "var(--accent)", fontSize: "12px", fontWeight: 500, cursor: "pointer", opacity: savingMetadata ? 0.6 : 1 }}>
                 {savingMetadata ? "Saving…" : "Save"}
               </button>
@@ -592,7 +620,7 @@ const SongRow = React.memo(({ song, isPlaying, flashed, onPlay, onAddToQueue, on
     <div className={`song-row ${isPlaying ? "playing" : ""} ${flashed ? "add-flash" : ""}`}
       onClick={() => onPlay(song)}
       tabIndex={0} role="button"
-      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onPlay(song); } }}
+      onKeyDown={(e) => { if (e.target.closest("button, input, textarea, select, a, [role='menu']")) return; if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onPlay(song); } }}
       aria-label={`Play ${song.title || "Unknown Title"}`}>
       <Music size={13} style={{ color: "var(--text-muted)" }} />
       <div style={{ minWidth: 0 }}>
@@ -622,9 +650,12 @@ const SongRow = React.memo(({ song, isPlaying, flashed, onPlay, onAddToQueue, on
           <button className="act-btn" title="Heart" onClick={(e) => onHeart(e, song)} aria-label="Heart">
             <Heart size={11} />
           </button>
-          <button className="act-btn" title="More" onClick={(e) => { e.stopPropagation(); setOpenMenuId(isOpen ? null : song.id); }}
-            style={{ position: "relative" }} aria-label="More actions">
-            <MoreHorizontal size={11} />
+          <div style={{ position: "relative" }} onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); setOpenMenuId(null); } }}>
+            <button className="act-btn" title="More" onClick={() => setOpenMenuId(isOpen ? null : song.id)}
+              aria-label="More actions" aria-expanded={isOpen}>
+              <MoreHorizontal size={11} />
+            </button>
             {isOpen && (
               <div ref={menuRef}
                 style={{ position: "absolute", top: "100%", right: 0, marginTop: "4px", zIndex: 20,
@@ -649,7 +680,7 @@ const SongRow = React.memo(({ song, isPlaying, flashed, onPlay, onAddToQueue, on
                 </button>
               </div>
             )}
-          </button>
+          </div>
         </div>
       </div>
     </div>

@@ -1,33 +1,74 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { ArrowLeft, Trash2, Search, Edit3, Check, X } from "lucide-react";
 import * as api from "../api";
+import { completionPercent, songSearchParams } from "./collectionDetailHelpers";
 
 export default function CollectionDetail({ collection, onBack, addToast }) {
   const [songs, setSongs] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [songsError, setSongsError] = useState("");
   const [search, setSearch] = useState("");
   const [allSongs, setAllSongs] = useState([]);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchError, setSearchError] = useState("");
+  const [searchPage, setSearchPage] = useState(1);
+  const [totalPages, setTotalPages] = useState(1);
+  const searchRequestId = useRef(0);
+  const songsRequestId = useRef(0);
   const [showAdd, setShowAdd] = useState(false);
   const [editing, setEditing] = useState(false);
   const [editName, setEditName] = useState("");
   const [editDesc, setEditDesc] = useState("");
 
   const loadSongs = useCallback(async () => {
+    const requestId = ++songsRequestId.current;
+    setLoading(true);
+    setSongsError("");
     try {
       const data = await api.fetchCollectionSongs(collection.id);
-      setSongs(data.songs || []);
-    } catch (e) {}
-    setLoading(false);
+      if (requestId === songsRequestId.current) setSongs(data.songs || []);
+    } catch (e) {
+      if (requestId === songsRequestId.current) setSongsError(e.message || "Failed to load collection songs");
+    } finally {
+      if (requestId === songsRequestId.current) setLoading(false);
+    }
   }, [collection.id]);
 
-  useEffect(() => { loadSongs(); }, [loadSongs]);
+  useEffect(() => {
+    loadSongs();
+    return () => { songsRequestId.current += 1; };
+  }, [loadSongs]);
 
-  const fetchAllSongs = async () => {
-    try {
-      const data = await api.fetchSongs({ page: "1", page_size: "1500", sort_by: "title" });
-      setAllSongs(data.items || []);
-    } catch (e) {}
-  };
+  useEffect(() => {
+    if (!showAdd) return undefined;
+    const requestId = ++searchRequestId.current;
+    setSearchLoading(true);
+    setAllSongs([]);
+    setSearchError("");
+    const timer = setTimeout(async () => {
+      try {
+        const data = await api.fetchSongs(songSearchParams(search, searchPage));
+        if (requestId !== searchRequestId.current) return;
+        setAllSongs(data.items || []);
+        setTotalPages(data.total_pages || 1);
+      } catch (e) {
+        if (requestId === searchRequestId.current) {
+          setAllSongs([]);
+          setSearchError(e.message || "Failed to search songs");
+        }
+      } finally {
+        if (requestId === searchRequestId.current) setSearchLoading(false);
+      }
+    }, 250);
+    return () => {
+      clearTimeout(timer);
+      if (requestId === searchRequestId.current) searchRequestId.current += 1;
+    };
+  }, [showAdd, search, searchPage]);
+
+  useEffect(() => {
+    setSearchPage(1);
+  }, [search]);
 
   const handleRemove = async (e, songId) => {
     e.stopPropagation();
@@ -72,11 +113,11 @@ export default function CollectionDetail({ collection, onBack, addToast }) {
     setEditing(false);
   };
 
-  const getPct = (song) => song.avg_completion != null ? Math.round(song.avg_completion * 100) : 0;
+  const getPct = completionPercent;
   const pctClass = (pct) => pct >= 50 ? "pct-hi" : pct >= 40 ? "pct-mid" : "pct-lo";
   const songIds = new Set(songs.map((s) => s.id));
 
-  const filteredAllSongs = allSongs.filter((s) => !songIds.has(s.id) && (search ? `${s.title} ${s.artist}`.toLowerCase().includes(search.toLowerCase()) : true));
+  const filteredAllSongs = allSongs.filter((s) => !songIds.has(s.id));
 
   return (
     <div>
@@ -127,7 +168,9 @@ export default function CollectionDetail({ collection, onBack, addToast }) {
             {search && <button onClick={() => setSearch("")} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-muted)", fontSize: 10 }}>Clear</button>}
           </div>
           <div style={{ maxHeight: 200, overflowY: "auto" }}>
-            {filteredAllSongs.length === 0 && <div style={{ fontSize: 11, color: "var(--text-muted)", padding: "8px 0", textAlign: "center" }}>{search ? "No songs match" : "Loading..."}</div>}
+            {searchLoading ? <div style={{ fontSize: 11, color: "var(--text-muted)", padding: "8px 0", textAlign: "center" }}>Searching songs...</div> : null}
+            {!searchLoading && searchError ? <div role="alert" style={{ fontSize: 11, color: "var(--danger)", padding: "8px 0", textAlign: "center" }}>{searchError}</div> : null}
+            {!searchLoading && !searchError && filteredAllSongs.length === 0 && <div style={{ fontSize: 11, color: "var(--text-muted)", padding: "8px 0", textAlign: "center" }}>{search ? "No songs match" : "No songs available"}</div>}
             {filteredAllSongs.map((s) => (
               <div key={s.id} onClick={() => handleAdd(s.id)}
                 style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 6px", cursor: "pointer", borderRadius: 4, fontSize: 11, color: "var(--text-primary)" }}>
@@ -137,17 +180,23 @@ export default function CollectionDetail({ collection, onBack, addToast }) {
               </div>
             ))}
           </div>
-          <button onClick={() => fetchAllSongs()} style={{ fontSize: 10, color: "var(--accent)", background: "none", border: "none", cursor: "pointer", padding: "4px 0", marginTop: 4 }}>Load all songs</button>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 10, fontSize: 10, marginTop: 4 }}>
+            <button disabled={searchPage <= 1 || searchLoading} onClick={() => setSearchPage((page) => Math.max(1, page - 1))} style={{ color: "var(--accent)", background: "none", border: "none", cursor: "pointer", opacity: searchPage <= 1 ? 0.45 : 1 }}>Previous</button>
+            <span style={{ color: "var(--text-muted)" }}>Page {searchPage} of {totalPages}</span>
+            <button disabled={searchPage >= totalPages || searchLoading} onClick={() => setSearchPage((page) => Math.min(totalPages, page + 1))} style={{ color: "var(--accent)", background: "none", border: "none", cursor: "pointer", opacity: searchPage >= totalPages ? 0.45 : 1 }}>Next</button>
+          </div>
         </div>
       )}
 
-      <button onClick={async () => { setShowAdd(!showAdd); if (!showAdd && allSongs.length === 0) fetchAllSongs(); }}
+      <button onClick={() => setShowAdd((value) => !value)}
         style={{ marginBottom: 8, fontSize: 10, padding: "4px 10px", borderRadius: 4, background: "var(--accent-muted)", border: "1px solid var(--border)", color: "var(--accent)", cursor: "pointer" }}>
         {showAdd ? "Cancel" : "+ Add songs"}
       </button>
 
       {loading ? (
         <div style={{ padding: "14px", fontSize: 12, color: "var(--text-muted)" }}>Loading...</div>
+      ) : songsError ? (
+        <div role="alert" style={{ padding: "14px", fontSize: 12, color: "var(--danger)" }}>{songsError}</div>
       ) : songs.length === 0 ? (
         <div style={{ padding: "20px 14px", textAlign: "center", fontSize: 12, color: "var(--text-muted)" }}>No songs in this collection yet.</div>
       ) : (

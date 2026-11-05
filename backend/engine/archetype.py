@@ -53,16 +53,16 @@ def detect_archetype():
 
     # Explorer: high wildcard acceptance, high cluster diversity
     total_signals = max(1, metrics["total_plays"])
-    hearted = metrics.get("signal_counts", {}).get("hearted", 0)
-    completed = metrics.get("signal_counts", {}).get("completed", 0)
     skip_early = metrics.get("signal_counts", {}).get("skip_early", 0)
 
-    # Wildcard acceptance rate (hearted/replayed songs that were wildcards)
-    wildcard_acceptance = hearted / max(1, hearted + skip_early)
+    # Compare positive feedback and skips only for wildcard queue slots.
+    wildcard_acceptance = metrics.get("wildcard_positive", 0) / max(
+        1, metrics.get("wildcard_positive", 0) + metrics.get("wildcard_negative", 0)
+    )
 
     # Cluster diversity (unique clusters / total clusters)
     total_clusters = config.N_CLUSTERS
-    unique_clusters = min(metrics["unique_songs"], total_clusters)
+    unique_clusters = min(metrics.get("unique_clusters", 0), total_clusters)
     cluster_diversity = unique_clusters / total_clusters
 
     # Replay rate

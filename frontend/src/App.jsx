@@ -41,6 +41,7 @@ import CommandPalette from "./components/CommandPalette";
 import HeaderButton from "./components/HeaderButton";
 import HeaderStatusPill from "./components/HeaderStatusPill";
 import { BrandIcon, DEFAULT_ICON_STYLE } from "./components/BrandIcons";
+import { createNonOverlappingPoll } from "./polling.js";
 
 // Focused hooks
 import { RadioProvider, useSharedRadio, useFetchStatus, useWebSocket, useOnboarding } from "./hooks/useRadioState";
@@ -117,9 +118,9 @@ function AppInner({ outputPlayback }) {
     showQuickSearch, setShowQuickSearch,
   } = ui;
 
-  const refreshStatus = useCallback(async () => {
+  const refreshStatus = useCallback(async (isActive = () => true) => {
     const data = await fetchStatus();
-    if (data) {
+    if (data && isActive()) {
       applyPlaybackStatus(data);
       applyStatus(data);
       // Sync talk overlay: clear when backend says talk is no longer playing
@@ -130,7 +131,11 @@ function AppInner({ outputPlayback }) {
     return data;
   }, [fetchStatus, applyPlaybackStatus, applyStatus, talkSegmentActive, setTalkSegmentActive]);
 
-  const { wsConnected, connectWebSocket } = useWebSocket(refreshStatus);
+  const statusPollRef = useRef(null);
+  const refreshStatusFromEvent = useCallback(() => {
+    return statusPollRef.current ? statusPollRef.current.run() : refreshStatus();
+  }, [refreshStatus]);
+  const { wsConnected, connectWebSocket } = useWebSocket(refreshStatusFromEvent);
 
  // Total songs count
   const [totalSongs, setTotalSongs] = useState(342);
@@ -549,33 +554,27 @@ function AppInner({ outputPlayback }) {
       return;
     }
     if (uiMode !== "radio") return;
-    const fetch = async () => {
+    const poll = createNonOverlappingPoll(async isActive => {
       try {
         const data = await api.fetchConstellations();
-        setConstellationData(data);
+        if (isActive()) setConstellationData(data);
       } catch (_) {}
-    };
-    fetch();
-    const id = setInterval(fetch, 30000);
-    return () => clearInterval(id);
-  }, [uiMode, constellationsEnabled]);
-  useEffect(() => {
-    if (!showConstellations) return;
-    const id = setInterval(async () => {
-      try {
-        const data = await api.fetchConstellations();
-        setConstellationData(data);
-      } catch (_) {}
-    }, 15000);
-    return () => clearInterval(id);
-  }, [showConstellations]);
+    });
+    poll.run();
+    const id = setInterval(() => { poll.run(); }, showConstellations ? 15000 : 30000);
+    return () => { clearInterval(id); poll.stop(); };
+  }, [uiMode, constellationsEnabled, showConstellations]);
 
   // Polling — fetch play status + mood/archetype
   useEffect(() => {
-    const id = setInterval(() => {
-      refreshStatus();
-    }, 3000);
-    return () => clearInterval(id);
+    const poll = createNonOverlappingPoll(isActive => refreshStatus(isActive));
+    statusPollRef.current = poll;
+    const id = setInterval(() => { poll.run(); }, 3000);
+    return () => {
+      clearInterval(id);
+      poll.stop();
+      if (statusPollRef.current === poll) statusPollRef.current = null;
+    };
   }, [refreshStatus]);
 
   // WebSocket handlers — re-attach on reconnection (wsConnected change)

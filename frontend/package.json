@@ -35,7 +35,8 @@
     "nsis": { "oneClick": false, "allowToChangeInstallationDirectory": true },
     "extraResources": [
       { "from": "../backend", "to": "backend", "filter": ["**/*", "!venv/**", "!__pycache__/**", "!*.log"] },
-      { "from": "electron/mobile-tunnel-job.py", "to": "mobile-tunnel-job.py" }
+      { "from": "electron/mobile-tunnel-job.py", "to": "mobile-tunnel-job.py" },
+      { "from": "dist", "to": "dist" }
     ]
   }
 }

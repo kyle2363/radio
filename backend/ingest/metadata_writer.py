@@ -18,7 +18,7 @@ import shutil
 from pathlib import Path
 
 import config
-from ingest.metadata import find_matching_json, build_json_index, normalize_filename
+from ingest.metadata import find_matching_json, build_json_index, normalize_filename, metadata_path
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +33,6 @@ def write_id3_tags(filepath, artist=None, title=None, album=None, genre=None):
     Returns dict with status per field: {field: "ok" | "error" | "skipped"}
     """
     from mutagen import File as MutagenFile
-    from mutagen.id3 import ID3, TIT2, TPE1, TALB, TCON
 
     result = {}
     try:
@@ -41,7 +40,7 @@ def write_id3_tags(filepath, artist=None, title=None, album=None, genre=None):
         if audio is None:
             logger.warning("Could not open MP3 file for ID3 writing: %s", filepath)
             for field in ["artist", "title", "album", "genre"]:
-                if field in [artist, title, album, genre] and [artist, title, album, genre][["artist", "title", "album", "genre"].index(field)]:
+                if dict(artist=artist, title=title, album=album, genre=genre)[field] is not None:
                     result[field] = "error"
                 else:
                     result[field] = "skipped"
@@ -51,29 +50,16 @@ def write_id3_tags(filepath, artist=None, title=None, album=None, genre=None):
         if not hasattr(audio, "tags") or audio.tags is None:
             audio.add_tags()
 
-        if artist is not None and artist.strip():
-            audio.tags["artist"] = artist.strip()
-            result["artist"] = "ok"
-        else:
-            result["artist"] = "skipped"
-
-        if title is not None and title.strip():
-            audio.tags["title"] = title.strip()
-            result["title"] = "ok"
-        else:
-            result["title"] = "skipped"
-
-        if album is not None and album.strip():
-            audio.tags["album"] = album.strip()
-            result["album"] = "ok"
-        else:
-            result["album"] = "skipped"
-
-        if genre is not None and genre.strip():
-            audio.tags["genre"] = genre.strip()
-            result["genre"] = "ok"
-        else:
-            result["genre"] = "skipped"
+        for field, value in {"artist": artist, "title": title, "album": album, "genre": genre}.items():
+            if value is None:
+                result[field] = "skipped"
+            else:
+                clean = value.strip()
+                if clean:
+                    audio.tags[field] = clean
+                else:
+                    audio.tags.pop(field, None)
+                result[field] = "ok"
 
         audio.save()
     except Exception as e:
@@ -194,12 +180,12 @@ def build_filename(artist, title):
     """
     parts = []
     if artist:
-        parts.append(str(artist).strip().replace("/", "\\").strip())
+        parts.append(str(artist).strip())
     if title:
-        parts.append(str(title).strip().replace("/", "\\").strip())
+        parts.append(str(title).strip())
     base = " - ".join(parts) if parts else "Unknown"
     # Remove characters invalid on Windows
-    base = re.sub(r'[<>:"|?*]', "", base)
+    base = re.sub(r'[<>:"|?*\\/\x00-\x1f]', "-", base)
     base = base.strip(" .")
     if not base:
         base = "Unknown"
@@ -267,7 +253,7 @@ def rename_song_files(old_filepath, new_artist=None, new_title=None):
     old_json = _find_acestep_json_path(old_filepath)
     if old_json:
         result["json"]["old_path"] = old_json
-        new_json_path = os.path.join(os.path.dirname(old_json), new_filename.replace(".mp3", ".json"))
+        new_json_path = metadata_path(new_filepath, os.path.dirname(old_json))
 
         if os.path.abspath(old_json) == os.path.abspath(new_json_path):
             result["json"]["status"] = "skipped"
@@ -275,11 +261,7 @@ def rename_song_files(old_filepath, new_artist=None, new_title=None):
         else:
             try:
                 if os.path.exists(new_json_path):
-                    counter = 1
-                    while os.path.exists(new_json_path):
-                        base = f"{new_stem} ({counter})"
-                        new_json_path = os.path.join(os.path.dirname(old_json), base + ".json")
-                        counter += 1
+                    raise FileExistsError("Metadata already exists for the renamed path; existing JSON was preserved")
 
                 shutil.move(old_json, new_json_path)
                 result["json"]["new_path"] = new_json_path

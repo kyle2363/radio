@@ -32,6 +32,7 @@ import uvicorn
 import chromadb
 import config
 from server_settings import load_server_settings
+from websocket_delivery import ClientDelivery
 from api_security import ApiSecurity
 
 from db import database
@@ -193,6 +194,8 @@ async def lifespan(app):
         start_auxiliary(_check_tts_voice, "tts-startup-probe")
 
     # Start broadcast worker for thread-safe WebSocket messaging
+    global _legacy_delivery
+    _legacy_delivery = ClientDelivery(on_disconnect=_remove_legacy_client)
     _set_broadcast_loop(asyncio.get_event_loop())
     app.state._broadcast_worker = asyncio.create_task(_broadcast_worker())
     logger.info("Broadcast worker started")
@@ -240,81 +243,9 @@ def health():
 
 
 def _chromadb_health_check():
-    """Check ChromaDB collections for consistency with SQLite.
-
-    Detects: duplicate IDs, missing embeddings, collection size mismatches.
-    Logs warnings for the user but does not block startup.
-    """
-    try:
-        conn = database.get_connection()
-        try:
-            row = conn.execute(
-                "SELECT COUNT(*) as cnt FROM songs WHERE ingest_phase = 'clustered'"
-            ).fetchone()
-            sqlite_count = row["cnt"] if row else 0
-        finally:
-            conn.close()
-
-        client = get_chroma_client()
-
-        # Check 'songs' collection
-        try:
-            songs_col = client.get_collection("songs")
-            songs_count = songs_col.count()
-            all_ids = songs_col.get(include=["metadatas"])
-
-            # Detect duplicate IDs
-            id_counts = {}
-            for id_str in all_ids["ids"]:
-                id_counts[id_str] = id_counts.get(id_str, 0) + 1
-            duplicates = {sid: cnt for sid, cnt in id_counts.items() if cnt > 1}
-
-            if duplicates:
-                logger.warning("ChromaDB 'songs' collection has %d duplicate IDs: %s",
-                             len(duplicates), list(duplicates.keys())[:10])
-        except Exception as e:
-            logger.warning("ChromaDB 'songs' collection check failed: %s", e)
-            songs_count = 0
-            duplicates = {}
-
-        # Check 'songs_audio' collection
-        audio_count = 0
-        audio_duplicates = {}
-        if config.MUQ_ENABLED:
-            try:
-                audio_col = client.get_collection(config.MUQ_AUDIO_COLLECTION)
-                audio_count = audio_col.count()
-                audio_ids = audio_col.get(include=["metadatas"])
-                audio_id_counts = {}
-                for id_str in audio_ids["ids"]:
-                    audio_id_counts[id_str] = audio_id_counts.get(id_str, 0) + 1
-                audio_duplicates = {sid: cnt for sid, cnt in audio_id_counts.items() if cnt > 1}
-                if audio_duplicates:
-                    logger.warning("ChromaDB '%s' collection has %d duplicate IDs: %s",
-                                 config.MUQ_AUDIO_COLLECTION, len(audio_duplicates),
-                                 list(audio_duplicates.keys())[:10])
-            except Exception as e:
-                logger.debug("ChromaDB '%s' collection check skipped: %s", config.MUQ_AUDIO_COLLECTION, e)
-
-        # Summary
-        logger.info("ChromaDB health: songs=%d (SQLite=%d), audio=%d, duplicates=%d, audio_duplicates=%d",
-                    songs_count, sqlite_count, audio_count, len(duplicates), len(audio_duplicates))
-
-        if songs_count == 0 and sqlite_count > 0:
-            logger.warning("ChromaDB 'songs' collection is empty but SQLite has %d clustered songs. "
-                         "Re-run ingest to populate embeddings.", sqlite_count)
-
-        return {
-            "songs_collection": songs_count,
-            "sqlite_clustered": sqlite_count,
-            "audio_collection": audio_count,
-            "duplicates": duplicates,
-            "audio_duplicates": audio_duplicates,
-            "healthy": len(duplicates) == 0 and len(audio_duplicates) == 0,
-        }
-    except Exception as e:
-        logger.warning("ChromaDB health check failed: %s", e)
-        return {"error": str(e), "healthy": False}
+    """Compare embedding identities with SQLite, including missing/stale entries."""
+    from db.vector_health import check_vector_health
+    return check_vector_health(database, get_chroma_client, config, logger)
 
 
 @app.get("/api/chroma/health")
@@ -424,8 +355,7 @@ class SleepTimerRequest(BaseModel):
     switch_to_chill: bool = True
 
 
-_broadcast_queue: asyncio.Queue = asyncio.Queue()
-_broadcast_write_lock = asyncio.Lock()
+_broadcast_queue: asyncio.Queue = asyncio.Queue(maxsize=256)
 _broadcast_loop = None
 
 
@@ -435,41 +365,42 @@ def _set_broadcast_loop(loop):
     _broadcast_loop = loop
 
 
+def _remove_legacy_client(websocket):
+    with _connected_clients_lock:
+        if websocket in connected_clients:
+            connected_clients.remove(websocket)
+
+
+_legacy_delivery = ClientDelivery(on_disconnect=_remove_legacy_client)
+
+
 async def _broadcast_worker():
-    """Async worker that serializes all WebSocket writes from the broadcast queue."""
-    while True:
-        try:
-            item = await _broadcast_queue.get()
-        except asyncio.CancelledError:
-            break
-        event_type, data, message = item
-        disconnected = []
-        with _connected_clients_lock:
-            clients_snapshot = list(connected_clients)
-        for client in clients_snapshot:
-            async with _broadcast_write_lock:
-                try:
-                    await asyncio.wait_for(client.send_json(message), timeout=3.0)
-                except Exception as e:
-                    logger.warning("WebSocket send failed: %s", e)
-                    disconnected.append(client)
-        for client in disconnected:
-            with _connected_clients_lock:
-                if client in connected_clients:
-                    connected_clients.remove(client)
-        _broadcast_queue.task_done()
+    """Fan out notifications into bounded independent client queues."""
+    try:
+        while True:
+            _, _, message = await _broadcast_queue.get()
+            try:
+                _legacy_delivery.publish(message)
+            finally:
+                _broadcast_queue.task_done()
+    finally:
+        await _legacy_delivery.close()
 
 
 async def _send_websocket_text(websocket: WebSocket, message: str):
-    """Serialize direct WebSocket writes with broadcast writes."""
-    async with _broadcast_write_lock:
-        await websocket.send_text(message)
+    await _legacy_delivery.send_text(websocket, message)
 
 
 async def _send_websocket_json(websocket: WebSocket, message: dict):
-    """Serialize direct WebSocket writes with broadcast writes."""
-    async with _broadcast_write_lock:
-        await websocket.send_json(message)
+    await _legacy_delivery.send_json(websocket, message)
+
+
+def _enqueue_broadcast(item):
+    try:
+        _broadcast_queue.put_nowait(item)
+    except asyncio.QueueFull:
+        # Notifications are reconciled by authoritative snapshots, never replayed.
+        logger.warning("Legacy broadcast backlog full; notification dropped")
 
 
 def broadcast(event_type: str, data: dict):
@@ -488,7 +419,7 @@ def _broadcast_legacy(event_type, data):
     loop = _broadcast_loop
     if loop and not loop.is_closed():
         try:
-            asyncio.run_coroutine_threadsafe(_broadcast_queue.put((event_type, data, message)), loop)
+            loop.call_soon_threadsafe(_enqueue_broadcast, (event_type, data, message))
         except RuntimeError as e:
             if "closed" not in str(e).lower():
                 logger.warning("Broadcast failed: %s", e)
@@ -500,6 +431,7 @@ def _broadcast_legacy(event_type, data):
 async def websocket_endpoint(websocket: WebSocket):
     """Real-time event stream for song_ended, queue_updated, mood_changed, etc."""
     await websocket.accept()
+    _legacy_delivery.add(websocket)
     with _connected_clients_lock:
         connected_clients.append(websocket)
     logger.info(f"WebSocket client connected. Total clients: {len(connected_clients)}")
@@ -542,6 +474,10 @@ async def websocket_endpoint(websocket: WebSocket):
         with _connected_clients_lock:
             if websocket in connected_clients:
                 connected_clients.remove(websocket)
+
+    finally:
+        _legacy_delivery.remove(websocket)
+        _remove_legacy_client(websocket)
 
 
 # Global engine instances
@@ -1046,8 +982,11 @@ def list_songs(
     artist_exclude: str | None = None,
     mtime_min_days: int | None = None,
     mtime_max_days: int | None = None,
+    summary: bool = False,
 ):
     """List songs with filtering, search, sorting, and pagination."""
+    if page < 1 or not 1 <= page_size <= 200:
+        raise HTTPException(status_code=422, detail="page must be positive and page_size must be between 1 and 200")
     conn = database.get_connection()
     try:
         clauses = []
@@ -1141,11 +1080,15 @@ def list_songs(
         if sort_by == "instrumental":
             order = f"ORDER BY (CASE WHEN lyrics IS NULL OR lyrics = '' THEN 0 ELSE (LENGTH(lyrics) - LENGTH(REPLACE(lyrics, ' ', '')) + 1) END) {dir_}"
         else:
-            order = f"ORDER BY {sort_by} {dir_}"
+            order = f"ORDER BY {sort_by} {dir_}, id ASC"
 
         offset = (page - 1) * page_size
+        columns = ("id, artist, title, album, duration_secs, bpm, energy, valence, cluster_id, "
+                   "user_tags, user_notes, play_count, skip_count, complete_count, avg_completion, "
+                   "last_played, added_at, ingest_phase, keyscale, timesignature, vocal_language, "
+                   "dj_effect_eligible") if summary else "*"
         rows = conn.execute(
-            f"SELECT * FROM songs {where} {order} LIMIT ? OFFSET ?",
+            f"SELECT {columns} FROM songs {where} {order} LIMIT ? OFFSET ?",
             params + [page_size, offset],
         ).fetchall()
         total = conn.execute(
@@ -1281,23 +1224,6 @@ def list_clusters():
         return clusters
     finally:
         conn.close()
-
-
-@app.get("/api/chroma/health")
-def chroma_health():
-    """Check ChromaDB collection for duplicate entries."""
-    try:
-        client = get_chroma_client()
-        collection = client.get_collection("songs")
-        total = collection.count()
-        all_data = collection.get(include=[])
-        id_counts = {}
-        for id_str in all_data["ids"]:
-            id_counts[id_str] = id_counts.get(id_str, 0) + 1
-        duplicates = [{"song_id": int(sid), "count": cnt} for sid, cnt in id_counts.items() if cnt > 1]
-        return {"total_entries": total, "duplicates": duplicates, "duplicate_count": len(duplicates)}
-    except Exception as e:
-        return {"error": str(e)}
 
 
 @app.post("/api/chroma/dedup")
@@ -1931,10 +1857,10 @@ def update_song_metadata(song_id: int, req: MetadataUpdateRequest):
         db_updates["ai_description"] = req.caption.strip() or None
 
     # Check if artist or title changed (triggers file rename)
-    new_artist = (req.artist or "").strip()
-    new_title = (req.title or "").strip()
     old_artist = (song.get("artist") or "").strip()
     old_title = (song.get("title") or "").strip()
+    new_artist = req.artist.strip() if req.artist is not None else old_artist
+    new_title = req.title.strip() if req.title is not None else old_title
     name_changed = (new_artist != old_artist) or (new_title != old_title)
 
     # Persist to source files
@@ -4852,7 +4778,7 @@ app.include_router(create_portable_router(_get_portable_store, _get_portable_cat
 # Private routes stay masked by the middleware's 401 gate, which hides this bug.
 app.state.security = ApiSecurity(_server_settings.security,
                                  native_authorizer=native_authorizer(lambda: PortableProfileStore(initialize=False))).install(app)
-mount_frontend(app, os.path.join(config.BASE_DIR, "frontend", "dist"))
+mount_frontend(app, os.environ.get("RADIO_FRONTEND_DIST") or os.path.join(config.BASE_DIR, "frontend", "dist"))
 
 
 if __name__ == "__main__":

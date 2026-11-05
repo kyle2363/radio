@@ -505,7 +505,8 @@ class PlaybackStore:
             attempt = conn.execute("SELECT * FROM playback_attempts WHERE id=?", (item["attempt_id"],)).fetchone()
             if attempt is None or attempt["outcome"] is not None:
                 raise ConflictError("The current playback attempt cannot be replayed")
-            database.insert_play_event(conn, item["song_id"], attempt["history_session_id"], "replayed")
+            database.insert_play_event(conn, item["song_id"], attempt["history_session_id"], "replayed",
+                                       queue_slot=item.get("queue_slot"), mood_state=item.get("mood_state"))
             feedback_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
             conn.execute("UPDATE songs SET replay_count=replay_count+1 WHERE id=?", (item["song_id"],))
             flags = json.loads(attempt["flags_json"])
@@ -568,7 +569,8 @@ class PlaybackStore:
             state["status"] = "playing"
             state["desired_status"] = "playing"
             if attempt and not attempt["started"]:
-                database.insert_play_event(conn, item["song_id"], attempt["history_session_id"], "playing")
+                database.insert_play_event(conn, item["song_id"], attempt["history_session_id"], "playing",
+                                           queue_slot=item.get("queue_slot"), mood_state=item.get("mood_state"))
                 conn.execute("UPDATE playback_attempts SET started=1 WHERE id=?", (attempt["id"],))
         elif kind in ("paused", "resumed"):
             required, target = ("playing", "paused") if kind == "paused" else ("paused", "playing")
@@ -582,7 +584,8 @@ class PlaybackStore:
             flags = json.loads(attempt["flags_json"])
             if any(flag == kind or isinstance(flag, dict) and flag.get("kind") == kind for flag in flags):
                 return False
-            database.insert_play_event(conn, item["song_id"], attempt["history_session_id"], kind)
+            database.insert_play_event(conn, item["song_id"], attempt["history_session_id"], kind,
+                                       queue_slot=item.get("queue_slot"), mood_state=item.get("mood_state"))
             feedback_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
             if kind == "replayed":
                 conn.execute("UPDATE songs SET replay_count=replay_count+1 WHERE id=?", (item["song_id"],))
@@ -599,6 +602,7 @@ class PlaybackStore:
                     signal = "completed" if kind == "completed" else ("skip_early" if position < 30000 else "skip_late")
                     database.insert_play_event(conn, item["song_id"], attempt["history_session_id"], signal,
                                                completion_pct=100.0 if kind == "completed" else percent,
+                                               queue_slot=item.get("queue_slot"), mood_state=item.get("mood_state"),
                                                skip_at_secs=position / 1000 if kind == "skipped" else None)
                 conn.execute("UPDATE playback_attempts SET outcome=? WHERE id=?", (kind, attempt["id"]))
             state["active_index"] += 1

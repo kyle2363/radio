@@ -1,5 +1,45 @@
 # Isolated verification
 
+## Desktop review improvements — November 4, 2026
+
+The non-Android review fixes cover library pagination and lightweight summary
+responses, stale UI requests, collection percentages and full-library searches,
+partial metadata edits and file-write reporting, safe rename/metadata identity,
+deletion of durable playback attempts, archetype metrics, vector diagnostics,
+packaged Electron paths and startup errors, coordinated polling, and bounded
+per-client legacy WebSocket delivery. Android and manual profile sync are outside
+this change.
+
+Regression targets added to the contract workflow:
+
+```powershell
+backend\venv\Scripts\python -B scripts/run_tests.py -q backend/tests/test_desktop_review.py backend/tests/test_metadata_edit_safety.py backend/tests/test_archetype_metric_edges.py backend/tests/test_websocket_delivery.py
+```
+
+Local verification: full backend suite 740 passed / 9 skipped; frontend suite
+154 passed; Vite production build passed. Windows asyncio's internal socketpair
+stalled inside the desktop sandbox, so backend verification ran outside that
+sandbox with the runner's production-storage, subprocess and network guards still
+enabled. The skips cover fixture availability, symlink privileges and opt-in VLC
+tests. Hosted CI and an installed Electron build were not exercised.
+
+Short manual follow-up, using the isolated launcher below for playback/UI checks:
+
+- Search rapidly in Library and Quick Search; verify the latest query wins,
+  errors are visible, and failed queue actions do not claim success.
+- Page through a collection's Add songs search beyond the first page; verify
+  completion percentages match Library and an empty result is distinct from loading.
+- Use keyboard navigation on song-row actions; Enter/Space on Heart, Add and
+  More must not also start the song.
+- Edit metadata only against disposable fixture files: change the title while
+  retaining the artist, clear a text field, and verify the rename warning plus
+  any partial file-write errors. List summaries must not blank existing lyrics.
+- Check a packaged installation's Python/dependency prerequisites, frontend
+  assets, writable per-user data location, and visible missing-Python error.
+
+No real-library listening, production startup, source-audio edits or installed-app
+acceptance is implied by the automated results.
+
 From the repository root on Windows:
 
 ```powershell
