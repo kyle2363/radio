@@ -102,6 +102,16 @@ class PortableProfileStore:
         with self.transaction() as conn:
             conn.execute("UPDATE portable_devices SET revoked=1 WHERE id=?", (device_id,))
 
+    def grant_profile_sync(self, device_id):
+        """Add profile read/write to an existing active device without rotating identity."""
+        with self.transaction() as conn:
+            row = conn.execute("SELECT scopes,expires,revoked FROM portable_devices WHERE id=?", (device_id,)).fetchone()
+            if not row or row[2] or row[1] <= time.time():
+                raise ValueError("Device is missing, revoked or expired")
+            scopes = sorted(set(json.loads(row[0])) | {"profile:read", "profile:write"})
+            conn.execute("UPDATE portable_devices SET scopes=? WHERE id=?", (canonical(scopes), device_id))
+        return {"device_id": device_id, "scopes": scopes}
+
     def authorize(self, token):
         if not isinstance(token, str) or not 20 <= len(token) <= 256:
             return None
@@ -194,7 +204,7 @@ class PortableProfileStore:
         if sid is None or not conn.execute("SELECT 1 FROM songs WHERE id=?", (sid,)).fetchone():
             return
         database.insert_play_event(conn, int(sid), None, signal,
-                                   completion_pct=event.get("completion", 1 if signal == "completed" else 0))
+                                   completion_pct=100 * event.get("completion", 1 if signal == "completed" else 0))
         play_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
         # Existing history stores local naive ISO times. Preserve that format;
         # protocol timestamps remain absolute epoch seconds.
@@ -267,7 +277,16 @@ class PortableProfileStore:
             rows = conn.execute("SELECT revision,payload FROM portable_events WHERE revision>? ORDER BY revision LIMIT ?", (cursor, limit + 1)).fetchall()
             high = conn.execute("SELECT COALESCE(MAX(clock),0) FROM portable_events").fetchone()[0]
         page = rows[:limit]
-        return {"protocol_version": 1, "events": [{"revision": row[0], "event": json.loads(row[1])} for row in page],
+        def wire_event(payload):
+            event = json.loads(payload)
+            completion = event.get("completion")
+            # Compatibility for invalid desktop exports made before percentage
+            # conversion. Keep the immutable ledger and valid wire events intact.
+            if (event.get("device_id") == "server" and event.get("event_id", "").startswith("desktop:")
+                    and type(completion) in (int, float) and completion > 1):
+                event["completion"] = min(completion / 100, 1.0)
+            return event
+        return {"protocol_version": 1, "events": [{"revision": row[0], "event": wire_event(row[1])} for row in page],
                 "cursor": page[-1][0] if page else cursor, "has_more": len(rows) > limit, "logical_clock": high}
 
     def profile(self):
@@ -301,7 +320,7 @@ class PortableProfileStore:
                          "logical_clock": clock, "kind": kind, "song_id": str(row["song_id"]),
                          "catalog_id": catalog_id,
                          "attempt_id": f"legacy:{row['id']}", "occurred_at": datetime.fromisoformat(row["played_at"]).timestamp(),
-                         "completion": row["completion_pct"] or 0}
+                         "completion": min(1.0, max(0.0, (row["completion_pct"] or 0) / 100))}
                 conn.execute("INSERT INTO portable_events(device_id,event_id,clock,payload) VALUES ('server',?,?,?)", (identity, clock, canonical(event)))
             snapshot = {}
             positives = {signal: {str(row[0]) for row in conn.execute("SELECT DISTINCT song_id FROM play_events WHERE signal=? AND COALESCE(undone,0)=0", (signal,))}

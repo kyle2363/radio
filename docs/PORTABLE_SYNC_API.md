@@ -1,11 +1,11 @@
 # Portable catalog and manual profile sync, version 1
 
 This protocol prepares Radio for independently operating clients. It does not
-transfer active playback, implement Android, upload music, or delete local media.
+transfer active playback, upload music, or delete local media.
 The implementation is `portable_api.py`, `portable_server.py`, and
 `portable_sync.py`. Run one API worker per instance, as for existing playback.
 
-The optional [USB gateway](MOBILE_PAIRING.md) exposes identity, ticket exchange, authenticated capabilities and checkpoint 1B prepared catalog/vector reads. It registers client-generated bearer digests in this same device authority, with atomic retry receipts and local Electron-administered revocation. Catalog reads require `catalog:read`; preparation stays local and explicit. The events/profile/device-administration routes below remain existing server APIs and are not exposed through this gateway.
+The optional [USB gateway](MOBILE_PAIRING.md) exposes identity, ticket exchange, authenticated capabilities, prepared catalog/vector reads and scoped events/profile routes. It registers client-generated bearer digests in this same device authority, with atomic retry receipts and local Electron-administered revocation. Catalog reads require `catalog:read`; preparation stays local and explicit. Device administration is never a gateway route. Android checkpoint 2C implements manual event exchange; see [MOBILE_SYNC.md](MOBILE_SYNC.md) for operation and recovery.
 
 ## Authentication
 
@@ -16,6 +16,14 @@ The response returns a device ID, expiry and random bearer token **once**. Store
 the token privately on the client and send it in `Authorization: Bearer ...`.
 The server persists only its SHA-256 digest. `DELETE /devices/{device_id}` revokes
 it; bearer tokens cannot provision/revoke tokens or control existing playback.
+
+USB pairing still grants only `catalog:read`. The private local-admin endpoint
+`POST /api/mobile-hosting/devices/{device_id}/profile-sync` explicitly adds
+`profile:read` and `profile:write` to that existing active device and enables the
+USB listener. It preserves its device ID and bearer digest. This endpoint needs
+the owned Electron parent capability and existing desktop authentication; it is
+not exposed on the mobile gateway. A missing profile scope returns 403 without
+invalidating a usable catalog credential.
 
 Scopes are `catalog:read`, `profile:read`, `profile:write`, and reserved `dj:read`.
 Native requests can omit Origin; explicit browser origins and Fetch Metadata

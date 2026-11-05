@@ -50,6 +50,29 @@ test('pairing is explicit, fixed-path, catalog-only and filters privileged respo
   assert.equal(calls.at(-1).method, 'DELETE');
 });
 
+test('profile sync upgrade is explicit and restarting the gateway needs no catalog preparation', async () => {
+  const calls = [];
+  const { control } = fixture({ request: async (path, options) => {
+    calls.push({ path, method: options.method });
+    if (path.endsWith('/devices/phone-one/profile-sync')) return jsonResponse({ device_id: 'phone-one', scopes: ['catalog:read', 'profile:read', 'profile:write'] });
+    if (path.endsWith('/status')) return jsonResponse({ enabled: false });
+    if (path.endsWith('/enable')) return jsonResponse({ enabled: true });
+    return jsonResponse({});
+  } });
+  assert.deepEqual(await control.gatewayStatus(), { enabled: false });
+  assert.deepEqual(await control.enableGateway(), { enabled: true });
+  assert.deepEqual(await control.grantProfileSync('phone-one'), {
+    device_id: 'phone-one', scopes: ['catalog:read', 'profile:read', 'profile:write'],
+  });
+  assert.deepEqual(calls, [
+    { path: '/api/mobile-hosting/status', method: 'GET' },
+    { path: '/api/mobile-hosting/enable', method: 'POST' },
+    { path: '/api/mobile-hosting/devices/phone-one/profile-sync', method: 'POST' },
+  ]);
+  assert.equal(calls.some(call => call.path.includes('/catalog/prepare')), false);
+  await assert.rejects(control.grantProfileSync('../other'));
+});
+
 test('parent capability travels only over inherited private pipe, never launch env or argv', () => {
   const { control } = fixture();
   let payload;
@@ -99,6 +122,7 @@ test('IPC only accepts approved main frame and exact argument counts', async () 
   const window = { webContents: contents, isDestroyed: () => false };
   registerMobilePairingIPC({ handle: (name, callback) => handlers.set(name, callback) }, {
     createBundle: async name => { calls.push(name); return {}; }, listDevices: async () => ({}), revokeDevice: async () => ({}),
+    gatewayStatus: async () => ({ enabled: false }), enableGateway: async () => ({ enabled: true }), grantProfileSync: async id => ({ device_id: id }),
   }, () => window);
   const good = { sender: contents, senderFrame: frame };
   for (const event of [{ ...good, sender: {} }, { ...good, senderFrame: { url: frame.url } }, { ...good, senderFrame: null }]) {
@@ -110,6 +134,10 @@ test('IPC only accepts approved main frame and exact argument counts', async () 
   await assert.rejects(async () => handlers.get('mobile-pairing-create')(good, 'Phone', 'extra'));
   await assert.rejects(async () => handlers.get('mobile-pairing-devices')(good, 'extra'));
   await handlers.get('mobile-pairing-create')(good, 'Phone');
+  assert.deepEqual(await handlers.get('mobile-pairing-gateway-status')(good), { enabled: false });
+  assert.deepEqual(await handlers.get('mobile-pairing-enable-gateway')(good), { enabled: true });
+  assert.deepEqual(await handlers.get('mobile-pairing-profile-sync')(good, 'phone-one'), { device_id: 'phone-one' });
+  await assert.rejects(async () => handlers.get('mobile-pairing-profile-sync')(good, 'phone-one', 'extra'));
   assert.deepEqual(calls, ['Phone']);
 });
 

@@ -11,6 +11,9 @@ Start with [the repository README](../README.md) for setup and the application m
 | [TESTING.md](TESTING.md) | Safe verification, outstanding desktop acceptance and deferred TTS investigation |
 | [APP_USAGE_CHECKLIST.md](APP_USAGE_CHECKLIST.md) | Detailed manual desktop walkthrough |
 | [MOBILE_PAIRING.md](MOBILE_PAIRING.md) | Phone pairing, catalog import, matching and feedback workflow |
+| [MOBILE_SYNC.md](MOBILE_SYNC.md) | Explicit profile sync, permissions, retry/recovery and phone acceptance |
+| [REMOTE_HOSTING.md](REMOTE_HOSTING.md) | Explicit remote hosting, signed address updates and cellular acceptance |
+| [AUTOMATIC_DISCOVERY.md](AUTOMATIC_DISCOVERY.md) | Firebase setup, protected discovery accounts, URL rotation and recovery |
 
 ## Android status and planning
 
@@ -19,7 +22,7 @@ Start with [the repository README](../README.md) for setup and the application m
 | [ANDROID_APP_PLAN.md](ANDROID_APP_PLAN.md) | Checkpoint delivery, verification, acceptance and proposed app follow-ups |
 | [MOBILE_CONNECTION_PLAN.md](MOBILE_CONNECTION_PLAN.md) | Future connection/sync architecture and explicitly dated Phase 0 audit |
 
-Checkpoints 1A–1C, 2A and offline Radio 2B are accepted (2B accepted November 3, 2026). Manual sync 2C is future work. Plans are not authorization to begin another checkpoint.
+Checkpoints through 3B automatic discovery are phone-accepted. Work remains on `codex/android-3b-discovery`, preserving the uncommitted 2C and 3A implementations. Plans are not authorization to begin another checkpoint.
 
 ## Technical contracts
 
@@ -28,7 +31,7 @@ Checkpoints 1A–1C, 2A and offline Radio 2B are accepted (2B accepted November 
 | [PORTABLE_CATALOG.md](PORTABLE_CATALOG.md) | Immutable catalog revisions, validation and vector provenance |
 | [MUSIC_MATCHING.md](MUSIC_MATCHING.md) | Local recording identity, decisions and uncertainty |
 | [OFFLINE_RECOMMENDATIONS.md](OFFLINE_RECOMMENDATIONS.md) | Reference scoring and Android offline Radio integration |
-| [PORTABLE_SYNC_API.md](PORTABLE_SYNC_API.md) | Server event/profile API; Android manual sync remains future work |
+| [PORTABLE_SYNC_API.md](PORTABLE_SYNC_API.md) | Event/profile API, Android manual sync and immutable retry/conflict rules |
 | [PORTABLE_MEDIA_PLAN.md](PORTABLE_MEDIA_PLAN.md) | Optional connected speech contract; native speech generation remains unavailable |
 
 ## Maintenance rules

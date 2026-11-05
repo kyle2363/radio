@@ -39,13 +39,18 @@ sealed class CatalogJson {
     companion object {
         const val MAX_BYTES = 16 * 1024 * 1024
         fun parse(bytes: ByteArray): CatalogJson {
+            val value = parseStrict(bytes)
+            catalogRequire(value.canonical() == try { Charsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT).onUnmappableCharacter(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(bytes)).toString() } catch (_: Exception) { "" }, "Server must send canonical catalog JSON bytes.")
+            return value
+        }
+        /** Strict duplicate-key/type-safe parsing for JSON APIs whose outer object order is not canonical. */
+        fun parseStrict(bytes: ByteArray): CatalogJson {
             catalogRequire(bytes.size <= MAX_BYTES, "Catalog manifest exceeds the phone limit.")
             val text = try { Charsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT).onUnmappableCharacter(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(bytes)).toString() }
             catch (_: Exception) { throw CatalogException("Catalog is not valid UTF-8.") }
             val parser = Parser(text)
             val value = parser.value(0)
             catalogRequire(parser.position == text.length, "Trailing or noncanonical catalog data.")
-            catalogRequire(value.canonical() == text, "Server must send canonical catalog JSON bytes.")
             return value
         }
         private val scalarOrder = Comparator<String> { a, b ->

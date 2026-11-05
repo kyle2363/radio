@@ -163,6 +163,86 @@ def test_gateway_only_explicit_routes_and_mandatory_loopback_auth(tmp_path):
     assert request(app, "GET", "/api/portable/v1/identity").status_code == 503
 
 
+def test_gateway_profile_sync_is_scoped_and_reports_authenticated_capabilities(tmp_path):
+    store, identity, pairing = setup(tmp_path)
+    app = create_mobile_gateway(store, identity, pairing)
+    app.state.admission.enable(1)
+    device = store.issue_device("Catalog only", ["catalog:read"])
+    headers = {"Authorization": "Bearer " + device["token"]}
+    capabilities = request(app, "GET", "/api/portable/v1/capabilities", headers)
+    assert capabilities.status_code == 200
+    assert capabilities.json()["profile_sync"] is True
+    assert capabilities.json()["scopes"] == ["catalog:read"]
+    for method, path, content in (("GET", "/api/portable/v1/events", None),
+                                  ("GET", "/api/portable/v1/profile", None),
+                                  ("POST", "/api/portable/v1/events", b'{"protocol_version":1,"events":[]}')):
+        assert request(app, method, path, headers, content).status_code == 403
+
+    store.grant_profile_sync(device["device_id"])
+    scopes = store.authorize(device["token"])["scopes"]
+    assert scopes == ["catalog:read", "profile:read", "profile:write"]
+    assert request(app, "GET", "/api/portable/v1/capabilities", headers).json()["scopes"] == scopes
+    assert request(app, "GET", "/api/portable/v1/events?cursor=0&limit=100", headers).status_code == 200
+    assert request(app, "GET", "/api/portable/v1/profile", headers).status_code == 200
+    headers = {**headers, "Content-Type": "application/json"}
+    assert request(app, "POST", "/api/portable/v1/events", headers, b'{"protocol_version":1,"events":[]}').status_code == 422
+    event = {"protocol_version": 1, "event_id": "phone-event-1", "device_id": device["device_id"],
+             "logical_clock": 1, "catalog_id": store.catalog_id, "kind": "favorite_changed",
+             "song_id": "1", "occurred_at": 1793220000, "value": True}
+    imported = request(app, "POST", "/api/portable/v1/events", headers,
+                       json.dumps({"protocol_version": 1, "events": [event]}).encode())
+    assert imported.status_code == 200
+    assert imported.json()["accepted"] == ["phone-event-1"]
+    assert request(app, "GET", "/api/portable/v1/profile", headers).json()["favorites"]["1"] is True
+
+
+@pytest.mark.parametrize("query", ["cursor=-1", "cursor=01", "cursor=0&cursor=1", "limit=501", "limit=1&limit=2", "cursor=0&x=1"])
+def test_gateway_sync_query_is_strict(tmp_path, query):
+    store, identity, pairing = setup(tmp_path)
+    app = create_mobile_gateway(store, identity, pairing)
+    app.state.admission.enable(1)
+    device = store.issue_device("Phone", ["profile:read"])
+    headers = {"Authorization": "Bearer " + device["token"]}
+    assert request(app, "GET", "/api/portable/v1/events?" + query, headers).status_code == 400
+
+
+def test_local_admin_upgrade_preserves_existing_device_and_token(tmp_path):
+    store, _, _ = setup(tmp_path)
+    device = store.issue_device("Phone", ["catalog:read"])
+    upgraded = store.grant_profile_sync(device["device_id"])
+    assert upgraded["device_id"] == device["device_id"]
+    assert upgraded["scopes"] == ["catalog:read", "profile:read", "profile:write"]
+    assert store.authorize(device["token"])["device_id"] == device["device_id"]
+    with pytest.raises(ValueError):
+        store.grant_profile_sync("missing-device")
+
+
+def test_gateway_sync_parsers_reject_ambiguous_queries_and_duplicate_json_fields():
+    from mobile_gateway import strict_json, sync_query
+    assert sync_query(b"limit=25&cursor=12") == {"cursor": 12, "limit": 25}
+    for query in (b"cursor=-1", b"cursor=01", b"cursor=0&cursor=1", b"limit=501", b"limit=1&limit=2", b"cursor=0&unknown=1", b"cursor=%30", b"cursor=9223372036854775808"):
+        with pytest.raises(ValueError):
+            sync_query(query)
+    assert strict_json(b'{"protocol_version":1,"events":[]}') == {"protocol_version": 1, "events": []}
+    for raw in (b'{"protocol_version":1,"protocol_version":1,"events":[]}',
+                b'{"protocol_version":1,"events":[{"event_id":"a","event_id":"b"}]}',
+                b'{"protocol_version":NaN,"events":[]}'):
+        with pytest.raises(ValueError):
+            strict_json(raw)
+
+
+def test_gateway_sync_rejects_oversized_body_and_duplicate_json_keys(tmp_path):
+    store, identity, pairing = setup(tmp_path)
+    app = create_mobile_gateway(store, identity, pairing)
+    app.state.admission.enable(1)
+    device = store.issue_device("Phone", ["profile:write"])
+    headers = {"Authorization": "Bearer " + device["token"], "Content-Type": "application/json"}
+    path = "/api/portable/v1/events"
+    assert request(app, "POST", path, headers, b"x" * (2 * 1024 * 1024 + 1)).status_code == 413
+    duplicate = b'{"protocol_version":1,"events":[],"events":[]}'
+    assert request(app, "POST", path, headers, duplicate).status_code == 422
+
+
 @pytest.mark.parametrize("headers,status", [({"Host": "evil.test"}, 400), ({"Origin": "null"}, 403),
     ({"Cookie": "radio_session=x"}, 403), ({"X-Forwarded-Host": "evil"}, 400),
     ({"Authorization": "Bearer bad"}, 401), ([("Host", "127.0.0.1:18766"), ("Host", "127.0.0.1:18766")], 400)])

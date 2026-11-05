@@ -1,6 +1,6 @@
 # USB pairing, catalog import and matching — checkpoints 1A–1C
 
-These checkpoints add a verified USB connection and explicit catalog/vector import between the Android debug app and the owned Electron development backend. Checkpoint 1C adds explicit cached content hashes and local matching/review. These checkpoints do not synchronize history, request recommendations, deliver speech, or enable LAN/public hosting. Local phone music remains independent. The workflow is intended for one personal server and a couple of listeners.
+These checkpoints add a verified USB connection and explicit catalog/vector import between the Android debug app and the owned Electron development backend. Checkpoint 1C adds explicit cached content hashes and local matching/review. Local phone music remains independent. The workflow is intended for one personal server and a couple of listeners. Checkpoint 2C adds separately authorized [manual profile sync](MOBILE_SYNC.md); remote hosting, connected recommendations and speech remain deferred.
 
 The architecture and later checkpoints are in [MOBILE_CONNECTION_PLAN.md](MOBILE_CONNECTION_PLAN.md). This guide describes the implementation; the checkpoint log and final verification are in [ANDROID_APP_PLAN.md](ANDROID_APP_PLAN.md).
 
@@ -35,7 +35,7 @@ The architecture and later checkpoints are in [MOBILE_CONNECTION_PLAN.md](MOBILE
 
 Bundle copying is manual in this checkpoint. It does not install a camera/QR scanner or automatically bridge the desktop and phone clipboards. Use a trusted transfer method you control; the bundle is a short-lived authorization secret. It never contains a desktop password or long-lived device bearer. A new bundle replaces outstanding unused tickets. The displayed copy disappears on expiry, replacement, revocation or closing the settings section.
 
-ADB forwarding may need to be repeated after USB reconnect or device restart. After quitting/relaunching Radio, the gateway is initially off: **Prepare catalog** or **Create pairing bundle** explicitly enables it. An already-paired phone does not need a new ticket. A separate remote-hosting UI is deferred to its own checkpoint.
+ADB forwarding may need to be repeated after USB reconnect or device restart. After quitting/relaunching Radio, the gateway is initially off: **Enable USB connection** starts it for an already-paired phone. **Prepare catalog**, **Create pairing bundle** and **Allow profile sync** also explicitly enable it. An already-paired phone does not need a new ticket. A separate remote-hosting UI is deferred to its own checkpoint.
 
 ## Import a catalog
 
@@ -70,12 +70,12 @@ Catalog bytes are private cached data outside Android backup. Restored metadata 
 ## Security boundary
 
 - The listener binds **127.0.0.1:18766 only**, is off at startup, and has a separate ASGI application. No desktop route, general proxy, source-song streaming, admin API or OpenAPI surface is mounted there.
-- Exposed methods are GET identity, POST pairing exchange, GET capabilities, GET prepared catalog and GET/HEAD content-addressed vectors under `/api/portable/v1`. Identity has no bearer; exchange requires the ticket; other private routes require a current portable device bearer even though the socket is loopback. Catalog/vector delivery requires `catalog:read`. Host, native-request headers, framing, body size, rate and total body deadline are constrained. Mobile requests cannot trigger preparation or ingestion.
+- Exposed methods are GET identity, POST pairing exchange, GET capabilities, GET prepared catalog, vector-batch and GET/HEAD content-addressed vectors, plus GET/POST events and GET profile under `/api/portable/v1`. Identity has no bearer; exchange requires the ticket; other private routes require a current portable device bearer even though the socket is loopback. Catalog/vector delivery requires `catalog:read`; events/profile require the corresponding `profile:read` or `profile:write` scope. Host, native-request headers, framing, body size, rate and total body deadline are constrained. Mobile requests cannot trigger preparation or ingestion.
 - Electron main sends a random parent capability to its child over a bounded stdin bootstrap pipe. Local pairing administration requires that capability, a loopback peer, and the existing desktop authentication/origin policy. Narrow IPC accepts only the trusted main window. The capability is not returned to the renderer or put in an argument, URL or log.
 - Android stores its pending/paired secret in AES-GCM ciphertext protected by Android Keystore. The encrypted directory is excluded from both backup rule formats and device transfer. A separate non-backup installation marker is compared with nonsecret backed-up metadata; mismatch or decryption failure quarantines the state. Catalog metadata uses the separate additive Room v6 tables.
 - Identity uses P-256/SHA-256 signatures over the transmitted payload bytes, a SHA-256 SPKI pin, exact endpoint/server identity, bounded freshness and persisted generation/revision floors. Platform TLS/hostname checks stay enabled. Redirects never receive credentials; responses and complete requests are bounded.
 - Cleartext is permitted only for the exact USB loopback origin in Android debug builds. Release builds reject it and keep cleartext disabled. This is not a release remote-hosting path. Packaged Electron does not offer this development pairing flow.
-- The backend stores bearer/ticket digests and a nonsecret exchange receipt, not plaintext bearer responses. Pairing grants only `catalog:read` in the existing portable authority. The prepared catalog/vector routes expose no profile-writing or playback authority.
+- The backend stores bearer/ticket digests and a nonsecret exchange receipt, not plaintext bearer responses. Pairing grants only `catalog:read` in the existing portable authority. A later private local-admin grant explicitly adds profile sync for that existing device without rotating identity. The prepared catalog/vector routes expose no profile-writing or playback authority.
 - Graceful Electron shutdown disables and closes the owned listener before backend termination. A backend listener failure closes admission. Abrupt parent-death cleanup for a future public tunnel is a separate checkpoint; no public tunnel exists here.
 
 ## Short acceptance checklist
@@ -88,9 +88,9 @@ Catalog bytes are private cached data outside Android backup. Restored metadata 
 6. Let an unused bundle expire and verify it cannot create a device. For a deliberately interrupted exchange, retry the saved pending request and confirm only one device appears.
 7. Quit Radio and verify connection is unavailable; relaunch and explicitly enable the USB gateway again. No hosting preference, tunnel or LAN listener should start automatically.
 
-Phone acceptance, USB ergonomics, audible playback and ordinary Electron startup must be reported separately from automated emulator/fixture checks. Stop at checkpoint 1A for user review before catalog import.
+Phone acceptance, USB ergonomics, audible playback and ordinary Electron startup must be reported separately from automated emulator/fixture checks. The original checkpoint 1A review gate was subsequently satisfied; it does not block the accepted catalog/matching workflow.
 
-Checkpoint 1A was subsequently phone-tested and accepted. For 1B, check: the Server field and Pair button stay above the software keyboard; prepare/import a catalog while local music plays; reopen offline to see the imported revision; cancel/retry an update and confirm the previous catalog survives; then retry after briefly disconnecting USB. Stop for review before content hashing/matching in 1C.
+Checkpoints 1A–1C were subsequently phone-tested and accepted. For import regressions, check: the Server field and Pair button stay above the software keyboard; prepare/import a catalog while local music plays; reopen offline to see the imported revision; cancel/retry an update and confirm the previous catalog survives; then retry after briefly disconnecting USB.
 
 ## Match phone files to the server catalog (1C)
 

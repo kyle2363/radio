@@ -119,7 +119,7 @@ class LibraryRepository(context: Context, internal val db: LibraryDatabase) {
     companion object {
         @Volatile private var instance: LibraryRepository? = null
         fun get(context: Context): LibraryRepository = instance ?: synchronized(this) {
-            instance ?: LibraryRepository(context, Room.databaseBuilder(context.applicationContext, LibraryDatabase::class.java, "local-library.db").addMigrations(LIBRARY_MIGRATION_1_2, LIBRARY_MIGRATION_2_3, LIBRARY_MIGRATION_3_4, LIBRARY_MIGRATION_4_5, LIBRARY_MIGRATION_5_6, LIBRARY_MIGRATION_6_7, LIBRARY_MIGRATION_7_8).build()).also { instance = it }
+            instance ?: LibraryRepository(context, Room.databaseBuilder(context.applicationContext, LibraryDatabase::class.java, "local-library.db").addMigrations(LIBRARY_MIGRATION_1_2, LIBRARY_MIGRATION_2_3, LIBRARY_MIGRATION_3_4, LIBRARY_MIGRATION_4_5, LIBRARY_MIGRATION_5_6, LIBRARY_MIGRATION_6_7, LIBRARY_MIGRATION_7_8, LIBRARY_MIGRATION_8_9).build()).also { instance = it }
         }
     }
 }

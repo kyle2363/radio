@@ -106,5 +106,16 @@ val LIBRARY_MIGRATION_7_8 = object : Migration(7, 8) {
   db.execSQL("CREATE TABLE IF NOT EXISTS local_song_feedback (localId TEXT NOT NULL, favorite INTEGER NOT NULL, disliked INTEGER NOT NULL, PRIMARY KEY(localId))")
  }
 }
-@Database(entities = [LibraryRoot::class, LocalSong::class, LocalFolder::class, LocalPlaybackStart::class, LocalPlaybackSnapshot::class, LocalPlaylist::class, LocalPlaylistSong::class, LocalLoudness::class, PortableCatalogRevision::class, PortableCatalogSong::class, PortableCatalogVector::class, PortableCatalogActive::class, LocalContentHash::class, PortableMatchDecision::class, LocalListeningEvent::class, LocalEventOutbox::class, LocalJournalClock::class, LocalSongFeedback::class], version = 8, exportSchema = true)
+val LIBRARY_MIGRATION_8_9 = object : Migration(8, 9) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE local_event_outbox ADD COLUMN acknowledged INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("CREATE TABLE IF NOT EXISTS portable_sync_cursor (serverId TEXT NOT NULL, deviceId TEXT NOT NULL, cursor INTEGER NOT NULL, updatedAt INTEGER NOT NULL, lastSuccessAt INTEGER, PRIMARY KEY(serverId,deviceId))")
+        db.execSQL("CREATE TABLE IF NOT EXISTS portable_remote_events (serverId TEXT NOT NULL, deviceId TEXT NOT NULL, eventId TEXT NOT NULL, logicalClock INTEGER NOT NULL, occurredAt INTEGER NOT NULL, kind TEXT NOT NULL, localId TEXT, payload TEXT NOT NULL, PRIMARY KEY(serverId,deviceId,eventId))")
+        db.execSQL("CREATE INDEX IF NOT EXISTS index_portable_remote_events_serverId_occurredAt ON portable_remote_events(serverId,occurredAt)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS index_portable_remote_events_serverId_logicalClock ON portable_remote_events(serverId,logicalClock)")
+        db.execSQL("CREATE TABLE IF NOT EXISTS portable_profile_registers (serverId TEXT NOT NULL, registerKey TEXT NOT NULL, logicalClock INTEGER NOT NULL, deviceId TEXT NOT NULL, eventId TEXT NOT NULL, kind TEXT NOT NULL, valueJson TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(serverId,registerKey))")
+        db.execSQL("CREATE TABLE IF NOT EXISTS portable_sync_owner (ownerKey TEXT NOT NULL, serverId TEXT NOT NULL, deviceId TEXT NOT NULL, installationMarker TEXT NOT NULL, quarantined INTEGER NOT NULL, PRIMARY KEY(ownerKey))")
+    }
+}
+@Database(entities = [LibraryRoot::class, LocalSong::class, LocalFolder::class, LocalPlaybackStart::class, LocalPlaybackSnapshot::class, LocalPlaylist::class, LocalPlaylistSong::class, LocalLoudness::class, PortableCatalogRevision::class, PortableCatalogSong::class, PortableCatalogVector::class, PortableCatalogActive::class, LocalContentHash::class, PortableMatchDecision::class, LocalListeningEvent::class, LocalEventOutbox::class, LocalJournalClock::class, LocalSongFeedback::class, PortableSyncCursor::class, PortableRemoteEvent::class, PortableProfileRegister::class, PortableSyncOwner::class], version = 9, exportSchema = true)
 abstract class LibraryDatabase : RoomDatabase() { abstract fun library(): LibraryDao; abstract fun playlists(): PlaylistDao; abstract fun loudness(): LoudnessDao; abstract fun catalogs(): PortableCatalogDao; abstract fun matching(): MatchingDao; abstract fun journal(): ListeningJournalDao }

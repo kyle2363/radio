@@ -1,8 +1,30 @@
 """Manual profile synchronization uses disposable storage, never playback sessions."""
 import pytest
+import json
 
 from db import database
 from portable_sync import PortableProfileStore, SyncConflict
+
+
+def test_desktop_percentages_export_as_ratios_and_legacy_invalid_rows_are_readable():
+    database.record_play_event(1, None, "completed", completion_pct=75)
+    store = PortableProfileStore()
+    store.capture_desktop()
+    exported = [r for r in store.events()["events"] if r["event"]["event_id"].startswith("desktop:")]
+    assert exported[0]["event"]["completion"] == .75
+    payload = dict(exported[0]["event"], completion=75)
+    with store.transaction() as conn:
+        conn.execute("UPDATE portable_events SET payload=? WHERE device_id='server' AND event_id=?",
+                     (json.dumps(payload), payload["event_id"]))
+    assert [r for r in store.events()["events"] if r["event"]["event_id"] == payload["event_id"]][0]["event"]["completion"] == .75
+    with database.get_connection_cm() as conn:
+        assert json.loads(conn.execute("SELECT payload FROM portable_events WHERE device_id='server' AND event_id=?", (payload["event_id"],)).fetchone()[0])["completion"] == 75
+
+
+def test_imported_completion_ratio_is_projected_as_desktop_percentage():
+    PortableProfileStore().import_events("phone", [event(kind="song_completed", completion=.75)])
+    with database.get_connection_cm() as conn:
+        assert conn.execute("SELECT completion_pct FROM play_events WHERE signal='completed'").fetchone()[0] == 75
 
 
 def event(number=1, kind="song_started", **changes):

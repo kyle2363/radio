@@ -34,7 +34,8 @@
     "win": { "target": "nsis", "icon": "electron/tray-icon.png" },
     "nsis": { "oneClick": false, "allowToChangeInstallationDirectory": true },
     "extraResources": [
-      { "from": "../backend", "to": "backend", "filter": ["**/*", "!venv/**", "!__pycache__/**", "!*.log"] }
+      { "from": "../backend", "to": "backend", "filter": ["**/*", "!venv/**", "!__pycache__/**", "!*.log"] },
+      { "from": "electron/mobile-tunnel-job.py", "to": "mobile-tunnel-job.py" }
     ]
   }
 }

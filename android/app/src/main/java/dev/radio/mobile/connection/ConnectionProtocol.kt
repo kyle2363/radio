@@ -79,6 +79,7 @@ data class PairingRecord(
     val bundle: PairingBundle, val bearer: String, val exchangeId: String, val installationMarker: String,
     val deviceId: String? = null, val credentialExpiresAt: Long? = null,
     val generation: Long = 0, val revision: Long = 0, val authorizationBlocked: Boolean = false,
+    val trustedUsbEndpoint: String? = null,
 ) {
     override fun toString() = "PairingRecord(redacted)"
     val identityAnchor: String get() = "${bundle.serverId}:$exchangeId"
@@ -86,26 +87,50 @@ data class PairingRecord(
         .put("installation_marker", installationMarker).put("device_id", deviceId ?: JSONObject.NULL)
         .put("credential_expires_at", credentialExpiresAt ?: JSONObject.NULL).put("generation", generation)
         .put("revision", revision).put("authorization_blocked", authorizationBlocked)
+        .put("trusted_usb_endpoint", trustedUsbEndpoint ?: JSONObject.NULL)
     companion object {
         internal fun parse(text: String, policy: EndpointPolicy): PairingRecord {
             val obj = json(text)
             val exchange = obj.text("exchange_id", 36)
             if (runCatching { UUID.fromString(exchange).toString() }.getOrNull() != exchange) throw ConnectionFailure("Pairing storage needs repair.")
-            return PairingRecord(PairingBundle.parse(obj.getJSONObject("bundle").toString(), policy), WireBase64.secret(obj.text("bearer", 43)),
+            val bundle = PairingBundle.parse(obj.getJSONObject("bundle").toString(), policy)
+            val legacyUsb = bundle.endpoint.takeIf { it == "http://127.0.0.1:18766" }
+            return PairingRecord(bundle, WireBase64.secret(obj.text("bearer", 43)),
                 exchange, obj.text("installation_marker", 43), if (obj.isNull("device_id")) null else obj.text("device_id", 128),
-                if (obj.isNull("credential_expires_at")) null else obj.number("credential_expires_at"), obj.number("generation"), obj.number("revision"), obj.getBoolean("authorization_blocked"))
+                if (obj.isNull("credential_expires_at")) null else obj.number("credential_expires_at"), obj.number("generation"), obj.number("revision"), obj.getBoolean("authorization_blocked"),
+                if (obj.has("trusted_usb_endpoint")) {
+                    if (obj.isNull("trusted_usb_endpoint")) null else policy.validate(obj.text("trusted_usb_endpoint", 2048))
+                } else legacyUsb)
         }
     }
 }
 
 internal fun parseDescriptor(envelope: String, record: PairingRecord, now: Long): Descriptor {
+    return parseSignedDescriptor(envelope, record, now, record.bundle.endpoint, null)
+}
+
+/** A manually supplied descriptor may name a new origin, but its signing key stays pinned. */
+internal fun parseReplacementDescriptor(envelope: String, record: PairingRecord, now: Long, policy: EndpointPolicy): Descriptor {
+    return parseSignedDescriptor(envelope, record, now, null, policy)
+}
+
+internal fun parseTrustedEndpointDescriptor(envelope: String, record: PairingRecord, now: Long, endpoint: String, policy: EndpointPolicy): Descriptor {
+    return parseSignedDescriptor(envelope, record, now, endpoint, policy, allowUsb = true)
+}
+
+private fun parseSignedDescriptor(envelope: String, record: PairingRecord, now: Long, expectedOrigin: String?, policy: EndpointPolicy?, allowUsb: Boolean = false): Descriptor {
     val obj = json(envelope)
     val bytes = DescriptorSignatures.verify(record.bundle.publicKeyPin, obj.text("public_key", 512), obj.text("payload", 12000), obj.text("signature", 128))
     val text = try { Charsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT).onUnmappableCharacter(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(bytes)).toString() }
     catch (_: Exception) { throw ConnectionFailure("Invalid signed server data.") }
     val payload = json(text).apply { version() }
-    val descriptor = Descriptor(payload.text("server_id", 128), payload.text("endpoint", 2048), payload.number("connection_generation"),
+    val endpoint = payload.text("endpoint", 2048)
+    if (policy != null) {
+        if (allowUsb && endpoint == "http://127.0.0.1:18766") policy.validate(endpoint)
+        else policy.validateRemoteEndpoint(endpoint)
+    }
+    val descriptor = Descriptor(payload.text("server_id", 128), endpoint, payload.number("connection_generation"),
         payload.number("publication_revision"), payload.number("issued_at"), payload.number("expires_at"), payload.opt("available") == true)
-    descriptor.validate(record.bundle.serverId, record.bundle.endpoint, record.generation, record.revision, now)
+    descriptor.validate(record.bundle.serverId, expectedOrigin ?: endpoint, record.generation, record.revision, now)
     return descriptor
 }

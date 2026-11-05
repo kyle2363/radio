@@ -20,6 +20,7 @@ class LibraryMigrationTest {
     @Test fun v5MigrationPreservesLoudnessAndAddsPortableMetadataOnly() = verifyMigration(5)
     @Test fun v6MigrationAddsContentIdentityWithoutChangingPlayback() = verifyMigration(6)
     @Test fun v7MigrationAddsEmptyJournalWithoutReinterpretingHistory() = verifyMigration(7)
+    @Test fun v8MigrationAddsSyncStorageAndKeepsPendingBytes() = verifyMigration(8)
     private fun verifyMigration(version: Int) = runBlocking {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val context = instrumentation.targetContext
@@ -42,9 +43,13 @@ class LibraryMigrationTest {
                 db.execSQL("INSERT INTO local_playlist_songs (playlistId, songId, position) VALUES ('pl', 'keep', 0)")
             }
             if (version >= 5) db.execSQL("INSERT INTO local_loudness (songId, uri, modifiedAt, byteSize, catalogScan, algorithm, integratedLufs, samplePeak, status, measuredAt) VALUES ('keep', 'content://fixture/song', 1, 3, 1, 'fixture', -12.0, 0.5, 'measured', 2)")
+            if (version >= 8) {
+                db.execSQL("INSERT INTO local_listening_events (eventId,localId,attemptId,kind,occurredAt,logicalClock,payload,listenedMs,completion,terminationReason,provenance) VALUES ('pending-event','keep',NULL,'favorite_changed',3,7,'{\"event_id\":\"pending-event\"}',0,NULL,NULL,'fixture')")
+                db.execSQL("INSERT INTO local_event_outbox (eventId,serverId,deviceId,payload) VALUES ('pending-event','server','device','{\"event_id\":\"pending-event\"}')")
+            }
             db.version = version
         }
-        val db = Room.databaseBuilder(context, LibraryDatabase::class.java, file.absolutePath).addMigrations(LIBRARY_MIGRATION_1_2, LIBRARY_MIGRATION_2_3, LIBRARY_MIGRATION_3_4, LIBRARY_MIGRATION_4_5, LIBRARY_MIGRATION_5_6, LIBRARY_MIGRATION_6_7, LIBRARY_MIGRATION_7_8).build()
+        val db = Room.databaseBuilder(context, LibraryDatabase::class.java, file.absolutePath).addMigrations(LIBRARY_MIGRATION_1_2, LIBRARY_MIGRATION_2_3, LIBRARY_MIGRATION_3_4, LIBRARY_MIGRATION_4_5, LIBRARY_MIGRATION_5_6, LIBRARY_MIGRATION_6_7, LIBRARY_MIGRATION_7_8, LIBRARY_MIGRATION_8_9).build()
         try {
             assertEquals("Music", db.library().root()!!.name)
             assertEquals("keep", db.library().allSongs().single().id)
@@ -59,8 +64,15 @@ class LibraryMigrationTest {
             if (version >= 4) assertEquals(listOf("keep"), db.playlists().songs("pl"))
             if (version >= 5) assertEquals(-12.0, db.loudness().observe().first().single().integratedLufs!!, 0.0)
             assertNull(db.catalogs().latest())
-            assertTrue(db.journal().events().isEmpty())
-            assertTrue(db.journal().outbox().isEmpty())
+            if (version >= 8) assertEquals("pending-event", db.journal().events().single().eventId)
+            else assertTrue(db.journal().events().isEmpty())
+            if (version >= 8) {
+                val saved = db.journal().outbox().single()
+                assertEquals("pending-event", saved.eventId)
+                assertEquals("{\"event_id\":\"pending-event\"}", saved.payload)
+                assertFalse(saved.acknowledged)
+            } else assertTrue(db.journal().outbox().isEmpty())
+            assertNull(db.journal().syncCursor("server","device"))
         } finally { db.close(); context.deleteDatabase(file.absolutePath) }
         Unit
     }

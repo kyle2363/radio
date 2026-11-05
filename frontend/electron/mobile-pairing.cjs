@@ -140,6 +140,35 @@ function createMobilePairingControl({ request, isBackendAlive, enabled }) {
         }) });
       });
     },
+    async gatewayStatus() {
+      return enqueue(async () => {
+        const value = await call('/status', 'GET');
+        if (typeof value?.enabled !== 'boolean') throw Error(UNAVAILABLE);
+        return { enabled: value.enabled };
+      });
+    },
+    // Remote leases bypass the pairing/catalog queue so a long catalog operation
+    // cannot starve the five-second owner heartbeat. This remains main-process only.
+    remoteControl(suffix, method, body) {
+      if (!['/remote/start', '/remote/renew', '/remote/stop', '/remote/status'].includes(suffix)) return Promise.reject(Error(UNAVAILABLE));
+      return call(suffix, method, body);
+    },
+    async enableGateway() {
+      return enqueue(async () => {
+        const value = await call('/enable', 'POST');
+        if (value?.enabled !== true) throw Error(UNAVAILABLE);
+        return { enabled: true };
+      });
+    },
+    async grantProfileSync(id) {
+      if (!validId(id)) throw Error('Invalid paired device.');
+      return enqueue(async () => {
+        const value = await call(`/devices/${id}/profile-sync`, 'POST');
+        if (value?.device_id !== id || !Array.isArray(value.scopes) ||
+            !['catalog:read', 'profile:read', 'profile:write'].every(scope => value.scopes.includes(scope))) throw Error(UNAVAILABLE);
+        return { device_id: id, scopes: [...value.scopes] };
+      });
+    },
     async revokeDevice(id) {
       if (!validId(id)) throw Error('Invalid paired device.');
       return enqueue(async () => {
@@ -182,6 +211,8 @@ function registerMobilePairingIPC(ipcMain, control, getMainWindow) {
   for (const [channel, count, method] of [
     ['mobile-pairing-available', 0, 'isAvailable'],
     ['mobile-pairing-create', 1, 'createBundle'], ['mobile-pairing-devices', 0, 'listDevices'], ['mobile-pairing-revoke', 1, 'revokeDevice'],
+    ['mobile-pairing-gateway-status', 0, 'gatewayStatus'], ['mobile-pairing-enable-gateway', 0, 'enableGateway'],
+    ['mobile-pairing-profile-sync', 1, 'grantProfileSync'],
     ['mobile-catalog-prepare', 0, 'prepareCatalog'], ['mobile-catalog-status', 0, 'catalogStatus'], ['mobile-catalog-cancel', 0, 'cancelCatalog'],
   ]) ipcMain.handle(channel, (event, ...args) => {
     guard(event);

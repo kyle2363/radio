@@ -46,6 +46,10 @@ private val destinations = listOf("Radio" to Symbol.Radio, "Library" to Symbol.L
 @Composable
 fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.current), playback: PlaybackController = rememberPlaybackController(), openPlayerRequest: Int = 0,
     pairingRepository: dev.radio.mobile.connection.PairingRepository? = null) {
+    val appContext=LocalContext.current.applicationContext
+    val pairing= remember(pairingRepository,appContext) { pairingRepository ?: dev.radio.mobile.connection.EndpointPolicy(dev.radio.mobile.BuildConfig.DEBUG).let { p -> dev.radio.mobile.connection.PairingRepository(dev.radio.mobile.connection.PairedServerStore(appContext,p),dev.radio.mobile.connection.RadioApiClient(p),p) } }
+    val discovery= remember(pairing,appContext) { dev.radio.mobile.connection.DiscoveryRepository(appContext,pairing) }
+    val lifecycleScope=rememberCoroutineScope()
     val audio by playback.state.collectAsState()
     val library by repository.state.collectAsState()
     val playlists by repository.playlists.state.collectAsState()
@@ -57,9 +61,10 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
     fun chooseFolder() { picker.launch(library.root?.uri?.let(Uri::parse) ?: DocumentsContract.buildDocumentUri("com.android.externalstorage.documents", "primary:Music")) }
     val lifecycle = LocalLifecycleOwner.current
     val activity = LocalContext.current.playbackActivity()
-    DisposableEffect(repository, lifecycle) {
+    LaunchedEffect(pairing,discovery) { pairing.load(); discovery.load() }
+    DisposableEffect(repository, lifecycle, discovery) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) repository.checkAccess()
+            if (event == Lifecycle.Event.ON_RESUME) { repository.checkAccess(); lifecycleScope.launch { pairing.load(); discovery.load(); discovery.readOnResume() } }
             if (event == Lifecycle.Event.ON_STOP && activity?.isChangingConfigurations != true) repository.loudness.pauseAnalysis()
         }
         lifecycle.lifecycle.addObserver(observer)
@@ -262,10 +267,10 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
                     }
                 }
                 "Server" -> Column(Modifier.padding(insets).consumeWindowInsets(insets).imePadding().fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).testTag("server-scroll")) {
-                    ServerSettings(pairingRepository, onOpenMatching = { navigate("Matching") })
+                    ServerSettings(pairing, onOpenMatching = { navigate("Matching") }, discoveryRepository = discovery)
                 }
                 "Matching" -> Column(Modifier.padding(insets).consumeWindowInsets(insets).imePadding().fillMaxSize().padding(horizontal = 16.dp)) {
-                    ServerSettings(pairingRepository, matchingScreen = true)
+                    ServerSettings(pairing, matchingScreen = true, discoveryRepository = discovery)
                 }
                 "Settings" -> Column(Modifier.padding(insets).consumeWindowInsets(insets).imePadding().fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).testTag("settings-scroll")) {
                     SectionLabel("Music library")

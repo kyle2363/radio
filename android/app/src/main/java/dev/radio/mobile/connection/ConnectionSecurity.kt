@@ -15,12 +15,20 @@ class ConnectionFailure(val safeMessage: String, val retryAfterSeconds: Int? = n
 
 /** Endpoints are exact origins. The sole HTTP exception is the USB debug port. */
 class EndpointPolicy(private val debug: Boolean) {
+    fun isTrustedUsb(endpoint: String): Boolean = debug && endpoint == "http://127.0.0.1:18766"
+    fun validateRemoteEndpoint(endpoint: String): String {
+        val exact = validate(endpoint)
+        val uri = URI(exact)
+        if (uri.scheme != "https" || uri.port != -1 || uri.host == null || !uri.host.endsWith(".trycloudflare.com"))
+            throw ConnectionFailure("Use the current HTTPS Quick Tunnel address supplied by the trusted desktop.")
+        return exact
+    }
     fun validate(endpoint: String): String {
         val uri = runCatching { URI(endpoint) }.getOrNull()
             ?: throw ConnectionFailure("Invalid server endpoint.")
         val https = uri.scheme == "https" && !uri.host.isNullOrBlank() &&
             uri.host == uri.host.lowercase() && uri.port in -1..65535 && uri.port != 0
-        val usb = debug && endpoint == "http://127.0.0.1:18766"
+        val usb = isTrustedUsb(endpoint)
         if ((!https && !usb) || uri.rawUserInfo != null || !uri.rawPath.isNullOrEmpty() ||
             uri.rawQuery != null || uri.rawFragment != null || uri.rawAuthority != uri.host + (if (uri.port == -1) "" else ":${uri.port}")) {
             throw ConnectionFailure("Use an exact HTTPS server origin. USB loopback is available only in debug builds.")

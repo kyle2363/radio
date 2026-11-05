@@ -55,23 +55,24 @@ class ListeningJournalRepository(context: Context, private val db: LibraryDataba
         requests.trySend(operation)
     }
     private fun envelope(identity: JournalIdentity, eventId: String, attempt: String?, kind: String, at: Long, clock: Long,
-        completion: Double? = null, value: Boolean? = null) = JSONObject().apply {
+        completion: Double? = null, value: Any? = null) = JSONObject().apply {
         put("protocol_version", 1); put("device_id", identity.deviceId); put("event_id", eventId)
         put("logical_clock", clock); put("kind", kind); put("occurred_at", at / 1000)
         put("song_id", identity.songId ?: JSONObject.NULL)
-        if (identity.songId == null) put("local_id", identity.localId) else put("catalog_id", identity.catalogId)
+        if (identity.songId == null && kind!="preference_changed") put("local_id", identity.localId) else if(identity.songId!=null) put("catalog_id", identity.catalogId)
         if (attempt != null) put("attempt_id", attempt)
         if (completion != null) put("completion", completion)
         if (value != null) put("value", value)
     }.toString()
     private suspend fun append(identity: JournalIdentity, eventId: String, attempt: String?, kind: String, at: Long,
-        listened: Long = 0, completion: Double? = null, reason: String? = null, value: Boolean? = null) {
+        listened: Long = 0, completion: Double? = null, reason: String? = null, value: Any? = null, preferenceKey:String?=null) {
         val dao = db.journal(); val previousClock = dao.clock() ?: 0
         check(previousClock < 9007199254740991L) { "Journal clock exhausted" }
         val clock = previousClock + 1
         val wireCompletion = completion ?: if (kind == "song_completed" || kind == "song_skipped") 0.0 else null
         val payload = JSONObject(envelope(identity, eventId, attempt, kind, at, clock, wireCompletion, value)).apply {
             if (kind == "song_skipped" && reason in setOf("too_intense", "too_slow", "too_samey", "wrong_mood", "just_skip")) put("reason", reason)
+            if(kind=="preference_changed")put("key",preferenceKey)
         }.toString()
         dao.clock(LocalJournalClock(value = clock))
         dao.insert(LocalListeningEvent(eventId, identity.localId, attempt, kind, at, clock, payload, listened, completion, reason, identity.provenance))
@@ -104,6 +105,16 @@ class ListeningJournalRepository(context: Context, private val db: LibraryDataba
     }
     fun setFavorite(song: LocalSong, value: Boolean) = setFeedback(song, true, value)
     fun setDisliked(song: LocalSong, value: Boolean) = setFeedback(song, false, value)
+    /** Shares the supported default only when a paired server identity exists. This never changes this Radio instance. */
+    fun setSharedExploration(value:Double) {
+        val bounded=value.coerceIn(0.0,1.0)
+        val identity=JournalIdentityProvider.currentProfileIdentity() ?: return
+        val eventId=UUID.randomUUID().toString();val at=System.currentTimeMillis()
+        submit { db.withTransaction {
+            beforeCommit()
+            append(identity,eventId,null,"preference_changed",at,value=bounded,preferenceKey="exploration_level")
+        } }
+    }
     private fun setFeedback(song: LocalSong, favorite: Boolean, value: Boolean) {
         val identity = identity(song); val at = System.currentTimeMillis()
         val ids = listOf(UUID.randomUUID().toString(), UUID.randomUUID().toString())

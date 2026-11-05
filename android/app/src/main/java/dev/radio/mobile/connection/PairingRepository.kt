@@ -14,7 +14,7 @@ import java.util.UUID
 data class ConnectionState(
     val loaded: Boolean = false, val busy: Boolean = false, val serverId: String? = null,
     val endpoint: String? = null, val paired: Boolean = false, val pending: Boolean = false,
-    val quarantined: Boolean = false, val blocked: Boolean = false, val message: String = "Not paired",
+    val quarantined: Boolean = false, val blocked: Boolean = false, val trustedUsb: Boolean = false, val message: String = "Not paired", val error: Boolean = false,
 )
 
 /** Explicit user actions only. This repository has no connection to the local player. */
@@ -26,18 +26,18 @@ class PairingRepository(
     val state = mutableState.asStateFlow()
     private val mutex get() = pairingMutex
     companion object { private val pairingMutex = Mutex() }
-    private fun publish(snapshot: StoredPairing, message: String? = null) {
+    private fun publish(snapshot: StoredPairing, message: String? = null, error: Boolean = false) {
         dev.radio.mobile.data.JournalIdentityProvider.publishPairing(snapshot)
         val record = snapshot.record
         mutableState.value = ConnectionState(loaded = true, serverId = record?.bundle?.serverId, endpoint = record?.bundle?.endpoint,
             paired = record?.deviceId != null, pending = record != null && record.deviceId == null, quarantined = snapshot.quarantined,
-            blocked = record?.authorizationBlocked == true, message = message ?: when {
+            blocked = record?.authorizationBlocked == true, trustedUsb = record?.trustedUsbEndpoint != null, message = message ?: when {
                 snapshot.quarantined -> "Pairing quarantined after restore or key loss. Forget pairing and pair again. Local music is available."
                 record?.authorizationBlocked == true -> "Credential expired or revoked. Forget pairing and pair again."
                 record?.deviceId != null -> "Paired · connection not checked"
                 record != null -> "Pairing incomplete · retry with the same saved exchange"
                 else -> "Not paired"
-            })
+            }, error = error)
     }
     suspend fun load() = withContext(Dispatchers.IO) { mutex.withLock { publish(store.load()) } }
     suspend fun forget() = action { store.forget(); "Pairing forgotten on this phone" }
@@ -48,7 +48,8 @@ class PairingRepository(
         if (record == null) {
             val bundle = PairingBundle.parse(bundleText, policy)
             if (bundle.expiresAt <= now() || bundle.expiresAt > now() + 360) throw ConnectionFailure("Pairing ticket has expired or the device clock needs attention.")
-            record = PairingRecord(bundle, WireBase64.encode(ByteArray(32).also { SecureRandom().nextBytes(it) }), UUID.randomUUID().toString(), store.installationMarker())
+            record = PairingRecord(bundle, WireBase64.encode(ByteArray(32).also { SecureRandom().nextBytes(it) }), UUID.randomUUID().toString(), store.installationMarker(),
+                trustedUsbEndpoint = bundle.endpoint.takeIf { it == "http://127.0.0.1:18766" })
             store.save(record) // The candidate and retry ID must survive a lost exchange reply.
         } else if (bundleText.isNotBlank() && PairingBundle.parse(bundleText, policy) != record.bundle) {
             throw ConnectionFailure("A different pairing is pending. Retry it or forget pairing first.")
@@ -61,6 +62,37 @@ class PairingRepository(
         if (record.deviceId == null) exchange(record) else capabilities(verifyIdentity(record))
         "Paired · connection verified"
     }
+    /** Explicit endpoint replacement. Neither pasted content nor bearer leaves the device before both signatures verify. */
+    suspend fun updateConnection(descriptorText: String) = action {
+        val record = usable().record ?: throw ConnectionFailure("Pair this phone first.")
+        if (record.deviceId == null) throw ConnectionFailure("Finish pairing before updating the server address.")
+        val offered = parseReplacementDescriptor(descriptorText, record, now(), policy)
+        val response = transport.request(offered.endpoint, "/identity", null, null)
+        requireStatus(response)
+        val identity = parseReplacementDescriptor(response.body, record, now(), policy)
+        if (identity.endpoint != offered.endpoint || identity.serverId != offered.serverId || identity.generation < offered.generation ||
+            identity.generation == offered.generation && identity.revision < offered.revision)
+            throw ConnectionFailure("The server address changed or its signed identity is older. Paste a current descriptor from the trusted desktop.")
+        // Accept and persist the verified endpoint and monotonic fence before any bearer request.
+        val accepted = record.copy(bundle = record.bundle.copy(endpoint = identity.endpoint), generation = identity.generation, revision = identity.revision)
+        store.save(accepted)
+        capabilities(Verified(accepted, identity.expiresAt))
+        "Server address verified and updated"
+    }
+    /** Explicit debug-only recovery through the original USB-forwarded endpoint. */
+    suspend fun returnToTrustedUsb() = action {
+        val record = usable().record ?: throw ConnectionFailure("Pair this phone first.")
+        if (record.deviceId == null) throw ConnectionFailure("Finish pairing before reconnecting.")
+        val endpoint = record.trustedUsbEndpoint ?: throw ConnectionFailure("This pairing has no trusted USB connection.")
+        if (!policy.isTrustedUsb(endpoint)) throw ConnectionFailure("Trusted USB connection is available only in debug builds.")
+        val response = transport.request(endpoint, "/identity", null, null)
+        requireStatus(response)
+        val identity = parseTrustedEndpointDescriptor(response.body, record, now(), endpoint, policy)
+        val accepted = record.copy(bundle = record.bundle.copy(endpoint = endpoint), generation = identity.generation, revision = identity.revision)
+        store.save(accepted)
+        capabilities(Verified(accepted, identity.expiresAt))
+        "Trusted USB connection verified"
+    }
     internal class CatalogSession internal constructor(val serverId: String, internal val anchor: String, internal val deviceId: String, internal val bearer: String) {
         internal var identityExpiresAt: Long = 0
         internal var identityGeneration: Long = -1
@@ -68,6 +100,15 @@ class PairingRepository(
         internal var catalogBatches: Boolean = false
         override fun toString() = "CatalogSession(redacted)"
     }
+    internal class ProfileSyncSession internal constructor(val serverId: String, internal val anchor: String,
+        internal val installationMarker: String, internal val deviceId: String, internal val bearer: String,
+        internal val endpoint: String, internal var identityExpiresAt:Long, internal var identityGeneration:Long, internal var identityRevision:Long)
+    internal data class LocalProfileOwner(val serverId:String?,val deviceId:String?,val installationMarker:String?,val quarantined:Boolean,val blocked:Boolean)
+    /** Read-only local identity metadata for sync status; never returns the bearer token. */
+    internal suspend fun localProfileOwnerSnapshot():LocalProfileOwner = withContext(Dispatchers.IO) { mutex.withLock {
+        val snapshot=store.load();val record=snapshot.record
+        LocalProfileOwner(record?.bundle?.serverId,record?.deviceId,record?.installationMarker,snapshot.quarantined,record?.authorizationBlocked==true)
+    } }
     /** A snapshot carries no authority unless rechecked against the current protected record. */
     internal suspend fun catalogSession(): CatalogSession = withContext(Dispatchers.IO) { mutex.withLock {
         val record = usable().record ?: throw ConnectionFailure("Pair this phone before importing a catalog.")
@@ -75,6 +116,46 @@ class PairingRepository(
         requireCredential(record)
         CatalogSession(record.bundle.serverId, record.identityAnchor, device, record.bearer)
     } }
+    /** Revalidates the paired identity and current server-side scope before any profile data is sent. */
+    internal suspend fun profileSyncSession(): ProfileSyncSession = withContext(Dispatchers.IO) { mutex.withLock {
+        val record = usable().record ?: throw ConnectionFailure("Pair this phone before syncing a profile.")
+        val device = record.deviceId ?: throw ConnectionFailure("Finish pairing before syncing a profile.")
+        requireCredential(record)
+        val verified = freshIdentity(verifyIdentity(record))
+        val capabilities = requestCapabilities(verified.record)
+        val scopes = capabilities.optJSONArray("scopes")
+        val hasScopes = scopes != null && (0 until scopes.length()).map { scopes.optString(it) }.containsAll(listOf("profile:read", "profile:write"))
+        if (!capabilities.optBoolean("profile_sync", false) || !hasScopes)
+            throw ConnectionFailure("Profile sync is not enabled for this device. Allow profile sync for this device in desktop Server Settings, then retry.")
+        ProfileSyncSession(record.bundle.serverId, record.identityAnchor, record.installationMarker, device, record.bearer, record.bundle.endpoint,
+            verified.identityExpiresAt, verified.record.generation, verified.record.revision)
+    } }
+    internal suspend fun profileRequest(session: ProfileSyncSession, path: String, body: String? = null): RadioResponse = withContext(Dispatchers.IO) { mutex.withLock {
+        val initial = usable().record ?: throw ConnectionFailure("Pairing changed. Sync stopped safely.")
+        if (initial.identityAnchor != session.anchor || initial.installationMarker != session.installationMarker || initial.deviceId != session.deviceId || initial.bearer != session.bearer || initial.bundle.serverId != session.serverId || initial.bundle.endpoint != session.endpoint)
+            throw ConnectionFailure("Pairing changed. Sync stopped safely; pending events were kept.")
+        val record = if(session.identityExpiresAt<=now()+16 || session.identityGeneration!=initial.generation || session.identityRevision!=initial.revision) {
+            val refreshed=freshIdentity(verifyIdentity(initial))
+            session.identityExpiresAt=refreshed.identityExpiresAt;session.identityGeneration=refreshed.record.generation;session.identityRevision=refreshed.record.revision
+            refreshed.record
+        } else initial
+        requireCredential(record)
+        val response = transport.request(record.bundle.endpoint, path, body, record.bearer)
+        if (response.status == 401) {
+            store.save(record.copy(authorizationBlocked = true)); publish(store.load())
+            throw ConnectionFailure("Profile sync credential expired or was revoked. Pending events were kept; pair again to retry.")
+        }
+        if (response.status == 403) throw ConnectionFailure("Profile sync permission was denied. Allow profile sync for this device in desktop Server Settings, then retry.")
+        response
+    } }
+    /** Database receipt commits serialize with forget/re-pair, just like catalog pointer adoption. */
+    internal suspend fun <T> adoptProfile(session:ProfileSyncSession, block:suspend ()->T):T = mutex.withLock {
+        val record=usable().record ?: throw ConnectionFailure("Pairing changed. Sync stopped safely; saved progress was kept.")
+        if (record.identityAnchor != session.anchor || record.installationMarker != session.installationMarker || record.deviceId != session.deviceId || record.bearer != session.bearer || record.bundle.serverId != session.serverId || record.bundle.endpoint != session.endpoint)
+            throw ConnectionFailure("Pairing changed. Sync stopped safely; saved progress was kept.")
+        requireCredential(record)
+        block()
+    }
     private fun sessionRecord(session: CatalogSession): PairingRecord {
         val record = usable().record ?: throw ConnectionFailure("Pairing changed. Previous catalog kept.")
         if (record.identityAnchor != session.anchor || record.deviceId != session.deviceId || record.bearer != session.bearer || record.bundle.serverId != session.serverId)
@@ -119,8 +200,8 @@ class PairingRepository(
             mutableState.value = mutableState.value.copy(busy = true)
             try { val message = block(); publish(store.load(), message) }
             catch (cancelled: CancellationException) { publish(store.load()); throw cancelled }
-            catch (failure: ConnectionFailure) { publish(store.load(), failure.safeMessage) }
-            catch (_: Exception) { publish(store.load(), "Connection could not be completed. Saved pairing can be retried.") }
+            catch (failure: ConnectionFailure) { publish(store.load(), failure.safeMessage, error = true) }
+            catch (_: Exception) { publish(store.load(), "Connection could not be completed. Saved pairing can be retried.", error = true) }
         }
     }
     private fun usable(): StoredPairing {
@@ -163,8 +244,8 @@ class PairingRepository(
         store.save(paired)
         capabilities(verified.copy(record = paired))
     }
-    private suspend fun capabilities(verified: Verified) {
-        val record = freshIdentity(verified).record
+    private suspend fun capabilities(verified: Verified) { requestCapabilities(freshIdentity(verified).record) }
+    private suspend fun requestCapabilities(record: PairingRecord): JSONObject {
         if (record.credentialExpiresAt == null || record.credentialExpiresAt <= now()) {
             store.save(record.copy(authorizationBlocked = true))
             throw ConnectionFailure("Credential expired or revoked. Forget pairing and pair again.")
@@ -174,6 +255,7 @@ class PairingRepository(
         val result = json(response.body).apply { version() }
         if (result.text("server_id", 128) != record.bundle.serverId || result.text("authenticated_device_id", 128) != record.deviceId)
             throw ConnectionFailure("Authenticated server or device identity does not match this pairing.")
+        return result
     }
     private fun requireStatus(response: RadioResponse, record: PairingRecord? = null) {
         if (response.status in 200..299) return

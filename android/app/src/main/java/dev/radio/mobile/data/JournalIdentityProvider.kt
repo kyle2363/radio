@@ -51,6 +51,10 @@ class JournalIdentityProvider(context: Context, db: LibraryDatabase, scope: Coro
         else JournalIdentity(owner.deviceId, owner.serverId, mapping?.catalogId, mapping?.songId, song.id,
             listOf("owner",owner.anchor,owner.marker,mapping?.revision?.toString() ?: "none",mapping?.provenance ?: "local_only").joinToString(":"))
     }
+        internal fun currentProfileIdentity():JournalIdentity? = synchronized(lock) {
+            val owner=ownership ?: return@synchronized null
+            JournalIdentity(owner.deviceId,owner.serverId,localId="profile:${owner.serverId}",provenance="paired_profile:${owner.anchor}:${owner.marker}")
+        }
         private val lock = Any()
         private var localOrigin = "local:" + UUID.randomUUID().toString()
         private var ownership: Owner? = null

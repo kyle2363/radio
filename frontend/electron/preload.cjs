@@ -9,9 +9,28 @@ contextBridge.exposeInMainWorld("electron", {
   createMobilePairingBundle: (deviceName) => ipcRenderer.invoke('mobile-pairing-create', deviceName),
   listPairedMobileDevices: () => ipcRenderer.invoke('mobile-pairing-devices'),
   revokePairedMobileDevice: (deviceId) => ipcRenderer.invoke('mobile-pairing-revoke', deviceId),
+  getMobileGatewayStatus: () => ipcRenderer.invoke('mobile-pairing-gateway-status'),
+  enableMobileGateway: () => ipcRenderer.invoke('mobile-pairing-enable-gateway'),
+  grantMobileProfileSync: (deviceId) => ipcRenderer.invoke('mobile-pairing-profile-sync', deviceId),
   cancelMobileCatalog: () => ipcRenderer.invoke('mobile-catalog-cancel'),
   prepareMobileCatalog: () => ipcRenderer.invoke('mobile-catalog-prepare'),
   getMobileCatalogStatus: () => ipcRenderer.invoke('mobile-catalog-status'),
+  getRemoteHostingStatus: () => ipcRenderer.invoke('remote-hosting-status'),
+  startRemoteHosting: () => ipcRenderer.invoke('remote-hosting-start'),
+  stopRemoteHosting: () => ipcRenderer.invoke('remote-hosting-stop'),
+  retryRemoteHosting: () => ipcRenderer.invoke('remote-hosting-retry'),
+  getFreshRemoteHostingDescriptor: () => ipcRenderer.invoke('remote-hosting-fresh-descriptor'),
+  getDiscoveryStatus: () => ipcRenderer.invoke('discovery-status'),
+  configureDiscovery: (value) => ipcRenderer.invoke('discovery-configure', value),
+  signInDiscovery: (email, password) => ipcRenderer.invoke('discovery-sign-in', { email, password }),
+  signOutDiscovery: () => ipcRenderer.invoke('discovery-sign-out'),
+  setRemoteHostingBinaryPath: (value) => ipcRenderer.invoke('remote-hosting-set-path', value),
+  setRemoteHostingRestore: (value) => ipcRenderer.invoke('remote-hosting-set-restore', value),
+  onRemoteHostingChange: (callback) => {
+    const handler = (_event, value) => callback(value);
+    ipcRenderer.on('remote-hosting-changed', handler);
+    return () => ipcRenderer.removeListener('remote-hosting-changed', handler);
+  },
 
   // Window controls
   toggleMiniPlayer: () => ipcRenderer.invoke("toggle-mini-player"),

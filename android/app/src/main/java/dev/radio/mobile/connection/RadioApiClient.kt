@@ -37,7 +37,8 @@ class RadioApiClient(private val policy: EndpointPolicy, private val deadlineMs:
         }
     }
     override suspend fun request(endpoint: String, path: String, body: String?, bearer: String?): RadioResponse {
-        val result = execute(endpoint, path, body, bearer, 32768, false)
+        val limit = when { path.startsWith("/events?cursor=") -> 2 * 1024 * 1024; path=="/events" -> 128 * 1024; else -> 32768 }
+        val result = execute(endpoint, path, body, bearer, limit, false)
         return RadioResponse(result.status, result.body.toString(Charsets.UTF_8), result.retryAfterSeconds)
     }
     override suspend fun download(endpoint: String, path: String, bearer: String, maxBytes: Int): RadioBinaryResponse {
@@ -78,7 +79,10 @@ class RadioApiClient(private val policy: EndpointPolicy, private val deadlineMs:
         policy.validate(endpoint)
         val batchPath = path.length <= 4514 && path.matches(Regex("/vector-batch\\?revision=[1-9][0-9]{0,18}&manifest_sha256=[0-9a-f]{64}&digests=[0-9a-f]{64}(?:,[0-9a-f]{64}){0,63}"))
         val catalogPath = batchPath || path.matches(Regex("/catalog(?:\\?(?:revision=[1-9][0-9]{0,18})(?:&base_revision=[1-9][0-9]{0,18})?)?")) || path.matches(Regex("/vectors/[a-f0-9]{64}"))
-        if (if (binary) !catalogPath else path !in setOf("/identity", "/pairing/exchange", "/capabilities")) throw ConnectionFailure("Unsupported mobile request.")
+        val eventRead = path.matches(Regex("/events\\?cursor=(?:0|[1-9][0-9]{0,18})&limit=(?:[1-9]|[1-9][0-9]|[1-4][0-9]{2}|500)"))
+        val eventWrite = path == "/events"
+        val profileRead = path == "/profile"
+        if (if (binary) !catalogPath else path !in setOf("/identity", "/pairing/exchange", "/capabilities") && !eventRead && !eventWrite && !profileRead) throw ConnectionFailure("Unsupported mobile request.")
         val connection = openConnection(URL("$endpoint/api/portable/v1$path"))
         try {
             connected(connection)
@@ -90,12 +94,12 @@ class RadioApiClient(private val policy: EndpointPolicy, private val deadlineMs:
             connection.setRequestProperty("Accept-Encoding", "identity")
             ensureActive()
             if (bearer != null) {
-                if (path != "/capabilities" && !binary) throw ConnectionFailure("Credentials are not allowed on the identity request.")
+                if (path != "/capabilities" && !binary && !eventRead && !eventWrite && !profileRead) throw ConnectionFailure("Credentials are not allowed on the identity request.")
                 connection.setRequestProperty("Authorization", "Bearer ${WireBase64.secret(bearer)}")
             }
             if (body != null) {
                 val bytes = body.toByteArray(Charsets.UTF_8)
-                if (bytes.size > 8192 || path != "/pairing/exchange") throw ConnectionFailure("Invalid mobile request.")
+                if (bytes.size > 2 * 1024 * 1024 || path != "/pairing/exchange" && !eventWrite || path == "/pairing/exchange" && bytes.size > 8192) throw ConnectionFailure("Invalid mobile request.")
                 connection.requestMethod = "POST"
                 connection.doOutput = true
                 connection.setRequestProperty("Content-Type", "application/json")

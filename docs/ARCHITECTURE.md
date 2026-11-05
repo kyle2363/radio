@@ -1,6 +1,6 @@
 # Radio architecture
 
-Current repository map, November 1, 2026. The active branch is `android-app`, based on `stability-server-architecture`. This describes implemented boundaries; acceptance status belongs in [the Android checkpoint log](ANDROID_APP_PLAN.md) and [testing guide](TESTING.md).
+Current repository map, November 4, 2026. Android through accepted checkpoint 2B is merged into `main`; checkpoint 2C development is on `codex/android-2c-manual-sync`. This describes implemented boundaries; acceptance status belongs in [the Android checkpoint log](ANDROID_APP_PLAN.md) and [testing guide](TESTING.md).
 
 ## Three application surfaces
 
@@ -40,13 +40,14 @@ Optional Ollama/OpenAI-compatible services, MuQ, OmniVoice and Piper support rec
 
 Folder grants and content URIs feed a read-only recursive scan into Room. One Media3 service owns the production player, background controls and local queue. Queues snapshot the selected list. Bookmarks restore paused; preparation, restoration, seeking and paused navigation do not count as starts. Explicit additive Room migrations preserve existing state. Normalization attenuates only and never changes source audio or tags.
 
-Local playlists, sleep timer, journal, feedback and Replay are implemented. Offline Radio checkpoint 2B adds persisted learning, tuning, Vibe lock and bounded refill through that same player; phone review remains pending. Manual profile sync is not implemented. See [ANDROID_APP_PLAN.md](ANDROID_APP_PLAN.md) for checkpoint evidence and the proposed cold-start taste bootstrap.
+Local playlists, sleep timer, journal, feedback and Replay are implemented. Accepted offline Radio checkpoint 2B adds persisted learning, tuning, Vibe lock and bounded refill through that same player. Checkpoint 2C adds explicit manual profile sync with an immutable outbox, scoped remote ledger, Lamport registers and transactional download cursors. Shared profile changes affect future advice; they do not transfer the active playback session. See [ANDROID_APP_PLAN.md](ANDROID_APP_PLAN.md) for verification and acceptance evidence.
 
 ## Server and phone contracts
 
-Debug USB pairing uses the explicitly enabled loopback gateway on port `18766`; release connections require HTTPS. Direct LAN hosting is deferred. Pairing, prepared catalog import, local hashing and matching are implemented. Future sync and speech contracts do not imply enabled Android features.
+Debug USB pairing uses the explicitly enabled loopback gateway on port `18766`; release connections require HTTPS. Direct LAN hosting is deferred. Pairing, prepared catalog import, local hashing, matching and manual profile sync are implemented on the current development branch. Profile read/write requires a separate local-admin grant for the existing paired device. Checkpoint 3A adds explicitly enabled Quick Tunnel hosting through the narrow gateway, a short owner lease and signed manual endpoint updates. Connected AI, automatic discovery and speech remain future work.
 
 - [Pairing and import workflow](MOBILE_PAIRING.md)
+- [Manual sync and recovery](MOBILE_SYNC.md)
 - [Catalog contract](PORTABLE_CATALOG.md), [matching contract](MUSIC_MATCHING.md), [offline scoring](OFFLINE_RECOMMENDATIONS.md)
 - [Portable sync API](PORTABLE_SYNC_API.md) and [optional connected speech](PORTABLE_MEDIA_PLAN.md)
 - [Future connection design and historical Phase 0 audit](MOBILE_CONNECTION_PLAN.md)

@@ -1,7 +1,118 @@
 # Android app plan
 
-Status: local playback and checkpoints 1A–1C, 2A and 2B are accepted. The user confirmed the current app works on November 3, 2026 and authorized review, tests and integration into main. Direct LAN hosting and checkpoint 2C sync remain deferred.
+Status: checkpoints through 3B automatic discovery are phone-tested and accepted. The user reported 3B works on November 4, 2026. Work continues on `codex/android-3b-discovery`, preserving the uncommitted accepted 2C and 3A implementations. Direct LAN hosting remains deferred.
 Integration: `android-app`, based on `stability-server-architecture`, reviewed for integration into `main` on November 3. Earlier pending-review notes below are historical checkpoint records, superseded by the November 3 acceptance.
+
+## Automatic discovery checkpoint 3B — November 4, 2026
+
+Phone-accepted on November 4, 2026: the user reported that the Firebase setup
+and 3B phone checks work. Changes remain on `codex/android-3b-discovery`,
+preserving all uncommitted accepted 2C/3A changes and unrelated local edits.
+No commits or merges were requested.
+
+- One exact Firestore document contains the signed public connection update.
+  Separate publisher/reader Firebase identities and deny-by-default rules restrict
+  access; no Radio credentials, music or history are published.
+- Electron signs in through Firebase REST and protects refresh credentials with
+  Windows `safeStorage`. The backend persists increasing publication revisions
+  before issuing descriptors. Hosting can continue when discovery fails.
+- Android retains its existing pairing and uses the pinned key plus an
+  unauthenticated identity check before adopting a discovered URL. Discovery is
+  independent of local playback and does not schedule profile sync.
+- Publication/read budgets, protected storage, cancellation, quota/auth failures
+  and URL rotation are verified locally. The user subsequently reported the
+  Firebase setup and checkpoint phone checks work.
+
+Setup, recovery and acceptance: [AUTOMATIC_DISCOVERY.md](AUTOMATIC_DISCOVERY.md).
+Checkpoint 4 connected recommendations remains proposed, not authorized.
+
+Verification: guarded backend **739 passed, 9 expected skips**; frontend **165
+passed** and production build passed; Firestore emulator **7 test groups passed**,
+including the actual desktop REST commit builder and protected document read.
+Android **84 JVM tests passed**, and debug app/test APK builds passed. The full
+emulator run passed all **134 existing tests**; the new discovery test initially
+had a JUnit return-type declaration error, which was corrected, then its targeted
+recheck **passed 1/1**. It verifies real signed-descriptor adoption, forged
+signature rejection, quota suppression, refresh credential invalidation and safe
+sign-in failure. Live Firebase and phone acceptance are user-reported; the
+agent did not independently inspect the deployed Firebase configuration.
+Lint passed with **0 errors, 52 warnings**; eleven added warnings concern the
+discovery repository's SharedPreferences API style and synchronous off-main
+credential-state commits. Existing dependency/resource/lint-library warnings
+remain. No dependency upgrades were made to silence warnings.
+
+Artifacts/logs: `.test-runtime/android-checkpoint3b/`; installable APK
+`radio-checkpoint3b-debug.apk` (SHA-256
+`545c49c26317da728d6485fe8529afd04633da0fa1c5fea18002b490de1562b0`).
+
+## Secure remote hosting checkpoint 3A — November 4, 2026
+
+Implemented on `codex/android-3a-remote-hosting`; the user reported it works and accepted the phone checks on November 4, 2026. No commits or merges were requested; accepted 2C and unrelated local
+edits remain preserved.
+
+- Electron explicitly owns the hidden Quick Tunnel process through a Windows
+  Job Object helper. Remote hosting and restore-on-launch default off. Stop,
+  Quit, backend loss, bounded retry and sleep/wake use fenced lifecycle controls.
+- The existing separate loopback gateway admits only its exact assigned public
+  Host, scoped portable bearers and bounded native requests. A fifteen-second
+  monotonic owner lease, renewed every five seconds, closes remote admission
+  independently of tunnel process cleanup. Desktop routes, source audio and
+  remote pairing are not exposed.
+- Android accepts a manually pasted signed endpoint update against the existing
+  pinned key, verifies the new origin without credentials and persists its
+  generation fence before authenticated requests. The same device credential,
+  catalog, history and local player are retained. Debug builds can explicitly
+  reconnect through the original trusted USB endpoint.
+- Real disposable tunnel verification established actual Cloudflare forwarding
+  header behavior and passed identity/auth/revocation/legacy-route/lease-expiry
+  checks without using the production backend or music library.
+
+Verification: full guarded backend **732 passed, 9 expected skips**; frontend **150 passed** and build passed; Android **78 JVM tests passed**, debug APK builds and lint passed (**0 errors, 41 existing warnings**). The full emulator run covered **134 tests** with one service-test setup race (seek issued before the paused timeline became seekable); that setup was corrected and all **6 service tests passed** on recheck. Real disposable Cloudflare probes passed identity, anonymous/authenticated access, revocation, blocked desktop routes and 15-second lease expiry. Windows tests cover both helper crash and owner-parent death. No physical phone or cellular acceptance is claimed.
+
+Phone acceptance: the user subsequently reported that 3A works and then explicitly authorized checkpoint 3B.
+
+Artifacts and logs: `.test-runtime/android-checkpoint3a/`; APK `radio-checkpoint3a-debug.apk`. Nothing committed, merged or pushed.
+
+Setup and phone acceptance: [REMOTE_HOSTING.md](REMOTE_HOSTING.md). Automatic
+discovery (3B), connected recommendations and speech remain later checkpoints.
+
+## Manual profile sync checkpoint 2C — November 4, 2026
+
+Implemented on `codex/android-2c-manual-sync`; automated verification passed and the user accepted the phone checks on November 4, 2026. The
+user authorized this checkpoint and requested GPT-6 Luna subagents where useful.
+The subsequent user acceptance explicitly authorizes checkpoint 3A; checkpoint 3B and later work remain proposals.
+
+- Settings → Server adds explicit Sync now, pending count, last successful sync
+  and recovery states. There is no scheduler or startup network requirement.
+- Existing catalog-only pairing is preserved. A private desktop-admin action
+  allows profile sync for the existing device without rotating identity or
+  rewriting pending events. The gateway exposes only scoped events/profile
+  additions; playback, device administration and source media stay outside it.
+- Room v9 adds explicit ACK state, remote events, winning registers, cursors and
+  ownership records through an additive v8→v9 migration. ACKed local event
+  origins remain available to offline learning. Remote events are namespaced by
+  server and originating device; foreign local-only IDs never identify this
+  phone's files.
+- Retry preserves immutable event IDs/payloads. Download persistence, register
+  application, Lamport advancement and cursor adoption share a transaction.
+  Upload ACK cursors never advance download progress. Lost replies, permission
+  failures and quarantined identities keep local data available.
+- Shared history/feedback, blacklist and energy inform future local Radio picks.
+  Active mood, tuning, Vibe lock, timeline, position and timer remain local.
+  Shared exploration loads as a default in a newly initialized Radio context;
+  the desktop reranking preference is stored without adding Android inference.
+
+Operation, recovery and the phone acceptance list: [MOBILE_SYNC.md](MOBILE_SYNC.md).
+Final verification, November 4, 2026:
+
+- Full guarded backend: **727 passed, 9 expected skips** (fixtures, Windows symlink privileges and opt-in native VLC).
+- Frontend: **142 tests passed**; production build passed.
+- Android: **77 JVM tests passed**, debug app/test APK builds passed; lint **0 errors, 41 existing warnings**.
+- Full API 37 emulator suite: **129 tests passed, 0 failed, 0 skipped**. Includes every exported-schema migration through v9, paused restoration, background playback, sync retries/batching/interruption, shared learning, pending-start/profile fencing, timer preservation and Server/keyboard UI regressions.
+- The first final run attempted installation before the cold-booted emulator's package service was ready; the completed rerun waited for boot and includes the final Room default annotation.
+- Artifacts/logs: `.test-runtime/android-checkpoint2c/`. Installable APK: `radio-checkpoint2c-debug.apk`; SHA-256 `7ecde579add79e733cefda3800474bac692fea8a8875378753f7da90406e27af`.
+
+No physical phone was connected or changed. Real USB ergonomics, audible playback and actual-library sync need the phone acceptance list above. Nothing was committed, merged or pushed; remote hosting remains a later checkpoint.
 
 ## Checkpoint 2B acceptance and main integration — November 3, 2026
 

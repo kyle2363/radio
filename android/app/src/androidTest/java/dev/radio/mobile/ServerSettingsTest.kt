@@ -3,6 +3,8 @@ package dev.radio.mobile
 import android.graphics.Bitmap
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -33,7 +35,7 @@ class ServerSettingsTest {
             scenario.onActivity { activity -> activity.setContent {
                 RadioTheme(appearance = appearance.value) {
                     Surface(Modifier.fillMaxSize()) {
-                        Column(Modifier.padding(20.dp)) {
+                        Column(Modifier.padding(20.dp).verticalScroll(rememberScrollState())) {
                             Text("Settings", style = MaterialTheme.typography.headlineSmall)
                             ServerSettings(repository)
                         }
@@ -45,7 +47,7 @@ class ServerSettingsTest {
             compose.onNodeWithTag("pairing-bundle").assertIsDisplayed()
             compose.onNodeWithTag("pair-server").assertIsNotEnabled()
             compose.waitUntil(5000) { compose.onAllNodesWithText("No imported catalog").fetchSemanticsNodes().isNotEmpty() }
-            compose.onNodeWithTag("import-catalog").assertIsNotEnabled()
+            compose.onNodeWithTag("import-catalog").performScrollTo().assertIsNotEnabled()
             compose.onNodeWithText("No imported catalog").assertIsDisplayed()
             fun screenshot(name: String) {
                 compose.waitForIdle()

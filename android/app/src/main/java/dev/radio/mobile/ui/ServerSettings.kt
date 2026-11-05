@@ -18,10 +18,11 @@ import dev.radio.mobile.BuildConfig
 import dev.radio.mobile.connection.*
 import dev.radio.mobile.portable.CatalogRepository
 import dev.radio.mobile.portable.MatchingRepository
+import dev.radio.mobile.data.PortableSyncRepository
 import kotlinx.coroutines.launch
 
 @Composable
-fun ServerSettings(repository: PairingRepository? = null, matchingScreen: Boolean = false, onOpenMatching: () -> Unit = {}) {
+fun ServerSettings(repository: PairingRepository? = null, matchingScreen: Boolean = false, onOpenMatching: () -> Unit = {}, discoveryRepository: DiscoveryRepository? = null) {
     val context = LocalContext.current.applicationContext
     val connection = remember(repository, context) {
         repository ?: EndpointPolicy(BuildConfig.DEBUG).let { policy -> PairingRepository(PairedServerStore(context, policy), RadioApiClient(policy), policy) }
@@ -32,12 +33,17 @@ fun ServerSettings(repository: PairingRepository? = null, matchingScreen: Boolea
     val matching = remember(context) { MatchingRepository.get(context) }
     val matches by matching.state.collectAsState()
     val scope = rememberCoroutineScope()
+    val discovery = remember(context, connection, discoveryRepository) { discoveryRepository ?: DiscoveryRepository(context, connection) }
+    val discoveryState by discovery.state.collectAsState()
     val pairingForm = remember { BringIntoViewRequester() }
     var bundleFocused by remember { mutableStateOf(false) }
     val imeBottom = WindowInsets.ime.getBottom(LocalDensity.current)
     // Bundle text contains a one-time secret: never persist it with rememberSaveable.
     var bundle by remember { mutableStateOf("") }
+    var endpointDescriptor by remember { mutableStateOf("") }
+    var showEndpointUpdate by remember { mutableStateOf(false) }
     LaunchedEffect(connection) { connection.load() }
+    LaunchedEffect(discovery) { discovery.load() }
     LaunchedEffect(catalog) { catalog.load() }
     LaunchedEffect(matching, imported.ready) { matching.load() }
     // Scroll the entire form after IME resizing, including the action below the
@@ -57,6 +63,9 @@ fun ServerSettings(repository: PairingRepository? = null, matchingScreen: Boolea
             onConfirmSelected = { chosen -> scope.launch { matching.batchConfirm(chosen) } })
         return
     }
+    val synchronizer = remember(context, connection) { PortableSyncRepository.get(context, connection) }
+    val sync by synchronizer.state.collectAsState()
+    LaunchedEffect(synchronizer, state.serverId, state.paired) { synchronizer.load() }
     Column(Modifier.fillMaxWidth().padding(top = 20.dp).testTag("server-settings")) {
         Text("Server", style = MaterialTheme.typography.titleSmall)
         Text("Pair for a verified server connection. Local music works independently.", Modifier.padding(top = 6.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -68,33 +77,58 @@ fun ServerSettings(repository: PairingRepository? = null, matchingScreen: Boolea
                 OutlinedTextField(value = bundle, onValueChange = { if (it.length <= 8192) bundle = it },
                     label = { Text("One-time pairing bundle") }, modifier = Modifier.fillMaxWidth().onFocusChanged { bundleFocused = it.isFocused }.testTag("pairing-bundle"),
                     visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false),
-                    singleLine = true, enabled = state.loaded && !state.busy && !imported.busy && !matches.busy)
+                    singleLine = true, enabled = state.loaded && !state.busy && !imported.busy && !matches.busy && !sync.busy)
                 TextButton(onClick = { val submitted = bundle; bundle = ""; scope.launch { connection.pair(submitted) } },
-                    enabled = state.loaded && !state.busy && !imported.busy && !matches.busy && bundle.isNotBlank(), modifier = Modifier.testTag("pair-server")) { Text("Pair") }
+                    enabled = state.loaded && !state.busy && !imported.busy && !matches.busy && !sync.busy && bundle.isNotBlank(), modifier = Modifier.testTag("pair-server")) { Text("Pair") }
             }
         }
         if (state.paired || state.pending || state.quarantined) {
             Row {
-                if (!state.quarantined) TextButton(onClick = { scope.launch { connection.check() } }, enabled = !state.busy && !state.blocked && !imported.busy && !matches.busy) {
+                if (!state.quarantined) TextButton(onClick = { scope.launch { discovery.readDuringSession(); connection.check(); if (connection.state.value.error) discovery.readAfterConnectionError() } }, enabled = !state.busy && !state.blocked && !imported.busy && !matches.busy && !sync.busy) {
                     Text(if (state.pending) "Retry pairing" else "Check connection")
                 }
-                TextButton(onClick = { bundle = ""; scope.launch { connection.forget() } }, enabled = !state.busy && !imported.busy && !matches.busy) { Text("Forget pairing") }
+                TextButton(onClick = { bundle = ""; scope.launch { connection.forget() } }, enabled = !state.busy && !imported.busy && !matches.busy && !sync.busy) { Text("Forget pairing") }
+            }
+        }
+        if (!state.quarantined) DiscoverySettings(discovery, discoveryState)
+        if (state.paired && !state.quarantined) {
+            TextButton(onClick = { showEndpointUpdate = !showEndpointUpdate; endpointDescriptor = "" },
+                enabled = !state.busy && !imported.busy && !matches.busy && !sync.busy,
+                modifier = Modifier.testTag("show-endpoint-update")) { Text("Update server address") }
+            if (showEndpointUpdate) {
+                Text("Paste the current signed descriptor from the trusted desktop. The saved pairing and local data stay on this phone.",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                OutlinedTextField(value = endpointDescriptor, onValueChange = { if (it.length <= 16384) endpointDescriptor = it },
+                    label = { Text("Signed server descriptor") }, modifier = Modifier.fillMaxWidth().testTag("endpoint-descriptor"),
+                    visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false),
+                    singleLine = true, enabled = !state.busy && !imported.busy && !matches.busy && !sync.busy)
+                TextButton(onClick = { val submitted = endpointDescriptor; endpointDescriptor = ""; showEndpointUpdate = false; scope.launch { connection.updateConnection(submitted) } },
+                    enabled = endpointDescriptor.isNotBlank() && !state.busy && !imported.busy && !matches.busy && !sync.busy,
+                    modifier = Modifier.testTag("verify-update-endpoint")) { Text("Verify and update") }
+            }
+            if (BuildConfig.DEBUG && state.trustedUsb && state.endpoint != "http://127.0.0.1:18766") {
+                TextButton(onClick = { scope.launch { connection.returnToTrustedUsb() } },
+                    enabled = !state.busy && !imported.busy && !matches.busy && !sync.busy,
+                    modifier = Modifier.testTag("return-trusted-usb")) { Text("Reconnect over trusted USB") }
             }
         }
         if (state.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
+        ProfileSyncSection(sync.busy, sync.pendingEvents, sync.lastSuccessAt, sync.message, sync.error,
+            enabled = state.loaded && state.paired && !state.pending && !state.quarantined && !state.blocked && !state.busy && !imported.busy && !matches.busy,
+            onSync = { scope.launch { discovery.readDuringSession(); synchronizer.syncNow(); if(sync.error != null) discovery.readAfterConnectionError() } })
         Text("Catalog", Modifier.padding(top = 12.dp), style = MaterialTheme.typography.titleSmall)
         val ready = imported.ready
         if (ready != null) {
             Text("Revision ${ready.revision} · ${ready.songCount} songs · ${ready.vectorCount} vectors", Modifier.padding(top = 6.dp).testTag("imported-catalog"), style = MaterialTheme.typography.bodySmall)
             if (state.serverId != null && state.serverId != ready.serverId) Text("Stored catalog is from a different server.", style = MaterialTheme.typography.bodySmall)
         } else Text(if (imported.loaded) "No imported catalog" else "Reading imported catalog…", Modifier.padding(top = 6.dp), style = MaterialTheme.typography.bodySmall)
-        Text("Imports metadata and vectors. Local matching is available on its own screen. Recommendations come later.", Modifier.padding(top = 6.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text("Imports metadata and vectors for local matching and offline Radio.", Modifier.padding(top = 6.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         if (imported.busy) {
             Text(imported.progress, Modifier.padding(top = 8.dp).testTag("catalog-progress"), style = MaterialTheme.typography.bodySmall)
             LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 6.dp))
             TextButton(onClick = { catalog.cancelImport() }, modifier = Modifier.testTag("cancel-catalog-import")) { Text("Cancel import") }
         } else {
-            TextButton(onClick = { scope.launch { catalog.importCatalog() } }, enabled = imported.loaded && state.loaded && state.paired && !state.busy && !state.pending && !state.blocked && !state.quarantined && !matches.busy,
+            TextButton(onClick = { scope.launch { catalog.importCatalog() } }, enabled = imported.loaded && state.loaded && state.paired && !state.busy && !state.pending && !state.blocked && !state.quarantined && !matches.busy && !sync.busy,
                 modifier = Modifier.testTag("import-catalog")) { Text("Import catalog") }
         }
         imported.error?.let { Text(it, Modifier.padding(top = 6.dp).testTag("catalog-error"), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }

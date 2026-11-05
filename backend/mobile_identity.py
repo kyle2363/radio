@@ -56,7 +56,7 @@ class ServerIdentity:
         from cryptography.hazmat.primitives import serialization
         from cryptography.hazmat.primitives.asymmetric import ec
         self.path, self.protector = Path(path), protector or WindowsProtector()
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         try:
             if self.path.exists():
                 if self.path.stat().st_size > 16384:
@@ -64,13 +64,16 @@ class ServerIdentity:
                 stored = json.loads(self.protector.unprotect(self.path.read_bytes()))
                 self.server_id = str(UUID(stored["server_id"]))
                 self.generation = stored["connection_generation"]
+                self.publication_revision = stored.get("publication_revision", 0)
+                if type(self.publication_revision) is not int or not 0 <= self.publication_revision < 2 ** 53:
+                    raise ValueError("Invalid publication revision")
                 if type(self.generation) is not int or self.generation < 0:
                     raise ValueError("Invalid identity generation")
                 self._key = serialization.load_der_private_key(base64.b64decode(stored["private_key"], validate=True), None)
                 if not isinstance(self._key, ec.EllipticCurvePrivateKey) or not isinstance(self._key.curve, ec.SECP256R1):
                     raise ValueError("Invalid identity key")
             else:
-                self.server_id, self.generation = str(uuid4()), 0
+                self.server_id, self.generation, self.publication_revision = str(uuid4()), 0, 0
                 self._key = ec.generate_private_key(ec.SECP256R1())
                 self._save()
             public = self._key.public_key().public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
@@ -83,6 +86,7 @@ class ServerIdentity:
         from cryptography.hazmat.primitives import serialization
         private = self._key.private_bytes(serialization.Encoding.DER, serialization.PrivateFormat.PKCS8, serialization.NoEncryption())
         value = json.dumps({"server_id": self.server_id, "connection_generation": self.generation,
+                            "publication_revision": self.publication_revision,
                             "private_key": base64.b64encode(private).decode("ascii")}).encode("utf8")
         protected = self.protector.protect(value)
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -103,10 +107,21 @@ class ServerIdentity:
             self._save()
             return self.generation
 
-    def descriptor(self, endpoint, generation, revision):
+    def publish_descriptor(self, endpoint, generation):
+        """Durably allocate a revision before publishing; failed saves issue nothing."""
+        with self._lock:
+            if self.publication_revision >= 2 ** 53 - 1:
+                raise RuntimeError("Publication revision exhausted; trusted repair required")
+            self.publication_revision += 1
+            self._save()
+            return self.descriptor(endpoint, generation)
+
+    def descriptor(self, endpoint, generation, revision=None):
         from cryptography.hazmat.primitives import hashes
         from cryptography.hazmat.primitives.asymmetric import ec
         now = int(time.time())
+        with self._lock:
+            revision = max(1, self.publication_revision) if revision is None else revision
         payload = json.dumps({"protocol_version": 1, "server_id": self.server_id, "endpoint": endpoint,
                               "connection_generation": generation, "publication_revision": revision,
                               "available": True, "issued_at": now, "expires_at": now + 300},

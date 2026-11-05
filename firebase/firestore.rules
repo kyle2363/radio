@@ -1,0 +1,48 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Render these three values locally. Unconfigured templates cannot authorize.
+    function serverId() { return '__SERVER_ID__'; }
+    function publisherUid() { return '__PUBLISHER_UID__'; }
+    function readerUid() { return '__READER_UID__'; }
+    function configured() {
+      return serverId().matches('^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
+        && publisherUid() != readerUid();
+    }
+    function validAdvertisement(d) {
+      return d.keys().hasAll(['server_id', 'connection_generation', 'publication_revision',
+        'available', 'endpoint', 'issued_at', 'expires_at', 'payload', 'signature', 'public_key', 'updated_at'])
+        && d.keys().hasOnly(['server_id', 'connection_generation', 'publication_revision',
+        'available', 'endpoint', 'issued_at', 'expires_at', 'payload', 'signature', 'public_key', 'updated_at'])
+        && d.server_id == serverId()
+        && d.connection_generation is int && d.connection_generation >= 1 && d.connection_generation < 9007199254740992
+        && d.publication_revision is int && d.publication_revision >= 1 && d.publication_revision < 9007199254740992
+        && d.available is bool && d.available == true
+        && d.endpoint is string && d.endpoint.size() <= 256
+        && d.endpoint.matches('^https://[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?[.]trycloudflare[.]com$')
+        && d.issued_at is int && d.expires_at is int
+        && d.issued_at >= request.time.toMillis() / 1000 - 60
+        && d.issued_at <= request.time.toMillis() / 1000 + 60
+        && d.expires_at > request.time.toMillis() / 1000
+        && d.expires_at > d.issued_at && d.expires_at <= d.issued_at + 300
+        && d.payload is string && d.payload.size() > 0 && d.payload.size() <= 12000 && d.payload.matches('^[A-Za-z0-9_-]+$')
+        && d.signature is string && d.signature.size() > 0 && d.signature.size() <= 128 && d.signature.matches('^[A-Za-z0-9_-]+$')
+        && d.public_key is string && d.public_key.size() > 0 && d.public_key.size() <= 512 && d.public_key.matches('^[A-Za-z0-9_-]+$')
+        && d.updated_at is timestamp && d.updated_at == request.time;
+    }
+    match /discovery/{server} {
+      allow get: if configured() && server == serverId() && request.auth != null
+        && request.auth.uid in [publisherUid(), readerUid()];
+      allow create: if configured() && server == serverId() && request.auth != null
+        && request.auth.uid == publisherUid() && validAdvertisement(request.resource.data);
+      allow update: if configured() && server == serverId() && request.auth != null
+        && request.auth.uid == publisherUid() && validAdvertisement(request.resource.data)
+        && request.resource.data.server_id == resource.data.server_id
+        && request.resource.data.connection_generation >= resource.data.connection_generation
+        && request.resource.data.publication_revision > resource.data.publication_revision;
+    }
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

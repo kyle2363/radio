@@ -8,10 +8,12 @@ import android.provider.DocumentsContract
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import androidx.room.Room
+import androidx.room.withTransaction
 import androidx.test.core.app.ActivityScenario
 import androidx.test.platform.app.InstrumentationRegistry
 import dev.radio.mobile.data.*
 import dev.radio.mobile.playback.*
+import dev.radio.mobile.portable.PortableSyncChanges
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.CompletableDeferred
 import org.junit.After
@@ -94,6 +96,39 @@ class RadioServiceTest {
     private fun pausedUnstartedQueue() {
         main { playback.pause();playback.state.value.queue.map{it.id}.forEach(playback::removeFromQueue);playback.addToQueue(songs.take(3)) }
         await("Paused unstarted queue wasn't installed") {playback.state.value.currentId!=null && !playback.state.value.playWhenReady && library.journal.state.value.pendingWrites==0}
+    }
+    @Test fun sharedProfileApplyFencesPendingStartAndPreservesPausedTransportAndTimer() = runBlocking {
+        pausedUnstartedQueue()
+        await("Paused timeline was not ready for seeking") { playback.state.value.seekable && playback.state.value.durationMs != null }
+        main { playback.seek(5000); playback.sleepAtTrackEnd(); library.radio.setMood("focus") }
+        await("Paused position and timer were not ready") {
+            playback.state.value.positionMs in 4900..5200 && playback.state.value.sleepTimer.endOfTrack &&
+                library.journal.state.value.pendingWrites == 0 && !library.radio.state.value.busy
+        }
+        val before = playback.state.value
+        val startsBefore = starts()
+        val entered = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        RadioPlaybackService.beforeRadioStartCommit = { entered.complete(Unit); release.await() }
+        main { playback.startRadio() }
+        await("Start batch did not reach its deferred commit") { entered.isCompleted }
+        PortableSyncChanges.applying {
+            db.withTransaction { db.journal().cursor(PortableSyncCursor("synthetic-sync", "phone", 1, System.currentTimeMillis())) }
+            release.complete(Unit)
+            kotlinx.coroutines.delay(350)
+            assertEquals(before.playOrder, playback.state.value.playOrder)
+            assertFalse(playback.state.value.radioActive)
+            assertFalse(playback.state.value.playWhenReady)
+        }
+        await("Shared profile refresh did not settle") { !library.radio.state.value.busy }
+        val after = playback.state.value
+        assertEquals(before.currentId, after.currentId)
+        assertEquals(before.positionMs, after.positionMs)
+        assertEquals(before.playOrder, after.playOrder)
+        assertEquals(before.queueRevision, after.queueRevision)
+        assertEquals(before.sleepTimer, after.sleepTimer)
+        assertEquals("focus", library.radio.state.value.mood)
+        assertEquals(startsBefore, starts())
     }
     @Test fun delayedStartCannotOverrideSystemStop() {
         pausedUnstartedQueue()

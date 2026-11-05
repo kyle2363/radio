@@ -46,6 +46,9 @@ docs/*
 !docs/ANDROID_APP_PLAN.md
 !docs/MOBILE_CONNECTION_PLAN.md
 !docs/MOBILE_PAIRING.md
+!docs/MOBILE_SYNC.md
+!docs/REMOTE_HOSTING.md
+!docs/AUTOMATIC_DISCOVERY.md
 
 #audio files
 audio_files

@@ -15,7 +15,7 @@ import kotlinx.coroutines.sync.withLock
 import org.json.JSONObject
 
 data class RadioSuggestion(val song:LocalSong,val pick:RadioPick)
-data class RadioInputToken(val library:LibraryState,val mappings:JournalIdentityProvider.MappingSnapshot,val feedback:ListeningJournalState,val mood:String,val exploration:Double,val vibe:String?,val current:String?,val queueRevision:Long,val playOrder:List<String>,val policyRevision:Long,val bootstrap:Set<String>,val legacyVectorSnapshot:String?)
+data class RadioInputToken(val library:LibraryState,val mappings:JournalIdentityProvider.MappingSnapshot,val feedback:ListeningJournalState,val mood:String,val exploration:Double,val vibe:String?,val current:String?,val queueRevision:Long,val playOrder:List<String>,val policyRevision:Long,val bootstrap:Set<String>,val legacyVectorSnapshot:String?,val syncRevision:Long=0,val syncEpoch:Long=0)
 data class RadioBatch(val suggestions:List<RadioSuggestion>,val token:RadioInputToken)
 data class RadioState(val loaded:Boolean=false,val busy:Boolean=false,val suggestions:List<RadioSuggestion> = emptyList(),val mood:String="neutral",val exploration:Double=.3,val matched:Int=0,val localOnly:Int=0,val status:String="Loading local Radio…",val error:String?=null,val vibeLocalId:String?=null,val vibeUntil:Long=0,val vibeSongsLeft:Int=0,val generation:Long=0,val vibeAvailable:Boolean=false,
     val diagnostics:RadioDiagnostics=RadioDiagnostics(),val bootstrapLocalIds:Set<String> = emptySet(),val bootstrapCandidates:Set<String> = emptySet(),val bootstrapDismissed:Boolean=false,
@@ -34,6 +34,11 @@ class RadioRepository internal constructor(context:Context,private val db:Librar
     private val sessionSeed=kotlin.random.Random.nextInt()
     @Volatile private var legacyVectorSnapshot=prefs.getString("legacyVectorSnapshot",null)
     @Volatile private var policyRevision=0L
+    @Volatile private var syncRevision=0L
+    @Volatile private var sharedExcludedLocalIds=emptySet<String>()
+    @Volatile private var explorationEdited=false
+    private val explorationLock=Any()
+    private val defaultsReady=CompletableDeferred<Unit>()
     private var sequenceOffset=0
     // Local IDs survive rematching; these are selection reservations, never listening events.
     @Volatile private var recentSelections=runCatching {
@@ -41,10 +46,30 @@ class RadioRepository internal constructor(context:Context,private val db:Librar
         (0 until saved.length()).map{saved.getString(it)}.takeLast(50)
     }.getOrDefault(emptyList())
     fun token():RadioInputToken { val output=playback;val state=mutable.value
-        return RadioInputToken(library.value,JournalIdentityProvider.mappings.value,journal.state.value,state.mood,state.exploration,state.vibeLocalId,output.currentId,output.queueRevision,output.playOrder,policyRevision,state.bootstrapLocalIds,legacyVectorSnapshot)
+        return RadioInputToken(library.value,JournalIdentityProvider.mappings.value,journal.state.value,state.mood,state.exploration,state.vibeLocalId,output.currentId,output.queueRevision,output.playOrder,policyRevision,state.bootstrapLocalIds,legacyVectorSnapshot,syncRevision,PortableSyncChanges.revision)
     }
-    fun valid(value:RadioInputToken)=token()==value && !library.value.accessLost && !library.value.scanning && journal.state.value.pendingWrites==0
+    fun valid(value:RadioInputToken)=!PortableSyncChanges.isApplying && token()==value && !library.value.accessLost && !library.value.scanning && journal.state.value.pendingWrites==0
+    internal fun <T> accept(batch:RadioBatch, block:()->T):T? = PortableSyncChanges.accept(batch.token.syncEpoch) {
+        if(valid(batch.token))block() else null
+    }
     init {
+        scope.launch {
+            try {
+                val initial=db.catalogs().latest()?.let { readSharedRadioProfile(db,it).explorationDefault }
+                synchronized(explorationLock) {
+                    if(initial!=null && !explorationEdited) mutable.update{it.copy(exploration=initial)}
+                }
+            } catch(cancelled:CancellationException) {
+                throw cancelled
+            } catch(_:Exception) {
+                // A shared default is optional; local tuning and local playback remain usable.
+            } finally { defaultsReady.complete(Unit) }
+        }
+        scope.launch { db.journal().observeSyncCursors().collect {
+            syncRevision++
+            refresh()
+        } }
+        scope.launch { PortableSyncChanges.changes.collect { refresh() } }
         scope.launch { combine(library,JournalIdentityProvider.mappings,journal.state) { local,mappings,feedback-> Triple(local,mappings,feedback) }.collect { (local,_,feedback)->
             if(!local.loading && !local.scanning && feedback.feedbackLoaded && feedback.pendingWrites==0) refresh()
         } }
@@ -80,7 +105,7 @@ class RadioRepository internal constructor(context:Context,private val db:Librar
         return true
     }
     fun setMood(value:String) {if(value !in OfflineRecommender.MOODS)return;prefs.edit().putString("mood",value).putLong("moodAt",System.currentTimeMillis()).apply();mutable.update{it.copy(mood=value)};refresh()}
-    fun setExploration(value:Double) {val bounded=value.coerceIn(0.0,1.0);prefs.edit().putFloat("exploration",bounded.toFloat()).apply();mutable.update{it.copy(exploration=bounded)};refresh()}
+    fun setExploration(value:Double) {if(!value.isFinite())return; synchronized(explorationLock){explorationEdited=true;val bounded=value.coerceIn(0.0,1.0);prefs.edit().putFloat("exploration",bounded.toFloat()).apply();mutable.update{it.copy(exploration=bounded)};journal.setSharedExploration(bounded)};refresh()}
     private fun saveVibe(){val value=mutable.value;prefs.edit().putString("vibe",value.vibeLocalId).putLong("vibeUntil",value.vibeUntil).putInt("vibeLeft",value.vibeSongsLeft).apply()}
     fun clearVibe(){mutable.update{it.copy(vibeLocalId=null,vibeUntil=0,vibeSongsLeft=0)};saveVibe();refresh()}
     fun lockVibe() {
@@ -94,7 +119,7 @@ class RadioRepository internal constructor(context:Context,private val db:Librar
         if(mutable.value.vibeLocalId!=null){val remaining=mutable.value.vibeSongsLeft-1;if(remaining<=0)clearVibe() else {mutable.update{it.copy(vibeSongsLeft=remaining)};saveVibe()}}
     }
     @Volatile private var previewExclusions = emptySet<String>()
-    fun isDisliked(id:String) = journal.state.value.feedback[id]?.disliked==true
+    fun isDisliked(id:String) = journal.state.value.feedback[id]?.disliked==true || id in sharedExcludedLocalIds
     fun refreshSuggestions() {
         if(mutable.value.suggestions.isNotEmpty()) previewExclusions = mutable.value.suggestions.map { it.song.id }.toSet()
         refresh()
@@ -102,17 +127,19 @@ class RadioRepository internal constructor(context:Context,private val db:Librar
     suspend fun startRecommendations(seedLocalId:String?):RadioBatch? {
         if(seedLocalId==null)return recommendations(anchorLocalId=null)
         val seed=library.value.songs.firstOrNull{it.id==seedLocalId && it.available} ?: return null
-        if(journal.state.value.feedback[seedLocalId]?.disliked==true)return null
+        if(isDisliked(seedLocalId))return null
         val batch=recommendations(setOf(seedLocalId),4,seedLocalId) ?: return null
+        if(isDisliked(seedLocalId))return null
         if(batch.token.library.songs.none{it==seed} || !valid(batch.token))return null
         return batch.copy(suggestions=listOf(RadioSuggestion(seed,RadioPick("local:$seedLocalId",seedLocalId,0.0,0.5,null,slot="exploit",reason="Chosen starting song")))+batch.suggestions)
     }
     fun refresh() { refreshJob?.cancel();refreshJob=scope.launch {delay(75);compute()} }
     suspend fun recommendations(exclude:Set<String> = emptySet(),count:Int=5,anchorLocalId:String?=playback.currentId):RadioBatch? { val input=token();val rows=compute(exclude,count,anchorLocalId,publishPreview=false) ?: return null;return if(valid(input))RadioBatch(rows,input) else null }
     private suspend fun compute(exclude:Set<String> = emptySet(),count:Int=5,anchorLocalId:String?=if(playback.radioActive)playback.playOrder.lastOrNull() ?: playback.currentId else playback.currentId,publishPreview:Boolean=true):List<RadioSuggestion>? = mutex.withLock {
+        defaultsReady.await()
         val local=library.value;val mapping=JournalIdentityProvider.mappings.value
         val inputs=token()
-        if(local.loading || local.scanning || !journal.state.value.feedbackLoaded || journal.state.value.pendingWrites>0)return@withLock null
+        if(PortableSyncChanges.isApplying || local.loading || local.scanning || !journal.state.value.feedbackLoaded || journal.state.value.pendingWrites>0)return@withLock null
         if(local.accessLost){mutable.update{it.copy(loaded=true,busy=false,suggestions=emptyList(),suggestionAnchorTitle=null,diagnostics=RadioDiagnostics(),bootstrapCandidates=emptySet(),bootstrapLocalIds=emptySet(),catalogSnapshot=null,legacyVectorTracks=0,legacyVectorsEnabled=false,status="Music folder access is unavailable.",generation=it.generation+1)};return@withLock emptyList()}
         mutable.update{it.copy(busy=true,error=null)}
         try {
@@ -149,19 +176,36 @@ class RadioRepository internal constructor(context:Context,private val db:Librar
             val byLocal=tracks.associateBy{it.localId}
             val rows=(db.journal().radioTasteEvents()+db.journal().radioRecentEvents(System.currentTimeMillis()-86400000L)+db.journal().radioLastStarts()).distinctBy{it.eventId}.sortedBy{it.logicalClock}
             val origins=rows.chunked(500).flatMap{db.journal().radioOrigins(it.map{row->row.eventId})}.associate{it.eventId to it.serverId}
-            val events=rows.mapNotNull { row->
+            val localEvents=rows.mapNotNull { row->
                 val payload=JSONObject(row.payload)
                 // A local-only observation stays local-only after later matching.
                 val sid=if(origins[row.eventId]==record?.serverId && payload.optString("catalog_id")==record?.catalogId && payload.optString("song_id").let{it.isNotBlank() && it!="null"})payload.getString("song_id") else "local:${row.localId}"
                 val kind=when(row.kind){"song_started"->"started";"song_completed"->"completed";"song_skipped"->"skipped";"song_replayed"->"replayed";"favorite_changed"->if(payload.optBoolean("value"))"hearted" else "unhearted";"dislike_changed"->if(payload.optBoolean("value"))"disliked" else "unblacklisted";else->return@mapNotNull null}
-                RadioEvent(row.eventId,kind,sid,row.occurredAt/1000.0,row.terminationReason)
+                RadioEvent(org.json.JSONArray(listOf(payload.optString("device_id"),row.eventId)).toString(),kind,sid,row.occurredAt/1000.0,row.terminationReason)
             }
+            val shared=record?.let{readSharedRadioProfile(db,it)} ?: SharedRadioProfile()
+            val localIdentities=rows.map{row->val payload=JSONObject(row.payload);payload.optString("device_id") to row.eventId}.toSet()
+            val remoteEvents=record?.let{saved->db.journal().remoteRadioEvents(saved.serverId).mapNotNull { row->
+                if((row.deviceId to row.eventId) in localIdentities)return@mapNotNull null
+                val payload=JSONObject(row.payload)
+                val sid=payload.opt("song_id") as? String ?: return@mapNotNull null
+                if(payload.optString("catalog_id")!=saved.catalogId)return@mapNotNull null
+                val kind=when(row.kind){"song_started"->"started";"song_completed"->"completed";"song_skipped"->"skipped";"song_replayed"->"replayed";"favorite_changed"->if(payload.optBoolean("value"))"hearted" else "unhearted";"dislike_changed"->if(payload.optBoolean("value"))"disliked" else "unblacklisted";else->return@mapNotNull null}
+                RadioEvent(org.json.JSONArray(listOf(row.deviceId,row.eventId)).toString(),kind,sid,row.occurredAt/1000.0,payload.optString("reason").takeIf{it.isNotEmpty()})
+            }}.orEmpty()
+            val events=(localEvents+remoteEvents).distinctBy{it.id}
             val feedback=journal.state.value.feedback
-            val hearts=feedback.values.filter{it.favorite}.mapNotNull{byLocal[it.localId]?.songId}.toSet()
-            val dislikes=feedback.values.filter{it.disliked}.mapNotNull{byLocal[it.localId]?.songId}.toSet()
+            val hearts=feedback.values.filter{it.favorite}.mapNotNull{byLocal[it.localId]?.songId}.toMutableSet()
+            val dislikes=feedback.values.filter{it.disliked}.mapNotNull{byLocal[it.localId]?.songId}.toMutableSet()
+            shared.favorites.forEach{(sid,value)->if(value)hearts.add(sid) else hearts.remove(sid)}
+            shared.dislikes.forEach{(sid,value)->if(value)dislikes.add(sid) else dislikes.remove(sid)}
+            hearts.addAll(shared.localFavorites.mapNotNull{byLocal[it]?.songId})
+            dislikes.addAll(shared.localDislikes.mapNotNull{byLocal[it]?.songId})
+            dislikes.addAll(shared.blacklist)
+            val sharedExclusions=tracks.filter{it.songId in dislikes}.map{it.localId}.toSet()
             var streak=0;var effectiveMood=mutable.value.mood
-            for(event in events){if(event.kind=="completed")streak=0 else if(event.kind=="skipped"){streak++;if(streak>=3 && event.at*1000>prefs.getLong("moodAt",0))effectiveMood=when(event.reason){"too_intense"->"chill";"too_slow"->"energetic";else->"discovery"}}}
-            val profile=RadioProfile(events,hearts,dislikes,byLocal[anchorLocalId]?.songId,events.filter{it.kind=="started"}.takeLast(5).map{id->tracks.firstOrNull{it.songId==id.songId}?.energy ?: .5},streak,
+            for(event in localEvents){if(event.kind=="completed")streak=0 else if(event.kind=="skipped"){streak++;if(streak>=3 && event.at*1000>prefs.getLong("moodAt",0))effectiveMood=when(event.reason){"too_intense"->"chill";"too_slow"->"energetic";else->"discovery"}}}
+            val profile=RadioProfile(events,hearts,dislikes,byLocal[anchorLocalId]?.songId,localEvents.filter{it.kind=="started"}.takeLast(5).map{id->tracks.firstOrNull{it.songId==id.songId}?.energy ?: .5},streak,userEnergy=shared.energy,
                 bootstrap=inputs.bootstrap.mapNotNull{byLocal[it]?.songId}.toSet())
             val vibe=mutable.value.vibeLocalId?.let(accepted::get)?.takeIf{anchor->vectors.any{it.songId==anchor}}
             if(mutable.value.vibeLocalId!=null && vibe==null && (mapping.loaded || damaged || available.none{it.id==mutable.value.vibeLocalId})){mutable.update{it.copy(vibeLocalId=null,vibeUntil=0,vibeSongsLeft=0)};saveVibe()}
@@ -177,6 +221,7 @@ class RadioRepository internal constructor(context:Context,private val db:Librar
             val picks=engine.recommendSequence(profile,settings,now,count,excluded,recentSelections.mapNotNull{byLocal[it]?.songId},sequenceOffset)
             val byId=available.associateBy{it.id};val suggestions=picks.mapNotNull{p->byId[p.localId]?.let{RadioSuggestion(it,p)}}
             if(!valid(inputs) || db.catalogs().latest()!=record){mutable.update{it.copy(busy=false)};refresh();return@withLock null}
+            sharedExcludedLocalIds=sharedExclusions
             val status=when{available.isEmpty()->"Choose music in Library to start Radio.";damaged->"Local recommendations · imported vectors need reimport";record==null->"Local recommendations · no catalog imported";accepted.isEmpty()->"Local recommendations · match songs to use imported metadata";legacyVectorTracks>0 && !legacyEnabled && diagnostics.textVectorTracks+diagnostics.audioVectorTracks==0->"Similarity is off · desktop vectors have unrecorded model provenance";legacyEnabled->"${accepted.size} matched · using legacy desktop similarity";else->"${accepted.size} matched · ${available.size-accepted.size} local only"}
             val vibeAvailable=accepted[playback.currentId]?.let{sid->vectors.any{it.songId==sid}}==true
             mutable.update{it.copy(loaded=true,busy=false,suggestions=if(publishPreview)suggestions else it.suggestions,suggestionAnchorTitle=if(publishPreview)available.firstOrNull{song->song.id==anchorLocalId}?.title else it.suggestionAnchorTitle,mood=effectiveMood,matched=accepted.size,localOnly=available.size-accepted.size,status=status,error=if(publishPreview && suggestions.size<count && previewExclusions.isNotEmpty())"Not enough different eligible songs for a full preview." else null,generation=it.generation+1,vibeAvailable=vibeAvailable,

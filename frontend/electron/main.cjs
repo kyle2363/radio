@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, Tray, Menu, globalShortcut, nativeImage, nativeTheme, Notification, powerMonitor, powerSaveBlocker, session } = require("electron");
+const { app, BrowserWindow, ipcMain, Tray, Menu, globalShortcut, nativeImage, nativeTheme, Notification, powerMonitor, powerSaveBlocker, session, safeStorage } = require("electron");
 const path = require("path");
 const { spawn, execSync } = require("child_process");
 const fs = require("fs");
@@ -7,17 +7,91 @@ const { shutdownOwnedBackend } = require("./backend-shutdown.cjs");
 const { BACKEND_URL, backendFetch, backendCookieHeader, waitForBackendReady, createPlaybackBinding } = require("./backend-session.cjs");
 const { loadDevelopmentWindow, setThumbnailButtons } = require('./window-startup.cjs');
 const { createMobilePairingControl, registerMobilePairingIPC } = require('./mobile-pairing.cjs');
+const { createRemoteHostingControl, createWindowsTunnelProcess, probeTunnelEndpoint, registerRemoteHostingIPC } = require('./remote-hosting.cjs');
+const { createDiscoveryPublisher, registerDiscoveryIPC } = require('./discovery-publisher.cjs');
 
 let mainWindow;
 let uvicornProcess;
 let tray;
 let isMiniMode = false;
+let remoteHosting;
+let discoveryPublisher;
+let remoteHostingPreferences = { binaryPath: '', restoreOnLaunch: false };
+let resumeRemoteAfterWake = false;
 const mobilePairing = createMobilePairingControl({
   enabled: !app.isPackaged,
   isBackendAlive: () => Boolean(uvicornProcess && uvicornProcess.exitCode == null && uvicornProcess.signalCode == null),
   request: (apiPath, options) => backendFetch(session.defaultSession, apiPath, options),
 });
 const playbackBinding = createPlaybackBinding();
+function remoteHostingPreferencesPath() { return path.join(app.getPath('userData'), 'remote-hosting.json'); }
+function loadRemoteHostingPreferences() {
+  try {
+    const value = JSON.parse(fs.readFileSync(remoteHostingPreferencesPath(), 'utf8'));
+    remoteHostingPreferences = { binaryPath: typeof value.binaryPath === 'string' ? value.binaryPath : '', restoreOnLaunch: value.restoreOnLaunch === true, firebaseProjectId: typeof value.firebaseProjectId === 'string' ? value.firebaseProjectId : '', firebaseApiKey: typeof value.firebaseApiKey === 'string' ? value.firebaseApiKey : '', firebaseCredential: typeof value.firebaseCredential === 'string' ? value.firebaseCredential : '' };
+  } catch { remoteHostingPreferences = { binaryPath: '', restoreOnLaunch: false, firebaseProjectId: '', firebaseApiKey: '', firebaseCredential: '' }; }
+}
+function saveRemoteHostingPreferences() {
+  const target = remoteHostingPreferencesPath();
+  const temporary = `${target}.${process.pid}.tmp`;
+  try {
+    fs.writeFileSync(temporary, JSON.stringify(remoteHostingPreferences), { mode: 0o600, flag: 'w' });
+    fs.renameSync(temporary, target);
+  } catch (error) {
+    try { fs.unlinkSync(temporary); } catch (_) {}
+    throw Error('Remote hosting preferences could not be saved securely.');
+  }
+}
+function initRemoteHosting() {
+  loadRemoteHostingPreferences();
+  discoveryPublisher = createDiscoveryPublisher({
+    storage: {
+      load: () => { if (!safeStorage.isEncryptionAvailable() || !remoteHostingPreferences.firebaseCredential) return null; try { return safeStorage.decryptString(Buffer.from(remoteHostingPreferences.firebaseCredential, 'base64')); } catch { return null; } },
+      save: value => {
+        if (!safeStorage.isEncryptionAvailable()) throw Error('Protected credential storage is unavailable.');
+        const prior = remoteHostingPreferences.firebaseCredential;
+        remoteHostingPreferences.firebaseCredential = safeStorage.encryptString(value).toString('base64');
+        try { saveRemoteHostingPreferences(); } catch (error) { remoteHostingPreferences.firebaseCredential = prior; throw error; }
+      },
+      clear: () => {
+        const prior = remoteHostingPreferences.firebaseCredential;
+        remoteHostingPreferences.firebaseCredential = '';
+        try { saveRemoteHostingPreferences(); } catch (error) { remoteHostingPreferences.firebaseCredential = prior; throw error; }
+      },
+    },
+    freshDescriptor: () => remoteHosting.freshDescriptor(),
+  });
+  if (remoteHostingPreferences.firebaseProjectId && remoteHostingPreferences.firebaseApiKey) void discoveryPublisher.configure({ projectId: remoteHostingPreferences.firebaseProjectId, apiKey: remoteHostingPreferences.firebaseApiKey }).then(() => discoveryPublisher.restore()).catch(() => {});
+  const backendRoot = path.join(__dirname, '..', '..', 'backend');
+  const pythonPath = path.join(backendRoot, 'venv', 'Scripts', 'python.exe');
+  const helperPath = path.join(app.isPackaged ? process.resourcesPath : __dirname, 'mobile-tunnel-job.py');
+  const processFactory = process.platform === 'win32'
+    ? createWindowsTunnelProcess({ pythonPath: fs.existsSync(pythonPath) ? pythonPath : 'python', helperPath })
+    : async executable => {
+      const child = spawn(executable, ['tunnel', '--url', 'http://127.0.0.1:18766', '--no-autoupdate'], { shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+      let pending = '';
+      child.onLine = callback => { child._lineHandler = callback; };
+      const parse = bytes => { pending += bytes.toString('utf8'); const lines = pending.split(/\r?\n/); pending = lines.pop() || ''; for (const line of lines) child._lineHandler?.(line); };
+      child.stdout.on('data', parse); child.stderr.on('data', parse); child.onExit = callback => child.once('exit', callback); child.ready = Promise.resolve();
+      return child;
+    };
+  remoteHosting = createRemoteHostingControl({
+    request: (suffix, options) => mobilePairing.remoteControl(suffix, options.method, options.method === 'GET' ? null : JSON.parse(options.body || '{}')),
+    startProcess: processFactory,
+    probe: probeTunnelEndpoint,
+    stopProcess: child => new Promise(resolve => {
+      if (child.exitCode !== null || child.signalCode !== null) return resolve();
+      const timeout = setTimeout(() => { try { child.kill(); } catch (_) {} resolve(); }, 4000);
+      child.once('exit', () => { clearTimeout(timeout); resolve(); });
+      if (process.platform === 'win32') { try { require('child_process').execFileSync('taskkill.exe', ['/F', '/T', '/PID', String(child.pid)], { windowsHide: true, timeout: 2500, stdio: 'ignore' }); } catch (_) { try { child.kill(); } catch (_) {} } }
+      else { try { child.kill('SIGTERM'); } catch (_) {} }
+    }),
+    emit: status => { void discoveryPublisher.hostingChanged(status).catch(() => {}); if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('remote-hosting-changed', status); },
+    initialState: { binaryPath: remoteHostingPreferences.binaryPath, restoreOnLaunch: remoteHostingPreferences.restoreOnLaunch },
+  });
+  if (remoteHostingPreferences.binaryPath) { try { remoteHosting.setBinaryPath(remoteHostingPreferences.binaryPath); } catch { remoteHostingPreferences.binaryPath = ''; saveRemoteHostingPreferences(); } }
+  remoteHosting.setRestoreOnLaunch(remoteHostingPreferences.restoreOnLaunch);
+}
 const backendRequest = (apiPath, options = {}) => {
   const headers = playbackBinding.headers();
   if (/^\/api\/(play|queue|mood|sleep|filter)(\/|$)/.test(apiPath) && !headers['X-Radio-Playback-Session']) {
@@ -765,6 +839,18 @@ function setupJumpList() {
 // ── IPC Handlers ──────────────────────────────────────────────
 function setupIPC() {
   registerMobilePairingIPC(ipcMain, mobilePairing, () => mainWindow);
+  registerRemoteHostingIPC(ipcMain, {
+    status: () => remoteHosting.status(),
+    start: () => remoteHosting.start(), stop: () => remoteHosting.stop(), retry: () => remoteHosting.retry(),
+    freshDescriptor: () => remoteHosting.freshDescriptor(),
+    setBinaryPath(value) { const result = remoteHosting.setBinaryPath(value); remoteHostingPreferences.binaryPath = result; saveRemoteHostingPreferences(); return result; },
+    setRestoreOnLaunch(value) { const result = remoteHosting.setRestoreOnLaunch(value); remoteHostingPreferences.restoreOnLaunch = result; saveRemoteHostingPreferences(); return result; },
+  }, () => mainWindow);
+  registerDiscoveryIPC(ipcMain, {
+    status: () => discoveryPublisher.status(),
+    configure: async value => { await discoveryPublisher.configure(value); remoteHostingPreferences.firebaseProjectId = value.projectId; remoteHostingPreferences.firebaseApiKey = value.apiKey; saveRemoteHostingPreferences(); return discoveryPublisher.status(); },
+    signIn: (email, password) => discoveryPublisher.signIn(email, password), signOut: () => discoveryPublisher.signOut(),
+  }, () => mainWindow);
   ipcMain.handle('widget-playback-status', async (event) => {
     if (!widgetWindow || event.sender !== widgetWindow.webContents || event.senderFrame !== widgetWindow.webContents.mainFrame) {
       throw Error('Untrusted widget');
@@ -906,6 +992,7 @@ function startBackend() {
   uvicornProcess.stdout.on("data", (data) => console.log(`[Backend] ${data}`));
   uvicornProcess.stderr.on("data", (data) => console.error(`[Backend] ${data}`));
   uvicornProcess.on("close", (code) => console.log(`[Backend] Process exited with code ${code}`));
+  uvicornProcess.once('exit', () => { if (remoteHosting) void remoteHosting.backendLost(); });
 }
 
 // ── Power Save Blocker ─────────────────────────────────────────
@@ -978,7 +1065,13 @@ app.whenReady().then(() => {
     }
   });
 
+  initRemoteHosting();
   startBackend();
+  if (remoteHostingPreferences.restoreOnLaunch) {
+    void waitForBackendReady(session.defaultSession, { isCancelled: () => app.isQuitting }).then(ready => {
+      if (ready && !app.isQuitting && remoteHostingPreferences.restoreOnLaunch) return remoteHosting.start();
+    }).catch(() => {});
+  }
   // Load persisted app icon style after backend is up so the API call succeeds
   setTimeout(() => { loadAppIconStyle().then(() => { if (mainWindow) updateTrayIcon(appIconStyle); }); }, 1500);
   createWindow();
@@ -986,6 +1079,8 @@ app.whenReady().then(() => {
   registerAllHotkeys();
   setupIPC();
   setupPowerMonitor();
+  powerMonitor.on('suspend', () => { resumeRemoteAfterWake = ['available', 'starting_gateway', 'starting_tunnel', 'verifying_endpoint', 'reconnecting'].includes(remoteHosting?.status().state); if (resumeRemoteAfterWake) void remoteHosting.stop(); });
+  powerMonitor.on('resume', () => { if (resumeRemoteAfterWake) { resumeRemoteAfterWake = false; void remoteHosting.start(); } });
   setupNativeThemeWatcher();
   setupJumpList();
   setupThumbnailToolbar();
@@ -1010,7 +1105,7 @@ app.on("before-quit", (event) => {
   quitPending = true;
   stopPowerSave();
   globalShortcut.unregisterAll();
-  shutdownBackend().catch((error) => {
+  Promise.resolve(remoteHosting?.stop()).catch(() => {}).then(() => shutdownBackend()).catch((error) => {
     console.error("Backend shutdown failed:", error.message);
   }).finally(() => {
     shutdownComplete = true;

@@ -69,10 +69,12 @@ class RadioPlaybackService : MediaSessionService() {
             radioRequest=scope.launch {
                 val batch=withContext(Dispatchers.IO){library.radio.startRecommendations(seedLocalId)} ?: return@launch
                 beforeRadioStartCommit()
-                if(batch.suggestions.isNotEmpty() && library.radio.valid(batch.token) && engine.state.value.queueRevision==expected.queueRevision && engine.state.value.currentId==expected.currentId) {
-                    engine.beginRadio(batch.suggestions.map{it.song})
-                    if(engine.state.value.radioActive && engine.state.value.error==null)
-                        library.radio.committed(batch,engine.state.value.playOrder.toSet())
+                library.radio.accept(batch) {
+                    if(batch.suggestions.isNotEmpty() && engine.state.value.queueRevision==expected.queueRevision && engine.state.value.currentId==expected.currentId) {
+                        engine.beginRadio(batch.suggestions.map{it.song})
+                        if(engine.state.value.radioActive && engine.state.value.error==null)
+                            library.radio.committed(batch,engine.state.value.playOrder.toSet())
+                    }
                 }
             }
         }
@@ -81,8 +83,9 @@ class RadioPlaybackService : MediaSessionService() {
                 engine.state.map{listOf(it.currentId,it.playOrder,it.radioActive,it.queueRevision,it.playWhenReady,it.sleepTimer.active)}.distinctUntilChanged(),
                 library.journal.state.map{listOf(it.pendingWrites,it.feedbackLoaded,it.history.firstOrNull()?.eventId)}.distinctUntilChanged(),
                 library.radio.state.map{listOf(it.mood,it.exploration,it.vibeLocalId)}.distinctUntilChanged(),
-                dev.radio.mobile.data.JournalIdentityProvider.mappings
-            ){_,_,_,_->Unit}.collect {
+                dev.radio.mobile.data.JournalIdentityProvider.mappings,
+                dev.radio.mobile.portable.PortableSyncChanges.changes
+            ){_,_,_,_,_->Unit}.collect {
                 val expected=engine.state.value
                 library.radio.updatePlayback(expected)
                 val current=expected.playOrder.indexOf(expected.currentId)
@@ -90,12 +93,13 @@ class RadioPlaybackService : MediaSessionService() {
                 if(initialized && expected.radioActive && expected.playWhenReady && !expected.sleepTimer.active && current>=0 && upcoming.size<=2){
                     val batch=withContext(Dispatchers.IO){library.radio.recommendations(upcoming+setOfNotNull(expected.currentId),5-upcoming.size,expected.playOrder.lastOrNull())}
                     if(batch!=null)beforeRadioRefillCommit()
-                    if(batch!=null && library.radio.valid(batch.token) && engine.state.value.playWhenReady)
-                        if(engine.appendRadio(expected,batch.suggestions.map{it.song})) {
+                    if(batch!=null)library.radio.accept(batch) {
+                        if(engine.state.value.playWhenReady && engine.appendRadio(expected,batch.suggestions.map{it.song})) {
                             val actual=engine.state.value
                             val accepted=actual.playOrder.drop(actual.playOrder.indexOf(actual.currentId)+1).filter{it !in upcoming}.toSet()
                             library.radio.committed(batch,accepted)
                         }
+                    }
                 }
             }
         }

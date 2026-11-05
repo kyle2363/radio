@@ -1,12 +1,14 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createPairingBundleState } from '../api/pairingBundleState';
 import MobileCatalogSettings from './MobileCatalogSettings';
+import RemoteHostingSettings from './RemoteHostingSettings';
 
 const buttonStyle = { border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg-surface)', color: 'var(--text-primary)', padding: '6px 10px', fontSize: 11, cursor: 'pointer' };
 const hintStyle = { fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.6 };
 
 export default function MobilePairingSettings() {
   const [available, setAvailable] = useState(false);
+  const [gatewayEnabled, setGatewayEnabled] = useState(false);
   const [deviceName, setDeviceName] = useState('Phone');
   const [devices, setDevices] = useState([]);
   const [bundle, setBundle] = useState(null);
@@ -18,7 +20,8 @@ export default function MobilePairingSettings() {
 
   const refresh = async () => {
     const result = await window.electron.listPairedMobileDevices();
-    if (alive.current) setDevices(result.devices);
+    const status = await window.electron.getMobileGatewayStatus();
+    if (alive.current) { setDevices(result.devices); setGatewayEnabled(status.enabled); }
   };
 
   useEffect(() => {
@@ -60,19 +63,36 @@ export default function MobilePairingSettings() {
     if (alive.current) setMessage('Device revoked. Local phone music stays available.');
   });
 
+  const enableGateway = () => perform(async () => {
+    await window.electron.enableMobileGateway();
+    await refresh();
+    if (alive.current) setMessage('USB connection enabled for paired devices.');
+  });
+
+  const grantProfileSync = id => perform(async () => {
+    await window.electron.grantMobileProfileSync(id);
+    await refresh();
+    if (alive.current) setMessage('Profile sync allowed. The existing phone credential and pending events are preserved.');
+  });
+
   const copy = () => perform(async () => {
     if (!bundle || bundle.expires_at * 1000 <= Date.now()) { bundleState.current.clear(); return; }
     await navigator.clipboard.writeText(JSON.stringify(bundle));
     if (alive.current) setMessage('Pairing bundle copied. Paste it into the Android debug app.');
   });
 
-  if (!available) return <div style={hintStyle}>USB pairing is available in the desktop development build and Android debug app.</div>;
+  if (!available) return <div><RemoteHostingSettings /><div style={hintStyle}>USB pairing is available in the desktop development build and Android debug app.</div></div>;
 
   return <div>
+    <RemoteHostingSettings />
     <div className="set-label">USB development only</div>
     <p style={hintStyle}>Connect the phone by USB with USB debugging enabled. Run this on the computer before pairing:</p>
     <code style={{ display: 'block', fontSize: 11, color: 'var(--text-primary)', marginBottom: 12 }}>adb reverse tcp:18766 tcp:18766</code>
     <p style={hintStyle}>Create a bundle, then paste it into Android Settings → Server. The USB server starts on creation and stops when Radio quits. Local phone playback stays independent.</p>
+    {!gatewayEnabled && <div className="set-row">
+      <div><div className="set-label">USB connection is stopped</div><div style={hintStyle}>Start it to let an already paired phone connect after Radio restarts.</div></div>
+      <button type="button" style={buttonStyle} disabled={busy} onClick={enableGateway}>Enable USB connection</button>
+    </div>}
     <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', margin: '12px 0' }}>
       <label htmlFor="pairing-device-name" className="set-label">Device name</label>
       <input id="pairing-device-name" value={deviceName} maxLength={80} disabled={busy} onChange={event => setDeviceName(event.target.value)} style={{ width: 140, padding: '6px 8px', fontSize: 12 }} />
@@ -90,8 +110,11 @@ export default function MobilePairingSettings() {
     {!devices.length && <div style={hintStyle}>No paired devices.</div>}
     {devices.map(device => {
       const expired = device.expires_at != null && device.expires_at * 1000 <= Date.now();
+      const hasProfileSync = device.scopes.includes('profile:read') && device.scopes.includes('profile:write');
       return <div className="set-row" key={device.device_id}>
         <div><div className="set-label">{device.name}</div><div style={hintStyle}>{device.revoked ? 'Revoked' : expired ? 'Expired' : 'Paired'} · {device.scopes.join(', ')}</div></div>
+        {!device.revoked && !expired && !hasProfileSync && <button type="button" style={buttonStyle} disabled={busy} onClick={() => grantProfileSync(device.device_id)} aria-label={`Allow profile sync for ${device.name}`}>Allow profile sync</button>}
+        {!device.revoked && !expired && hasProfileSync && <span style={hintStyle}>Profile sync allowed</span>}
         <button type="button" style={buttonStyle} disabled={busy || device.revoked} onClick={() => revoke(device.device_id)} aria-label={`Revoke ${device.name}`}>Revoke</button>
       </div>;
     })}

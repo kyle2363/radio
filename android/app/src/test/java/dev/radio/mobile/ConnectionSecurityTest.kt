@@ -19,6 +19,14 @@ class ConnectionSecurityTest {
         }
     }
 
+    @Test fun remoteEndpointReplacementIsRestrictedToExactQuickTunnelHttpsOrigins() {
+        assertEquals("https://abc.trycloudflare.com", EndpointPolicy(false).validateRemoteEndpoint("https://abc.trycloudflare.com"))
+        listOf("http://abc.trycloudflare.com", "https://trycloudflare.com", "https://abc.trycloudflare.com.evil.example",
+            "https://abc.trycloudflare.com:8443", "https://abc.trycloudflare.com/").forEach {
+            assertThrows(ConnectionFailure::class.java) { EndpointPolicy(false).validateRemoteEndpoint(it) }
+        }
+    }
+
     @Test fun standardP256DerSignatureCoversTransmittedPayloadBytes() {
         val keys = KeyPairGenerator.getInstance("EC").apply { initialize(java.security.spec.ECGenParameterSpec("secp256r1")) }.generateKeyPair()
         val bytes = "{\"server_id\":\"synthetic\", \"unicode\":\"海\"}".toByteArray(Charsets.UTF_8)

@@ -8,9 +8,9 @@ Checkpoints 1A–1B implement an explicitly enabled USB development gateway on `
 
 Catalog preparation is an explicit local parent-authorized action. It serves immutable published data and checks API-owned ingest activity/epochs before publication; independent maintenance scripts remain outside that tracker, so do not run them concurrently with preparation. SQLite and Chroma still do not share a transaction. Preparation failures retain the last prepared revision, and phone reads never start ingestion, export or models. A preparation deadline prevents late publication but cannot forcibly interrupt a blocked storage call.
 
-The October 30 [mobile connection architecture](MOBILE_CONNECTION_PLAN.md) proposes later Cloudflare Quick Tunnel hosting and Firebase Spark endpoint discovery. Those features are not implemented or enabled. A future tunnel must never target the full desktop FastAPI application or use its loopback trust as device authorization.
+Checkpoint 3A implements explicitly enabled Cloudflare Quick Tunnel hosting on `codex/android-3a-remote-hosting`; see [setup and acceptance](REMOTE_HOSTING.md). It targets only the separate mobile gateway, never the full desktop FastAPI application. Exact public Host admission, a short owner lease and scoped device bearer validation apply even though cloudflared connects from loopback. Firebase endpoint discovery remains checkpoint 3B.
 
-The user deferred direct LAN hosting. The current connection is debug-only USB/`adb reverse`; release clients reject this cleartext transport. The existing desktop configuration remains unchanged. The plain-LAN opt-in below is an existing desktop deployment option, not the phone integration path or permission to enable it on shared Wi-Fi.
+The user deferred direct LAN hosting. Debug USB/`adb reverse` remains available, while verified remote updates require an exact signed HTTPS Quick Tunnel origin. Release clients reject cleartext USB transport. The existing desktop configuration remains unchanged. The plain-LAN opt-in below is an existing desktop deployment option, not the phone integration path or permission to enable it on shared Wi-Fi.
 
 ## Configuration
 
