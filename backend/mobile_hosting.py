@@ -240,6 +240,12 @@ class MobileHosting:
                 await asyncio.to_thread(self._cancel_unused)
             return self.status()
 
+    def forget_device(self, device_id):
+        """Drop in-memory connected-recommendation state for a device."""
+        recommendations = getattr(getattr(self.gateway, "state", None), "recommendations", None)
+        if recommendations is not None:
+            recommendations.forget_device(device_id)
+
     def _cancel_unused(self):
         with self._tickets_lock:
             self.pairing.cancel_unused()
@@ -404,6 +410,7 @@ def create_mobile_hosting_router(hosting):
     def revoke(device_id: str, request: Request):
         authorize(request)
         hosting.store_factory().revoke_device(device_id)
+        hosting.forget_device(device_id)
         return {"revoked": True}
 
     @router.post("/devices/{device_id}/profile-sync")
@@ -418,5 +425,28 @@ def create_mobile_hosting_router(hosting):
             raise HTTPException(404, str(exc)) from None
         except Exception:
             raise HTTPException(503, "USB gateway unavailable; check protected identity or port") from None
+
+    @router.post("/devices/{device_id}/connected-radio")
+    async def grant_connected_radio(device_id: str, request: Request):
+        authorize(request)
+        try:
+            # Like profile sync, this explicit local-admin action also starts
+            # the listener so an already-paired phone can reach the server.
+            await hosting.enable()
+            return hosting.store_factory().grant_connected_radio(device_id)
+        except ValueError as exc:
+            raise HTTPException(404, str(exc)) from None
+        except Exception:
+            raise HTTPException(503, "USB gateway unavailable; check protected identity or port") from None
+
+    @router.delete("/devices/{device_id}/connected-radio")
+    def revoke_connected_radio(device_id: str, request: Request):
+        authorize(request)
+        try:
+            result = hosting.store_factory().revoke_connected_radio(device_id)
+        except ValueError as exc:
+            raise HTTPException(404, str(exc)) from None
+        hosting.forget_device(device_id)
+        return result
 
     return router

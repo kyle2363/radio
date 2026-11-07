@@ -17,7 +17,7 @@ from uuid import uuid4
 
 from db import database
 
-SCOPES = frozenset({"catalog:read", "profile:read", "profile:write", "dj:read"})
+SCOPES = frozenset({"catalog:read", "profile:read", "profile:write", "dj:read", "recommend:read"})
 KINDS = frozenset({"song_started", "song_completed", "song_skipped", "song_replayed",
                    "favorite_changed", "dislike_changed", "blacklist_changed",
                    "energy_changed", "preference_changed"})
@@ -109,6 +109,26 @@ class PortableProfileStore:
             if not row or row[2] or row[1] <= time.time():
                 raise ValueError("Device is missing, revoked or expired")
             scopes = sorted(set(json.loads(row[0])) | {"profile:read", "profile:write"})
+            conn.execute("UPDATE portable_devices SET scopes=? WHERE id=?", (canonical(scopes), device_id))
+        return {"device_id": device_id, "scopes": scopes}
+
+    def grant_connected_radio(self, device_id):
+        """Add ``recommend:read`` to an existing active device without rotating identity."""
+        with self.transaction() as conn:
+            row = conn.execute("SELECT scopes,expires,revoked FROM portable_devices WHERE id=?", (device_id,)).fetchone()
+            if not row or row[2] or row[1] <= time.time():
+                raise ValueError("Device is missing, revoked or expired")
+            scopes = sorted(set(json.loads(row[0])) | {"recommend:read"})
+            conn.execute("UPDATE portable_devices SET scopes=? WHERE id=?", (canonical(scopes), device_id))
+        return {"device_id": device_id, "scopes": scopes}
+
+    def revoke_connected_radio(self, device_id):
+        """Remove ``recommend:read``; the credential and every other scope are untouched."""
+        with self.transaction() as conn:
+            row = conn.execute("SELECT scopes FROM portable_devices WHERE id=?", (device_id,)).fetchone()
+            if not row:
+                raise ValueError("Device is missing")
+            scopes = sorted(set(json.loads(row[0])) - {"recommend:read"})
             conn.execute("UPDATE portable_devices SET scopes=? WHERE id=?", (canonical(scopes), device_id))
         return {"device_id": device_id, "scopes": scopes}
 

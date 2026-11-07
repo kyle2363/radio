@@ -21,6 +21,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.collectLatest
 
 /** Owns the only production player, independent of activity and Compose lifetimes. */
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
@@ -60,6 +61,8 @@ class RadioPlaybackService : MediaSessionService() {
             val identity = attemptIdentities.getOrPut(attempt) { library.journal.identity(song) }
             library.journal.started(song, attempt, position, identity)
             library.radio.actualStart(attempt)
+            // Prefetch one connected option set for this song. Playback never waits on it.
+            library.radio.songStarted(song, engine.state.value)
         }
         var radioRequest: Job? = null
         engine.onRadioStart = { seedLocalId ->
@@ -79,19 +82,26 @@ class RadioPlaybackService : MediaSessionService() {
             }
         }
         scope.launch {
-            combine(
+            combine(combine(
                 engine.state.map{listOf(it.currentId,it.playOrder,it.radioActive,it.queueRevision,it.playWhenReady,it.sleepTimer.active)}.distinctUntilChanged(),
                 library.journal.state.map{listOf(it.pendingWrites,it.feedbackLoaded,it.history.firstOrNull()?.eventId)}.distinctUntilChanged(),
                 library.radio.state.map{listOf(it.mood,it.exploration,it.vibeLocalId)}.distinctUntilChanged(),
                 dev.radio.mobile.data.JournalIdentityProvider.mappings,
                 dev.radio.mobile.portable.PortableSyncChanges.changes
-            ){_,_,_,_,_->Unit}.collect {
+            ){_,_,_,_,_->Unit}, library.radio.connectedSignal){_,_->Unit}.collectLatest {
                 val expected=engine.state.value
                 library.radio.updatePlayback(expected)
                 val current=expected.playOrder.indexOf(expected.currentId)
                 val upcoming=expected.playOrder.drop(current+1).toSet()
                 if(initialized && expected.radioActive && expected.playWhenReady && !expected.sleepTimer.active && current>=0 && upcoming.size<=2){
-                    val batch=withContext(Dispatchers.IO){library.radio.recommendations(upcoming+setOfNotNull(expected.currentId),5-upcoming.size,expected.playOrder.lastOrNull())}
+                    // A connected answer for this song is still coming and music remains: wait for it. Its own
+                    // 75 s deadline ends the wait (the signal re-runs this block), then offline refills as in 2B.
+                    // With nothing upcoming the queue would run dry, so offline refills immediately.
+                    if(dev.radio.mobile.recommendation.ConnectedPolicy.shouldWait(library.radio.connected.status.value.pendingAnchor,expected.currentId,upcoming.size))return@collectLatest
+                    // The state change that made this song current arrives just before its actual-start callback marks the
+                    // request pending. Give that start a short, bounded moment; the pending signal cancels this delay.
+                    if(upcoming.isNotEmpty() && library.radio.awaitingConnectedStart(expected.currentId))delay(connectedStartGraceMs)
+                    val batch=withContext(Dispatchers.IO){library.radio.refill(upcoming+setOfNotNull(expected.currentId),dev.radio.mobile.recommendation.ConnectedPolicy.REFILL_BOUND-upcoming.size,expected.playOrder.lastOrNull())}
                     if(batch!=null)beforeRadioRefillCommit()
                     if(batch!=null)library.radio.accept(batch) {
                         if(engine.state.value.playWhenReady && engine.appendRadio(expected,batch.suggestions.map{it.song})) {
@@ -224,5 +234,6 @@ class RadioPlaybackService : MediaSessionService() {
         internal var repositoryFactory: (android.content.Context) -> LibraryRepository = LibraryRepository::get
         internal var beforeRadioStartCommit: suspend () -> Unit = {}
         internal var beforeRadioRefillCommit: suspend () -> Unit = {}
+        internal var connectedStartGraceMs = 3000L
     }
 }

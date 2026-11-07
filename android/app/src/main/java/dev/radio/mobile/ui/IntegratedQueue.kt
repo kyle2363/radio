@@ -24,7 +24,7 @@ import kotlinx.coroutines.launch
 
 @Composable
 fun IntegratedQueue(audio: PlaybackState, accessAllowed: Boolean, onSelect: (String) -> Unit, modifier: Modifier = Modifier,
-    playback: PlaybackController? = null, onAdd: () -> Unit = {}, onSave: (List<String>) -> Unit = {}) {
+    playback: PlaybackController? = null, onAdd: () -> Unit = {}, onSave: (List<String>) -> Unit = {}, serverAiIds: Set<String> = emptySet()) {
     val byId = remember(audio.queue) { audio.queue.associateBy { it.id } }
     val currentIndex = remember(audio.playOrder, audio.currentId) { audio.playOrder.indexOf(audio.currentId) }
     val list = rememberLazyListState(initialFirstVisibleItemIndex = currentIndex.coerceAtLeast(0))
@@ -67,8 +67,11 @@ fun IntegratedQueue(audio: PlaybackState, accessAllowed: Boolean, onSelect: (Str
                     Column(Modifier.weight(1f).padding(start = 14.dp)) {
                         Text(song.title, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium,
                             fontWeight = if (current) FontWeight.Medium else FontWeight.Normal, color = if (current) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
-                        Text(if (current) audio.status else if (!song.available) "Unavailable" else songSubtitle(song), maxLines = 1, overflow = TextOverflow.Ellipsis,
-                            style = MaterialTheme.typography.bodySmall, color = tint)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(if (current) audio.status else if (!song.available) "Unavailable" else songSubtitle(song), Modifier.weight(1f, fill = false), maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                style = MaterialTheme.typography.bodySmall, color = tint)
+                            if (id in serverAiIds && !current) ServerAiMarker(Modifier.padding(start = 8.dp).testTag("queue-server-ai-$id"))
+                        }
                     }
                     if (playback != null) {
                         if (editing) {

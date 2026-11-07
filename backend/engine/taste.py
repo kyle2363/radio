@@ -203,6 +203,25 @@ class MemorySystem:
         if not signals:
             return None, 0.0
 
+        blended, drift = self.blend_signals(signals, session_signals, skip_streak)
+
+        # Cache the result
+        self._cache[cache_key] = _TasteCacheEntry(
+            text_vector=blended,
+            audio_vector=None,
+            drift=drift,
+            expires_at=time() + self._cache_ttl,
+            profile_generation=profile_generation,
+        )
+
+        return blended, drift
+
+    def blend_signals(self, signals, session_signals=None, skip_streak=0):
+        """Blend shared-profile ``signals`` and optional per-request session
+        signals (newest first) through the four memory layers.
+
+        Pure over its arguments: no cache and no writes. Returns (vector, drift).
+        """
         layers = [MemoryLayer(l.name, l.window, l.weight, l.decay) for l in LAYERS]
         if skip_streak >= 3:
             for layer in layers:
@@ -227,15 +246,6 @@ class MemorySystem:
                 blended = [v * layer.weight for v in lv]
             else:
                 blended = [a + b * layer.weight for a, b in zip(blended, lv)]
-
-        # Cache the result
-        self._cache[cache_key] = _TasteCacheEntry(
-            text_vector=blended,
-            audio_vector=None,
-            drift=drift,
-            expires_at=time() + self._cache_ttl,
-            profile_generation=profile_generation,
-        )
 
         return blended, drift
 

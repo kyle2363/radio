@@ -21,7 +21,7 @@ import dev.radio.mobile.recommendation.*
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun RadioContent(radio:RadioState,repository:RadioRepository,audio:PlaybackState,playback:PlaybackController,library:LibraryState,onLibrary:()->Unit,onPlayer:()->Unit,modifier:Modifier=Modifier) {
+fun RadioContent(radio:RadioState,repository:RadioRepository,audio:PlaybackState,playback:PlaybackController,library:LibraryState,onLibrary:()->Unit,onPlayer:()->Unit,modifier:Modifier=Modifier,connected:ConnectedUi=ConnectedUi()) {
     var tuning by remember { mutableStateOf(false) }
     var confirm by remember { mutableStateOf(false) }
     var seedPicker by remember { mutableStateOf(false) }
@@ -78,6 +78,10 @@ fun RadioContent(radio:RadioState,repository:RadioRepository,audio:PlaybackState
                 if(radio.vibeLocalId!=null){Text("Vibe lock · ${((radio.vibeUntil-System.currentTimeMillis()).coerceAtLeast(0)/60000)+1} min · ${radio.vibeSongsLeft} songs left",Modifier.padding(top=8.dp),style=MaterialTheme.typography.bodySmall);TextButton(onClick=repository::clearVibe){Text("Release vibe lock")}}
                 radio.error?.let{Text(it,Modifier.padding(top=12.dp),color=MaterialTheme.colorScheme.error)}
             }
+        }
+        item(key="up-next-options") {
+            val options=ConnectedPolicy.visibleOptions(connected,audio.currentId,audio.radioActive,audio.playOrder.toSet(),repository::isDisliked){id->library.songs.any{it.id==id && it.available}}
+            if(options.isNotEmpty())UpNextOptionsCard(options,{pick->playback.addToQueue(listOf(pick.song),true)},Modifier.padding(horizontal=20.dp,vertical=8.dp))
         }
         item {Row(Modifier.fillMaxWidth().padding(start=20.dp,end=8.dp),verticalAlignment=Alignment.CenterVertically){Text("Suggested next",Modifier.weight(1f),style=MaterialTheme.typography.titleMedium);TextButton(onClick=repository::refreshSuggestions,enabled=!radio.busy,modifier=Modifier.testTag("refresh-radio")){Text(if(radio.busy)"Refreshing…" else "Refresh")}}}
         item {

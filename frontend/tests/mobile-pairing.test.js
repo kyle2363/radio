@@ -194,3 +194,58 @@ test('bounded reader aborts and cancels a stalled response before parsing', asyn
     { message: 'Mobile pairing is unavailable. Sign in to the owned desktop server and try again.' });
   assert.equal(expired.counts().reads, 0);
 });
+
+test('connected radio grant and revoke use fixed device paths with validated responses', async () => {
+  const calls = [];
+  const { control } = fixture({ request: async (path, options) => {
+    calls.push({ path, method: options.method });
+    if (path.endsWith('/devices/phone-one/connected-radio') && options.method === 'POST') {
+      return jsonResponse({ device_id: 'phone-one', scopes: ['catalog:read', 'recommend:read'] });
+    }
+    if (path.endsWith('/devices/phone-one/connected-radio') && options.method === 'DELETE') {
+      return jsonResponse({ device_id: 'phone-one', scopes: ['catalog:read'] });
+    }
+    return jsonResponse({});
+  } });
+  assert.deepEqual(await control.grantConnectedRadio('phone-one'), { device_id: 'phone-one', scopes: ['catalog:read', 'recommend:read'] });
+  assert.deepEqual(await control.revokeConnectedRadio('phone-one'), { device_id: 'phone-one', scopes: ['catalog:read'] });
+  assert.deepEqual(calls, [
+    { path: '/api/mobile-hosting/devices/phone-one/connected-radio', method: 'POST' },
+    { path: '/api/mobile-hosting/devices/phone-one/connected-radio', method: 'DELETE' },
+  ]);
+  assert.equal(calls.some(call => call.path.includes('/catalog/prepare')), false);
+});
+
+test('connected radio rejects invalid ids and mismatched or malformed responses', async () => {
+  const { control, calls } = fixture();
+  for (const id of ['../other', 'phone?x=1', '', {}]) {
+    await assert.rejects(control.grantConnectedRadio(id), { message: 'Invalid paired device.' });
+    await assert.rejects(control.revokeConnectedRadio(id), { message: 'Invalid paired device.' });
+  }
+  assert.equal(calls.length, 0);
+  const wrongDevice = fixture({ request: async () => jsonResponse({ device_id: 'other', scopes: ['recommend:read'] }) });
+  await assert.rejects(wrongDevice.control.grantConnectedRadio('phone-one'), { message: 'Mobile pairing is unavailable. Sign in to the owned desktop server and try again.' });
+  const grantWithoutScope = fixture({ request: async () => jsonResponse({ device_id: 'phone-one', scopes: ['catalog:read'] }) });
+  await assert.rejects(grantWithoutScope.control.grantConnectedRadio('phone-one'));
+  const revokeKeepingScope = fixture({ request: async () => jsonResponse({ device_id: 'phone-one', scopes: ['recommend:read'] }) });
+  await assert.rejects(revokeKeepingScope.control.revokeConnectedRadio('phone-one'));
+});
+
+test('connected radio IPC channels are wired to approved-frame, exact-argument handlers', async () => {
+  const handlers = new Map(), calls = [];
+  const frame = { url: 'http://localhost:3000/settings' }, contents = { mainFrame: frame };
+  const window = { webContents: contents, isDestroyed: () => false };
+  registerMobilePairingIPC({ handle: (name, callback) => handlers.set(name, callback) }, {
+    createBundle: async () => ({}), listDevices: async () => ({}), revokeDevice: async () => ({}),
+    gatewayStatus: async () => ({ enabled: false }), enableGateway: async () => ({ enabled: true }), grantProfileSync: async id => ({ device_id: id }),
+    grantConnectedRadio: async id => { calls.push(['grant', id]); return { device_id: id }; },
+    revokeConnectedRadio: async id => { calls.push(['revoke', id]); return { device_id: id }; },
+  }, () => window);
+  const good = { sender: contents, senderFrame: frame };
+  assert.deepEqual(await handlers.get('mobile-pairing-connected-radio-grant')(good, 'phone-one'), { device_id: 'phone-one' });
+  assert.deepEqual(await handlers.get('mobile-pairing-connected-radio-revoke')(good, 'phone-one'), { device_id: 'phone-one' });
+  await assert.rejects(async () => handlers.get('mobile-pairing-connected-radio-grant')(good, 'phone-one', 'extra'));
+  await assert.rejects(async () => handlers.get('mobile-pairing-connected-radio-revoke')(good));
+  await assert.rejects(async () => handlers.get('mobile-pairing-connected-radio-revoke')({ ...good, sender: {} }, 'phone-one'));
+  assert.deepEqual(calls, [['grant', 'phone-one'], ['revoke', 'phone-one']]);
+});

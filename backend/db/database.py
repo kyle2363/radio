@@ -1085,17 +1085,22 @@ def get_recent_plays(song_id, n=10):
         conn.close()
 
 
-def get_neutral_centroid_songs(n=20):
+def get_neutral_centroid_songs(n=20, allowed_ids=None):
     conn = get_connection()
     try:
+        restriction, params = "", []
+        if allowed_ids is not None:
+            # One JSON parameter instead of thousands of SQL variables.
+            restriction = " AND id IN (SELECT value FROM json_each(?))"
+            params.append(json.dumps(sorted(int(i) for i in allowed_ids)))
         rows = conn.execute(
-            """SELECT * FROM songs 
-               WHERE ingest_phase = 'clustered' 
+            f"""SELECT * FROM songs
+               WHERE ingest_phase = 'clustered'
                 AND energy BETWEEN 0.3 AND 0.7
-                AND valence BETWEEN 0.3 AND 0.7
+                AND valence BETWEEN 0.3 AND 0.7{restriction}
                ORDER BY ABS(energy - 0.5) + ABS(valence - 0.5)
                LIMIT ?""",
-            (n,),
+            (*params, n),
         ).fetchall()
         return [_row_to_dict(r) for r in rows]
     finally:

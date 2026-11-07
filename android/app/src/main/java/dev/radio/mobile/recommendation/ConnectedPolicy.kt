@@ -1,0 +1,44 @@
+package dev.radio.mobile.recommendation
+
+/** What the UI and Radio screen need to know about Connected Radio, published by [RadioRepository.connectedState]. */
+data class ConnectedUi(
+    val status: ConnectedStatus = ConnectedStatus(),
+    val set: ConnectedSet? = null,
+    /** Local IDs queued from connected "similar" picks, for the queue's Server AI marker. */
+    val serverAiIds: Set<String> = emptySet(),
+)
+
+/** Pure rules for what connected data may be shown or consumed. No Android, storage or network. */
+object ConnectedPolicy {
+    const val SERVER_AI_PREFIX = "Server AI"
+    const val MAX_NORMAL_EXPLOIT = 4 // The server decides the mix (3 similar at default exploration); the phone only caps and bounds it.
+    const val MAX_VIBE_EXPLOIT = 4
+    const val REFILL_BOUND = 5
+
+    /**
+     * Options card contents. Empty (card hidden) when Connected Radio is off, Radio isn't playing, a request is still
+     * pending, the set expired (another song is current) or every option was filtered out.
+     */
+    fun visibleOptions(ui: ConnectedUi, currentId: String?, radioActive: Boolean, queued: Set<String>,
+        isDisliked: (String) -> Boolean, isAvailable: (String) -> Boolean): List<ConnectedPick> {
+        val set = ui.set ?: return emptyList()
+        if (!ui.status.enabled || !radioActive || currentId == null || ui.status.pendingAnchor != null || set.anchorLocalId != currentId) return emptyList()
+        return set.options.filter { it.song.id !in queued && it.song.id != currentId && !isDisliked(it.song.id) && isAvailable(it.song.id) }
+    }
+
+    /** How many connected similar picks one refill may take: at most 4 (as many as survive filtering), never beyond the room left. */
+    fun exploitLimit(vibeLocked: Boolean, room: Int) = minOf(room.coerceAtLeast(0), if (vibeLocked) MAX_VIBE_EXPLOIT else MAX_NORMAL_EXPLOIT)
+
+    /** Connected similar picks, in server order, that may still be appended. */
+    fun refillPicks(set: ConnectedSet?, exclude: Set<String>, vibeLocked: Boolean, room: Int,
+        isDisliked: (String) -> Boolean, isAvailable: (String) -> Boolean): List<ConnectedPick> {
+        if (set == null) return emptyList()
+        return set.continuation.filter { it.song.id !in exclude && !isDisliked(it.song.id) && isAvailable(it.song.id) }.take(exploitLimit(vibeLocked, room))
+    }
+
+    /**
+     * Refill waits for a pending connected answer only while it can: the answer must be for the current song and
+     * at least one upcoming entry must remain to keep music going. The source's own 75 s deadline bounds the wait.
+     */
+    fun shouldWait(pendingAnchor: String?, currentId: String?, upcoming: Int) = pendingAnchor != null && pendingAnchor == currentId && upcoming >= 1
+}

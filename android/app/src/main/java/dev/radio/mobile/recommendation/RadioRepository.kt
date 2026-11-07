@@ -2,6 +2,11 @@ package dev.radio.mobile.recommendation
 
 import android.content.Context
 import androidx.core.content.edit
+import dev.radio.mobile.connection.EndpointPolicy
+import dev.radio.mobile.connection.PairedServerStore
+import dev.radio.mobile.connection.PairingConnectedLink
+import dev.radio.mobile.connection.PairingRepository
+import dev.radio.mobile.connection.RadioApiClient
 import dev.radio.mobile.data.*
 import dev.radio.mobile.playback.PlaybackState
 import dev.radio.mobile.portable.*
@@ -23,11 +28,29 @@ data class RadioState(val loaded:Boolean=false,val busy:Boolean=false,val sugges
 
 /** Local-only recommendation snapshots. Publishing a preview never calls playback. */
 class RadioRepository internal constructor(context:Context,private val db:LibraryDatabase,private val library:StateFlow<LibraryState>,private val journal:ListeningJournalRepository,private val scope:CoroutineScope,
-    private val directory:File=File(context.applicationContext.noBackupFilesDir,"portable_catalog_blobs")) {
+    private val directory:File=File(context.applicationContext.noBackupFilesDir,"portable_catalog_blobs"),
+    connectedLink:(()->ConnectedServerLink)?=null) {
     private val prefs=context.getSharedPreferences("radio_recommendations",Context.MODE_PRIVATE)
     private val mutex=Mutex()
     private val mutable=MutableStateFlow(RadioState(mood=prefs.getString("mood","neutral") ?: "neutral",exploration=prefs.getFloat("exploration",.3f).toDouble(),vibeLocalId=prefs.getString("vibe",null),vibeUntil=prefs.getLong("vibeUntil",0),vibeSongsLeft=prefs.getInt("vibeLeft",0)))
     val state=mutable.asStateFlow()
+    // Connected Radio (checkpoint 4). Off until the listener turns it on; never required for local play.
+    private val serverAi=MutableStateFlow<Set<String>>(emptySet())
+    private val appContext=context.applicationContext
+    val connected=ConnectedRadioSource(object:ConnectedServerLink {
+        private val real by lazy {
+            (connectedLink ?: {
+                val policy=EndpointPolicy(dev.radio.mobile.BuildConfig.DEBUG)
+                PairingConnectedLink(PairingRepository(PairedServerStore(appContext,policy),RadioApiClient(policy),policy))
+            })()
+        }
+        override suspend fun access()=real.access()
+        override suspend fun post(path:String,body:String)=real.post(path,body)
+    },scope)
+    val connectedState:StateFlow<ConnectedUi> = combine(connected.status,connected.set,serverAi){status,set,ai->ConnectedUi(status,set,ai)}
+        .stateIn(scope,SharingStarted.Eagerly,ConnectedUi())
+    /** Emits whenever a connected answer starts, finishes or is dropped, so refill can re-evaluate. */
+    val connectedSignal:Flow<Pair<String?,String?>> = combine(connected.status.map{it.pendingAnchor}.distinctUntilChanged(),connected.set.map{it?.requestId}.distinctUntilChanged()){a,b->a to b}
     @Volatile private var playback=PlaybackState()
     private var refreshJob:Job?=null
     private var lastAttempt:String?=null
@@ -53,6 +76,7 @@ class RadioRepository internal constructor(context:Context,private val db:Librar
         if(valid(batch.token))block() else null
     }
     init {
+        if(prefs.getBoolean("connected_radio",false))connected.setEnabled(true)
         scope.launch {
             try {
                 val initial=db.catalogs().latest()?.let { readSharedRadioProfile(db,it).explorationDefault }
@@ -98,6 +122,7 @@ class RadioRepository internal constructor(context:Context,private val db:Librar
         val accepted=batch.suggestions.filter{it.song.id in acceptedLocalIds}
         if(batch.token.policyRevision!=policyRevision || accepted.isEmpty())return false
         recentSelections=(recentSelections+accepted.map{it.song.id}).takeLast(50)
+        accepted.filter{it.pick.reason.startsWith(ConnectedPolicy.SERVER_AI_PREFIX)}.map{it.song.id}.takeIf{it.isNotEmpty()}?.let{ai->serverAi.update{(it+ai).toList().takeLast(50).toSet()}}
         sequenceOffset=(sequenceOffset+accepted.size)%1000000
         policyRevision++
         prefs.edit { putString("recentSelections",org.json.JSONArray(recentSelections).toString()) }
@@ -133,7 +158,59 @@ class RadioRepository internal constructor(context:Context,private val db:Librar
         if(batch.token.library.songs.none{it==seed} || !valid(batch.token))return null
         return batch.copy(suggestions=listOf(RadioSuggestion(seed,RadioPick("local:$seedLocalId",seedLocalId,0.0,0.5,null,slot="exploit",reason="Chosen starting song")))+batch.suggestions)
     }
-    fun refresh() { refreshJob?.cancel();refreshJob=scope.launch {delay(75);compute()} }
+    val connectedEnabled:Boolean get()=connected.enabled
+    fun setConnectedEnabled(value:Boolean) {
+        prefs.edit{putBoolean("connected_radio",value)}
+        connected.setEnabled(value)
+        if(!value)serverAi.value=emptySet()
+        val output=playback
+        // Turning it on mid-song prepares an option set for the song already playing.
+        if(value && output.radioActive)output.current?.let{songStarted(it,output)}
+    }
+    private fun connectedFence():ConnectedFence? { val id=playback.currentId ?: return null;val st=mutable.value
+        return ConnectedFence(id,st.mood,st.exploration,st.vibeLocalId,JournalIdentityProvider.mappings.value.generation,PortableSyncChanges.revision)
+    }
+    /** Called only for an actual start. Asks the desktop for one option set anchored on this song; playback never waits. */
+    @Volatile private var startedAnchor:String?=null
+    /** True while Connected Radio is on and the current song's actual start has not yet been seen (its request isn't pending yet). */
+    fun awaitingConnectedStart(currentId:String?)=connected.enabled && currentId!=null && startedAnchor!=currentId
+    fun songStarted(song:LocalSong,output:PlaybackState) {
+        if(!connected.enabled || !output.radioActive)return
+        startedAnchor=song.id
+        updatePlayback(output)
+        val local=library.value;val mapping=JournalIdentityProvider.mappings.value
+        if(local.accessLost || local.scanning || local.loading)return
+        val recent=journal.state.value.history.filter{it.kind=="song_completed" || it.kind=="song_skipped"}.sortedBy{it.logicalClock}.takeLast(20)
+            .map{ConnectedRecent(it.localId,if(it.kind=="song_completed")"completed" else "skipped")}
+        val st=mutable.value
+        connected.begin(ConnectedRequest(song,st.mood,st.exploration,st.vibeLocalId,mapping,local.songs.filter{it.available}.associateBy{it.id},recent,
+            output.playOrder.toSet()+recent.map{it.localId}+song.id,::isDisliked,
+            ConnectedFence(song.id,st.mood,st.exploration,st.vibeLocalId,mapping.generation,PortableSyncChanges.revision)))
+    }
+    private fun playable(id:String)=library.value.songs.any{it.id==id && it.available && it.uri.startsWith("content:")}
+    /**
+     * Refill batch for a running Radio queue: valid connected "similar" picks first (never more than the bound), then
+     * the unchanged offline recommender for the remaining room. With no usable connected set this is exactly [recommendations].
+     */
+    suspend fun refill(exclude:Set<String>,room:Int,tail:String?):RadioBatch? {
+        val held=connected.set.value
+        if(held==null || room<=0)return recommendations(exclude,room,tail)
+        connected.revalidate(connectedFence())
+        if(connected.set.value!==held)return recommendations(exclude,room,tail)
+        val chosen=ConnectedPolicy.refillPicks(held,exclude,mutable.value.vibeLocalId!=null || held.vibeLocked,room,::isDisliked,::playable)
+        if(chosen.isEmpty())return recommendations(exclude,room,tail)
+        val mapping=JournalIdentityProvider.mappings.value
+        val input=token()
+        val first=chosen.map{RadioSuggestion(it.song,RadioPick(mapping.entries[it.song.id]?.songId ?: "local:${it.song.id}",it.song.id,0.0,.5,null,slot="exploit",
+            reason=ConnectedPolicy.SERVER_AI_PREFIX+" · "+it.reason.ifBlank{"Similar to the current song"}))}
+        val rest=room-chosen.size
+        val offline=if(rest>0)compute(exclude+chosen.map{it.song.id},rest,tail,publishPreview=false).orEmpty() else emptyList()
+        connected.revalidate(connectedFence())
+        // A late or changed set is dropped whole, never merged into a different situation.
+        if(!valid(input) || connected.set.value!==held)return null
+        return RadioBatch(first+offline.filter{row->first.none{it.song.id==row.song.id}}.take(rest),input)
+    }
+    fun refresh() { connected.revalidate(connectedFence());refreshJob?.cancel();refreshJob=scope.launch {delay(75);compute()} }
     suspend fun recommendations(exclude:Set<String> = emptySet(),count:Int=5,anchorLocalId:String?=playback.currentId):RadioBatch? { val input=token();val rows=compute(exclude,count,anchorLocalId,publishPreview=false) ?: return null;return if(valid(input))RadioBatch(rows,input) else null }
     private suspend fun compute(exclude:Set<String> = emptySet(),count:Int=5,anchorLocalId:String?=if(playback.radioActive)playback.playOrder.lastOrNull() ?: playback.currentId else playback.currentId,publishPreview:Boolean=true):List<RadioSuggestion>? = mutex.withLock {
         defaultsReady.await()
