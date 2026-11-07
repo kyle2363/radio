@@ -21,6 +21,8 @@ Start with [the repository README](../README.md) for setup and the application m
 | --- | --- |
 | [ANDROID_APP_PLAN.md](ANDROID_APP_PLAN.md) | Checkpoint delivery, verification, acceptance and proposed app follow-ups |
 | [MOBILE_CONNECTION_PLAN.md](MOBILE_CONNECTION_PLAN.md) | Future connection/sync architecture and explicitly dated Phase 0 audit |
+| [CONNECTED_RECOMMENDATIONS_PLAN.md](CONNECTED_RECOMMENDATIONS_PLAN.md) | Checkpoint 4 connected recommendations: design, wire contract, acceptance |
+| [CONNECTED_TUNING_PLAN.md](CONNECTED_TUNING_PLAN.md) | Checkpoint 4.1 phone-only tuning of connected recommendations (in progress) |
 
 Checkpoints through 3B automatic discovery are phone-accepted. 2C, 3A and 3B are merged into `main`. Plans are not authorization to begin another checkpoint.
 
