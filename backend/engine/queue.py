@@ -13,15 +13,13 @@ import config
 from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime
-from engine import taste, retriever, slots, reranker, transitions, mood, energy, recovery
+from engine import taste, retriever, slots, reranker, transitions, mood, energy, recovery, recommendation_service
 
 
 def _song_effective_energy(song):
     """Compute effective energy from a song dict (avoids extra DB query)."""
-    base = song.get("energy", 0.5)
-    user = song.get("user_energy")
-    n = song.get("user_energy_count", 0) or 0
-    return round(0.7 * base + 0.3 * user, 4) if n > 0 and user is not None else base
+    from engine.recommendation_service import song_effective_energy
+    return song_effective_energy(song)
 from engine.constellations import TasteConstellations
 from engine.playback_plan import MediaUnavailable, call_announcement, prepare_song, prepare_talk
 from db import database
@@ -640,13 +638,10 @@ class QueueManager:
             energy_dir = traj.get_direction()
             _log_step(f"Energy dir: {energy_dir}")
 
+            # Sampled for its side effect on the injected trajectory; ranking
+            # itself uses the direction only.
             if current_song:
-                target_energy = traj.get_target_energy(
-                    self._mood.get_state(),
-                    datetime.now().hour,
-                )
-            else:
-                target_energy = None
+                traj.get_target_energy(self._mood.get_state(), datetime.now().hour)
 
             # Build taste vectors (text + audio)
             taste_vectors = self._memory.get_taste_vectors(
@@ -695,6 +690,7 @@ class QueueManager:
                          self._mood.get_state(), mood_energy, type(mood_energy).__name__,
                          mood_valence, type(mood_valence).__name__)
 
+
             # Parse recommendation filters (folders, mtime range, artist mode)
             subfolder_filter = None
             mtime_min = None
@@ -722,317 +718,51 @@ class QueueManager:
                 except (json.JSONDecodeError, TypeError):
                     pass
 
-            _log_step(f"Building candidate list (exclude={len(exclude_ids)})")
-            # Recent skip feedback for energy bias
             recent_feedback = database.get_recent_skip_feedback(self._current_session_id, limit=3)
-           # logger.debug("Queue rebuild: taste_vector type=%s len=%s, mood_energy=%r (type=%s), mood_valence=%r (type=%s), recent_feedback=%r (type=%s, len=%s)",
-            #              type(taste_vector).__name__, len(taste_vector) if taste_vector else None,
-            #              mood_energy, type(mood_energy).__name__,
-            #              mood_valence, type(mood_valence).__name__,
-            #              recent_feedback, type(recent_feedback).__name__, len(recent_feedback) if recent_feedback else 0)
-            # logger.debug("Queue rebuild: repulsion_vector type=%s len=%s, subfolder_filter=%r, exclude_ids type=%s len=%s",
-            #              type(repulsion_vector).__name__, len(repulsion_vector) if repulsion_vector else None,
-            #              subfolder_filter, type(exclude_ids).__name__, len(exclude_ids))
-            candidates = retriever.build_candidate_list(
-                text_taste_vector=taste_vector,
-                audio_taste_vector=taste_vectors["audio"],
-                current_song_id=context_id,
-                exploration_level=self._db.get_setting_float("exploration_level", .3),
-                exclude_ids=exclude_ids,
-                mood_energy_range=mood_energy,
-                mood_valence_range=mood_valence,
-                text_repulsion_vector=text_repulsion,
-                audio_repulsion_vector=audio_repulsion,
-                skip_feedback=recent_feedback,
-                subfolder_filter=subfolder_filter,
-                vibe_lock=vibe_lock,
-                mood_state=self._mood.get_state(),
-                mtime_min=mtime_min, mtime_max=mtime_max,
-                artist_mode=artist_mode, artists=artists,
-            )
-            _log_step(f"Candidates: {len(candidates)}")
-
-            # Merge transition candidates into the pool
-            if context_id:
-                from engine import transitions
-                trans_candidates = transitions.get_transition_candidates(context_id, n=15)
-                seen_ids = {c["song_id"] for c in candidates}
-                for tc in trans_candidates:
-                    if tc["song_id"] not in seen_ids and tc["song_id"] not in exclude_ids:
-                        song = self._db.get_song(tc["song_id"])
-                        if song:
-                            candidates.append({
-                                "song_id": tc["song_id"],
-                                "score": tc["score"] * 0.8,
-                                "energy": _song_effective_energy(song),
-                                "valence": song.get("valence", 0.5),
-                                "cluster_id": song.get("cluster_id", -1),
-                                "artist": song.get("artist", ""),
-                                "title": song.get("title", ""),
-                                "source": "transition",
-                            })
-                            seen_ids.add(tc["song_id"])
-                _log_step(f"Transition candidates merged: {len(candidates)} total")
-
-            # Apply recommendation filters to transition candidates added post-hoc
-            import time as _time
-            now_ts = _time.time()
-            filtered_candidates = []
-            for c in candidates:
-                cid = c["song_id"]
-                if subfolder_filter:
-                    allowed_ids = set(database.get_song_ids_in_subfolders(subfolder_filter))
-                    if cid not in allowed_ids:
-                        continue
-                if mtime_min is not None or mtime_max is not None:
-                    song = database.get_song(cid)
-                    if song:
-                        m = song.get("file_mtime")
-                        if m is None:
-                            # Fallback: derive from subfolder
-                            subf = song.get("subfolder", "")
-                            all_subfolders = database.get_subfolders()
-                            if all_subfolders and len(all_subfolders) > 1:
-                                rank = all_subfolders.index(subf) if subf in all_subfolders else 0
-                                known_mtimes = database.get_file_mtime_range()
-                                min_known, max_known = known_mtimes if known_mtimes[0] else (0, 1)
-                                if max_known > min_known:
-                                    frac = rank / (len(all_subfolders) - 1)
-                                    m = min_known + frac * (max_known - min_known)
-                        if m is not None:
-                            age_days = (now_ts - m) / 86400.0
-                            if mtime_min is not None and age_days < mtime_min:
-                                continue
-                            if mtime_max is not None and age_days > mtime_max:
-                                continue
-                if artist_mode and artists:
-                    lower_artists = [a.lower() for a in artists if a.strip()]
-                    if lower_artists:
-                        c_artist = c.get("artist", "").lower()
-                        if artist_mode == "include" and not any(a in c_artist for a in lower_artists):
-                            continue
-                        if artist_mode == "exclude" and any(a in c_artist for a in lower_artists):
-                            continue
-                filtered_candidates.append(c)
-            candidates = filtered_candidates
-            _log_step(f"Recommendation filters applied: {len(candidates)} remaining")
-
-            # Apply transition boost to candidates (batched)
-            if context_id and candidates:
-                from engine import transitions
-                candidate_ids = [c["song_id"] for c in candidates]
-                boost_map = transitions.get_transition_boosts(context_id, candidate_ids)
-                for c in candidates:
-                    boost = boost_map.get(c["song_id"], 0.0)
-                    if boost > 0:
-                        c["score"] = min(1.0, c.get("score", 0.5) + boost)
-
-            if not candidates:
-                _log_step("No eligible recommendation candidates")
-
-            # --- Taste Constellations: reweight candidates + taste hopping ---
-            hop_pocket = None
-            if (self._db.get_setting("constellations_enabled") or "true") == "true":
-                try:
-                    self._constellations.build()
-                    if self._constellations.is_active:
-                        active_pocket = self._constellations.select_active_pocket(
-                            current_song=current_song,
-                            mood_state=self._mood.get_state(),
-                            hour=datetime.now().hour,
-                        )
-                        if active_pocket:
-                            candidates = self._constellations.reweight_candidates(
-                                candidates, active_pocket
-                            )
-                            _log_step(f"Constellation reweighted: active_pocket={active_pocket.constellation_id} "
-                                      f"(mood={active_pocket.primary_mood}, weight={active_pocket.weight:.2f})")
-
-                            # Taste hopping: occasionally inject candidates from neighboring pocket
-                            exploration_level_val = self._db.get_setting_float("exploration_level", 0.3)
-                            hop_pocket = self._constellations.should_hop(
-                                active_pocket, exploration_level_val
-                            )
-                            if hop_pocket:
-                                hop_emb = hop_pocket.centroid_text
-                                if hop_emb:
-                                    hop_candidates = retriever.search_by_vector(
-                                        taste_vector=hop_emb,
-                                        exploration_level=self._db.get_setting_float("exploration_level", .3),
-                                        n=10,
-                                        exclude_ids=exclude_ids + [c["song_id"] for c in candidates],
-                                        subfolder_filter=subfolder_filter,
-                                        mtime_min=mtime_min, mtime_max=mtime_max,
-                                        artist_mode=artist_mode, artists=artists,
-                                    )
-                                    for hc in hop_candidates:
-                                        hc["source"] = "constellation_hop"
-                                    candidates.extend(hop_candidates)
-                                    _log_step(f"Taste hop: {len(hop_candidates)} candidates from pocket {hop_pocket.constellation_id}")
-                except Exception as e:
-                    logger.debug("Constellation reweighting skipped: %s", e)
-
-            # Defensive: coerce None artist/title to "" — SQLite returns NULL for
-            # missing ID3 tags, and dict.get("artist","") returns None (not the
-            # default) when the key exists with value None.
-            for c in candidates:
-                if c.get("artist") is None:
-                    c["artist"] = ""
-                if c.get("title") is None:
-                    c["title"] = ""
-
-            # Apply genre filter if set (batched)
-            genre_filter = self._db.get_setting("genre_filter")
-            if genre_filter and genre_filter.strip().lower() not in ("none", ""):
-                _log_step(f"Applying genre filter: {genre_filter}")
-                candidate_ids = [c["song_id"] for c in candidates]
-                song_map = database.get_songs_by_ids(candidate_ids)
-                filtered = []
-                for c in candidates:
-                    song = song_map.get(c["song_id"])
-                    if song:
-                        genres = json.loads(song.get("genre_tags") or "[]")
-                        if genre_filter.lower() in [g.lower() for g in genres]:
-                            filtered.append(c)
-                if filtered:
-                    candidates = filtered
-                    _log_step(f"Genre filter: {len(candidates)} remaining")
-
-            # Apply artist filter if set
-            artist_filter = self._db.get_setting("artist_filter")
-            if artist_filter and artist_filter.strip().lower() not in ("none", ""):
-                _log_step(f"Applying artist filter: {artist_filter}")
-                filtered = []
-                for c in candidates:
-                    artist = c.get("artist", "").lower()
-                    if artist_filter.lower() in artist:
-                        filtered.append(c)
-                if filtered:
-                    candidates = filtered
-                    _log_step(f"Artist filter: {len(candidates)} remaining")
-
-            # Allocate slots (with optional guest persona slot bias)
-            exploration_level = self._db.get_setting_float("exploration_level", 0.3)
+            exploration_level = self._db.get_setting_float("exploration_level", .3)
             from engine import archetype as archetype_engine
             archetype_name, _ = archetype_engine.detect_archetype()
             guest_bias = self._talk_context.get_active_guest_slot_bias()
-            # Pass constellation pockets if available
-            _active_pocket = self._constellations.active_pocket if self._constellations.is_active else None
-            _log_step(f"Allocating slots (archetype={archetype_name}, exploration={exploration_level})")
-            slots_result = slots.allocate_slots(
-                candidates, current_song, vibe_lock=vibe_lock,
-                exploration_level=exploration_level, archetype=archetype_name,
+            _log_step(f"Ranking (archetype={archetype_name}, exploration={exploration_level})")
+
+            # The ranking pipeline itself is pure and shared with mobile
+            # requests; everything stateful stays in this method.
+            result = recommendation_service.recommend(recommendation_service.RecommendationInputs(
+                db=self._db,
+                anchor_song_id=context_id,
+                taste_vector=taste_vector,
+                audio_taste_vector=taste_vectors["audio"],
+                text_repulsion_vector=text_repulsion,
+                audio_repulsion_vector=audio_repulsion,
+                exclude_ids=exclude_ids,
+                mood_state=self._mood.get_state(),
+                mood_energy_range=mood_energy,
+                mood_valence_range=mood_valence,
+                energy_direction=energy_dir,
+                skip_streak=self._skip_streak,
+                skip_feedback=recent_feedback,
+                exploration_level=exploration_level,
+                vibe_lock=vibe_lock,
+                subfolder_filter=subfolder_filter,
+                mtime_min=mtime_min, mtime_max=mtime_max,
+                artist_mode=artist_mode, artists=artists,
+                genre_filter=self._db.get_setting("genre_filter"),
+                artist_filter=self._db.get_setting("artist_filter"),
+                reranking_enabled=reranking_enabled,
+                mode=self._db.get_setting("current_mode") or "radio",
+                play_mode=self._db.get_setting("play_mode") or "ai",
+                archetype=archetype_name,
                 slot_bias=guest_bias,
-                active_pocket=_active_pocket,
-                hop_pocket=hop_pocket,
-            )
-            _log_step(f"Slots allocated: {slots_result}")
+                constellations=self._constellations,
+                constellations_enabled=(self._db.get_setting("constellations_enabled") or "true") == "true",
+                filler_current_song_id=self._current_song_id,
+                llm_gate=recommendation_service.DEFAULT_LLM_GATE,
+                gate_priority=recommendation_service.LlmPriorityGate.DESKTOP,
+                step=_log_step,
+            ))
+            new_queue = result.entries
 
-            # Hydrate song text in one batch; retrieval diagnostics stay attached.
-            _log_step("Enriching candidates with lyrics and tags")
-            candidate_songs = self._db.get_songs_by_ids([c["song_id"] for c in candidates])
-            for c in candidates:
-                cs = candidate_songs.get(c["song_id"])
-                if cs:
-                    for key in ("lyrics", "genre_tags", "emotional_tags", "instrument_tags"):
-                        c[key] = cs.get(key)
 
-            # Check play_mode (ai/shuffle/sequential) — bypasses full recommendation engine
-            mode = self._db.get_setting("current_mode") or "radio"
-            play_mode = self._db.get_setting("play_mode") or "ai"
-            _log_step(f"Mode: {mode}, Play mode: {play_mode}")
-            if play_mode in ("shuffle", "sequential"):
-                _log_step(f"Play mode '{play_mode}' — building queue directly from library")
-                conn = self._db.get_connection()
-                try:
-                    exclude_sql = ""
-                    if self._current_song_id:
-                        exclude_sql = f"AND s.id != {self._current_song_id}"
-                    eff_expr = "(0.7 * s.energy + 0.3 * COALESCE(s.user_energy, s.energy))"
-                    order_by = "RANDOM()" if play_mode == "shuffle" else f"{eff_expr} DESC"
-                    reason = "Random pick" if play_mode == "shuffle" else "Sequential order"
-                    rows = conn.execute(f"""
-                        SELECT s.id, s.artist, s.title, {eff_expr} as energy, s.valence, s.bpm
-                        FROM songs s LEFT JOIN blacklist b ON s.id = b.song_id
-                        WHERE s.ingest_phase = 'clustered' AND b.song_id IS NULL {exclude_sql}
-                        ORDER BY {order_by} LIMIT 5
-                    """).fetchall()
-                finally:
-                    conn.close()
-                picks = [{"id": r["id"], "slot": "manual", "reason": reason} for r in rows]
-                _log_step(f"Built {len(picks)} picks from {play_mode} mode")
-            elif mode == "normal" or not reranking_enabled:
-                _log_step("Deterministic song assignment")
-                picks = reranker.deterministic_assignment(candidates, slots_result)
-            else:
-                # Rerank with LLM
-                _log_step("Calling reranker.rerank()...")
-                picks = reranker.rerank(
-                    candidates=candidates,
-                    current_song=current_song,
-                    mood_state=self._mood.get_state(),
-                    energy_trajectory=energy_dir,
-                    hour=datetime.now().hour,
-                    skip_streak=self._skip_streak,
-                    vibe_lock=vibe_lock,
-                    exploration_level=exploration_level,
-                )
-                _log_step(f"Reranker returned: {len(picks) if picks else None} picks")
-                if picks is None:
-                    _log_step("Reranker returned None, using fallback")
-                    picks = reranker.fallback_assignment(candidates, slots_result)
-
-            if picks is None:
-                # Fallback: deterministic assignment
-                _log_step("Picks still None, using fallback_assignment")
-                picks = reranker.fallback_assignment(candidates, slots_result)
-
-            # Build queue from picks
-            _log_step(f"Building queue from {len(picks)} picks")
-            vibe_active = vibe_lock and vibe_lock.get("active")
-            new_queue = []
-            for pick in picks:
-                song = self._db.get_song(pick["id"])
-                if song:
-                    is_vibe_affect = bool(vibe_active and pick.get("slot") in ("exploit", "explore"))
-                    new_queue.append({
-                        "song_id": pick["id"],
-                        "slot": pick.get("slot", "context"),
-                        "reason": pick.get("reason", ""),
-                        "artist": song.get("artist", ""),
-                        "title": song.get("title", ""),
-                        "energy": _song_effective_energy(song),
-                        "valence": song.get("valence", 0.5),
-                        "bpm": song.get("bpm", 0),
-                        "vibe_affected": is_vibe_affect,
-                        "recommendation": next((c.get("diagnostics", {}) for c in candidates
-                                                if c["song_id"] == pick["id"]), {}),
-                    })
-
-            # Ensure we have at least 4 items
-            if len(new_queue) < 4:
-                _log_step(f"Queue only {len(new_queue)}, adding fillers")
-                additional = retriever.build_candidate_list(
-                    text_taste_vector=taste_vector,
-                    audio_taste_vector=taste_vectors["audio"],
-                    current_song_id=self._current_song_id,
-                    exploration_level=self._db.get_setting_float("exploration_level", .3),
-                    exclude_ids=[p["song_id"] for p in new_queue],
-                    subfolder_filter=subfolder_filter,
-                )
-                for c in additional:
-                    song = self._db.get_song(c["song_id"])
-                    if song and len(new_queue) < 4:
-                        new_queue.append({
-                            "song_id": c["song_id"],
-                            "slot": "context",
-                            "reason": "Recommended for you.",
-                            "artist": song.get("artist", ""),
-                            "title": song.get("title", ""),
-                            "energy": _song_effective_energy(song),
-                            "valence": song.get("valence", 0.5),
-                            "bpm": song.get("bpm", 0),
-                        })
 
             # --- Phase 1: Validate rebuild is current BEFORE talk scheduling ---
             with self._condition:

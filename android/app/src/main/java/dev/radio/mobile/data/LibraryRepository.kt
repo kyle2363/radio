@@ -27,7 +27,7 @@ data class LibraryState(
     val error: String? = null
 )
 
-class LibraryRepository(context: Context, internal val db: LibraryDatabase) {
+class LibraryRepository(context: Context, internal val db: LibraryDatabase, connectedLink: (() -> dev.radio.mobile.recommendation.ConnectedServerLink)? = null) {
     private val resolver = context.applicationContext.contentResolver
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     internal val playbackSnapshots = PlaybackSnapshotStore(db.library(), scope)
@@ -36,7 +36,7 @@ class LibraryRepository(context: Context, internal val db: LibraryDatabase) {
     private val mutex = Mutex()
     private val mutable = MutableStateFlow(LibraryState())
     val state: StateFlow<LibraryState> = mutable.asStateFlow()
-    val radio = dev.radio.mobile.recommendation.RadioRepository(context, db, state, journal, scope)
+    val radio = dev.radio.mobile.recommendation.RadioRepository(context, db, state, journal, scope, connectedLink = connectedLink)
     val loudness = LoudnessRepository(context, db.loudness(), scope, state)
     private var scanJob: Job? = null
     private fun hasAccess(uri: Uri) = resolver.persistedUriPermissions.any { it.uri == uri && it.isReadPermission }

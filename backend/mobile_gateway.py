@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictInt, ValidationError
 from starlette.responses import JSONResponse, Response
 
 from portable_sync import SyncConflict
+from mobile_recommendations import CONTEXT_ID, MobileRecommendations, Rejected
 from portable.catalog import canonical_json
 from mobile_catalog import MAX_REVISION, MOBILE_BATCH_COUNT, MOBILE_BATCH_BYTES
 
@@ -21,6 +22,13 @@ PREFIX = "/api/portable/v1"
 ROUTES = {("GET", PREFIX + "/identity"), ("POST", PREFIX + "/pairing/exchange"),
           ("GET", PREFIX + "/capabilities")}
 MAX_SYNC_BODY = 2 * 1024 * 1024
+# Connected recommendations: every route is POST with a JSON body (the phone's
+# transport only sends GET and POST). Per-route request limits.
+MAX_AVAILABILITY_BODY = 256 * 1024
+MAX_CONTEXT_BODY = 8 * 1024
+MAX_RECOMMENDATION_BODY = 16 * 1024
+MAX_RECOMMENDATION_RESPONSE = 64 * 1024
+CONTEXT_PATH = re.compile(re.escape(PREFIX) + r"/contexts/(" + CONTEXT_ID + r")(/recommendations)?")
 
 
 class EventsRequest(BaseModel):
@@ -133,9 +141,10 @@ class Admission:
 
 
 class GatewayBoundary:
-    def __init__(self, app, *, store, admission, catalog=None):
+    def __init__(self, app, *, store, admission, catalog=None, recommendations=None):
         self.app, self.store, self.admission = app, store, admission
         self.catalog = catalog
+        self.recommendations = recommendations
         self._lock, self._buckets = threading.Lock(), OrderedDict()
         self._global = (0, 0)
         self._device_buckets = OrderedDict()
@@ -212,11 +221,18 @@ class GatewayBoundary:
         is_sync_events = path == PREFIX + "/events" and scope["method"] in ("GET", "POST")
         is_sync_profile = path == PREFIX + "/profile" and scope["method"] == "GET"
         sync_get = is_sync_events and scope["method"] == "GET"
+        context_match = CONTEXT_PATH.fullmatch(path) if scope["method"] == "POST" else None
+        is_availability = path == PREFIX + "/availability" and scope["method"] == "POST"
+        is_context_create = path == PREFIX + "/contexts" and scope["method"] == "POST"
+        is_context_update = bool(context_match) and not context_match[2]
+        is_recommendation = bool(context_match) and bool(context_match[2])
+        is_connected = self.recommendations is not None and (
+            is_availability or is_context_create or is_context_update or is_recommendation)
         # The factory supplies this flag explicitly; middleware's inner app is
         # an exception wrapper rather than the FastAPI instance.
         catalog_enabled = self.catalog is not None
         if (((scope["method"], path) not in ROUTES and not (catalog_enabled and (is_catalog or is_vector or is_batch))
-             and not (is_sync_events or is_sync_profile))
+             and not (is_sync_events or is_sync_profile) and not is_connected)
                 or (scope.get("query_string") and not (is_catalog or is_batch or sync_get))
                 or scope.get("raw_path", path.encode()) != path.encode("ascii", errors="replace")):
             return await reject(404, "Mobile route not found")
@@ -306,8 +322,11 @@ class GatewayBoundary:
                     return await reject(429, "Device request limit exceeded", {"Retry-After": str(retry_after)})
             if scope["mobile_ingress"] == "remote" and path == PREFIX + "/pairing/exchange":
                 return await reject(404, "Remote pairing is unavailable")
-            if (path.endswith("/capabilities") or is_catalog or is_vector or is_batch or is_sync_events or is_sync_profile) and not scope.get("portable_identity"):
+            if (path.endswith("/capabilities") or is_catalog or is_vector or is_batch or is_sync_events or is_sync_profile
+                    or is_connected) and not scope.get("portable_identity"):
                 return await reject(401, "Device bearer required")
+            if is_connected and "recommend:read" not in scope["portable_identity"]["scopes"]:
+                return await reject(403, "Device token lacks recommend:read scope")
             if (is_catalog or is_vector or is_batch) and "catalog:read" not in scope["portable_identity"]["scopes"]:
                 return await reject(403, "Device token lacks catalog:read scope")
             if is_catalog:
@@ -334,7 +353,11 @@ class GatewayBoundary:
             length = values.get(b"content-length", "0")
             if not re.fullmatch(r"0|[1-9][0-9]{0,8}", length):
                 return await reject(400, "Invalid content length")
-            body_limit = MAX_SYNC_BODY if is_sync_events and scope["method"] == "POST" else 8192
+            body_limit = (MAX_SYNC_BODY if is_sync_events and scope["method"] == "POST" else
+                          MAX_AVAILABILITY_BODY if is_availability else
+                          MAX_RECOMMENDATION_BODY if is_recommendation else 8192)
+            if is_context_create or is_context_update:
+                body_limit = MAX_CONTEXT_BODY
             if int(length) > body_limit:
                 return await reject(413, "Mobile body too large")
             if scope["method"] == "POST" and values.get(b"content-type", "").split(";")[0].strip() != "application/json":
@@ -372,7 +395,8 @@ class GatewayBoundary:
             return {"type": "http.request", "body": bytes(body), "more_body": False}
 
         response_limit = (16 * 1024 * 1024 if is_catalog else 8_000_000 if is_batch else
-                          MAX_SYNC_BODY if is_sync_events else 262_144 if is_vector else 8192)
+                          MAX_SYNC_BODY if is_sync_events else 262_144 if is_vector else
+                          MAX_RECOMMENDATION_RESPONSE if is_connected else 8192)
         messages, response_size = [], 0
         async def capture(message):
             nonlocal response_size
@@ -392,9 +416,10 @@ class GatewayBoundary:
             await send(message)
 
 
-def create_mobile_gateway(store, identity, pairing, *, catalog=None, monotonic=time.monotonic):
+def create_mobile_gateway(store, identity, pairing, *, catalog=None, monotonic=time.monotonic, recommendations=None):
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, redirect_slashes=False)
     admission = app.state.admission = Admission(monotonic=monotonic)
+    recommendations = app.state.recommendations = recommendations or MobileRecommendations(store)
 
     @app.get(PREFIX + "/identity")
     def descriptor(request: Request):
@@ -418,7 +443,7 @@ def create_mobile_gateway(store, identity, pairing, *, catalog=None, monotonic=t
                 "catalog_id": store.catalog_id, "pairing": True,
                 "catalog_import": catalog is not None, "catalog_schema": 1,
                 "catalog_revision": catalog.status()["revision"] if catalog else None,
-                "profile_sync": True, "remote_hosting": True,
+                "profile_sync": True, "remote_hosting": True, "connected_recommendations": True, "connected_tuning": True,
                 "offline_recommendations": False, "native_speech_generation": False,
                 "local_music_required": True}
 
@@ -454,6 +479,35 @@ def create_mobile_gateway(store, identity, pairing, *, catalog=None, monotonic=t
             raise HTTPException(409, str(exc)) from None
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from None
+
+    async def connected(request: Request, call, *args):
+        try:
+            body = strict_json(await request.body())
+        except (ValueError, UnicodeError):
+            raise HTTPException(422, "Invalid request") from None
+        device_id = request.scope["portable_identity"]["device_id"]
+        try:
+            # Ranking can legitimately take up to the 60 s server deadline; it
+            # runs in a worker thread so the gateway's event loop stays free.
+            return await asyncio.to_thread(call, device_id, *args, body)
+        except Rejected as exc:
+            raise HTTPException(exc.status, exc.detail) from None
+
+    @app.post(PREFIX + "/availability")
+    async def put_availability(request: Request):
+        return await connected(request, recommendations.put_availability)
+
+    @app.post(PREFIX + "/contexts")
+    async def create_context(request: Request):
+        return await connected(request, recommendations.create_context)
+
+    @app.post(PREFIX + "/contexts/{context_id}")
+    async def update_context(context_id: str, request: Request):
+        return await connected(request, recommendations.update_context, context_id)
+
+    @app.post(PREFIX + "/contexts/{context_id}/recommendations")
+    async def recommend(context_id: str, request: Request):
+        return await connected(request, recommendations.recommend, context_id)
 
     if catalog is not None:
         @app.get(PREFIX + "/catalog")
@@ -494,5 +548,6 @@ def create_mobile_gateway(store, identity, pairing, *, catalog=None, monotonic=t
             except (ValueError, OSError):
                 raise HTTPException(503, "Prepared vector unavailable") from None
 
-    app.add_middleware(GatewayBoundary, store=store, admission=admission, catalog=catalog)
+    app.add_middleware(GatewayBoundary, store=store, admission=admission, catalog=catalog,
+                       recommendations=recommendations)
     return app

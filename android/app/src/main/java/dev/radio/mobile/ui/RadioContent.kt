@@ -2,6 +2,7 @@ package dev.radio.mobile.ui
 
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -21,7 +22,7 @@ import dev.radio.mobile.recommendation.*
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun RadioContent(radio:RadioState,repository:RadioRepository,audio:PlaybackState,playback:PlaybackController,library:LibraryState,onLibrary:()->Unit,onPlayer:()->Unit,modifier:Modifier=Modifier) {
+fun RadioContent(radio:RadioState,repository:RadioRepository,audio:PlaybackState,playback:PlaybackController,library:LibraryState,onLibrary:()->Unit,onPlayer:()->Unit,modifier:Modifier=Modifier,connected:ConnectedUi=ConnectedUi()) {
     var tuning by remember { mutableStateOf(false) }
     var confirm by remember { mutableStateOf(false) }
     var seedPicker by remember { mutableStateOf(false) }
@@ -79,6 +80,10 @@ fun RadioContent(radio:RadioState,repository:RadioRepository,audio:PlaybackState
                 radio.error?.let{Text(it,Modifier.padding(top=12.dp),color=MaterialTheme.colorScheme.error)}
             }
         }
+        item(key="up-next-options") {
+            val options=ConnectedPolicy.visibleOptions(connected,audio.currentId,audio.radioActive,audio.playOrder.toSet(),repository::isDisliked){id->library.songs.any{it.id==id && it.available}}
+            if(options.isNotEmpty())UpNextOptionsCard(options,{pick->playback.addToQueue(listOf(pick.song),true)},Modifier.padding(horizontal=20.dp,vertical=8.dp),connected.set?.let(ConnectedPolicy::summary))
+        }
         item {Row(Modifier.fillMaxWidth().padding(start=20.dp,end=8.dp),verticalAlignment=Alignment.CenterVertically){Text("Suggested next",Modifier.weight(1f),style=MaterialTheme.typography.titleMedium);TextButton(onClick=repository::refreshSuggestions,enabled=!radio.busy,modifier=Modifier.testTag("refresh-radio")){Text(if(radio.busy)"Refreshing…" else "Refresh")}}}
         item {
             radio.suggestionAnchorTitle?.let { title ->
@@ -117,7 +122,7 @@ fun RadioContent(radio:RadioState,repository:RadioRepository,audio:PlaybackState
     )
     if(confirm)AlertDialog(onDismissRequest={confirm=false},title={Text("Start a new Radio queue?")},text={Text("This replaces the current queue and starts " + (library.songs.firstOrNull{it.id==selectedSeed}?.title ?: "the first recommendation") + ".")},confirmButton={TextButton(onClick={confirm=false;start()},modifier=Modifier.testTag("confirm-start-radio")){Text("Start Radio")}},dismissButton={TextButton(onClick={confirm=false}){Text("Cancel")}})
     if(tuning)ModalBottomSheet(onDismissRequest={tuning=false}) {
-        Column(Modifier.padding(horizontal=24.dp).padding(bottom=24.dp).testTag("radio-tuning")) {
+        Column(Modifier.verticalScroll(androidx.compose.foundation.rememberScrollState()).padding(horizontal=24.dp).padding(bottom=24.dp).testTag("radio-tuning")) {
             Text("Tune Radio",style=MaterialTheme.typography.titleLarge)
             Text("Mood",Modifier.padding(top=20.dp,bottom=8.dp),style=MaterialTheme.typography.titleSmall)
             FlowRow(horizontalArrangement=Arrangement.spacedBy(8.dp)){OfflineRecommender.MOODS.keys.forEach { mood->FilterChip(radio.mood==mood,onClick={repository.setMood(mood)},label={Text(mood.replaceFirstChar{it.uppercase()})},modifier=Modifier.testTag("radio-mood-$mood"))}}
@@ -127,6 +132,10 @@ fun RadioContent(radio:RadioState,repository:RadioRepository,audio:PlaybackState
             Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween){Text("Familiar",style=MaterialTheme.typography.bodySmall);Text("Adventurous",style=MaterialTheme.typography.bodySmall)}
             Text("At 0%, Radio prioritizes similarity and stays near the starting song. Listening taste breaks near ties.",Modifier.padding(top=8.dp),style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
             Text("Applies to future suggestions. Your current song and queue stay in place.",Modifier.padding(top=16.dp),style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+            if(connected.status.enabled){
+                val connectedTuning by repository.connectedTuning.collectAsState()
+                ConnectedTuningSection(connectedTuning,connected.status.tunable,connected.set?.applied?.pockets=="inactive",repository::setConnectedTuning)
+            }
             TextButton(onClick={tuning=false},modifier=Modifier.align(Alignment.End)){Text("Done")}
         }
     }

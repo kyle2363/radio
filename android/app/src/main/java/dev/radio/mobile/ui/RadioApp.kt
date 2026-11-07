@@ -55,6 +55,7 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
     val playlists by repository.playlists.state.collectAsState()
     val journal by repository.journal.state.collectAsState()
     val radio by repository.radio.state.collectAsState()
+    val connected by repository.radio.connectedState.collectAsState()
     val keyboard = LocalSoftwareKeyboardController.current
     val focus = LocalFocusManager.current
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri -> if (uri != null) repository.chooseFolder(uri) }
@@ -202,7 +203,7 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
                     choose = { chooseFolder() }, rescan = { repository.rescan() }, cancel = { repository.cancelScan() }, modifier = Modifier.padding(insets), onSongAction = ::songAction,
                     playlistContent = { PlaylistBrowser(playlists, repository.playlists, library.songs, !library.accessLost, playlistId, { playlistId = it },
                         onPlay = { item, context, source -> playSong(item, context, source); navigate("Now playing") }, onSongAction = ::songAction) })
-                "Radio" -> RadioContent(radio,repository.radio,audio,playback,library,onLibrary={navigate("Library")},onPlayer={navigate("Now playing")},modifier=Modifier.padding(insets))
+                "Radio" -> RadioContent(radio,repository.radio,audio,playback,library,onLibrary={navigate("Library")},onPlayer={navigate("Now playing")},connected=connected,modifier=Modifier.padding(insets))
                 "Search" -> Column(Modifier.padding(insets).imePadding()) {
                     OutlinedTextField(query, onValueChange = { query = it }, placeholder = { Text("Search songs and filenames") }, singleLine = true, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp).testTag("search-input"))
                     val results = remember(songs, query) { songs.filter { query.isNotBlank() && (it.title + " " + it.fileName + " " + it.folderPath).contains(query, ignoreCase = true) } }
@@ -221,7 +222,7 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
                     Column(Modifier.fillMaxSize().navigationBarsPadding()) {
                         if (showQueue) {
                             IntegratedQueue(audio, !library.accessLost, onSelect = { playback.jumpTo(it) }, modifier = Modifier.fillMaxWidth().weight(1f),
-                                playback = playback, onAdd = { addQueueSongs = true }, onSave = { playlistSongIds = it })
+                                playback = playback, onAdd = { addQueueSongs = true }, onSave = { playlistSongIds = it }, serverAiIds = connected.serverAiIds)
                         } else {
                             Column(Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                                 Spacer(Modifier.height(20.dp))
@@ -243,6 +244,9 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
                                     if(audio.radioActive){Text("${radio.mood.replaceFirstChar{it.uppercase()}} · ${if(radio.vibeAvailable)"For your taste" else "Local music"}",Modifier.padding(top=8.dp),style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
                                         if(locked)Text("${radio.vibeSongsLeft} songs left · up to 30 min",style=MaterialTheme.typography.bodySmall)
                                         else if(!radio.vibeAvailable)Text("Vibe lock needs a matched song with recommendation data.",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)}
+                                    val options = dev.radio.mobile.recommendation.ConnectedPolicy.visibleOptions(connected, audio.currentId, audio.radioActive, audio.playOrder.toSet(), repository.radio::isDisliked) { id -> library.songs.any { it.id == id && it.available } }
+                                    if (options.isNotEmpty()) UpNextOptionsCard(options, { pick -> playback.addToQueue(listOf(pick.song), true) }, Modifier.padding(top = 12.dp),
+                                        connected.set?.let(dev.radio.mobile.recommendation.ConnectedPolicy::summary))
                                     HorizontalDivider(Modifier.padding(top = 8.dp))
                                     Text(audio.status + " · Local file\n" + song.folderPath.ifEmpty { library.root?.name ?: "Music" }, Modifier.fillMaxWidth().padding(vertical = 16.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
@@ -267,7 +271,7 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
                     }
                 }
                 "Server" -> Column(Modifier.padding(insets).consumeWindowInsets(insets).imePadding().fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).testTag("server-scroll")) {
-                    ServerSettings(pairing, onOpenMatching = { navigate("Matching") }, discoveryRepository = discovery)
+                    ServerSettings(pairing, onOpenMatching = { navigate("Matching") }, discoveryRepository = discovery, radioRepository = repository.radio)
                 }
                 "Matching" -> Column(Modifier.padding(insets).consumeWindowInsets(insets).imePadding().fillMaxSize().padding(horizontal = 16.dp)) {
                     ServerSettings(pairing, matchingScreen = true, discoveryRepository = discovery)

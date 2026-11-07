@@ -12,6 +12,8 @@ contextBridge.exposeInMainWorld("electron", {
   getMobileGatewayStatus: () => ipcRenderer.invoke('mobile-pairing-gateway-status'),
   enableMobileGateway: () => ipcRenderer.invoke('mobile-pairing-enable-gateway'),
   grantMobileProfileSync: (deviceId) => ipcRenderer.invoke('mobile-pairing-profile-sync', deviceId),
+  grantMobileConnectedRadio: (deviceId) => ipcRenderer.invoke('mobile-pairing-connected-radio-grant', deviceId),
+  revokeMobileConnectedRadio: (deviceId) => ipcRenderer.invoke('mobile-pairing-connected-radio-revoke', deviceId),
   cancelMobileCatalog: () => ipcRenderer.invoke('mobile-catalog-cancel'),
   prepareMobileCatalog: () => ipcRenderer.invoke('mobile-catalog-prepare'),
   getMobileCatalogStatus: () => ipcRenderer.invoke('mobile-catalog-status'),

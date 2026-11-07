@@ -169,6 +169,22 @@ function createMobilePairingControl({ request, isBackendAlive, enabled }) {
         return { device_id: id, scopes: [...value.scopes] };
       });
     },
+    async grantConnectedRadio(id) {
+      if (!validId(id)) throw Error('Invalid paired device.');
+      return enqueue(async () => {
+        const value = await call(`/devices/${id}/connected-radio`, 'POST');
+        if (value?.device_id !== id || !Array.isArray(value.scopes) || !value.scopes.includes('recommend:read')) throw Error(UNAVAILABLE);
+        return { device_id: id, scopes: [...value.scopes] };
+      });
+    },
+    async revokeConnectedRadio(id) {
+      if (!validId(id)) throw Error('Invalid paired device.');
+      return enqueue(async () => {
+        const value = await call(`/devices/${id}/connected-radio`, 'DELETE');
+        if (value?.device_id !== id || !Array.isArray(value.scopes) || value.scopes.includes('recommend:read')) throw Error(UNAVAILABLE);
+        return { device_id: id, scopes: [...value.scopes] };
+      });
+    },
     async revokeDevice(id) {
       if (!validId(id)) throw Error('Invalid paired device.');
       return enqueue(async () => {
@@ -213,6 +229,7 @@ function registerMobilePairingIPC(ipcMain, control, getMainWindow) {
     ['mobile-pairing-create', 1, 'createBundle'], ['mobile-pairing-devices', 0, 'listDevices'], ['mobile-pairing-revoke', 1, 'revokeDevice'],
     ['mobile-pairing-gateway-status', 0, 'gatewayStatus'], ['mobile-pairing-enable-gateway', 0, 'enableGateway'],
     ['mobile-pairing-profile-sync', 1, 'grantProfileSync'],
+    ['mobile-pairing-connected-radio-grant', 1, 'grantConnectedRadio'], ['mobile-pairing-connected-radio-revoke', 1, 'revokeConnectedRadio'],
     ['mobile-catalog-prepare', 0, 'prepareCatalog'], ['mobile-catalog-status', 0, 'catalogStatus'], ['mobile-catalog-cancel', 0, 'cancelCatalog'],
   ]) ipcMain.handle(channel, (event, ...args) => {
     guard(event);

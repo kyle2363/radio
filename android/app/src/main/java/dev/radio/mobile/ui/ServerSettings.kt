@@ -22,7 +22,7 @@ import dev.radio.mobile.data.PortableSyncRepository
 import kotlinx.coroutines.launch
 
 @Composable
-fun ServerSettings(repository: PairingRepository? = null, matchingScreen: Boolean = false, onOpenMatching: () -> Unit = {}, discoveryRepository: DiscoveryRepository? = null) {
+fun ServerSettings(repository: PairingRepository? = null, matchingScreen: Boolean = false, onOpenMatching: () -> Unit = {}, discoveryRepository: DiscoveryRepository? = null, radioRepository: dev.radio.mobile.recommendation.RadioRepository? = null) {
     val context = LocalContext.current.applicationContext
     val connection = remember(repository, context) {
         repository ?: EndpointPolicy(BuildConfig.DEBUG).let { policy -> PairingRepository(PairedServerStore(context, policy), RadioApiClient(policy), policy) }
@@ -116,6 +116,12 @@ fun ServerSettings(repository: PairingRepository? = null, matchingScreen: Boolea
         ProfileSyncSection(sync.busy, sync.pendingEvents, sync.lastSuccessAt, sync.message, sync.error,
             enabled = state.loaded && state.paired && !state.pending && !state.quarantined && !state.blocked && !state.busy && !imported.busy && !matches.busy,
             onSync = { scope.launch { discovery.readDuringSession(); synchronizer.syncNow(); if(sync.error != null) discovery.readAfterConnectionError() } })
+        if (radioRepository != null) {
+            val connectedUi by radioRepository.connectedState.collectAsState()
+            ConnectedRadioSection(connectedUi.status, paired = state.paired && !state.blocked && !state.quarantined,
+                onToggle = { radioRepository.setConnectedEnabled(it) }, onCheck = { scope.launch { radioRepository.connected.checkAccess() } },
+                summary = connectedUi.set?.let(dev.radio.mobile.recommendation.ConnectedPolicy::summary))
+        }
         Text("Catalog", Modifier.padding(top = 12.dp), style = MaterialTheme.typography.titleSmall)
         val ready = imported.ready
         if (ready != null) {

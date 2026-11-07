@@ -20,7 +20,7 @@ def _is_assigned(song, assigned_ids):
 
 
 def allocate_slots(candidates, current_song, vibe_lock=None, exploration_level=0.3,
-                    archetype=None, slot_bias=None, active_pocket=None, hop_pocket=None):
+                    archetype=None, slot_bias=None, active_pocket=None, hop_pocket=None, counts=None):
     """Allocate candidates into named slots.
 
     Args:
@@ -36,6 +36,7 @@ def allocate_slots(candidates, current_song, vibe_lock=None, exploration_level=0
             - explore_boost: float score multiplier for explore
         active_pocket: TastePocket or None — current constellation pocket
         hop_pocket: TastePocket or None — target pocket for taste hopping
+        counts: optional per-slot budget from portable.slots.slot_counts (phone tuning)
 
     Returns:
         dict with slot names as keys and song dicts as values, e.g.:
@@ -109,7 +110,7 @@ def allocate_slots(candidates, current_song, vibe_lock=None, exploration_level=0
             pass
     return allocate_ranked_slots(filtered, effective_current,
                                  vibe_lock=bool(vibe_lock and vibe_lock.get("active")),
-                                 exploration_level=exploration_level, archetype=archetype)
+                                 exploration_level=exploration_level, archetype=archetype, counts=counts)
 
 
 def score_candidate(candidate, current_song, vibe_lock=None):

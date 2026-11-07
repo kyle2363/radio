@@ -49,6 +49,8 @@ docs/*
 !docs/MOBILE_SYNC.md
 !docs/REMOTE_HOSTING.md
 !docs/AUTOMATIC_DISCOVERY.md
+!docs/CONNECTED_RECOMMENDATIONS_PLAN.md
+!docs/CONNECTED_TUNING_PLAN.md
 
 #audio files
 audio_files

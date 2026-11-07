@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { createPairingBundleState } from '../api/pairingBundleState';
 import MobileCatalogSettings from './MobileCatalogSettings';
 import RemoteHostingSettings from './RemoteHostingSettings';
+import { hasConnectedRadio } from '../api/connectedRadioState';
 
 const buttonStyle = { border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg-surface)', color: 'var(--text-primary)', padding: '6px 10px', fontSize: 11, cursor: 'pointer' };
 const hintStyle = { fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.6 };
@@ -75,6 +76,13 @@ export default function MobilePairingSettings() {
     if (alive.current) setMessage('Profile sync allowed. The existing phone credential and pending events are preserved.');
   });
 
+  const setConnectedRadio = (id, enabled, name) => perform(async () => {
+    if (enabled) await window.electron.grantMobileConnectedRadio(id);
+    else await window.electron.revokeMobileConnectedRadio(id);
+    await refresh();
+    if (alive.current) setMessage(enabled ? `Connected Radio allowed for ${name}.` : `Connected Radio turned off for ${name}.`);
+  });
+
   const copy = () => perform(async () => {
     if (!bundle || bundle.expires_at * 1000 <= Date.now()) { bundleState.current.clear(); return; }
     await navigator.clipboard.writeText(JSON.stringify(bundle));
@@ -115,6 +123,8 @@ export default function MobilePairingSettings() {
         <div><div className="set-label">{device.name}</div><div style={hintStyle}>{device.revoked ? 'Revoked' : expired ? 'Expired' : 'Paired'} · {device.scopes.join(', ')}</div></div>
         {!device.revoked && !expired && !hasProfileSync && <button type="button" style={buttonStyle} disabled={busy} onClick={() => grantProfileSync(device.device_id)} aria-label={`Allow profile sync for ${device.name}`}>Allow profile sync</button>}
         {!device.revoked && !expired && hasProfileSync && <span style={hintStyle}>Profile sync allowed</span>}
+        {!device.revoked && !expired && !hasConnectedRadio(device) && <button type="button" style={buttonStyle} disabled={busy} onClick={() => setConnectedRadio(device.device_id, true, device.name)} aria-label={`Allow Connected Radio for ${device.name}`}>Allow Connected Radio</button>}
+        {!device.revoked && !expired && hasConnectedRadio(device) && <button type="button" style={buttonStyle} disabled={busy} onClick={() => setConnectedRadio(device.device_id, false, device.name)} aria-label={`Turn off Connected Radio for ${device.name}`}>Turn off Connected Radio</button>}
         <button type="button" style={buttonStyle} disabled={busy || device.revoked} onClick={() => revoke(device.device_id)} aria-label={`Revoke ${device.name}`}>Revoke</button>
       </div>;
     })}

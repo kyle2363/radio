@@ -9,6 +9,22 @@ import threading
 from db import database
 
 
+def direction_of(energies):
+    """'rising', 'falling' or 'stable' for energies in play order (first half vs second half)."""
+    energies = list(energies)
+    if len(energies) < 2:
+        return "stable"
+    mid = len(energies) // 2
+    first_half = sum(energies[:mid]) / max(1, mid)
+    second_half = sum(energies[mid:]) / max(1, len(energies) - mid)
+    delta = second_half - first_half
+    if delta > 0.1:
+        return "rising"
+    if delta < -0.1:
+        return "falling"
+    return "stable"
+
+
 class EnergyTrajectory:
     """Tracks energy trends and computes targets."""
 
@@ -28,20 +44,8 @@ class EnergyTrajectory:
     def get_direction(self):
         """Get energy direction: 'rising', 'falling', or 'stable'."""
         with self._lock:
-            if len(self._recent_energies) < 2:
-                return "stable"
             energies = [e["energy"] for e in self._recent_energies]
-        # Compare first half vs second half
-        mid = len(energies) // 2
-        first_half = sum(energies[:mid]) / max(1, mid)
-        second_half = sum(energies[mid:]) / max(1, len(energies) - mid)
-
-        delta = second_half - first_half
-        if delta > 0.1:
-            return "rising"
-        elif delta < -0.1:
-            return "falling"
-        return "stable"
+        return direction_of(energies)
 
     def get_current_energy(self):
         """Get average energy of recent songs."""

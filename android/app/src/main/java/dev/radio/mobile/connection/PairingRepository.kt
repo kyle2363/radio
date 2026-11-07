@@ -148,6 +148,40 @@ class PairingRepository(
         if (response.status == 403) throw ConnectionFailure("Profile sync permission was denied. Allow profile sync for this device in desktop Server Settings, then retry.")
         response
     } }
+    /** Identity-verified session for connected recommendations. Unlike profile sync it does not demand a scope: the caller reads permission from /capabilities. */
+    internal suspend fun connectedSession(): ProfileSyncSession = withContext(Dispatchers.IO) { mutex.withLock {
+        val record = usable().record ?: throw ConnectionFailure("Pair this phone before using Connected Radio.")
+        val device = record.deviceId ?: throw ConnectionFailure("Finish pairing before using Connected Radio.")
+        requireCredential(record)
+        val verified = freshIdentity(verifyIdentity(record))
+        ProfileSyncSession(record.bundle.serverId, record.identityAnchor, record.installationMarker, device, record.bearer, record.bundle.endpoint,
+            verified.identityExpiresAt, verified.record.generation, verified.record.revision)
+    } }
+    /**
+     * One authenticated request for Connected Radio. Pairing is validated under the pairing lock, but the
+     * request itself is sent outside it: a recommendation may take over a minute and must not block
+     * pairing, catalog or sync actions. A 403 is returned to the caller (it means "not permitted").
+     */
+    internal suspend fun connectedRequest(session: ProfileSyncSession, path: String, body: String? = null): RadioResponse {
+        val record = withContext(Dispatchers.IO) { mutex.withLock {
+            val initial = usable().record ?: throw ConnectionFailure("Pairing changed. Connected Radio stopped.")
+            if (initial.identityAnchor != session.anchor || initial.installationMarker != session.installationMarker || initial.deviceId != session.deviceId || initial.bearer != session.bearer || initial.bundle.serverId != session.serverId || initial.bundle.endpoint != session.endpoint)
+                throw ConnectionFailure("Pairing changed. Connected Radio stopped.")
+            val current = if (session.identityExpiresAt <= now() + 16 || session.identityGeneration != initial.generation || session.identityRevision != initial.revision) {
+                val refreshed = freshIdentity(verifyIdentity(initial))
+                session.identityExpiresAt = refreshed.identityExpiresAt; session.identityGeneration = refreshed.record.generation; session.identityRevision = refreshed.record.revision
+                refreshed.record
+            } else initial
+            requireCredential(current)
+            current
+        } }
+        val response = transport.request(record.bundle.endpoint, path, body, record.bearer)
+        if (response.status == 401) {
+            withContext(Dispatchers.IO) { mutex.withLock { store.save(record.copy(authorizationBlocked = true)); publish(store.load()) } }
+            throw ConnectionFailure("Credential expired or revoked. Pair again to use Connected Radio.")
+        }
+        return response
+    }
     /** Database receipt commits serialize with forget/re-pair, just like catalog pointer adoption. */
     internal suspend fun <T> adoptProfile(session:ProfileSyncSession, block:suspend ()->T):T = mutex.withLock {
         val record=usable().record ?: throw ConnectionFailure("Pairing changed. Sync stopped safely; saved progress was kept.")
