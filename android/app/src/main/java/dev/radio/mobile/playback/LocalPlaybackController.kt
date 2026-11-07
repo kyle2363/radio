@@ -16,6 +16,8 @@ import androidx.media3.exoplayer.audio.AudioSink
 import androidx.media3.exoplayer.audio.DefaultAudioSink
 import androidx.media3.exoplayer.source.ShuffleOrder.DefaultShuffleOrder
 import dev.radio.mobile.data.LocalSong
+import dev.radio.mobile.recommendation.StationOrigin
+import dev.radio.mobile.recommendation.StationRecord
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -56,8 +58,33 @@ class LocalPlaybackController(
     private var radioActive = false
     private var queueRevision = 0L
     internal var onRadioStart: (String?) -> Unit = {}
+    internal var onNewMix: () -> Unit = {}
+    // Station context (checkpoint 4.2): why each queued song is there and where the station started.
+    private var origins = emptyMap<String, StationOrigin>()
+    private var seedLocalId: String? = null
+    private var seedTitle: String? = null
+    private fun clearStation() { origins = emptyMap(); seedLocalId = null; seedTitle = null }
     override fun startRadio(seedLocalId: String?) = onRadioStart(seedLocalId)
-    override fun stopRadio() { radioActive=false;queueRevision++;publish(checkpoint=true) }
+    override fun newMix() { if (radioActive) onNewMix() }
+    override fun stopRadio() { radioActive=false;clearStation();queueRevision++;publish(checkpoint=true) }
+    override fun endRadio(stopNow: Boolean) {
+        if (stopNow) { queueRevision++; player.pause(); if (queue.isNotEmpty()) source = "Custom queue" }
+        stopRadio()
+    }
+    /** The running station, for the bookmark beside the playback snapshot; null outside Radio. */
+    internal fun station(): StationRecord? {
+        val value = state.value
+        if (!radioActive || value.currentId == null) return null
+        return StationRecord(seedLocalId, seedTitle, origins, value.playOrder, value.currentId)
+    }
+    /** Called right after [restorePaused]: resumes the station only when it describes exactly this queue. Never plays. */
+    internal fun restoreStation(record: StationRecord?) {
+        val value = state.value
+        if (record == null || !record.matches(value.playOrder, value.currentId)) return
+        radioActive = true; origins = record.pruned(value.playOrder).origins
+        seedLocalId = record.seedLocalId; seedTitle = record.seedTitle; source = "Radio"
+        publish()
+    }
     private var error: String? = null
     private var accessLost = false
     private var attemptSong: String? = null
@@ -173,10 +200,12 @@ class LocalPlaybackController(
             }
             cachedTimeline = timeline; cachedShuffle = player.shuffleModeEnabled; cachedOrder = order
         }
+        if (origins.isNotEmpty() && origins.keys.any { it !in queueById }) origins = origins.filterKeys { it in queueById }
         val next = if (id != null) adjacent(true) else C.INDEX_UNSET
         val duration = player.duration.takeIf { it != C.TIME_UNSET && it > 0 } ?: current?.durationMs
         mutable.value = PlaybackState(
             queue = queue, playOrder = cachedOrder, source = source, currentId = id, radioActive = radioActive, queueRevision = queueRevision,
+            origins = if (radioActive) origins else emptyMap(), stationSeedTitle = if (radioActive) seedTitle else null,
             positionMs = player.currentPosition.coerceAtLeast(0),
             durationMs = duration,
             isPlaying = player.isPlaying, playWhenReady = player.playWhenReady && player.playbackState != Player.STATE_ENDED,
@@ -214,7 +243,7 @@ class LocalPlaybackController(
     internal fun updateNormalization(profile: NormalizationProfile) { normalizationProcessor.profile = profile; publish() }
 
     override fun playFrom(items: List<LocalSong>, selectedId: String, source: String) {
-        radioActive=false;queueRevision++
+        radioActive=false;clearStation();queueRevision++
         val snapshot = playbackQueue(items, selectedId).filter(::validUri)
         val index = snapshot.indexOfFirst { it.id == selectedId }
         if (accessLost || index < 0) { player.pause(); error = "This file is unavailable. Check folder access and rescan."; publish(); return }
@@ -345,17 +374,18 @@ class LocalPlaybackController(
     }
 
     private fun mediaItem(song: LocalSong) = MediaItem.Builder().setMediaId(song.id).setUri(song.uri).setMediaMetadata(metadata(song)).build()
-    internal fun beginRadio(items: List<LocalSong>) {
+    internal fun beginRadio(items: List<LocalSong>, origins: Map<String, StationOrigin> = emptyMap(), seedLocalId: String? = null, seedTitle: String? = null) {
         val first=items.firstOrNull() ?: return
         // Radio recommendations are already ranked. Clear any manual queue shuffle
         // before playFrom installs them so their recommendation order is preserved.
         player.shuffleModeEnabled = false
         playFrom(items.take(5),first.id,"Radio")
         radioActive=true
+        this.origins=origins.filterKeys{it in queueById};this.seedLocalId=seedLocalId;this.seedTitle=seedTitle
         publish(checkpoint=true)
     }
     /** Main-thread atomic append. Retire only played Radio prefix; never seek or prepare. */
-    internal fun appendRadio(expected:PlaybackState,items:List<LocalSong>):Boolean {
+    internal fun appendRadio(expected:PlaybackState,items:List<LocalSong>,newOrigins:Map<String,StationOrigin> = emptyMap()):Boolean {
         val actual=state.value
         if(!radioActive || accessLost || actual.queueRevision!=expected.queueRevision || actual.currentId!=expected.currentId || actual.playOrder!=expected.playOrder || actual.sleepTimer.active)return false
         val current=actual.playOrder.indexOf(actual.currentId)
@@ -374,8 +404,32 @@ class LocalPlaybackController(
         queue=queue+additions;queueById=queue.associateBy{it.id}
         player.addMediaItems(additions.map(::mediaItem))
         if(player.shuffleModeEnabled)setVisibleOrder(before+additions.map{it.id})
+        origins=origins+newOrigins.filterKeys{id->additions.any{it.id==id}}
         queueRevision++;publish(checkpoint=true)
         return additions.isNotEmpty()
+    }
+    /**
+     * New mix: atomically replace the upcoming songs Radio added with [items]. Songs the listener added, the current
+     * song and its position stay; nothing is prepared, sought or started. Rejects a stale [expected] like [appendRadio].
+     */
+    internal fun replaceRadioUpcoming(expected:PlaybackState,items:List<LocalSong>,newOrigins:Map<String,StationOrigin>):Boolean {
+        val actual=state.value
+        if(!radioActive || accessLost || actual.queueRevision!=expected.queueRevision || actual.currentId!=expected.currentId || actual.playOrder!=expected.playOrder)return false
+        val current=actual.playOrder.indexOf(actual.currentId)
+        if(current<0)return false
+        val upcoming=actual.playOrder.drop(current+1)
+        val kept=upcoming.filter{origins[it]==StationOrigin.User}
+        val incoming=items.filter{it.available && validUri(it) && it.id!=actual.currentId && it.id !in kept}.distinctBy{it.id}.take((5-kept.size).coerceAtLeast(0))
+        if(incoming.isEmpty())return false
+        // Drop Radio's upcoming songs, plus any earlier copy of an incoming song so Media3 identities stay unique.
+        val removed=(upcoming.filterNot{it in kept}+incoming.map{it.id}).toSet()-setOfNotNull(actual.currentId)
+        for(index in player.mediaItemCount-1 downTo 0)if(player.getMediaItemAt(index).mediaId in removed)player.removeMediaItem(index)
+        queue=queue.filterNot{it.id in removed}+incoming;queueById=queue.associateBy{it.id}
+        player.addMediaItems(incoming.map(::mediaItem))
+        if(player.shuffleModeEnabled)setVisibleOrder(actual.playOrder.filterNot{it in removed}+incoming.map{it.id})
+        origins=origins.filterKeys{it !in removed}+newOrigins.filterKeys{id->incoming.any{it.id==id}}
+        queueRevision++;publish(checkpoint=true)
+        return true
     }
     private fun nativeIndex(id: String) = (0 until player.mediaItemCount).firstOrNull { player.getMediaItemAt(it).mediaId == id }
     private fun setVisibleOrder(order: List<String>) {
@@ -398,6 +452,7 @@ class LocalPlaybackController(
         queueById = queue.associateBy { it.id }
         if (additions.isNotEmpty()) player.addMediaItems(additions.map(::mediaItem))
         source = if(radioActive)"Radio" else "Custom queue"; error = null
+        if (radioActive) origins = origins + incoming.map { it.id }.filter { it != player.currentMediaItem?.mediaId }.associateWith { StationOrigin.User }
         val combined = (before + additions.map { it.id }).distinct()
         if (playNext && !wasEmpty) {
             val current = player.currentMediaItem?.mediaId
@@ -447,7 +502,7 @@ class LocalPlaybackController(
             player.playWhenReady = continuePlaying
         }
         if (queue.isEmpty() || player.mediaItemCount == 0) {
-            radioActive=false
+            radioActive=false;clearStation()
             queue = emptyList(); queueById = emptyMap()
             player.pause(); player.clearMediaItems(); cancelSleepTimer(); source = ""; error = null
             onQueueCleared()
@@ -455,7 +510,7 @@ class LocalPlaybackController(
         publish(checkpoint = true)
     }
     override fun clearUpcoming() {
-        radioActive=false;queueRevision++
+        radioActive=false;clearStation();queueRevision++
         val order = state.value.playOrder
         val current = order.indexOf(state.value.currentId)
         if (current < 0 || current == order.lastIndex) {publish(checkpoint=true);return}

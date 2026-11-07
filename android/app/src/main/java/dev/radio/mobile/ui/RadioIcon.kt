@@ -35,7 +35,13 @@ enum class Symbol(val path: String, val filled: Boolean = false) {
     Shuffle("M3 6 H6 C12 6 12 18 18 18 H21 M18 15 L21 18 L18 21 M3 18 H6 C8 18 9 16 10 14 M14 10 C16 6 18 6 21 6 M18 3 L21 6 L18 9"),
     Lock("M6 10 H18 V21 H6 Z M8 10 V6 A4 4 0 0 1 16 6 V10"),
     Minimize("M4 8 H9 V3 M20 16 H15 V21"),
-    Expand("M9 3 H3 V9 M15 21 H21 V15")
+    Expand("M9 3 H3 V9 M15 21 H21 V15"),
+    Stop("M6 6 H18 V18 H6 Z"),
+    Close("M6 6 L18 18 M18 6 L6 18"),
+    Check("M5 12 L10 17 L19 7"),
+    Block("M20 12 A8 8 0 1 1 4 12 A8 8 0 1 1 20 12 M6.5 6.5 L17.5 17.5"),
+    Warning("M12 4 L21 20 H3 Z M12 10 V14 M12 17 V17.5"),
+    Forward("M9 5 L16 12 L9 19")
 }
 
 private val vectors = Symbol.entries.associateWith { symbol ->

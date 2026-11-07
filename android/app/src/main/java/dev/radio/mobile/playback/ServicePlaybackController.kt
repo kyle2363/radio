@@ -80,6 +80,8 @@ class ServicePlaybackController(context: Context) : PlaybackController {
     override fun cancelSleepTimer() = command { it.cancelSleepTimer() }
     override fun startRadio(seedLocalId: String?) = command { it.startRadio(seedLocalId) }
     override fun stopRadio() = command { it.stopRadio() }
+    override fun endRadio(stopNow: Boolean) = command { it.endRadio(stopNow) }
+    override fun newMix() = command { it.newMix() }
     // The service observes the canonical repository even while there is no activity.
     override fun reconcileLibrary(songs: List<LocalSong>, accessLost: Boolean) = Unit
     fun close() {

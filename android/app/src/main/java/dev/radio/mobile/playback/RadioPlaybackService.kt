@@ -16,6 +16,8 @@ import com.google.common.util.concurrent.ListenableFuture
 import dev.radio.mobile.MainActivity
 import dev.radio.mobile.data.LibraryRepository
 import dev.radio.mobile.data.JournalIdentity
+import dev.radio.mobile.recommendation.RadioBatch
+import dev.radio.mobile.recommendation.StationOrigin
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -47,8 +49,9 @@ class RadioPlaybackService : MediaSessionService() {
         val library = repositoryFactory(this)
         val attemptIdentities = mutableMapOf<String, JournalIdentity>()
         prefs = PlaybackPrefs(this)
-        engine = LocalPlaybackController(this, onCheckpoint = { if (initialized) library.playbackSnapshots.save(it) },
-            onQueueCleared = { if (initialized) library.playbackSnapshots.clear() },
+        val stations = StationStore(this)
+        engine = LocalPlaybackController(this, onCheckpoint = { if (initialized) { library.playbackSnapshots.save(it); stations.save(engine.station()) } },
+            onQueueCleared = { if (initialized) { library.playbackSnapshots.clear(); stations.clear() } },
             onAttemptFinished = { _, attempt, kind, listened, duration, reason ->
                 attemptIdentities.remove(attempt)?.let { library.journal.finished(it, attempt, kind, listened, duration, reason) }
             }, onExplicitReplay = { song, attempt ->
@@ -74,7 +77,8 @@ class RadioPlaybackService : MediaSessionService() {
                 beforeRadioStartCommit()
                 library.radio.accept(batch) {
                     if(batch.suggestions.isNotEmpty() && engine.state.value.queueRevision==expected.queueRevision && engine.state.value.currentId==expected.currentId) {
-                        engine.beginRadio(batch.suggestions.map{it.song})
+                        val seedTitle=seedLocalId?.let{id->batch.token.library.songs.firstOrNull{it.id==id}?.title}
+                        engine.beginRadio(batch.suggestions.map{it.song},origins(batch),seedLocalId,seedTitle)
                         if(engine.state.value.radioActive && engine.state.value.error==null)
                             library.radio.committed(batch,engine.state.value.playOrder.toSet())
                     }
@@ -104,11 +108,32 @@ class RadioPlaybackService : MediaSessionService() {
                     val batch=withContext(Dispatchers.IO){library.radio.refill(upcoming+setOfNotNull(expected.currentId),dev.radio.mobile.recommendation.ConnectedPolicy.REFILL_BOUND-upcoming.size,expected.playOrder.lastOrNull())}
                     if(batch!=null)beforeRadioRefillCommit()
                     if(batch!=null)library.radio.accept(batch) {
-                        if(engine.state.value.playWhenReady && engine.appendRadio(expected,batch.suggestions.map{it.song})) {
+                        if(engine.state.value.playWhenReady && engine.appendRadio(expected,batch.suggestions.map{it.song},origins(batch))) {
                             val actual=engine.state.value
                             val accepted=actual.playOrder.drop(actual.playOrder.indexOf(actual.currentId)+1).filter{it !in upcoming}.toSet()
                             library.radio.committed(batch,accepted)
                         }
+                    }
+                }
+            }
+        }
+        var mixRequest: Job? = null
+        // New mix: a fresh batch for the room Radio's own upcoming songs occupy. Songs the listener added stay.
+        engine.onNewMix = {
+            mixRequest?.cancel()
+            val expected=engine.state.value
+            val current=expected.playOrder.indexOf(expected.currentId)
+            if(expected.radioActive && current>=0) mixRequest=scope.launch {
+                val upcoming=expected.playOrder.drop(current+1)
+                val kept=upcoming.count{expected.origins[it]==StationOrigin.User}
+                val room=(dev.radio.mobile.recommendation.ConnectedPolicy.REFILL_BOUND-kept).coerceAtLeast(0)
+                if(room==0)return@launch
+                library.radio.updatePlayback(expected)
+                val batch=withContext(Dispatchers.IO){library.radio.refill(upcoming.toSet()+setOfNotNull(expected.currentId),room,expected.currentId)} ?: return@launch
+                library.radio.accept(batch) {
+                    if(engine.replaceRadioUpcoming(expected,batch.suggestions.map{it.song},origins(batch))) {
+                        val actual=engine.state.value
+                        library.radio.committed(batch,actual.playOrder.drop(actual.playOrder.indexOf(actual.currentId)+1).filter{it !in upcoming}.toSet())
                     }
                 }
             }
@@ -123,7 +148,7 @@ class RadioPlaybackService : MediaSessionService() {
                 val saved = library.playbackSnapshots.load()
                 val catalog = library.state.first { !it.loading && !it.scanning }
                 engine.updateNormalization(library.loudness.state.first { it.loaded }.profile)
-                if (saved != null) engine.restorePaused(saved, catalog.songs, catalog.accessLost)
+                if (saved != null) { engine.restorePaused(saved, catalog.songs, catalog.accessLost); engine.restoreStation(stations.load()) }
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (error: Exception) {
                 android.util.Log.w("RadioPlayback", "Couldn't restore playback bookmark", error)
@@ -138,6 +163,8 @@ class RadioPlaybackService : MediaSessionService() {
         }
         library.checkAccess()
     }
+
+    private fun origins(batch: RadioBatch) = batch.suggestions.associate { it.song.id to StationOrigin.of(it.pick) }
 
     private fun createMediaSession() {
         val activity = PendingIntent.getActivity(this, 0,
