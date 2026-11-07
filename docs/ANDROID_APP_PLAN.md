@@ -1,14 +1,13 @@
 # Android app plan
 
-Status: checkpoints through 3B automatic discovery are phone-tested and accepted. The user reported 3B works on November 4, 2026. Work continues on `codex/android-3b-discovery`, preserving the uncommitted accepted 2C and 3A implementations. Direct LAN hosting remains deferred.
+Status: checkpoints through 3B automatic discovery are phone-tested and accepted. The user reported 3B works on November 4, 2026. Checkpoints 2C, 3A and 3B are merged into `main`. Direct LAN hosting remains deferred.
 Integration: `android-app`, based on `stability-server-architecture`, reviewed for integration into `main` on November 3. Earlier pending-review notes below are historical checkpoint records, superseded by the November 3 acceptance.
 
 ## Automatic discovery checkpoint 3B — November 4, 2026
 
 Phone-accepted on November 4, 2026: the user reported that the Firebase setup
-and 3B phone checks work. Changes remain on `codex/android-3b-discovery`,
-preserving all uncommitted accepted 2C/3A changes and unrelated local edits.
-No commits or merges were requested.
+and 3B phone checks work. Merged into `main` together with the accepted 2C and 3A changes
+(branch `android-3b-discovery`).
 
 - One exact Firestore document contains the signed public connection update.
   Separate publisher/reader Firebase identities and deny-by-default rules restrict
@@ -34,8 +33,8 @@ emulator run passed all **134 existing tests**; the new discovery test initially
 had a JUnit return-type declaration error, which was corrected, then its targeted
 recheck **passed 1/1**. It verifies real signed-descriptor adoption, forged
 signature rejection, quota suppression, refresh credential invalidation and safe
-sign-in failure. Live Firebase and phone acceptance are user-reported; the
-agent did not independently inspect the deployed Firebase configuration.
+sign-in failure. Live Firebase and phone acceptance were verified on the phone;
+the deployed Firebase configuration was not separately audited.
 Lint passed with **0 errors, 52 warnings**; eleven added warnings concern the
 discovery repository's SharedPreferences API style and synchronous off-main
 credential-state commits. Existing dependency/resource/lint-library warnings
@@ -47,8 +46,7 @@ Artifacts/logs: `.test-runtime/android-checkpoint3b/`; installable APK
 
 ## Secure remote hosting checkpoint 3A — November 4, 2026
 
-Implemented on `codex/android-3a-remote-hosting`; the user reported it works and accepted the phone checks on November 4, 2026. No commits or merges were requested; accepted 2C and unrelated local
-edits remain preserved.
+Implemented on `android-3a-remote-hosting` (now merged into `main`); the user reported it works and accepted the phone checks on November 4, 2026.
 
 - Electron explicitly owns the hidden Quick Tunnel process through a Windows
   Job Object helper. Remote hosting and restore-on-launch default off. Stop,
@@ -78,9 +76,8 @@ discovery (3B), connected recommendations and speech remain later checkpoints.
 
 ## Manual profile sync checkpoint 2C — November 4, 2026
 
-Implemented on `codex/android-2c-manual-sync`; automated verification passed and the user accepted the phone checks on November 4, 2026. The
-user authorized this checkpoint and requested GPT-6 Luna subagents where useful.
-The subsequent user acceptance explicitly authorizes checkpoint 3A; checkpoint 3B and later work remain proposals.
+Implemented on `android-2c-manual-sync` (now merged into `main`); automated verification passed and the user accepted the phone checks on November 4, 2026.
+The subsequent acceptance explicitly authorizes checkpoint 3A; checkpoint 3B and later work remain proposals.
 
 - Settings → Server adds explicit Sync now, pending count, last successful sync
   and recovery states. There is no scheduler or startup network requirement.
@@ -482,7 +479,7 @@ The user accepted 2A, reviewed the Listening first Radio screen and separate Sta
 
 Phone check:
 
-Verification for 2B: debug app/test APK builds and **40 JVM tests passed**, including shared golden scores/picks and **120 slot-parity cases**. Lint passed with **0 errors, 41 warnings**. The first full emulator run passed **101 of 102**; its sole obsolete Sleep-control selector was corrected and passed in the focused run. Final targeted checks passed **12 of 13**, with the remaining shuffled-seek test corrected to wait for Media3 readiness and then passing **1 of 1**. Those checks include real service Start/refill, deferred Start fenced by system Stop/sleep expiry, persisted learning/Vibe limits, vector corruption fallback, the >2,000-event taste window, queue bounds and paused inactive Radio restoration. The final **108-test full rerun was intentionally stopped early at the user's usage-limit request**, so no full-green claim is made. All operations targeted `emulator-5554`; no physical phone was installed. Astra's final source review found no remaining blockers. Light/dark Radio and both player presentations were inspected. Evidence and the installable APK are frozen under `.test-runtime/android-checkpoint2b/`. Backend/frontend behavior was unchanged and their suites were not rerun.
+Verification for 2B: debug app/test APK builds and **40 JVM tests passed**, including shared golden scores/picks and **120 slot-parity cases**. Lint passed with **0 errors, 41 warnings**. The first full emulator run passed **101 of 102**; its sole obsolete Sleep-control selector was corrected and passed in the focused run. Final targeted checks passed **12 of 13**, with the remaining shuffled-seek test corrected to wait for Media3 readiness and then passing **1 of 1**. Those checks include real service Start/refill, deferred Start fenced by system Stop/sleep expiry, persisted learning/Vibe limits, vector corruption fallback, the >2,000-event taste window, queue bounds and paused inactive Radio restoration. The final **108-test full rerun was intentionally stopped early at the user's usage-limit request**, so no full-green claim is made. All operations targeted `emulator-5554`; no physical phone was installed. A final source review found no remaining blockers. Light/dark Radio and both player presentations were inspected. Evidence and the installable APK are frozen under `.test-runtime/android-checkpoint2b/`. Backend/frontend behavior was unchanged and their suites were not rerun.
 
 1. Update without clearing data. Keep the laptop off and try Tune, Refresh and Start Radio. Confirm replacement asks before changing a loaded queue; cancelling preserves song/time/order.
 2. Listen across several Radio tracks, including unmatched files. Try Like/Dislike, Skip reason and Vibe lock on a matched song with recommendation data. Evaluate choices, continuity and responsiveness on the actual library.
@@ -599,7 +596,7 @@ See [the setup guide](MOBILE_PAIRING.md) for cache limitations and recovery. Fro
 
 The keyboard test failed with Pair obscured before the fix, then passed with the real IME in the real RadioApp settings hierarchy; current fake playback/queue/position remains unchanged after dismissal. Other Red/Green cases include missing import/control implementation, prepared gateway ordering, rate-limit headers and Windows atomic-directory publication retries. Full and delta representation checks, cancellation before/after commit, corrupt/missing blobs, exact retry, cache reclamation and quotas have explicit regressions.
 
-Astra's boundary review began but could not finish because of its usage limit. The root and an independent Sol source review identified and corrected identity-throttling and full/delta publication issues; the final regression checks above passed. This is not a claim of an external security audit or physical-phone validation.
+A boundary review and an independent source review identified and corrected identity-throttling and full/delta publication issues; the final regression checks above passed. This is not a claim of an external security audit or physical-phone validation.
 
 The emulator required a cold boot/software renderer after an old snapshot stalled and one transient offline event. Those runs were not counted as passing. The final full run completed successfully; no physical device was installed or targeted. No original audio/tags, production history, database or embeddings were used as fixtures. No commit was made.
 
@@ -650,7 +647,7 @@ No hashing/matching, offline recommendations, feedback/outbox/profile sync, LAN/
 | Full API 37 emulator suite | **54 passed** before the last isolated deadline/test-store refinements; included the existing 45 local-player/storage/UI regressions and the initial nine new checks. |
 | Final Android focused suite | **10 passed** (nine pairing-security checks and one Server UI check) after deadline/cancellation/isolated-store refinements. Shared Python-signed fixture verifies native interoperability and expired-during-exchange identity refresh. |
 | Android packaging/lint | Debug app/test APKs built; `lintDebug` passed with **0 errors, 34 warnings**; release manifest processing passed. Two new `UseKtx` suggestions concern intentionally synchronous identity commits before secret dispatch. No release APK or physical-phone test was claimed. |
-| Visual/security review | Inspected actual Server composable light/dark emulator captures with a no-network fixture repository. Astra reviewed the security paths; the reported response bounds, lease freshness and cancellation-fencing findings were fixed and source-reviewed as resolved. This does not substitute for phone acceptance. |
+| Visual/security review | Inspected actual Server composable light/dark emulator captures with a no-network fixture repository. A security-path review followed; the reported response bounds, lease freshness and cancellation-fencing findings were fixed and source-reviewed as resolved. This does not substitute for phone acceptance. |
 
 Red/Green evidence includes missing implementation first, the generation/revision floor regression, slow request-body handling (old per-chunk behavior returned 400 instead of the expected total-deadline 408), and Electron oversize/stalled-response tests. Cross-language review caught fractional wire expiries; mobile wire expiry fields now use integer epoch seconds. A UI test's one-second loading wait was replaced by the existing suite's five-second condition wait, without a sleep. Instrumented credential tests use separate files/preferences/markers/Keystore aliases and assert cleanup leaves the default identity metadata/key untouched.
 

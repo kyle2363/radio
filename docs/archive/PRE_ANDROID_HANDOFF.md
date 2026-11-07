@@ -4,14 +4,14 @@
 
 Work started on `stability-server-architecture` at `c596895602e4890b6690b8525988f18d1d44abd5`
 with a clean working tree. Local rollback tag:
-`codex/pre-android-baseline-20261028`. No Android application, Stash fork, Kotlin,
+`pre-android-baseline-20261028`. No Android application, Stash fork, Kotlin,
 media transfer, model install, public listener, or playback architecture rewrite
 is part of this change. Original music, metadata, production SQLite and existing
 Chroma vectors were not opened for automated validation or modified by tests.
 
-Luna performed file/default/logging inventory, Sol implemented desktop settings
-and the portable core, and Astra advised on architecture and reviewed critical
-contracts. The parent integrated the native API, sync, simulator and verification.
+Work covered a file/default/logging inventory, desktop settings and the portable
+core, an architecture review of critical contracts, and integration of the native
+API, sync, simulator and verification.
 
 ## Current-state audit and implementation plan
 

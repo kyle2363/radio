@@ -3,7 +3,7 @@
 Date: October 30, 2026. Audited source: `a6715a8813aaf658f379cd156918168b8b0c8d8e`, branch `android-app`.
 The working tree was clean at the start. The Phase 0 checkpoint changed documentation and added one exact `.gitignore` exception so this plan could be tracked; it made no production code changes. The sections below record that audit and its proposals; current implementation updates are linked next.
 
-Implementation update, November 4, 2026: checkpoints through 2B are accepted and merged into main. Checkpoints 2C manual sync and 3A secure remote hosting are implemented, verified and phone-accepted. Checkpoint 3B automatic discovery is also phone-accepted as of November 4, 2026, on `codex/android-3b-discovery`, preserving the uncommitted accepted changes. Implementation and verification are recorded in [ANDROID_APP_PLAN.md](ANDROID_APP_PLAN.md). [MOBILE_PAIRING.md](MOBILE_PAIRING.md) covers setup and [MOBILE_SYNC.md](MOBILE_SYNC.md) covers manual sync. The matrix below remains the historical Phase 0 baseline. Checkpoint 4 and later remain proposals.
+Implementation update, November 4, 2026: checkpoints through 2B are accepted and merged into main. Checkpoints 2C manual sync and 3A secure remote hosting are implemented, verified and phone-accepted. Checkpoint 3B automatic discovery is also phone-accepted as of November 4, 2026; 2C, 3A and 3B are merged into `main`. Implementation and verification are recorded in [ANDROID_APP_PLAN.md](ANDROID_APP_PLAN.md). [MOBILE_PAIRING.md](MOBILE_PAIRING.md) covers setup and [MOBILE_SYNC.md](MOBILE_SYNC.md) covers manual sync. The matrix below remains the historical Phase 0 baseline. Checkpoint 4 and later remain proposals.
 
 ## 1. Scope and decisions from the user
 

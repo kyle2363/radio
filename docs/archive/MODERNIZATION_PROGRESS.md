@@ -3,9 +3,9 @@
 ## Scope and safeguards
 
 - User authorized implementation after initial read-only review.
-- Current branch: `stability-server-architecture`, tracking `origin/stability-server-architecture`. The user renamed the original `codex/stability-server-architecture` branch and committed the implementation checkpoint as `c065ed3`.
+- Current branch: `stability-server-architecture`, tracking `origin/stability-server-architecture`. The user committed the implementation checkpoint as `c065ed3`.
 - Starting commit: `63cc57562baa85645211fa120f42d78d0a67f8ac`. Audit/test foundation committed as `f5c9899`.
-- Rollback tag: `codex/modernization-baseline-20261026`.
+- Rollback tag: `modernization-baseline-20261026`.
 - All edits and temporary output stay inside this checkout. Original audio is read-only.
 - One shared taste/history profile; independent playback sessions/queues.
 - Mode switching transfers the whole listening session: song/position, queue, mood/vibe, energy, DJ/guest context, and timer; other sessions remain independent.
@@ -20,7 +20,7 @@
 4. Browser playback and output transfer: integrated with targeted coverage. Synthetic browser playback, pause/seek, reconnect without duplicate play history, and separate-tab mood were exercised. The user's later pause/seek report produced further acknowledgement/proxy/reconnect fixes; current real-app retesting and remaining recovery review findings are still open.
 5. LAN access and recovery: access policy is documented; no LAN or reverse-proxy validation has been performed.
 6. Expanded tests/observability/CI: a lean backend contract workflow and frontend test/build workflow are added. Final reviewed-tree checks: **450 backend tests passed, 9 skipped; 83 frontend tests passed; 4 opt-in native VLC tests passed; production build passed**. Hosted CI has not run.
-7. Final validation: pending live model/audio, Electron/OS/LAN checks and remaining reconnect race/idempotency findings. See the finalized local `docs/CODEX_HANDOFF.md`; it is explicitly Git-ignored by the user's current rules and must be carried separately to a new checkout.
+7. Final validation: pending live model/audio, Electron/OS/LAN checks and remaining reconnect race/idempotency findings. See the finalized local `docs/archive/LOCAL_HANDOFF.md`; it is explicitly Git-ignored by the user's current rules and must be carried separately to a new checkout.
 
 ## Changes and checks
 
@@ -78,7 +78,7 @@ Branch: `stability-server-architecture`. Starting HEAD:
 `72441902396c4b673ef94a3c09fab5a7c5c88d73`; the starting working tree was clean.
 That commit already contained the earlier reconnect/proxy changes and the two
 prior review fixes. This tracked checkpoint supersedes stale statements in the
-ignored local `CODEX_HANDOFF.md`; no original library or production database was
+ignored local `LOCAL_HANDOFF.md`; no original library or production database was
 used by automated verification. `main` was not merged or changed.
 
 ### Confirmed causes and resulting changes

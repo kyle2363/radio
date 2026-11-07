@@ -2,7 +2,7 @@
 
 ## Baseline identity and limitations
 
-Static source review dated October 26, 2026. Starting commit: `63cc57562baa85645211fa120f42d78d0a67f8ac`. Original branch: `main`. Implementation branch: `codex/stability-server-architecture`. Rollback tag: `codex/modernization-baseline-20261026`.
+Static source review dated October 26, 2026. Starting commit: `63cc57562baa85645211fa120f42d78d0a67f8ac`. Original branch: `main`. Implementation branch: `stability-server-architecture`. Rollback tag: `modernization-baseline-20261026`.
 
 The initial Git status was clean for tracked files. That does **not** establish an inventory or backup of ignored files. `.gitignore` excludes audio, runtime data, documentation, voices, and environment files. Documentation intended for version control must be added selectively; do not add all ignored documentation, which includes original metadata.
 

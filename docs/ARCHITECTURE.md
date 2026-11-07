@@ -1,6 +1,6 @@
 # Radio architecture
 
-Current repository map, November 4, 2026. Android through accepted checkpoint 2B is merged into `main`; checkpoint 2C development is on `codex/android-2c-manual-sync`. This describes implemented boundaries; acceptance status belongs in [the Android checkpoint log](ANDROID_APP_PLAN.md) and [testing guide](TESTING.md).
+Current repository map, November 4, 2026. Android through accepted checkpoint 3B is merged into `main`. This describes implemented boundaries; acceptance status belongs in [the Android checkpoint log](ANDROID_APP_PLAN.md) and [testing guide](TESTING.md).
 
 ## Three application surfaces
 

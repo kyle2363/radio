@@ -56,7 +56,7 @@ audio_files
 
 out.wav
 .test-runtime/
-docs/archive/CODEX_HANDOFF.md
+docs/archive/LOCAL_HANDOFF.md
 
 # Active documentation index and explicitly preserved historical records
 !docs/README.md

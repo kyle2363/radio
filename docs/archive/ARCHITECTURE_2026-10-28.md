@@ -9,7 +9,7 @@ sections below remain as inspected evidence.
 
 This is the initial static architecture baseline, inspected on October 26, 2026 at commit `63cc57562baa85645211fa120f42d78d0a67f8ac`. It describes existing code, not a claim that runtime behavior has passed validation. See [BASELINE.md](BASELINE.md) for limitations and identified defects. Source line numbers in that document refer to the baseline commit.
 
-The current modernization branch is `stability-server-architecture` (renamed by the user from `codex/stability-server-architecture`), with implementation checkpoint `c065ed3`; the rollback reference is `codex/modernization-baseline-20261026`. Git does not protect the ignored runtime data, original audio, or source JSON metadata.
+The current modernization branch is `stability-server-architecture`, with implementation checkpoint `c065ed3`; the rollback reference is `modernization-baseline-20261026`. Git does not protect the ignored runtime data, original audio, or source JSON metadata.
 
 ## Existing system
 
@@ -153,7 +153,7 @@ flowchart LR
 
 - Final reviewed-tree verification: **450 backend tests passed, 9 skipped; 83 frontend tests passed; 4 opt-in native VLC tests passed; production build passed**. These checks do not resolve the remaining reconnect race/idempotency review findings recorded in the handoff.
 - The isolated launcher serves the real app on loopback with three generated silent WAVs and a disposable database. Recommendation/model generation is deterministic and mocked, TTS/process management are disabled, writes are guarded to a random `.test-runtime/qa-*` workspace, and outbound sockets are blocked. It does not use the original music or metadata.
-- Browser QA on port `18765` exposed and verified a fix for a missing-lyrics rendering crash, then exercised pause/seek, same-attempt reconnect, and separate-tab mood. Subsequent user-reported pause/seek and development WebSocket problems led to further tested fixes; live acceptance is still open. See [APP_USAGE_CHECKLIST.md](../APP_USAGE_CHECKLIST.md) and the local `CODEX_HANDOFF.md` (explicitly ignored by current Git rules).
+- Browser QA on port `18765` exposed and verified a fix for a missing-lyrics rendering crash, then exercised pause/seek, same-attempt reconnect, and separate-tab mood. Subsequent user-reported pause/seek and development WebSocket problems led to further tested fixes; live acceptance is still open. See [APP_USAGE_CHECKLIST.md](../APP_USAGE_CHECKLIST.md) and the local `LOCAL_HANDOFF.md` (explicitly ignored by current Git rules).
 - Real-library history updates were explicitly permitted for manual checks on October 28, 2026. Automated tests and the isolated launcher remain synthetic and do not write to the production history.
 - Browser controls, authenticated routes, output transfer, native callback translation, and generated-media range handling have targeted automated coverage. The current CI contract workflow runs the lean backend contract suite and frontend tests/build; it does not run the entire backend suite, VLC, Electron, TTS/GPU, or live app.
 

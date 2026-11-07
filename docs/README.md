@@ -22,7 +22,7 @@ Start with [the repository README](../README.md) for setup and the application m
 | [ANDROID_APP_PLAN.md](ANDROID_APP_PLAN.md) | Checkpoint delivery, verification, acceptance and proposed app follow-ups |
 | [MOBILE_CONNECTION_PLAN.md](MOBILE_CONNECTION_PLAN.md) | Future connection/sync architecture and explicitly dated Phase 0 audit |
 
-Checkpoints through 3B automatic discovery are phone-accepted. Work remains on `codex/android-3b-discovery`, preserving the uncommitted 2C and 3A implementations. Plans are not authorization to begin another checkpoint.
+Checkpoints through 3B automatic discovery are phone-accepted. 2C, 3A and 3B are merged into `main`. Plans are not authorization to begin another checkpoint.
 
 ## Technical contracts
 
@@ -38,4 +38,4 @@ Checkpoints through 3B automatic discovery are phone-accepted. Work remains on `
 
 Keep current behavior in guides/contracts, checkpoint evidence in the Android log, and future design in the connection plan. Date historical evidence and link to it rather than duplicating it. Test counts belong to their recorded revision, not the current repository inventory.
 
-`understand/`, `understand_new/`, JSON manifests and lyrics work files are operational/source data, not documentation to archive or delete. `lyrics_progress.md` remains an unverified historical work note. The local Codex handoff remains ignored by Git. Agent workflow instructions are in the root `AGENTS.md`.
+`understand/`, `understand_new/`, JSON manifests and lyrics work files are operational/source data, not documentation to archive or delete. `lyrics_progress.md` remains an unverified historical work note. The local handoff notes (`archive/LOCAL_HANDOFF.md`) remain ignored by Git. Agent workflow instructions are in the root `AGENTS.md`.
