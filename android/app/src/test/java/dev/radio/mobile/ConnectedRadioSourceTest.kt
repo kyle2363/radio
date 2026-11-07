@@ -24,11 +24,12 @@ private class FakeServer : RadioTransport {
     var picks: List<Triple<String, String, String>> = emptyList()
     var status = "ok"
     var vibeLocked = false
+    var applied: Map<String, Any?>? = null
     var recommendation: suspend (Map<*, *>) -> RadioResponse = { req ->
         RadioResponse(200, ConnectedJson.write(linkedMapOf("request_id" to req["request_id"], "result_id" to "r1", "context_id" to "ctx-aaaaaaaaaaaaaaaa",
             "epoch" to req["epoch"], "availability_digest" to req["availability_digest"], "catalog_revision" to req["catalog_revision"],
             "anchor_song_id" to req["anchor_song_id"], "status" to status, "ranked_by" to "llm", "vibe_locked" to vibeLocked,
-            "picks" to picks.map { linkedMapOf("song_id" to it.first, "slot" to it.second, "reason" to it.third) })))
+            "picks" to picks.map { linkedMapOf("song_id" to it.first, "slot" to it.second, "reason" to it.third) }).also { m -> applied?.let { m["applied"] = it } }))
     }
     fun count(prefix: String) = calls.count { it.first == prefix }
     override suspend fun request(endpoint: String, path: String, body: String?, bearer: String?): RadioResponse {
@@ -62,9 +63,10 @@ class ConnectedRadioSourceTest {
     private val full = arrayOf("l1" to "s1", "l2" to "s2", "l3" to "s3", "l4" to "s4", "l5" to "s5", "l6" to "s6")
 
     private fun request(map: MappingSnapshot = mappings(*full), anchor: String = "l1", exclude: Set<String> = setOf("l1"), disliked: Set<String> = emptySet(),
-        available: Map<String, LocalSong> = songs, vibe: String? = null, recent: List<ConnectedRecent> = emptyList()) =
+        available: Map<String, LocalSong> = songs, vibe: String? = null, recent: List<ConnectedRecent> = emptyList(),
+        tuning: ConnectedTuning = ConnectedTuning(), played: List<ConnectedPlayed> = emptyList()) =
         ConnectedRequest(songs.getValue(anchor), "neutral", .3, vibe, map, available, recent, exclude, { it in disliked},
-            ConnectedFence(anchor, "neutral", .3, vibe, map.generation, 0))
+            ConnectedFence(anchor, "neutral", .3, vibe, map.generation, 0, tuning = tuning), tuning, played)
 
     private fun source(server: FakeServer, timeout: Long = 5_000, link: ConnectedServerLink = TransportLink(server)) =
         ConnectedRadioSource(link, scope, timeout, newId = { "req-${java.util.UUID.randomUUID()}" }).also { it.setEnabled(true) }
@@ -357,5 +359,75 @@ class ConnectedRadioSourceTest {
         assertEquals(mapOf("a" to "x\"y\n\u0001", "n" to null, "l" to listOf(1L, 2.5, true)), ConnectedJson.parse(text))
         assertThrows(IllegalArgumentException::class.java) { ConnectedJson.parse("""{"a":1,"a":2}""") }
         assertThrows(IllegalArgumentException::class.java) { ConnectedJson.parse("""{"a":1} x""") }
+    }
+    // --- checkpoint 4.1 tuning -------------------------------------------------------------
+
+    private val tunable = """{"protocol_version":1,"connected_recommendations":true,"connected_tuning":true,"scopes":["catalog:read","recommend:read"]}"""
+    private fun contextBody(server: FakeServer) = ConnectedJson.parse(server.calls.last { it.first.startsWith("/contexts") && !it.first.endsWith("/recommendations") }.second!!) as Map<*, *>
+
+    @Test fun tuningAndPlayedAreSentOnlyToAServerThatAdvertisesTuning() {
+        val tuning = ConnectedTuning(variety = .4, picks = 8, similar = 2, energy = "rising", reranking = "off", pockets = true)
+        val played = listOf(ConnectedPlayed("l3", 120), ConnectedPlayed("zzz", 5), ConnectedPlayed("l4", 7200), ConnectedPlayed("l3", 9000))
+        val old = FakeServer().apply { picks = listOf(Triple("s2", "exploit", "")) }
+        run(source(old), request(tuning = tuning, played = played))
+        assertFalse(contextBody(old).containsKey("tuning")); assertFalse(contextBody(old).containsKey("played"))
+        val server = FakeServer().apply { capabilities = tunable; picks = listOf(Triple("s2", "exploit", "")) }
+        run(source(server), request(tuning = tuning, played = played))
+        val body = contextBody(server)
+        assertEquals(mapOf("variety" to .4, "picks" to 8L, "similar" to 2L, "energy" to "rising", "reranking" to "off", "pockets" to true), body["tuning"])
+        assertEquals(listOf(mapOf("song_id" to "s3", "age_s" to 120L), mapOf("song_id" to "s4", "age_s" to 7200L)), body["played"])
+    }
+
+    @Test fun defaultTuningSendsNoTuningObject() {
+        val server = FakeServer().apply { capabilities = tunable; picks = listOf(Triple("s2", "exploit", "")) }
+        run(source(server), request())
+        assertFalse(contextBody(server).containsKey("tuning"))
+        assertTrue(ConnectedTuning().isDefault)
+        assertNull(ConnectedTuning().toWire())
+    }
+
+    @Test fun changingTuningPatchesTheContext() {
+        val server = FakeServer().apply { capabilities = tunable; picks = listOf(Triple("s2", "exploit", "")) }
+        val source = source(server)
+        run(source, request(tuning = ConnectedTuning(picks = 6)))
+        run(source, request(tuning = ConnectedTuning(picks = 7)))
+        assertEquals(1, server.contexts)
+        assertEquals(mapOf("picks" to 7L), contextBody(server)["tuning"])
+        val rec = ConnectedJson.parse(server.calls.last().second!!) as Map<*, *>
+        assertEquals(2L, rec["epoch"])
+    }
+
+    @Test fun appliedTuningIsParsedIntoTheSet() {
+        val server = FakeServer().apply { capabilities = tunable; picks = listOf(Triple("s2", "exploit", ""), Triple("s3", "explore", "x"))
+            applied = linkedMapOf("variety" to .4, "picks" to 6L, "similar" to 1L, "energy" to "rising", "reranking" to "on", "pockets" to "inactive") }
+        val source = source(server)
+        run(source, request())
+        assertEquals(ConnectedApplied(.4, 6, 1, "rising", "on", "inactive"), source.set.value!!.applied)
+        val plain = FakeServer().apply { picks = listOf(Triple("s2", "exploit", "")) }
+        val other = source(plain)
+        run(other, request())
+        assertNull(other.set.value!!.applied)
+    }
+
+    @Test fun aTuningChangeExpiresTheHeldSet() {
+        val server = FakeServer().apply { capabilities = tunable; picks = listOf(Triple("s2", "exploit", "")) }
+        val source = source(server)
+        run(source, request(tuning = ConnectedTuning(similar = 3)))
+        val fence = source.set.value!!.fence
+        source.revalidate(fence); assertNotNull(source.set.value)
+        source.revalidate(fence.copy(tuning = ConnectedTuning(similar = 4))); assertNull(source.set.value)
+    }
+
+    @Test fun capabilityParsesTuningSupport() {
+        assertTrue(ConnectedAccess.parse("k", tunable).tunable)
+        assertFalse(ConnectedAccess.parse("k", FakeServer().capabilities).tunable)
+    }
+
+    @Test fun tuningClampsAndRoundTripsThroughStorage() {
+        val tuning = ConnectedTuning(variety = 1.7, picks = 12, similar = 1, energy = "sideways", reranking = "maybe", pockets = false).normalized()
+        assertEquals(ConnectedTuning(variety = 1.0, picks = 8, similar = 2, energy = null, reranking = null, pockets = false), tuning)
+        assertEquals(tuning, ConnectedTuning.decode(tuning.encode()))
+        assertEquals(ConnectedTuning(), ConnectedTuning.decode("not json"))
+        assertEquals(ConnectedTuning(), ConnectedTuning.decode(null))
     }
 }

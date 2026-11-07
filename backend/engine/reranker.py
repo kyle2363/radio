@@ -121,7 +121,8 @@ def _candidate_similarities(candidate):
     return " | " + " | ".join(parts) if parts else ""
 
 
-def rerank(candidates, current_song=None, mood_state=None, energy_trajectory="stable", hour=None, skip_streak=0, vibe_lock=None, exploration_level=0.3):
+def rerank(candidates, current_song=None, mood_state=None, energy_trajectory="stable", hour=None, skip_streak=0, vibe_lock=None, exploration_level=0.3,
+           slot_counts=None, reasons_for_all=False):
     """Rerank candidates using LLM.
 
     Args:
@@ -132,6 +133,8 @@ def rerank(candidates, current_song=None, mood_state=None, energy_trajectory="st
         hour: current hour (0-23)
         skip_streak: number of consecutive skips
         exploration_level: novelty preference from 0 to 1 within the fixed slots
+        slot_counts: optional per-slot budget (phone tuning, 5-8 picks); ignored under vibe lock
+        reasons_for_all: ask for and keep a reason on every pick, not just the first two
 
     Returns:
         list of pick dicts: [{"id": N, "slot": "exploit", "reason": "..."}, ...]
@@ -196,8 +199,13 @@ def rerank(candidates, current_song=None, mood_state=None, energy_trajectory="st
     # Adjust needed slots for fixup
     if is_vibe_lock:
         needed = {"exploit": 4, "explore": 1, "wildcard": 0, "context": 0}
+    elif slot_counts:
+        needed = {slot: int(slot_counts.get(slot, 0)) for slot in ("exploit", "explore", "wildcard", "context")}
     else:
         needed = {"exploit": 2, "explore": 1, "wildcard": 1, "context": 1}
+    total = sum(needed.values())
+    if reasons_for_all or (slot_counts and not is_vibe_lock):
+        prompt = _with_custom_shape(prompt, needed, reasons_for_all)
 
     # Retry up to 3 times
     logger.info(f"Reranker: calling LLM with {len(candidates)} candidates, vibe_lock={is_vibe_lock}")
@@ -234,7 +242,7 @@ def rerank(candidates, current_song=None, mood_state=None, energy_trajectory="st
                     if type(pid) is int and pid in candidate_ids and pid not in seen_ids:
                         seen_ids.add(pid)
                         unique_picks.append(pick)
-                        if len(unique_picks) == 5:
+                        if len(unique_picks) == total:
                             break
 
                 # Validate slot distribution
@@ -281,7 +289,7 @@ def rerank(candidates, current_song=None, mood_state=None, energy_trajectory="st
                 # that shape even if the model ignores the prompt or slot repair
                 # had to append picks.
                 for index, pick in enumerate(unique_picks):
-                    if index < 2:
+                    if reasons_for_all or index < 2:
                         if not isinstance(pick.get("reason"), str) or not pick["reason"].strip():
                             pick["reason"] = "Recommended by the AI reranker."
                     else:
@@ -293,6 +301,28 @@ def rerank(candidates, current_song=None, mood_state=None, energy_trajectory="st
             logger.warning("Reranker attempt %d failed: %s", attempt + 1, e)
 
     return None
+
+
+def _with_custom_shape(prompt, needed, reasons_for_all):
+    """Replace the five-pick answer shape with the requested slot budget."""
+    head = prompt[:prompt.index('Return a JSON object with a "picks" array')]
+    order = [slot for slot in ("exploit", "explore", "wildcard", "context") for _ in range(needed.get(slot, 0))]
+    lines = []
+    for index, slot in enumerate(order):
+        reason = ', "reason": "<one-sentence reason, 12 words max>"' if reasons_for_all or index < 2 else ""
+        lines.append('    {"id": <song_id>, "slot": "' + slot + '"' + reason + "}")
+    shape = ", ".join(f"{count} {slot}" for slot, count in needed.items() if count)
+    if reasons_for_all:
+        reason_rules = ["- Include a specific, one-sentence reason of 12 words or fewer for every pick; you can reference lyrics"]
+    else:
+        reason_rules = ["- Include a specific, one-sentence reason of 12 words or fewer only for the first two picks; you can reference lyrics",
+                        '- Do not include a "reason" field for picks after the second']
+    tail = [f'Return a JSON object with a "picks" array containing exactly {len(order)} entries:',
+            "{", '  "picks": [', ",\n".join(lines), "  ]", "}", "", "Rules:", *reason_rules,
+            "- Do not mention the song title in a reason; the title is shown separately",
+            f"- Slots must match: {shape}",
+            "- Return ONLY the JSON object, no preamble", ""]
+    return head + "\n".join(tail)
 
 
 def fallback_assignment(candidates, slots_result):

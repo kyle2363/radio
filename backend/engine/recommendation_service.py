@@ -134,6 +134,13 @@ class RecommendationInputs:
     filler_current_song_id: int | None = None
     strict_exclusions: bool = False    # fillers also honour exclude_ids
     hour: int | None = None
+    # Phone tuning (checkpoint 4.1). Desktop rebuilds leave these at their defaults.
+    slot_counts: dict | None = None        # portable.slots.slot_counts budget; ignored under vibe lock
+    jitter_strength: float | None = None   # variety 0-1 applied to retrieval query vectors
+    jitter_rng: Any = None
+    recent_hours: dict | None = None       # {song_id: hours since an unsynced phone play}
+    energy_nudge: bool = False             # bias scores toward energy_direction
+    reasons_for_all: bool = False          # a reason on every pick (options card)
     llm_budget_seconds: Any = None   # None = unbounded (desktop); seconds, or a callable returning seconds
     llm_gate: LlmPriorityGate | None = None
     gate_priority: int = LlmPriorityGate.DESKTOP
@@ -208,6 +215,11 @@ def recommend(inputs: RecommendationInputs) -> RecommendationResult:
 
     step(f"Building candidate list (exclude={len(exclude_ids)})")
     extra = {} if allowed is None else {"allowed_ids": allowed}
+    tuning = {}
+    if inputs.jitter_strength:
+        tuning.update(jitter_strength=inputs.jitter_strength, jitter_rng=inputs.jitter_rng)
+    if inputs.recent_hours:
+        tuning["extra_recent_hours"] = dict(inputs.recent_hours)
     candidates = retriever.build_candidate_list(
         text_taste_vector=taste_vector,
         audio_taste_vector=inputs.audio_taste_vector,
@@ -224,7 +236,7 @@ def recommend(inputs: RecommendationInputs) -> RecommendationResult:
         mood_state=inputs.mood_state,
         mtime_min=mtime_min, mtime_max=mtime_max,
         artist_mode=artist_mode, artists=artists,
-        **extra,
+        **extra, **tuning,
     )
     if allowed is not None:
         candidates = [c for c in candidates if c["song_id"] in allowed]
@@ -304,6 +316,15 @@ def recommend(inputs: RecommendationInputs) -> RecommendationResult:
             boost = boost_map.get(c["song_id"], 0.0)
             if boost > 0:
                 c["score"] = min(1.0, c.get("score", 0.5) + boost)
+
+    if inputs.energy_nudge and current_song and inputs.energy_direction in ("rising", "falling"):
+        base = song_effective_energy(current_song)
+        sign = 1.0 if inputs.energy_direction == "rising" else -1.0
+        for c in candidates:
+            nudge = max(-.1, min(.1, sign * (c.get("energy", .5) - base) * .5))
+            c["score"] = max(0.0, min(1.0, c.get("score", .5) + nudge))
+            c.setdefault("diagnostics", {})["energy_nudge"] = round(nudge, 3)
+        step(f"Energy nudge ({inputs.energy_direction}) applied")
 
     if not candidates:
         step("No eligible recommendation candidates")
@@ -391,6 +412,7 @@ def recommend(inputs: RecommendationInputs) -> RecommendationResult:
         slot_bias=inputs.slot_bias,
         active_pocket=active_pocket_for_slots,
         hop_pocket=hop_pocket,
+        counts=None if (vibe_lock and vibe_lock.get("active")) else inputs.slot_counts,
     )
     step(f"Slots allocated: {slots_result}")
 
@@ -442,6 +464,8 @@ def recommend(inputs: RecommendationInputs) -> RecommendationResult:
             skip_streak=inputs.skip_streak,
             vibe_lock=vibe_lock,
             exploration_level=exploration_level,
+            **({"slot_counts": inputs.slot_counts} if inputs.slot_counts else {}),
+            **({"reasons_for_all": True} if inputs.reasons_for_all else {}),
         ))
         step(f"Reranker returned: {len(picks) if picks else None} picks")
         if picks is None:

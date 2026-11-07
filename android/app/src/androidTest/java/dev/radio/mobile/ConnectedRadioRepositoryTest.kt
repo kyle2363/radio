@@ -195,4 +195,40 @@ class ConnectedRadioRepositoryTest {
         assertEquals("s0", request["anchor_song_id"])
         assertTrue(db.let { runBlocking { it.journal().events().isEmpty() } }) // Connected requests write no history.
     }
+    // --- checkpoint 4.1 tuning ---------------------------------------------------------------
+
+    private fun lastContext() = ConnectedJson.parse(link.posts.last { it.first.startsWith("/contexts") && !it.first.endsWith("/recommendations") }.second) as Map<*, *>
+
+    @Test fun tuningIsSavedAndSentWithTheNextSong() {
+        link.tunable = true
+        radio.setConnectedTuning(ConnectedTuning(picks = 7, similar = 2, energy = "auto"))
+        assertEquals(ConnectedTuning(picks = 7, similar = 2, energy = "auto"),
+            ConnectedTuning.decode(context.getSharedPreferences("radio_recommendations", 0).getString("connected_tuning", null)))
+        start()
+        assertEquals(mapOf("picks" to 7L, "similar" to 2L, "energy" to "auto"), lastContext()["tuning"])
+    }
+
+    @Test fun olderDesktopsGetNoTuning() {
+        radio.setConnectedTuning(ConnectedTuning(picks = 7))
+        start()
+        assertFalse(lastContext().containsKey("tuning"))
+        assertFalse(lastContext().containsKey("played"))
+        assertEquals(false, radio.connected.status.value.tunable)
+    }
+
+    @Test fun aTuningChangeExpiresTheHeldSetButNotPlayback() = runBlocking {
+        val state = start()
+        radio.setConnectedTuning(ConnectedTuning(similar = 3))
+        assertNull(radio.connected.set.value)
+        assertEquals(state.currentId, songs[0].id)
+        val batch = radio.refill(state.playOrder.toSet(), 3, state.playOrder.last())
+        assertTrue(batch!!.suggestions.none { it.pick.reason.startsWith(ConnectedPolicy.SERVER_AI_PREFIX) })
+    }
+
+    @Test fun defaultsClearTheOverride() {
+        radio.setConnectedTuning(ConnectedTuning(variety = .5))
+        radio.setConnectedTuning(ConnectedTuning())
+        assertTrue(radio.connectedTuning.value.isDefault)
+        assertEquals("{}", context.getSharedPreferences("radio_recommendations", 0).getString("connected_tuning", null))
+    }
 }

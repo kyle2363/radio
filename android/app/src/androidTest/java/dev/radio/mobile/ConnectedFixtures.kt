@@ -17,10 +17,11 @@ class ScriptedConnectedLink(private val serverIds: List<String>) : ConnectedServ
     @Volatile var permitted = true
     @Volatile var slots = listOf("exploit", "exploit", "explore", "wildcard", "context")
     @Volatile var vibeLocked = false
+    @Volatile var tunable = false
     private var epoch = 0L
 
     fun count(suffix: String) = posts.count { it.first.endsWith(suffix) }
-    override suspend fun access() = ConnectedAccess("srv:device", true, permitted)
+    override suspend fun access() = ConnectedAccess("srv:device", true, permitted, tunable)
 
     override suspend fun post(path: String, body: String): RadioResponse {
         posts += path to body

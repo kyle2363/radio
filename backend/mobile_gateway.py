@@ -443,7 +443,7 @@ def create_mobile_gateway(store, identity, pairing, *, catalog=None, monotonic=t
                 "catalog_id": store.catalog_id, "pairing": True,
                 "catalog_import": catalog is not None, "catalog_schema": 1,
                 "catalog_revision": catalog.status()["revision"] if catalog else None,
-                "profile_sync": True, "remote_hosting": True, "connected_recommendations": True,
+                "profile_sync": True, "remote_hosting": True, "connected_recommendations": True, "connected_tuning": True,
                 "offline_recommendations": False, "native_speech_generation": False,
                 "local_music_required": True}
 

@@ -245,7 +245,8 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
                                         if(locked)Text("${radio.vibeSongsLeft} songs left · up to 30 min",style=MaterialTheme.typography.bodySmall)
                                         else if(!radio.vibeAvailable)Text("Vibe lock needs a matched song with recommendation data.",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)}
                                     val options = dev.radio.mobile.recommendation.ConnectedPolicy.visibleOptions(connected, audio.currentId, audio.radioActive, audio.playOrder.toSet(), repository.radio::isDisliked) { id -> library.songs.any { it.id == id && it.available } }
-                                    if (options.isNotEmpty()) UpNextOptionsCard(options, { pick -> playback.addToQueue(listOf(pick.song), true) }, Modifier.padding(top = 12.dp))
+                                    if (options.isNotEmpty()) UpNextOptionsCard(options, { pick -> playback.addToQueue(listOf(pick.song), true) }, Modifier.padding(top = 12.dp),
+                                        connected.set?.let(dev.radio.mobile.recommendation.ConnectedPolicy::summary))
                                     HorizontalDivider(Modifier.padding(top = 8.dp))
                                     Text(audio.status + " · Local file\n" + song.folderPath.ifEmpty { library.root?.name ?: "Music" }, Modifier.fillMaxWidth().padding(vertical = 16.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }

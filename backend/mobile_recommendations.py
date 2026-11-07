@@ -21,8 +21,9 @@ from uuid import uuid4
 
 import config
 from db import database
-from pydantic import BaseModel, ConfigDict, Field, StrictFloat, StrictInt, StrictStr, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictFloat, StrictInt, StrictStr, ValidationError
 
+from engine import energy as energy_module
 from engine import mood as mood_module
 from engine import recommendation_service as service
 from engine import taste
@@ -32,6 +33,9 @@ logger = logging.getLogger(__name__)
 PROTOCOL_VERSION = 1
 MAX_SONG_IDS = 20000
 MAX_RECENT = 20
+MAX_PLAYED = 100
+PLAYED_WINDOW_SECONDS = 3 * 86400
+ENERGY_SETTINGS = {"rising": "rising", "falling": "falling", "steady": "stable"}
 MAX_EXCLUDED = 200
 MAX_CONTEXTS_PER_DEVICE = 2
 CONTEXT_IDLE_SECONDS = 1800.0
@@ -74,6 +78,23 @@ class RecentEntry(BaseModel):
     outcome: Annotated[StrictStr, Field(pattern=r"^(completed|skipped)$")]
 
 
+class PlayedEntry(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    song_id: SongId
+    age_s: Annotated[StrictInt, Field(ge=0, le=2**31 - 1)]
+
+
+class Tuning(BaseModel):
+    """Phone-only overrides (checkpoint 4.1). Absent fields mean the desktop default."""
+    model_config = ConfigDict(extra="forbid")
+    variety: Optional[Annotated[Number, Field(ge=0, le=1)]] = None
+    picks: Optional[Annotated[StrictInt, Field(ge=5, le=8)]] = None
+    similar: Optional[Annotated[StrictInt, Field(ge=2, le=4)]] = None
+    energy: Optional[Annotated[StrictStr, Field(pattern=r"^(auto|rising|steady|falling)$")]] = None
+    reranking: Optional[Annotated[StrictStr, Field(pattern=r"^(default|on|off)$")]] = None
+    pockets: Optional[StrictBool] = None
+
+
 class ContextRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     protocol_version: StrictInt
@@ -81,6 +102,8 @@ class ContextRequest(BaseModel):
     exploration: Number
     vibe_lock_song_id: Optional[SongId] = None
     recent: Annotated[list[RecentEntry], Field(max_length=MAX_RECENT)]
+    tuning: Optional[Tuning] = None
+    played: Annotated[list[PlayedEntry], Field(max_length=MAX_PLAYED)] = []
 
 
 class RecommendationRequest(BaseModel):
@@ -141,6 +164,8 @@ class Context:
     recent: list
     touched: float
     order: int
+    tuning: dict = field(default_factory=dict)
+    played: list = field(default_factory=list)     # [(song_id, age_s)] unsynced phone plays
 
 
 @dataclass
@@ -165,6 +190,7 @@ class MobileRecommendations:
         self.gate = gate if gate is not None else service.DEFAULT_LLM_GATE
         self.recommend_fn = recommend_fn or (lambda inputs: service.recommend(inputs))
         self.memory = memory or taste.MemorySystem()
+        self.constellations = None                # taste pockets for phone requests, built on first use
         self._lock = threading.RLock()
         self._snapshots = OrderedDict()           # device_id -> Snapshot (LRU)
         self._contexts = {}                       # context_id -> Context
@@ -217,13 +243,15 @@ class MobileRecommendations:
             raise Rejected(422, "Invalid request")
         recent = [(int(item.song_id), item.outcome) for item in request.recent]
         vibe = int(request.vibe_lock_song_id) if request.vibe_lock_song_id else None
-        known = _existing_ids({sid for sid, _ in recent} | ({vibe} if vibe else set()))
-        if any(sid not in known for sid, _ in recent) or (vibe and vibe not in known):
+        played = [(int(item.song_id), item.age_s) for item in request.played]
+        ids = {sid for sid, _ in recent} | {sid for sid, _ in played} | ({vibe} if vibe else set())
+        if ids - _existing_ids(ids):
             raise Rejected(400, "Unknown song IDs")
-        return request.mood, float(request.exploration), vibe, recent
+        tuning = request.tuning.model_dump(exclude_none=True) if request.tuning else {}
+        return request.mood, float(request.exploration), vibe, recent, tuning, played
 
     def create_context(self, device_id, body):
-        mood, exploration, vibe, recent = self._fields(body)
+        mood, exploration, vibe, recent, tuning, played = self._fields(body)
         with self._lock:
             self._sweep()
             mine = sorted((c for c in self._contexts.values() if c.device_id == device_id), key=lambda c: c.order)
@@ -234,17 +262,18 @@ class MobileRecommendations:
                 del self._contexts[oldest.context_id]
             self._counter += 1
             context = Context(secrets.token_urlsafe(24), device_id, 1, mood, exploration, vibe, recent,
-                              self.clock(), self._counter)
+                              self.clock(), self._counter, tuning, played)
             self._contexts[context.context_id] = context
             return self._context_reply(context)
 
     def update_context(self, device_id, context_id, body):
         with self._lock:
             self._owned(device_id, context_id)
-        mood, exploration, vibe, recent = self._fields(body)
+        mood, exploration, vibe, recent, tuning, played = self._fields(body)
         with self._lock:
             context = self._owned(device_id, context_id)
             context.mood, context.exploration, context.vibe_lock_song_id, context.recent = mood, exploration, vibe, recent
+            context.tuning, context.played = tuning, played
             context.epoch += 1
             self._touch(context)
             return self._context_reply(context)
@@ -288,7 +317,7 @@ class MobileRecommendations:
         ticket = self._admit(device_id)
         try:
             self._await_turn(device_id, ticket)
-            result, vibe_locked = self._compute(context, snapshot, request, anchor, arrival + self.deadline_seconds)
+            result, vibe_locked, applied = self._compute(context, snapshot, request, anchor, arrival + self.deadline_seconds)
         except BaseException:
             self._finish(device_id, ticket)
             raise
@@ -307,6 +336,7 @@ class MobileRecommendations:
             "status": result.status, "ranked_by": result.ranked_by, "vibe_locked": vibe_locked,
             "picks": [{"song_id": str(p["song_id"]), "slot": p["slot"], "reason": p["reason"]}
                       for p in result.picks],
+            "applied": dict(applied, similar=sum(p["slot"] == "exploit" for p in result.picks)),
         }
 
     def _check_fences(self, device_id, context, request):
@@ -367,6 +397,7 @@ class MobileRecommendations:
         with self._lock:
             mood_name, exploration = context.mood, context.exploration
             vibe_song, recent = context.vibe_lock_song_id, list(context.recent)
+            tuning, played = dict(context.tuning), list(context.played)
         completed = [sid for sid, outcome in reversed(recent) if outcome == "completed"]
         skip_streak = 0
         for _, outcome in reversed(recent):
@@ -374,6 +405,16 @@ class MobileRecommendations:
                 break
             skip_streak += 1
         exclude = {anchor, *(int(v) for v in request.exclude_song_ids), *(sid for sid, _ in recent)}
+        # Unsynced phone plays obey the desktop recency window and graduated penalty.
+        window = float(database._get_cached_setting("recency_exclude_hours") or "1") * 3600
+        recent_hours = {}
+        for sid, age in played:
+            if sid in exclude or age >= PLAYED_WINDOW_SECONDS:
+                continue
+            if age < window:
+                exclude.add(sid)
+            else:
+                recent_hours[sid] = min(age / 3600, recent_hours.get(sid, age / 3600))
         vibe = self._vibe_lock(vibe_song)
         collections = [("text", "songs")]
         if config.MUQ_ENABLED:
@@ -388,6 +429,20 @@ class MobileRecommendations:
         archetype_name, _ = archetype_engine.detect_archetype()
         mood_config = mood_module.MOOD_STATES[mood_name]
         reranking = (database.get_setting("llm_reranking_enabled") or "true").lower() != "false"
+        if tuning.get("reranking") in ("on", "off"):
+            reranking = tuning["reranking"] == "on"
+        direction, nudge = "stable", False
+        if "energy" in tuning:
+            nudge = True
+            direction = (self._energy_direction([sid for sid, _ in recent][-5:]) if tuning["energy"] == "auto"
+                         else ENERGY_SETTINGS[tuning["energy"]])
+        counts, total = None, 5
+        if not vibe and ("picks" in tuning or "similar" in tuning):
+            from portable.slots import slot_counts
+            total = tuning.get("picks", 5)
+            counts = slot_counts(total, tuning.get("similar"), exploration_level=exploration, archetype=archetype_name)
+        pockets = self._pockets() if tuning.get("pockets") else None
+        variety = float(tuning["variety"]) if "variety" in tuning else None
         inputs = service.RecommendationInputs(
             db=database, anchor_song_id=anchor,
             taste_vector=vectors["text"], audio_taste_vector=vectors.get("audio"),
@@ -396,6 +451,9 @@ class MobileRecommendations:
             mood_energy_range=mood_config["energy_range"], mood_valence_range=mood_config["valence_range"],
             skip_streak=skip_streak, exploration_level=exploration, vibe_lock=vibe,
             reranking_enabled=reranking, archetype=archetype_name,
+            energy_direction=direction, energy_nudge=nudge, slot_counts=counts,
+            jitter_strength=variety, recent_hours=recent_hours or None, reasons_for_all=True,
+            constellations=pockets, constellations_enabled=pockets is not None,
             allowed_ids=snapshot.ids, filler_current_song_id=anchor, strict_exclusions=True,
             llm_budget_seconds=lambda: max(0.0, deadline_at - self.clock()),
             llm_gate=self.gate, gate_priority=service.LlmPriorityGate.MOBILE,
@@ -409,7 +467,26 @@ class MobileRecommendations:
         if picks != result.picks:
             result.picks = picks
             result.status = "ok" if picks else "insufficient"
-        return result, bool(vibe)
+        applied = {"variety": variety, "picks": total, "energy": direction, "reranking": "on" if reranking else "off",
+                   "pockets": "off" if pockets is None else "on" if getattr(pockets, "is_active", False) else "inactive"}
+        return result, bool(vibe), applied
+
+    def _pockets(self):
+        if self.constellations is None:
+            from engine.constellations import TasteConstellations
+            self.constellations = TasteConstellations()
+        return self.constellations
+
+    @staticmethod
+    def _energy_direction(song_ids):
+        """The desktop rising/falling/stable rule over the phone's newest songs, in play order."""
+        if len(song_ids) < 2:
+            return "stable"
+        try:
+            energies = database.get_effective_energy_batch(song_ids)
+        except Exception:                                  # noqa: BLE001 - direction is optional
+            return "stable"
+        return energy_module.direction_of([energies[sid] for sid in song_ids if sid in energies])
 
     def _taste_vector(self, collection, completed_newest_first, skip_streak):
         """Shared long-term/daily profile plus this request's session list."""

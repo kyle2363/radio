@@ -41,4 +41,16 @@ object ConnectedPolicy {
      * at least one upcoming entry must remain to keep music going. The source's own 75 s deadline bounds the wait.
      */
     fun shouldWait(pendingAnchor: String?, currentId: String?, upcoming: Int) = pendingAnchor != null && pendingAnchor == currentId && upcoming >= 1
+
+    /** One line under the options card: how the set was ranked and which tuning the desktop actually applied. */
+    fun summary(set: ConnectedSet): String {
+        val parts = mutableListOf(when (set.rankedBy) { "llm" -> "LLM"; "fallback" -> "Fallback ranking"; "deterministic" -> "Deterministic"; else -> set.rankedBy },
+            "${set.continuation.size} similar", "${set.options.size} " + if (set.options.size == 1) "option" else "options")
+        set.applied?.let { a ->
+            a.variety?.takeIf { it > 0 }?.let { parts += "variety ${Math.round(it * 100)}%" }
+            if (a.energy == "rising" || a.energy == "falling") parts += a.energy
+            when (a.pockets) { "on" -> parts += "pockets on"; "inactive" -> parts += "pockets need more listening" }
+        }
+        return parts.joinToString(" · ")
+    }
 }

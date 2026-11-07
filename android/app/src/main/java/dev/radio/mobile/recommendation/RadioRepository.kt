@@ -26,6 +26,8 @@ data class RadioState(val loaded:Boolean=false,val busy:Boolean=false,val sugges
     val diagnostics:RadioDiagnostics=RadioDiagnostics(),val bootstrapLocalIds:Set<String> = emptySet(),val bootstrapCandidates:Set<String> = emptySet(),val bootstrapDismissed:Boolean=false,
     val suggestionAnchorTitle:String?=null,val catalogSnapshot:String?=null,val legacyVectorTracks:Int=0,val legacyVectorsEnabled:Boolean=false)
 
+private const val PLAYED_WINDOW_MS = 3 * 86_400_000L
+
 /** Local-only recommendation snapshots. Publishing a preview never calls playback. */
 class RadioRepository internal constructor(context:Context,private val db:LibraryDatabase,private val library:StateFlow<LibraryState>,private val journal:ListeningJournalRepository,private val scope:CoroutineScope,
     private val directory:File=File(context.applicationContext.noBackupFilesDir,"portable_catalog_blobs"),
@@ -35,6 +37,9 @@ class RadioRepository internal constructor(context:Context,private val db:Librar
     private val mutable=MutableStateFlow(RadioState(mood=prefs.getString("mood","neutral") ?: "neutral",exploration=prefs.getFloat("exploration",.3f).toDouble(),vibeLocalId=prefs.getString("vibe",null),vibeUntil=prefs.getLong("vibeUntil",0),vibeSongsLeft=prefs.getInt("vibeLeft",0)))
     val state=mutable.asStateFlow()
     // Connected Radio (checkpoint 4). Off until the listener turns it on; never required for local play.
+    private val tuningState=MutableStateFlow(ConnectedTuning.decode(prefs.getString("connected_tuning",null)))
+    /** Phone-only Connected Radio tuning (checkpoint 4.1); never sent to offline Radio or desktop settings. */
+    val connectedTuning:StateFlow<ConnectedTuning> = tuningState.asStateFlow()
     private val serverAi=MutableStateFlow<Set<String>>(emptySet())
     private val appContext=context.applicationContext
     val connected=ConnectedRadioSource(object:ConnectedServerLink {
@@ -168,8 +173,20 @@ class RadioRepository internal constructor(context:Context,private val db:Librar
         if(value && output.radioActive)output.current?.let{songStarted(it,output)}
     }
     private fun connectedFence():ConnectedFence? { val id=playback.currentId ?: return null;val st=mutable.value
-        return ConnectedFence(id,st.mood,st.exploration,st.vibeLocalId,JournalIdentityProvider.mappings.value.generation,PortableSyncChanges.revision)
+        return ConnectedFence(id,st.mood,st.exploration,st.vibeLocalId,JournalIdentityProvider.mappings.value.generation,PortableSyncChanges.revision,tuning=tuningState.value)
     }
+    /** Saves tuning and expires the held set; the new values apply from the next song's request. */
+    fun setConnectedTuning(value:ConnectedTuning) {
+        val normalized=value.normalized()
+        if(normalized==tuningState.value)return
+        prefs.edit{putString("connected_tuning",normalized.encode())}
+        tuningState.value=normalized
+        connected.revalidate(connectedFence())
+    }
+    /** Phone completions/skips from the last 3 days, newest first, so the desktop's recency window covers unsynced plays. */
+    private fun connectedPlayed(now:Long=System.currentTimeMillis()):List<ConnectedPlayed> =
+        journal.state.value.history.asSequence().filter{(it.kind=="song_completed" || it.kind=="song_skipped") && now-it.occurredAt in 0 until PLAYED_WINDOW_MS}
+            .sortedByDescending{it.occurredAt}.distinctBy{it.localId}.take(ConnectedRadioSource.MAX_PLAYED*2).map{ConnectedPlayed(it.localId,(now-it.occurredAt)/1000)}.toList()
     /** Called only for an actual start. Asks the desktop for one option set anchored on this song; playback never waits. */
     @Volatile private var startedAnchor:String?=null
     /** True while Connected Radio is on and the current song's actual start has not yet been seen (its request isn't pending yet). */
@@ -182,10 +199,10 @@ class RadioRepository internal constructor(context:Context,private val db:Librar
         if(local.accessLost || local.scanning || local.loading)return
         val recent=journal.state.value.history.filter{it.kind=="song_completed" || it.kind=="song_skipped"}.sortedBy{it.logicalClock}.takeLast(20)
             .map{ConnectedRecent(it.localId,if(it.kind=="song_completed")"completed" else "skipped")}
-        val st=mutable.value
+        val st=mutable.value;val tuning=tuningState.value
         connected.begin(ConnectedRequest(song,st.mood,st.exploration,st.vibeLocalId,mapping,local.songs.filter{it.available}.associateBy{it.id},recent,
             output.playOrder.toSet()+recent.map{it.localId}+song.id,::isDisliked,
-            ConnectedFence(song.id,st.mood,st.exploration,st.vibeLocalId,mapping.generation,PortableSyncChanges.revision)))
+            ConnectedFence(song.id,st.mood,st.exploration,st.vibeLocalId,mapping.generation,PortableSyncChanges.revision,tuning=tuning),tuning,connectedPlayed()))
     }
     private fun playable(id:String)=library.value.songs.any{it.id==id && it.available && it.uri.startsWith("content:")}
     /**

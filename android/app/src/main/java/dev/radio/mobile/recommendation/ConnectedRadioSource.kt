@@ -15,13 +15,13 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
 /** What the desktop currently allows this phone to do. */
-data class ConnectedAccess(val key: String, val capable: Boolean, val permitted: Boolean) {
+data class ConnectedAccess(val key: String, val capable: Boolean, val permitted: Boolean, val tunable: Boolean = false) {
     companion object {
         /** Parses GET /capabilities. [key] identifies the paired server and device. */
         fun parse(key: String, body: String): ConnectedAccess {
             val root = runCatching { ConnectedJson.parse(body) as? Map<*, *> }.getOrNull() ?: throw ConnectionFailure("Invalid server response.")
             val scopes = (root["scopes"] as? List<*>)?.filterIsInstance<String>().orEmpty()
-            return ConnectedAccess(key, root["connected_recommendations"] == true, "recommend:read" in scopes)
+            return ConnectedAccess(key, root["connected_recommendations"] == true, "recommend:read" in scopes, root["connected_tuning"] == true)
         }
     }
 }
@@ -56,10 +56,12 @@ data class ConnectedPick(val song: LocalSong, val slot: String, val reason: Stri
 
 /** Everything that must still hold for a set to be usable (see [ConnectedRadioSource.revalidate]). */
 data class ConnectedFence(val anchorLocalId: String, val mood: String, val exploration: Double, val vibe: String?,
-    val mappingGeneration: Long, val syncEpoch: Long, val connectedEpoch: Long = 0, val availabilityDigest: String = "")
+    val mappingGeneration: Long, val syncEpoch: Long, val connectedEpoch: Long = 0, val availabilityDigest: String = "",
+    val tuning: ConnectedTuning = ConnectedTuning())
 
 data class ConnectedSet(val anchorLocalId: String, val requestId: String, val resultId: String, val rankedBy: String, val vibeLocked: Boolean,
-    val fence: ConnectedFence, val continuation: List<ConnectedPick>, val options: List<ConnectedPick>, val dropped: Int, val receivedAt: Long)
+    val fence: ConnectedFence, val continuation: List<ConnectedPick>, val options: List<ConnectedPick>, val dropped: Int, val receivedAt: Long,
+    val applied: ConnectedApplied? = null)
 
 data class ConnectedRecent(val localId: String, val outcome: String)
 
@@ -68,11 +70,14 @@ data class ConnectedRequest(
     val anchor: LocalSong, val mood: String, val exploration: Double, val vibeLocalId: String?,
     val mappings: MappingSnapshot, val available: Map<String, LocalSong>, val recent: List<ConnectedRecent>,
     val excludeLocalIds: Set<String>, val isDisliked: (String) -> Boolean, val fence: ConnectedFence,
+    val tuning: ConnectedTuning = ConnectedTuning(), val played: List<ConnectedPlayed> = emptyList(),
 )
 
 data class ConnectedStatus(
     val enabled: Boolean = false, val permitted: Boolean? = null, val pendingAnchor: String? = null, val pendingSince: Long = 0,
     val lastAt: Long = 0, val lastOk: Boolean? = null, val lastMessage: String = "Off", val lastFailure: ConnectedFailure? = null,
+    /** Whether the paired desktop accepts phone tuning; null until it has been asked. */
+    val tunable: Boolean? = null,
 )
 
 /** Digest rule shared with the desktop (plan section 8). */
@@ -124,6 +129,7 @@ class ConnectedRadioSource(
         private const val ACCESS_TTL_MS = 5 * 60_000L
         private const val DENIED_TTL_MS = 30_000L
         private val SLOTS = setOf("exploit", "explore", "wildcard", "context")
+        const val MAX_PLAYED = 100
     }
     private val mutable = MutableStateFlow(ConnectedStatus())
     val status: StateFlow<ConnectedStatus> = mutable.asStateFlow()
@@ -150,7 +156,7 @@ class ConnectedRadioSource(
         generation++
         job?.cancel(); job = null
         currentSet.value = null
-        mutable.update { if (value) ConnectedStatus(enabled = true, lastMessage = "Waiting for the next song") else ConnectedStatus() }
+        mutable.update { if (value) ConnectedStatus(enabled = true, lastMessage = "Waiting for the next song", tunable = access?.let { it.capable && it.tunable }) else ConnectedStatus() }
     }
 
     /** Marks the anchor pending right away so a refill that fires at song start waits for the answer. */
@@ -181,7 +187,8 @@ class ConnectedRadioSource(
         val held = currentSet.value ?: return
         val f = held.fence
         val ok = current != null && f.anchorLocalId == current.anchorLocalId && f.mood == current.mood && f.exploration == current.exploration &&
-            f.vibe == current.vibe && f.mappingGeneration == current.mappingGeneration && f.syncEpoch == current.syncEpoch && f.connectedEpoch == latestEpoch
+            f.vibe == current.vibe && f.mappingGeneration == current.mappingGeneration && f.syncEpoch == current.syncEpoch && f.connectedEpoch == latestEpoch &&
+            f.tuning.normalized() == current.tuning.normalized()
         if (!ok) currentSet.compareAndSet(held, null)
     }
 
@@ -224,6 +231,7 @@ class ConnectedRadioSource(
         val fresh = link.access()
         if (fresh.key != linkKey) { uploadedDigest = null; uploadedRevision = -1; contextId = null; contextBody = null; contextEpoch = 0; latestEpoch = 0; linkKey = fresh.key }
         access = fresh; accessAt = now()
+        mutable.update { it.copy(tunable = fresh.capable && fresh.tunable) }
         return fresh
     }
 
@@ -260,7 +268,7 @@ class ConnectedRadioSource(
                 if (obj(response.body)?.get("digest") != snapshot.digest) return fail(ConnectedFailureKind.INVALID_REPLY, "availability digest")
                 uploadedDigest = snapshot.digest; uploadedRevision = snapshot.revision; forceUpload = false
             }
-            val ctx = contextBody(request, snapshot)
+            val ctx = contextBody(request, snapshot, granted.tunable)
             if (contextId == null || forceContext || ctx != contextBody) {
                 val create = contextId == null
                 val response = link.post(if (create) "/contexts" else "/contexts/$contextId", ctx)
@@ -298,10 +306,18 @@ class ConnectedRadioSource(
         }
     }
 
-    private fun contextBody(request: ConnectedRequest, snapshot: AvailabilitySnapshot): String {
+    private fun contextBody(request: ConnectedRequest, snapshot: AvailabilitySnapshot, tunable: Boolean): String {
         val recent = request.recent.mapNotNull { r -> snapshot.serverIdByLocal[r.localId]?.let { linkedMapOf("song_id" to it, "outcome" to r.outcome) } }.takeLast(20)
-        return ConnectedJson.write(linkedMapOf("protocol_version" to 1, "mood" to request.mood, "exploration" to request.exploration.coerceIn(0.0, 1.0),
-            "vibe_lock_song_id" to request.vibeLocalId?.let { snapshot.serverIdByLocal[it] }, "recent" to recent))
+        val body = linkedMapOf<String, Any?>("protocol_version" to 1, "mood" to request.mood, "exploration" to request.exploration.coerceIn(0.0, 1.0),
+            "vibe_lock_song_id" to request.vibeLocalId?.let { snapshot.serverIdByLocal[it] }, "recent" to recent)
+        // Older desktops reject unknown fields, so tuning and phone plays are only sent where advertised.
+        if (tunable) {
+            request.tuning.toWire()?.let { body["tuning"] = it }
+            val played = request.played.mapNotNull { p -> snapshot.serverIdByLocal[p.localId]?.let { it to p.ageS.coerceAtLeast(0) } }
+                .distinctBy { it.first }.take(MAX_PLAYED).map { linkedMapOf("song_id" to it.first, "age_s" to it.second) }
+            if (played.isNotEmpty()) body["played"] = played
+        }
+        return ConnectedJson.write(body)
     }
 
     private fun parseReply(request: ConnectedRequest, snapshot: AvailabilitySnapshot, requestId: String, id: String, anchorServer: String, text: String): Outcome {
@@ -329,6 +345,6 @@ class ConnectedRadioSource(
         if (continuation.isEmpty() && options.isEmpty()) return fail(ConnectedFailureKind.INSUFFICIENT, if (dropped > 0) "$dropped picks weren't usable on this phone" else null)
         val fence = request.fence.copy(connectedEpoch = contextEpoch, availabilityDigest = snapshot.digest)
         return ConnectedSet(request.anchor.id, requestId, reply["result_id"] as? String ?: "", reply["ranked_by"] as? String ?: "unknown", vibeLocked,
-            fence, continuation, options, dropped, now()) to null
+            fence, continuation, options, dropped, now(), ConnectedApplied.parse(reply["applied"])) to null
     }
 }

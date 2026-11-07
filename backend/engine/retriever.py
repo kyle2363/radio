@@ -74,6 +74,18 @@ def _jitter_vector(v, strength=0.12):
     return [a + b for a, b in zip(v, noise)]
 
 
+def _variety_jitter(v, variety, rng=random):
+    """Phone "variety": add Gaussian noise of norm ``0.16 * variety`` to a query vector."""
+    if v is None or not variety:
+        return v
+    amount = 0.16 * max(0.0, min(1.0, float(variety)))
+    noise = [rng.gauss(0, 1) for _ in v]
+    magnitude = math.sqrt(sum(x * x for x in noise))
+    if magnitude == 0:
+        return list(v)
+    return [a + b / magnitude * amount for a, b in zip(v, noise)]
+
+
 def _where(subfolder_filter=None, allowed_ids=None, extra=None):
     """Combine folder, availability and caller restrictions into one Chroma filter."""
     clauses = list(extra or [])
@@ -462,7 +474,8 @@ def build_candidate_list(text_taste_vector=None, audio_taste_vector=None,
                          artist_mode=None, artists=None,
                          # Legacy params for backward compatibility
                          taste_vector=None, repulsion_vector=None, exploration_level=None,
-                         allowed_ids=None):
+                         allowed_ids=None, jitter_strength=None, jitter_rng=None,
+                         extra_recent_hours=None):
     """Build a candidate list for slot allocation.
 
     Runs two ChromaDB searches (text + audio) when both vectors are available,
@@ -474,6 +487,12 @@ def build_candidate_list(text_taste_vector=None, audio_taste_vector=None,
 
     ``allowed_ids`` (optional) restricts every search, the metadata fallback and
     the vibe-lock boost to that set of song IDs; an empty set returns nothing.
+
+    Phone requests may also pass ``jitter_strength`` (variety 0-1, noise on the
+    query vectors; ``jitter_rng`` makes it reproducible) and
+    ``extra_recent_hours`` ({song_id: hours since an unsynced phone play}),
+    which obey the same recency window and graduated penalty as desktop plays.
+    The desktop passes neither, so its retrieval stays deterministic.
 
     Returns up to 40 candidates for LLM reranker.
     """
@@ -521,6 +540,14 @@ def build_candidate_list(text_taste_vector=None, audio_taste_vector=None,
                 recently_played_times[sid] = hours_ago
     finally:
         conn.close()
+    for sid, hours_ago in (extra_recent_hours or {}).items():
+        if sid in recently_played:
+            continue
+        if hours_ago < exclude_hours:
+            recently_played.add(sid)
+            recently_played_times.pop(sid, None)
+        else:
+            recently_played_times[sid] = min(hours_ago, recently_played_times.get(sid, hours_ago))
 
     # Get blacklisted song IDs
     blacklisted = set()
@@ -585,6 +612,10 @@ def build_candidate_list(text_taste_vector=None, audio_taste_vector=None,
     audio_anchor = anchor(config.MUQ_AUDIO_COLLECTION) if config.MUQ_ENABLED else None
     text_taste_vector = context_query(text_profile, text_anchor, exploration)
     audio_taste_vector = context_query(audio_profile, audio_anchor, exploration)
+    if jitter_strength:
+        rng = jitter_rng or random
+        text_taste_vector = _variety_jitter(text_taste_vector, jitter_strength, rng)
+        audio_taste_vector = _variety_jitter(audio_taste_vector, jitter_strength, rng)
     if text_taste_vector is None and audio_taste_vector is None:
         # Metadata fallback is explicitly labelled and obeys all caller filters.
         rows = []

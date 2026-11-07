@@ -9,8 +9,10 @@ import dev.radio.mobile.data.LocalSong
 import dev.radio.mobile.playback.PlaybackState
 import dev.radio.mobile.recommendation.*
 import dev.radio.mobile.ui.ConnectedRadioSection
+import dev.radio.mobile.ui.ConnectedTuningSection
 import dev.radio.mobile.ui.IntegratedQueue
 import dev.radio.mobile.ui.UpNextOptionsCard
+import androidx.compose.foundation.verticalScroll
 import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
@@ -117,5 +119,48 @@ class ConnectedRadioUiTest {
         paired = false
         compose.onNodeWithTag("connected-radio-permission").assertTextContains("Pair this phone", substring = true)
         compose.onNodeWithTag("connected-radio-check").assertIsNotEnabled()
+    }
+    // --- checkpoint 4.1 tuning ---------------------------------------------------------------
+
+    @Test fun cardShowsTheServerSummary() {
+        compose.setContent { UpNextOptionsCard(picks, {}, summary = "LLM · 2 similar · 3 options · variety 40%") }
+        compose.onNodeWithTag("up-next-summary").assertTextEquals("LLM · 2 similar · 3 options · variety 40%")
+    }
+
+    @Test fun tuningSectionReportsEachChangeAndResets() {
+        var tuning by mutableStateOf(ConnectedTuning())
+        compose.setContent { androidx.compose.foundation.layout.Column(androidx.compose.ui.Modifier.verticalScroll(androidx.compose.foundation.rememberScrollState())) { ConnectedTuningSection(tuning, tunable = true, pocketsInactive = false, onChange = { tuning = it }) } }
+        compose.onNodeWithTag("connected-tuning-reset").assertIsNotEnabled()
+        compose.onNodeWithTag("connected-picks-5").assertIsSelected()
+        compose.onNodeWithTag("connected-picks-7").performClick()
+        compose.onNodeWithTag("connected-similar-2").performScrollTo().performClick()
+        compose.onNodeWithTag("connected-mix").assertTextContains("Up to 2 similar songs join the queue; 5 more appear as options.")
+        compose.onNodeWithTag("connected-energy-rising").performScrollTo().performClick()
+        compose.onNodeWithTag("connected-advanced").performScrollTo().performClick()
+        compose.onNodeWithTag("connected-ranking-off").performScrollTo().performClick()
+        compose.onNodeWithTag("connected-pockets").performScrollTo().performClick()
+        assertEquals(ConnectedTuning(picks = 7, similar = 2, energy = "rising", reranking = "off", pockets = true), tuning)
+        compose.onNodeWithTag("connected-picks-5").performScrollTo().performClick()
+        compose.onNodeWithTag("connected-similar-auto").performScrollTo().performClick()
+        assertNull(tuning.picks); assertNull(tuning.similar)
+        compose.onNodeWithTag("connected-tuning-reset").performScrollTo().performClick()
+        assertTrue(tuning.isDefault)
+    }
+
+    @Test fun pocketsExplainWhenTheDesktopHasTooLittleHistory() {
+        compose.setContent { ConnectedTuningSection(ConnectedTuning(pockets = true), tunable = true, pocketsInactive = true, onChange = {}) }
+        compose.onNodeWithTag("connected-pockets-note", useUnmergedTree = true).assertTextContains("Needs more listening history", substring = true)
+    }
+
+    @Test fun anOlderDesktopDisablesTuning() {
+        compose.setContent { ConnectedTuningSection(ConnectedTuning(), tunable = false, pocketsInactive = false, onChange = { fail("No change expected") }) }
+        compose.onNodeWithTag("connected-tuning-unsupported").assertIsDisplayed()
+        compose.onNodeWithTag("connected-picks-7").assertIsNotEnabled()
+        compose.onNodeWithTag("connected-variety").assertIsNotEnabled()
+    }
+
+    @Test fun settingsShowTheCurrentSetSummary() {
+        compose.setContent { ConnectedRadioSection(ConnectedStatus(enabled = true, permitted = true, tunable = true), paired = true, onToggle = {}, onCheck = {}, summary = "Fallback ranking · 1 similar · 1 option") }
+        compose.onNodeWithTag("connected-radio-summary").assertTextContains("Fallback ranking", substring = true)
     }
 }

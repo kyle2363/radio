@@ -119,7 +119,8 @@ fun ServerSettings(repository: PairingRepository? = null, matchingScreen: Boolea
         if (radioRepository != null) {
             val connectedUi by radioRepository.connectedState.collectAsState()
             ConnectedRadioSection(connectedUi.status, paired = state.paired && !state.blocked && !state.quarantined,
-                onToggle = { radioRepository.setConnectedEnabled(it) }, onCheck = { scope.launch { radioRepository.connected.checkAccess() } })
+                onToggle = { radioRepository.setConnectedEnabled(it) }, onCheck = { scope.launch { radioRepository.connected.checkAccess() } },
+                summary = connectedUi.set?.let(dev.radio.mobile.recommendation.ConnectedPolicy::summary))
         }
         Text("Catalog", Modifier.padding(top = 12.dp), style = MaterialTheme.typography.titleSmall)
         val ready = imported.ready

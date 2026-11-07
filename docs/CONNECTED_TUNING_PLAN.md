@@ -1,7 +1,7 @@
 # Checkpoint 4.1 — connected recommendation tuning plan
 
 Date: November 7, 2026 (revision 1). Builds on checkpoint 4 ([CONNECTED_RECOMMENDATIONS_PLAN.md](CONNECTED_RECOMMENDATIONS_PLAN.md)), which is implemented on `android-4-connected-recommendations` and awaits phone acceptance.
-Status: **in progress** (started November 7, 2026 at the user's request, before checkpoint 4 phone acceptance). Checkpoint 4 is committed separately as `eaac988`.
+Status: **implemented November 7, 2026 on `android-4.1-connected-tuning`; awaiting phone acceptance (§5).** Started at the user's request before checkpoint 4 phone acceptance; checkpoint 4 is committed separately as `eaac988`.
 
 ## 1. Goal
 
@@ -65,7 +65,7 @@ Rules:
 
   Validation: `variety` 0–1; `picks` integer 5–8; `similar` integer 2–4 and ≤ `picks`; `energy` one of `auto|rising|steady|falling`; `reranking` one of `default|on|off`; `pockets` boolean. Anything else is 400.
 - **Phone plays.** The context gains an optional `played` list of `{"song_id", "age_s"}` (≤ 100 distinct songs, newest first, the last 3 days of phone completions/skips) so the server can apply its recency window to plays it has not synced yet. `recent` (≤ 20 outcomes) is unchanged.
-- **Fencing.** Tuning is part of the context, so changing it re-posts the context and bumps the epoch. Held sets become stale and are dropped, exactly like a mood change. The phone's `ConnectedFence` gains a tuning digest.
+- **Fencing.** Tuning is part of the context, so changing it re-posts the context and bumps the epoch. Held sets become stale and are dropped, exactly like a mood change. The phone's `ConnectedFence` carries the tuning value.
 - **Reply** adds `applied`, the tuning the server really used after Vibe lock and availability:
 
 ```json
@@ -87,18 +87,19 @@ Rules:
 ### 3.3 Android
 
 - **Storage.** A `ConnectedTuning` value in the Radio SharedPreferences, one per phone (not per server). No Room migration.
-- **Request.** `ConnectedRadioSource.contextBody` adds `tuning` when the capability is advertised, and `age_s` for recent entries from journal timestamps.
-- **Policy.** `ConnectedPolicy` reads `similar` for its exploit cap (still ≤ 4 and ≤ room). Options keep the existing filters.
-- **Tune sheet.** Below Mood and Exploration, a **Server** section visible only when Connected Radio is on:
-  - Variety slider labelled Steady ↔ Varied.
-  - Picks per song: segmented 5 / 6 / 7 / 8.
-  - Similar picks: segmented 2 / 3 / 4, with "Server decides" as the unset state.
-  - Energy: segmented Auto / Rising / Steady / Falling.
-  - **Advanced** (collapsed): LLM ranking (Desktop default / On / Off) and Taste pockets switch, with "Needs more listening history" when the last reply said `inactive`.
-  - **Use desktop defaults** button.
+- **Request.** `ConnectedRadioSource.contextBody` adds `tuning` (only overridden fields) and `played` (journal completions/skips of the last 3 days, mapped to server IDs, distinct, ≤ 100) only when the capability is advertised.
+- **Fence.** `ConnectedFence` carries the tuning value; changing tuning drops the held set (card hides) and the next song's request carries the new values. Current song, position and queue are untouched.
+- **Policy.** Unchanged: refill still takes at most 4 similar picks within the 5-entry bound; the server already returns the requested `similar` count. `ConnectedPolicy.summary` builds the card line.
+- **Tune sheet.** Below Mood and Exploration, a **Server** section visible only when Connected Radio is on (the sheet now scrolls):
+  - Variety slider labelled Steady ↔ Varied (0 = unset).
+  - Picks per song: chips 5 / 6 / 7 / 8 (5 = unset).
+  - Similar picks: chips Server decides / 2 / 3 / 4, with a line explaining how many become options.
+  - Energy: chips Off / Follow recent / Rising / Steady / Falling. Off (unset) keeps checkpoint 4 behavior; Follow recent is `auto`.
+  - **Advanced** (collapsed): LLM ranking (Desktop default / On / Off) and Taste pockets switch, with "Needs more listening history on the desktop" when the last reply said `inactive`.
+  - **Use desktop defaults** button, disabled when nothing is overridden.
   - A note: "Applies from the next song. Vibe lock keeps 4 similar + 1 option." When the server lacks `connected_tuning`: "This desktop doesn't support tuning yet" and the controls are disabled.
-- **Options card summary.** One line under the card from `applied` and `ranked_by`, for example `LLM · 3 similar · 3 options · variety 40% · rising`. Fallback shows `Fallback ranking`. Each option keeps its server reason.
-- **Settings → Server** keeps the last-result line and adds the same summary text.
+- **Options card summary.** One line under the card from `applied` and `ranked_by`, for example `LLM · 3 similar · 3 options · variety 40% · rising`. Fallback shows `Fallback ranking`; pockets show `pockets on` or `pockets need more listening`. Each option keeps its server reason (phone requests now ask the LLM for a reason on every pick).
+- **Settings → Server** keeps the last-result line, adds "Current set: …" with the same summary, and points to Radio → Tune.
 
 ## 4. Work order (Red/Green TDD)
 
@@ -106,13 +107,22 @@ Rules:
 | --- | --- | --- |
 | 1 | Jitter parameter in retriever/`RecommendationInputs` | Desktop queue/retriever tests unchanged; injected jitter changes candidate order deterministically with a seeded RNG |
 | 2 | `total`/`exploit` in slots, reranker prompt and repair | Defaults reproduce today's 5-pick output; 8 picks with 2 exploit gives 2/6; Vibe lock stays 4/1; fallback paths honour counts |
-| 3 | Context `tuning` + `age_s` validation, capability flag, epoch bump on change | 400 for every invalid field; absent tuning equals checkpoint 4 output; unknown fields still rejected |
+| 3 | Context `tuning` + `played` validation, capability flag, epoch bump on change | 422 for every invalid field; absent tuning equals checkpoint 4 output; unknown fields still rejected |
 | 4 | Energy Auto/explicit, LLM override, pockets, phone recency penalty, `applied` echo | Rising/falling recents resolve correctly; `off` never calls the LLM; under 50 signals → `inactive`; old phone plays are penalised; desktop `settings`, `play_events`, queue unchanged |
-| 5 | Android `ConnectedTuning`, request body, policy cap, fence digest | JVM fake-server tests: tuning sent only with capability; tuning change drops held set; exploit cap follows `similar` |
+| 5 | Android `ConnectedTuning`, request body, `played`, fence, `applied` parsing | JVM fake-server tests: tuning and plays sent only with capability; tuning change patches the context and drops the held set |
 | 6 | Tune sheet Server section, card summary, Settings text | Compose tests: section hidden when Connected off; disabled without capability; defaults reset; summary matches `applied` |
 | 7 | Full verification + APK + phone acceptance | §5 |
 
 ## 5. Verification and acceptance
+
+Verification on November 7, 2026 (branch `android-4.1-connected-tuning`):
+
+- Backend guarded suite: 926 passed, 9 skipped (includes `backend/tests/test_connected_tuning.py`).
+- Android `testDebugUnitTest`: 128 passed. `lintDebug`: no errors; warnings only on pre-existing lines.
+- `connectedDebugAndroidTest` on the API 37 emulator: 178 of 180 passed in the full run. One failure was a finder in a new tuning UI test, now fixed. The other was `CatalogImportTest.interruptedBatchesResumeVerifiedBlobsAfterRepositoryRestart`, in code this checkpoint does not touch. On rerun the affected classes passed 59/59, so that test appears flaky.
+- No desktop frontend changes, so `npm test` was not rerun.
+- Not yet done: phone acceptance, and a measurement of LLM time for 8-pick sets against the 60 s deadline on the real desktop.
+
 
 Automated: guarded backend suite, `npm test`/`npm run build` (no desktop change expected), Android `testDebugUnitTest`, `connectedDebugAndroidTest`, `lintDebug`. Fixtures in `.test-runtime/android-checkpoint4_1/` with synthetic catalogs and a fake LLM/Chroma.
 

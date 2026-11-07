@@ -78,4 +78,15 @@ class ConnectedPolicyTest {
     @Test fun serverAiPrefixIsStable() {
         assertEquals("Server AI", ConnectedPolicy.SERVER_AI_PREFIX)
     }
+    @Test fun summaryDescribesWhatTheServerDid() {
+        val applied = ConnectedApplied(.4, 6, 3, "rising", "on", "inactive")
+        val withApplied = set(listOf(pick("a", "exploit"), pick("b", "exploit"), pick("c", "exploit")), three).copy(applied = applied)
+        assertEquals("LLM · 3 similar · 3 options · variety 40% · rising · pockets need more listening", ConnectedPolicy.summary(withApplied))
+        val fallback = set(listOf(pick("a", "exploit")), listOf(pick("b", "explore"))).copy(rankedBy = "fallback",
+            applied = ConnectedApplied(null, 5, 1, "stable", "off", "off"))
+        assertEquals("Fallback ranking · 1 similar · 1 option", ConnectedPolicy.summary(fallback))
+        assertEquals("LLM · 1 similar · 0 options", ConnectedPolicy.summary(set(listOf(pick("a", "exploit")))))
+        assertEquals("Deterministic · 0 similar · 1 option · pockets on", ConnectedPolicy.summary(set(options = listOf(pick("b", "explore"))).copy(rankedBy = "deterministic",
+            applied = ConnectedApplied(0.0, 5, 0, "falling", "off", "on")).let { it.copy(applied = it.applied!!.copy(energy = "stable")) }))
+    }
 }

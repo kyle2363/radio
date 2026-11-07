@@ -68,6 +68,7 @@ def rig(tmp_path, library, monkeypatch):
 def test_capabilities_advertise_connected_recommendations_and_scope(rig):
     result = rig.call("GET", PREFIX + "/capabilities").json()
     assert result["connected_recommendations"] is True
+    assert result["connected_tuning"] is True
     assert result["scopes"] == ["catalog:read", "recommend:read"]
 
 
