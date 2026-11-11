@@ -12,11 +12,19 @@ test('packaged backend uses resources/backend and packaged Python lookup', () =>
   assert.deepEqual(result.env, { RADIO_FRONTEND_DIST: path.join('C:/Radio/resources', 'dist') });
 });
 
-test('development backend uses repository paths and system Python fallback', () => {
-  const result = resolveBackendLaunch({ packaged: false, dirname: 'C:/repo/frontend/electron', platform: 'win32', exists: () => false });
-  assert.equal(result.serverScript, path.join('C:/repo/backend', 'main.py'));
-  assert.equal(result.python, 'python');
-});
+// Filesystem paths use the host OS; platform selects the Python executable only.
+// A Windows drive path is relative on the Linux CI runner.
+for (const [platform, python] of [['win32', 'python'], ['linux', 'python3']]) {
+  test(`development backend uses repository paths and ${platform} Python fallback`, () => {
+    const repoDir = path.resolve('test-repo');
+    const result = resolveBackendLaunch({ packaged: false,
+      dirname: path.join(repoDir, 'frontend', 'electron'), platform, exists: () => false });
+    assert.equal(result.serverScript, path.join(repoDir, 'backend', 'main.py'));
+    assert.equal(result.cwd, path.join(repoDir, 'backend'));
+    assert.equal(result.frontendDist, path.join(repoDir, 'frontend', 'dist'));
+    assert.equal(result.python, python);
+  });
+}
 
 test('packaged mutable data uses user storage and retains an explicit data override', () => {
   const options = { packaged: true, resourcesPath: 'C:/Program Files/Radio/resources',
