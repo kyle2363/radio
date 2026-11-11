@@ -1,6 +1,7 @@
 package dev.radio.mobile.playback
 
 import dev.radio.mobile.data.LocalSong
+import dev.radio.mobile.recommendation.StationOrigin
 import kotlinx.coroutines.flow.StateFlow
 
 /** Repeat off plays the queue once; all wraps at the end; one holds the current song. */
@@ -24,7 +25,11 @@ data class PlaybackState(
     val repeat: RepeatMode = RepeatMode.OFF,
     val error: String? = null,
     val sleepTimer: SleepTimerState = SleepTimerState()
-    ,val radioActive: Boolean = false, val queueRevision: Long = 0
+    ,val radioActive: Boolean = false, val queueRevision: Long = 0,
+    /** Why each queued song is in a Radio station (checkpoint 4.2). Empty outside Radio. */
+    val origins: Map<String, StationOrigin> = emptyMap(),
+    /** Title of the song the station started from; null for Pick for me or outside Radio. */
+    val stationSeedTitle: String? = null,
 ) {
     val current: LocalSong? get() = queue.firstOrNull { it.id == currentId }
     val status: String get() = when {
@@ -65,4 +70,8 @@ interface PlaybackController {
     fun cancelSleepTimer()
     fun startRadio(seedLocalId: String? = null) = Unit
     fun stopRadio() = Unit
+    /** End the station: finish what's queued (radio stops adding), or stop now (pause and keep a normal queue). */
+    fun endRadio(stopNow: Boolean) { if (stopNow) pause(); stopRadio() }
+    /** Replace the songs Radio added after the current one with a fresh batch; songs the listener added stay. */
+    fun newMix() = Unit
 }

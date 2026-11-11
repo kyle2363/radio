@@ -56,22 +56,36 @@ class ConnectedRadioRepositoryTest {
         assertNull(radio.connected.set.value)
     }
 
-    @Test fun setReadyGivesSimilarPicksFirstThenOfflineTopsUpWithinTheBound() = runBlocking {
+    @Test fun setReadyGivesOnlyTheDesktopsSimilarPicks() = runBlocking {
         val state = start()
         val set = radio.connected.set.value!!
         assertEquals(2, set.continuation.size); assertEquals(3, set.options.size)
         val batch = radio.refill(setOf(songs[0].id, songs[1].id, songs[2].id), 3, songs[2].id)
         val picked = ids(batch)
-        assertEquals(3, picked.size)
-        assertEquals(set.continuation.map { it.song.id }, picked.take(2))
-        assertTrue(batch!!.suggestions.take(2).all { it.pick.reason.startsWith("Server AI") })
-        assertFalse(batch.suggestions[2].pick.reason.startsWith("Server AI"))
-        assertEquals(picked.distinct(), picked)
+        // Desktop first: room left over is not topped up with local picks while the desktop answers.
+        assertEquals(set.continuation.map { it.song.id }, picked)
+        assertTrue(batch!!.suggestions.all { it.pick.reason.startsWith("Server AI") })
         assertTrue(picked.none { it in setOf(songs[0].id, songs[1].id, songs[2].id) })
-        // Option slots are never queued by the connected path (only the offline top-up may coincide with them).
-        assertTrue(picked.take(2).none { id -> set.options.any { it.song.id == id } })
+        assertTrue(picked.none { id -> set.options.any { it.song.id == id } })
         assertTrue(radio.valid(batch.token))
         assertEquals(state.currentId, set.anchorLocalId)
+    }
+
+    @Test fun desktopFirstStartsWithOneSongAndLocalRadioStartsFull() = runBlocking {
+        assertFalse(radio.desktopFirst)
+        assertTrue(ids(radio.startRecommendations(null)).size > 1)
+        radio.setConnectedEnabled(true)
+        assertTrue(radio.desktopFirst)
+        assertEquals(1, ids(radio.startRecommendations(null)).size)
+        assertEquals(listOf(songs[3].id), ids(radio.startRecommendations(songs[3].id)))
+    }
+
+    @Test fun aFailedOrEmptyDesktopAnswerFallsBackToLocalPicks() = runBlocking {
+        radio.setConnectedEnabled(true)
+        // No held set (nothing answered yet, or the request failed): local picks fill the room.
+        val batch = radio.refill(setOf(songs[0].id), 3, songs[0].id)
+        assertEquals(3, ids(batch).size)
+        assertTrue(batch!!.suggestions.none { it.pick.reason.startsWith("Server AI") })
     }
 
     @Test fun boundCapsSimilarPicksToTheRoomLeft() = runBlocking {

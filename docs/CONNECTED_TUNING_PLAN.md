@@ -1,7 +1,7 @@
 # Checkpoint 4.1 — connected recommendation tuning plan
 
 Date: November 7, 2026 (revision 1). Builds on checkpoint 4 ([CONNECTED_RECOMMENDATIONS_PLAN.md](CONNECTED_RECOMMENDATIONS_PLAN.md)), which is implemented on `android-4-connected-recommendations` and awaits phone acceptance.
-Status: **implemented November 7, 2026 on `android-4.1-connected-tuning`; awaiting phone acceptance (§5).** Started at the user's request before checkpoint 4 phone acceptance; checkpoint 4 is committed separately as `eaac988`.
+Status: **phone-accepted and merged into `main` November 7, 2026 (user report).** Started at the user's request before checkpoint 4 phone acceptance; checkpoint 4 is committed separately as `eaac988`.
 
 ## 1. Goal
 

@@ -39,7 +39,7 @@ class ConnectedRadioUiTest {
     @Test fun cardShowsTitleSlotAndServerReasonForEachOption() {
         shown(ready())
         compose.onNodeWithTag("up-next-options").assertIsDisplayed()
-        compose.onNodeWithText("Up next options").assertIsDisplayed()
+        compose.onNodeWithText("Desktop picks").assertIsDisplayed()
         picks.forEach { compose.onNodeWithTag("up-next-option-${it.song.id}").assertIsDisplayed() }
         compose.onNodeWithText("Explore · Something new nearby").assertIsDisplayed()
         compose.onNodeWithText("Wildcard · A curveball").assertIsDisplayed()
@@ -134,7 +134,7 @@ class ConnectedRadioUiTest {
         compose.onNodeWithTag("connected-picks-5").assertIsSelected()
         compose.onNodeWithTag("connected-picks-7").performClick()
         compose.onNodeWithTag("connected-similar-2").performScrollTo().performClick()
-        compose.onNodeWithTag("connected-mix").assertTextContains("Up to 2 similar songs join the queue; 5 more appear as options.")
+        compose.onNodeWithTag("connected-mix").assertTextContains("2 similar songs join the queue · 5 appear as Desktop picks you can choose.")
         compose.onNodeWithTag("connected-energy-rising").performScrollTo().performClick()
         compose.onNodeWithTag("connected-advanced").performScrollTo().performClick()
         compose.onNodeWithTag("connected-ranking-off").performScrollTo().performClick()
@@ -149,6 +149,7 @@ class ConnectedRadioUiTest {
 
     @Test fun pocketsExplainWhenTheDesktopHasTooLittleHistory() {
         compose.setContent { ConnectedTuningSection(ConnectedTuning(pockets = true), tunable = true, pocketsInactive = true, onChange = {}) }
+        compose.onNodeWithTag("connected-advanced").performClick()
         compose.onNodeWithTag("connected-pockets-note", useUnmergedTree = true).assertTextContains("Needs more listening history", substring = true)
     }
 
@@ -156,6 +157,7 @@ class ConnectedRadioUiTest {
         compose.setContent { ConnectedTuningSection(ConnectedTuning(), tunable = false, pocketsInactive = false, onChange = { fail("No change expected") }) }
         compose.onNodeWithTag("connected-tuning-unsupported").assertIsDisplayed()
         compose.onNodeWithTag("connected-picks-7").assertIsNotEnabled()
+        compose.onNodeWithTag("connected-advanced").performClick()
         compose.onNodeWithTag("connected-variety").assertIsNotEnabled()
     }
 

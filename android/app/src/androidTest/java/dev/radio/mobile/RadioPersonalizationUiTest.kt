@@ -88,7 +88,7 @@ class RadioPersonalizationUiTest {
                 compose.onNodeWithTag("bootstrap-song-seed-one").assertDoesNotExist()
                 compose.onNodeWithTag("cancel-bootstrap").performClick()
                 compose.onNodeWithTag("choose-bootstrap-songs").assertIsDisplayed()
-                compose.onNodeWithText("Eligible tracks · 2").assertDoesNotExist()
+                compose.onNodeWithTag("station-details").assertDoesNotExist()
 
                 compose.onNodeWithTag("choose-bootstrap-songs").performClick()
                 compose.onNodeWithTag("bootstrap-song-seed-one").performClick()
@@ -97,12 +97,12 @@ class RadioPersonalizationUiTest {
                 compose.onNodeWithTag("choose-bootstrap-songs").assertIsDisplayed()
 
                 compose.onNodeWithTag("recommendation-details").assertIsDisplayed().performClick()
-                compose.onNodeWithText("Eligible tracks · 2").assertIsDisplayed()
-                compose.onNodeWithText("Matched tracks · 0").assertIsDisplayed()
-                compose.onNodeWithText("Local-only tracks · 0").assertIsDisplayed()
-                compose.onNodeWithText("Tracks with usable text vectors · 1").assertIsDisplayed()
-                compose.onNodeWithText("Tracks with usable audio vectors · 2").assertIsDisplayed()
-                compose.onNodeWithText("Taste events · 0 (0 contributing)").assertIsDisplayed()
+                compose.onNodeWithTag("detail-eligible").assertTextContains("Songs Radio can pick").assertTextContains("2")
+                compose.onNodeWithTag("detail-matched").assertTextContains("0")
+                compose.onNodeWithTag("detail-local").assertTextContains("0")
+                compose.onNodeWithTag("detail-text").assertTextContains("1")
+                compose.onNodeWithTag("detail-audio").assertTextContains("2")
+                compose.onNodeWithTag("detail-signals").assertTextContains("0 (0 used)")
                 capture("recommendation-details.png")
 
                 scenario.onActivity { activity ->
@@ -180,13 +180,12 @@ class RadioPersonalizationUiTest {
                             suggestions=listOf(dev.radio.mobile.recommendation.RadioSuggestion(songs.first(),
                                 dev.radio.mobile.recommendation.RadioPick("seed-one","seed-one",.9,.5,null,
                                     reason="Similar to starting song",evidence="Audio similarity"))),
-                        ),repository,PlaybackState(),FakePlaybackController(),libraryState,{},{})
+                        ),repository,PlaybackState(queue=listOf(songs[1]),playOrder=listOf(songs[1].id),currentId=songs[1].id,radioActive=true),FakePlaybackController(),libraryState,{},{})
                     }
                 }
-                compose.onNodeWithTag("radio-screen").performScrollToNode(hasText("Continues after Quiet Shore.mp3"))
-                compose.onNodeWithText("Continues after Quiet Shore.mp3").assertIsDisplayed()
-                compose.onNodeWithTag("radio-screen").performScrollToNode(hasText("1 · Similar to starting song · Audio similarity"))
-                compose.onNodeWithText("1 · Similar to starting song · Audio similarity").assertIsDisplayed()
+                // On air, local suggestions appear in "Add to the station" with their reason in words.
+                compose.onNodeWithTag("radio-screen").performScrollToKey("add-to-station")
+                compose.onNodeWithTag("station-add-${songs.first().id}").assertIsDisplayed().assertTextContains("Similar sound", substring = true)
                 capture("recommendation-anchor-evidence.png")
                 scenario.onActivity { activity ->
                     activity.setContent {

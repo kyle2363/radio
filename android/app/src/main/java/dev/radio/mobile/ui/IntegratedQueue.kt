@@ -25,6 +25,7 @@ import kotlinx.coroutines.launch
 @Composable
 fun IntegratedQueue(audio: PlaybackState, accessAllowed: Boolean, onSelect: (String) -> Unit, modifier: Modifier = Modifier,
     playback: PlaybackController? = null, onAdd: () -> Unit = {}, onSave: (List<String>) -> Unit = {}, serverAiIds: Set<String> = emptySet()) {
+    val origins = audio.origins
     val byId = remember(audio.queue) { audio.queue.associateBy { it.id } }
     val currentIndex = remember(audio.playOrder, audio.currentId) { audio.playOrder.indexOf(audio.currentId) }
     val list = rememberLazyListState(initialFirstVisibleItemIndex = currentIndex.coerceAtLeast(0))
@@ -35,7 +36,7 @@ fun IntegratedQueue(audio: PlaybackState, accessAllowed: Boolean, onSelect: (Str
     // Selecting or advancing a track updates the highlight without moving the viewport.
     Column(modifier) {
         Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            Text(if (audio.shuffled) "Shuffled order" else "In order", modifier = Modifier.weight(1f), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(if (audio.radioActive) "Radio adds more as these play" else if (audio.shuffled) "Shuffled order" else "In order", modifier = Modifier.weight(1f), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
             TextButton(onClick = { if (currentIndex >= 0) scope.launch { list.animateScrollToItem(currentIndex) } }, enabled = currentIndex >= 0,
                 modifier = Modifier.testTag("queue-position").semantics { stateDescription = "Track ${currentIndex + 1} of ${audio.playOrder.size}. Show current song." }) {
                 Text("${currentIndex + 1} / ${audio.playOrder.size}")
@@ -68,9 +69,12 @@ fun IntegratedQueue(audio: PlaybackState, accessAllowed: Boolean, onSelect: (Str
                         Text(song.title, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium,
                             fontWeight = if (current) FontWeight.Medium else FontWeight.Normal, color = if (current) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(if (current) audio.status else if (!song.available) "Unavailable" else songSubtitle(song), Modifier.weight(1f, fill = false), maxLines = 1, overflow = TextOverflow.Ellipsis,
+                            val origin = origins[id]
+                            val reason = origin?.takeIf { it != dev.radio.mobile.recommendation.StationOrigin.Desktop && it != dev.radio.mobile.recommendation.StationOrigin.User }?.label
+                            Text(if (current) audio.status else if (!song.available) "Unavailable" else songSubtitle(song) + (reason?.let { " · $it" } ?: ""), Modifier.weight(1f, fill = false), maxLines = 1, overflow = TextOverflow.Ellipsis,
                                 style = MaterialTheme.typography.bodySmall, color = tint)
-                            if (id in serverAiIds && !current) ServerAiMarker(Modifier.padding(start = 8.dp).testTag("queue-server-ai-$id"))
+                            if ((id in serverAiIds || origin == dev.radio.mobile.recommendation.StationOrigin.Desktop) && !current) ServerAiMarker(Modifier.padding(start = 8.dp).testTag("queue-server-ai-$id"))
+                            else if (origin == dev.radio.mobile.recommendation.StationOrigin.User && !current) OriginTag("Added by you", Modifier.padding(start = 8.dp).testTag("queue-user-$id"))
                         }
                     }
                     if (playback != null) {

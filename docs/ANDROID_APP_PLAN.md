@@ -1,7 +1,28 @@
 # Android app plan
 
-Status: checkpoints through 3B automatic discovery are phone-tested and accepted. The user reported 3B works on November 4, 2026. Checkpoints 2C, 3A and 3B are merged into `main`. Direct LAN hosting remains deferred.
+Status: checkpoints through 4.1 are merged into `main`. Checkpoint 4.2 Radio mode redesign was phone-accepted and fully verified November 11, 2026; merging into `main` awaits explicit approval. Direct LAN hosting remains deferred.
 Integration: `android-app`, based on `stability-server-architecture`, reviewed for integration into `main` on November 3. Earlier pending-review notes below are historical checkpoint records, superseded by the November 3 acceptance.
+
+## Radio redesign checkpoint 4.2 — November 11, 2026
+
+The user accepted the working phone build and authorized closing the checkpoint.
+This includes the station surfaces, New mix/End/Not for me, desktop-first refill
+with local fallback, Desktop pick tiles, and long-title presentation refinements.
+Verification on November 11: 138 JVM unit tests passed; the full API 37 emulator
+suite passed 200/200 with no skips; debug APK build passed; lint passed with zero
+errors and 54 warnings. Initial instrumented attempts had no connected device,
+then an emulator still booting; the full successful run followed completed boot.
+No backend or frontend changes required their suites. The installable APK is
+`.test-runtime/android-checkpoint4.2/radio-checkpoint4.2-debug.apk` (SHA-256
+`27e6609131ccd6b5d0d51ead84d23fd23bd50bfea7806754c1d8dfb84939c071`).
+Committed on `android-4.2-radio-redesign`; merge into `main` awaits explicit approval.
+See the local [RADIO_REDESIGN_PLAN.md](RADIO_REDESIGN_PLAN.md) for the detailed design.
+
+After integration, the existing extras roadmap prioritizes lyrics and statistics.
+The proposed next increment is read-only plain lyrics for matched local songs,
+with explicit unavailable/offline states and independent local playback. It still
+needs a scoped design and contract review before implementation; synchronized
+lyrics, automatic sync, speech, crossfade and downloads are separate work.
 
 ## Automatic discovery checkpoint 3B — November 4, 2026
 

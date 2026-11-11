@@ -86,11 +86,15 @@ class ConnectedRadioServiceTest {
         runCatching { context.contentResolver.releasePersistableUriPermission(FixtureDocumentsProvider.tree(), Intent.FLAG_GRANT_READ_URI_PERMISSION) }
     }
 
+    /** Desktop first (checkpoint 4.2): Radio starts with one song and asks the desktop for the rest. */
     private fun startRadioAndWaitForRequest() {
         library.radio.setConnectedEnabled(true)
         main { playback.startRadio() }
-        await("Radio didn't install its queue") { playback.state.value.radioActive && playback.state.value.playOrder.size >= 5 && playback.state.value.isPlaying }
+        await("Radio didn't start its single first song") { playback.state.value.radioActive && playback.state.value.isPlaying && playback.state.value.playOrder.isNotEmpty() }
+        if (link.gate != null) assertEquals("Desktop first starts with one song", 1, playback.state.value.playOrder.size)
         await("Song start didn't ask the desktop") { link.count("/recommendations") >= 1 }
+        // Only a held-back (gated) answer stays pending long enough to observe.
+        if (link.gate != null) await("A request for the current song should be pending") { library.radio.connected.status.value.pendingAnchor == playback.state.value.currentId }
     }
     private fun advanceToLowWatermark() {
         repeat(2) {
@@ -102,14 +106,12 @@ class ConnectedRadioServiceTest {
         assertEquals("Two upcoming entries remain", 2, state.playOrder.size - state.playOrder.indexOf(state.currentId) - 1)
     }
 
-    @Test fun refillWaitsForThePendingSetThenAppendsSimilarPicksFirst() {
+    @Test fun desktopFirstWaitsThenQueuesOnlyTheDesktopsSimilarPicks() {
         link.gate = CompletableDeferred()
         startRadioAndWaitForRequest()
-        advanceToLowWatermark()
         val waiting = playback.state.value.playOrder
-        await("A request for the current song should be pending") { library.radio.connected.status.value.pendingAnchor == playback.state.value.currentId }
         Thread.sleep(900)
-        assertEquals("Refill waits while a set is pending and music remains", waiting, playback.state.value.playOrder)
+        assertEquals("No local songs are added while the desktop is answering", waiting, playback.state.value.playOrder)
 
         link.gate!!.complete(Unit)
         await("Set arrival didn't trigger the refill") { playback.state.value.playOrder.size > waiting.size }
@@ -117,19 +119,17 @@ class ConnectedRadioServiceTest {
         val set = library.radio.connected.set.value!!
         val suffix = after.playOrder.drop(waiting.size)
         assertEquals(waiting, after.playOrder.take(waiting.size))
-        assertTrue("Never beyond the 5-entry bound", after.playOrder.size - after.playOrder.indexOf(after.currentId) - 1 <= 5)
-        assertEquals("Similar picks come first, in server order", set.continuation.map { it.song.id }.take(2), suffix.take(2))
-        assertTrue(library.radio.connectedState.value.serverAiIds.containsAll(suffix.take(2)))
-        assertTrue("Option slots are not auto-queued by the connected path", suffix.take(2).none { id -> set.options.any { it.song.id == id } })
+        assertEquals("Only the desktop's similar picks, in server order", set.continuation.map { it.song.id }, suffix)
+        assertTrue(library.radio.connectedState.value.serverAiIds.containsAll(suffix))
+        assertTrue("Option slots are not auto-queued", suffix.none { id -> set.options.any { it.song.id == id } })
         val options = ConnectedPolicy.visibleOptions(library.radio.connectedState.value, after.currentId, after.radioActive, after.playOrder.toSet(), library.radio::isDisliked) { true }
         assertEquals("The card has the three non-similar options", 3, options.size)
-        assertEquals("Current song never changes", waiting[waiting.indexOf(after.currentId)], after.currentId)
+        assertEquals("Current song never changes", waiting.single(), after.currentId)
     }
 
-    @Test fun failedRequestEndsTheWaitAndRefillsLikeOffline() {
+    @Test fun failedRequestEndsTheWaitAndRefillsLocally() {
         link.gate = CompletableDeferred()
         startRadioAndWaitForRequest()
-        advanceToLowWatermark()
         val waiting = playback.state.value.playOrder
         Thread.sleep(500)
         assertEquals(waiting, playback.state.value.playOrder)
@@ -140,21 +140,18 @@ class ConnectedRadioServiceTest {
         assertNull(library.radio.connected.set.value)
     }
 
-    @Test fun lastSongRefillsOfflineImmediatelyAndLateSetOnlyShowsOptions() {
+    @Test fun slowDesktopFallsBackLocallyBeforeTheSongEndsAndALateSetOnlyShowsOptions() {
         link.gate = CompletableDeferred()
-        library.radio.setConnectedEnabled(true)
-        // One song left in the queue: waiting would run the music dry.
-        main { playback.startRadio() }
-        await("Radio didn't install its queue") { playback.state.value.radioActive && playback.state.value.playOrder.size >= 5 }
-        main { playback.state.value.playOrder.drop(1).forEach { playback.removeFromQueue(it) } }
-        await("Radio refilled the emptied queue without waiting") { playback.state.value.playOrder.size > 1 }
+        startRadioAndWaitForRequest()
+        // 60 s song: seeking to 40 s leaves 20 s, so the wait ends 15 s before the end and local Radio fills in.
+        main { playback.seek(40_000) }
+        await("Radio didn't fall back to local picks before the song ended") { playback.state.value.playOrder.size > 1 }
         assertTrue(library.radio.connectedState.value.serverAiIds.isEmpty())
+        val order = playback.state.value.playOrder
         link.gate!!.complete(Unit)
         await("Late set arrived") { library.radio.connected.set.value != null }
-        // The late set never appends: the queue was already refilled.
-        val order = playback.state.value.playOrder
         Thread.sleep(600)
-        assertEquals(order, playback.state.value.playOrder)
+        assertEquals("The late set never appends: the queue was already refilled", order, playback.state.value.playOrder)
         assertTrue(library.radio.connectedState.value.serverAiIds.isEmpty())
     }
 
@@ -180,6 +177,7 @@ class ConnectedRadioServiceTest {
     @Test fun playNextOptionStaysRightAfterTheCurrentSongThroughALaterRefill() {
         startRadioAndWaitForRequest()
         await("Set for the current song didn't arrive") { library.radio.connected.set.value != null }
+        await("The desktop's similar picks didn't join the queue") { playback.state.value.playOrder.size >= 3 }
         // Pause so no refill runs, leave one upcoming entry, then choose an option: [current, option, kept].
         main { playback.pause() }
         await("Radio didn't pause") { !playback.state.value.playWhenReady }

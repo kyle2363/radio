@@ -154,7 +154,16 @@ class RadioRepository internal constructor(context:Context,private val db:Librar
         if(mutable.value.suggestions.isNotEmpty()) previewExclusions = mutable.value.suggestions.map { it.song.id }.toSet()
         refresh()
     }
+    /**
+     * Desktop first (checkpoint 4.2): with Desktop picks on and not refused by the desktop, Radio starts with one song
+     * and fills the queue from the desktop's answers; local picks only cover a failed, missing or empty answer.
+     */
+    val desktopFirst:Boolean get()=connected.enabled && connected.status.value.permitted!=false
     suspend fun startRecommendations(seedLocalId:String?):RadioBatch? {
+        val batch=startBatch(seedLocalId) ?: return null
+        return if(desktopFirst)batch.copy(suggestions=batch.suggestions.take(1)) else batch
+    }
+    private suspend fun startBatch(seedLocalId:String?):RadioBatch? {
         if(seedLocalId==null)return recommendations(anchorLocalId=null)
         val seed=library.value.songs.firstOrNull{it.id==seedLocalId && it.available} ?: return null
         if(isDisliked(seedLocalId))return null
@@ -220,7 +229,8 @@ class RadioRepository internal constructor(context:Context,private val db:Librar
         val input=token()
         val first=chosen.map{RadioSuggestion(it.song,RadioPick(mapping.entries[it.song.id]?.songId ?: "local:${it.song.id}",it.song.id,0.0,.5,null,slot="exploit",
             reason=ConnectedPolicy.SERVER_AI_PREFIX+" · "+it.reason.ifBlank{"Similar to the current song"}))}
-        val rest=room-chosen.size
+        // Desktop first: the desktop's own picks only; local Radio tops up only when Desktop picks is not leading.
+        val rest=if(desktopFirst)0 else room-chosen.size
         val offline=if(rest>0)compute(exclude+chosen.map{it.song.id},rest,tail,publishPreview=false).orEmpty() else emptyList()
         connected.revalidate(connectedFence())
         // A late or changed set is dropped whole, never merged into a different situation.
