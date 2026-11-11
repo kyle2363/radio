@@ -1,6 +1,6 @@
 # Android app plan
 
-Status: checkpoints through 4.2 are phone-accepted and merged into `main`. Checkpoint 4.2 Radio mode redesign was accepted November 11, 2026: the user reported it works. Direct LAN hosting remains deferred.
+Status: checkpoints through 4.1 are merged into `main`. Checkpoint 4.2 Radio mode redesign was phone-accepted and fully verified November 11, 2026; merging into `main` awaits explicit approval. Direct LAN hosting remains deferred.
 Integration: `android-app`, based on `stability-server-architecture`, reviewed for integration into `main` on November 3. Earlier pending-review notes below are historical checkpoint records, superseded by the November 3 acceptance.
 
 ## Radio redesign checkpoint 4.2 — November 11, 2026
@@ -15,7 +15,7 @@ then an emulator still booting; the full successful run followed completed boot.
 No backend or frontend changes required their suites. The installable APK is
 `.test-runtime/android-checkpoint4.2/radio-checkpoint4.2-debug.apk` (SHA-256
 `27e6609131ccd6b5d0d51ead84d23fd23bd50bfea7806754c1d8dfb84939c071`).
-Merged from `android-4.2-radio-redesign` into `main` after phone acceptance.
+Committed on `android-4.2-radio-redesign`; merge into `main` awaits explicit approval.
 See the local [RADIO_REDESIGN_PLAN.md](RADIO_REDESIGN_PLAN.md) for the detailed design.
 
 After integration, the existing extras roadmap prioritizes lyrics and statistics.
