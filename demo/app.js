@@ -2,6 +2,12 @@ import { MOODS, createStation, setMood, nextTrack, toggleLike, toggleVibeLock, n
 
 const $ = selector => document.querySelector(selector);
 const moodLabels = { neutral: 'NEUTRAL', chill: 'CHILL / LOW KEY', energetic: 'ENERGY / LIFTED', focus: 'FOCUS', melancholy: 'MELANCHOLY', discovery: 'DISCOVERY' };
+const queueSlots = [
+  { name: 'exploit', color: '#2dd4a0', bg: '#0a2418', reason: 'A familiar thread from this station.' },
+  { name: 'explore', color: '#5eadf5', bg: '#09142a', reason: 'A nearby sound to keep things moving.' },
+  { name: 'wildcard', color: '#a78bfa', bg: '#100728', reason: 'A small turn in a new direction.' },
+  { name: 'context', color: '#f59e0b', bg: '#161008', reason: 'A natural fit for this moment.' },
+];
 const els = {
   moodButtons: [...document.querySelectorAll('[data-mood]')], title: $('#track-title'), artist: $('#track-artist'), canvas: $('#waveform'),
   like: $('#like-button'), play: $('#play-button'), seek: $('#seek'), elapsed: $('#elapsed'), duration: $('#duration'),
@@ -50,18 +56,21 @@ function render() {
   $('#valence-badge').textContent = `V ${Math.round((track.valence ?? .5) * 100)}%`;
   $('#station-label').textContent = moodLabels[state.mood]; $('#context-mood').textContent = state.mood;
   $('#context-energy').textContent = `${state.mood === 'energetic' ? '↗' : '→'} energy`;
-  els.like.setAttribute('aria-pressed', String(liked)); els.like.setAttribute('aria-label', `${liked ? 'Unlike' : 'Like'} ${track.title}`); els.like.innerHTML = liked ? '♥' : '♡';
+  els.like.setAttribute('aria-pressed', String(liked)); els.like.setAttribute('aria-label', `${liked ? 'Unlike' : 'Like'} ${track.title}`); els.like.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.8 8.7c0 4.4-8.8 10.1-8.8 10.1S3.2 13.1 3.2 8.7A4.7 4.7 0 0 1 12 6.2a4.7 4.7 0 0 1 8.8 2.5Z"/></svg>`;
   els.seek.max = track.duration; els.seek.value = Math.min(position, track.duration); els.elapsed.textContent = fmt(position); els.duration.textContent = fmt(track.duration);
   els.seek.setAttribute('aria-valuetext', `${fmt(position)} of ${fmt(track.duration)}`); updateSlider(els.seek, position / track.duration);
-  els.play.innerHTML = playing ? '<span aria-hidden="true">Ⅱ</span>' : '<span aria-hidden="true">▶</span>';
+  els.play.innerHTML = playing ? '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14M16 5v14"/></svg>' : '<svg class="play-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 4 13 8-13 8z"/></svg>';
   els.play.setAttribute('aria-label', playing ? 'Pause synthesized demo audio' : 'Play synthesized demo audio');
-  els.lock.setAttribute('aria-pressed', String(state.vibeLocked)); els.lock.setAttribute('aria-label', state.vibeLocked ? 'Unlock vibe' : "Lock to this song's vibe");
+  els.lock.setAttribute('aria-pressed', String(state.vibeLocked)); els.lock.setAttribute('aria-label', state.vibeLocked ? 'Unlock vibe' : "Lock to this song's vibe"); els.lock.title = state.vibeLocked ? 'Unlock vibe' : "Lock to this song's vibe";
   $('#lock-hint').textContent = state.vibeLocked ? 'Vibe locked · mood held' : 'Choose a station mood';
   els.moodButtons.forEach(button => { const selected = button.dataset.mood === state.mood; button.classList.toggle('active', selected); button.setAttribute('aria-pressed', String(selected)); button.disabled = state.vibeLocked && !selected; });
   const upcoming = [...state.queue.slice(currentIndex() + 1), ...state.queue.slice(0, currentIndex())];
   els.queueCount.textContent = String(upcoming.length).padStart(2, '0');
-  els.queue.innerHTML = upcoming.map((item, i) => `<li class="queue-item"><span class="queue-num">${String(i + 1).padStart(2, '0')}</span><div class="queue-copy"><div class="queue-title">${item.title}</div><div class="queue-artist">${item.artist}</div></div><span class="queue-time">${fmt(item.duration)}</span></li>`).join('');
-  const vol = Number($('#volume-wide').value); $('#volume-value').textContent = `${vol}%`; $('#volume').value = vol; updateSlider($('#volume'), vol / 100); updateSlider($('#volume-wide'), vol / 100);
+  els.queue.innerHTML = upcoming.map((item, i) => {
+    const slot = queueSlots[i % queueSlots.length]; const energy = Math.round((item.energy ?? .5) * 100), valence = Math.round((item.valence ?? .5) * 100);
+    return `<li class="queue-item" style="border-left-color:${slot.color}"><div class="queue-head"><span class="queue-title">${item.artist} – ${item.title}</span><span class="queue-slot" style="background:${slot.bg};color:${slot.color}">${slot.name}</span></div><div class="queue-reason">${slot.reason}</div><div class="queue-metrics"><span>E</span><div class="qb"><div class="qb-fill" style="width:${energy}%"></div></div><span>V</span><div class="qb"><div class="qb-fill valence" style="width:${valence}%"></div></div><span class="queue-bpm">${item.bpm || 96} BPM</span></div></li>`;
+  }).join('');
+  const vol = Number($('#volume-wide').value); $('#volume-value').textContent = `${vol}%`; updateSlider($('#volume-wide'), vol / 100);
   drawWave();
 }
 function stopVoices() { voices.forEach(voice => { try { voice.stop(); } catch {} }); voices = []; }
@@ -86,6 +95,6 @@ $('#new-mix').addEventListener('click', createNewMix);
 els.like.addEventListener('click', () => { state = toggleLike(state); render(); notify(state.likedIds.includes(state.currentId) ? 'Saved to your liked tracks.' : 'Removed from liked tracks.'); });
 els.lock.addEventListener('click', () => { state = toggleVibeLock(state); render(); notify(state.vibeLocked ? 'Vibe lock on. The current mood is held.' : 'Vibe lock off. Choose another mood anytime.'); });
 els.seek.addEventListener('input', event => { position = Number(event.target.value); render(); });
-['volume', 'volume-wide'].forEach(id => $(`#${id}`).addEventListener('input', event => { $('#volume-wide').value = event.target.value; render(); if (audio && playing) startAudio(); }));
+$('#volume-wide').addEventListener('input', () => { render(); if (audio && playing) startAudio(); });
 window.addEventListener('resize', drawWave); render();
 

@@ -6,8 +6,10 @@ the demo independent of the backend, personal library, and Android app.
 The demo does not run live AI or access any visitor music.
 
 The interface follows the desktop app's compact player and queue layout, navy
-theme tokens, teal controls, and Orbit visualization. It demonstrates a subset
-of the desktop UI; the Android app is described separately below the player.
+theme tokens, teal controls, transport icons, segmented moods, compact queue
+cards, and Orbit visualization. It demonstrates a subset of the desktop UI;
+the footer also introduces the independent Android player. Queue slot labels
+and track measurements are illustrative sample data.
 
 ## Preview
 
