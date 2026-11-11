@@ -3,6 +3,7 @@
 package dev.radio.mobile.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -435,6 +436,18 @@ internal fun originExplanation(origin: StationOrigin?) = when (origin) {
     null -> "Radio picked this song on this phone."
 }
 
+/**
+ * Now Playing song title: up to two lines; a title that would need more becomes one line that scrolls sideways, so a
+ * long name never pushes the controls down. Scrolling follows the system's animation setting via basicMarquee.
+ */
+@Composable
+fun SongTitle(title: String, modifier: Modifier = Modifier) {
+    var scroll by remember(title) { mutableStateOf(false) }
+    if (scroll) Text(title, modifier.basicMarquee(iterations = Int.MAX_VALUE).testTag("song-title-scrolling"), style = MaterialTheme.typography.headlineSmall, maxLines = 1)
+    else Text(title, modifier.testTag("song-title"), style = MaterialTheme.typography.headlineSmall, maxLines = 2,
+        onTextLayout = { if (it.hasVisualOverflow) scroll = true })
+}
+
 /** Mini-player while on air: station surface, ON AIR dot, Pause and Skip. */
 @Composable
 fun StationMiniPlayer(song: LocalSong, status: String, playWhenReady: Boolean, canPlay: Boolean, canNext: Boolean, onOpen: () -> Unit, onToggle: () -> Unit, onNext: () -> Unit) {
@@ -479,7 +492,7 @@ fun RadioNowPlaying(
         }
         Row(verticalAlignment = Alignment.Top) {
             Column(Modifier.weight(1f)) {
-                Text(song.title, style = MaterialTheme.typography.headlineSmall)
+                SongTitle(song.title, Modifier.fillMaxWidth())
                 OriginLine(song, audio.origins[song.id])
             }
             IconToggleButton(liked, { onLike() }, enabled = feedbackReady, modifier = Modifier.testTag("favorite-song")) {

@@ -75,6 +75,16 @@ class ConnectedPolicyTest {
         assertFalse("nothing pending (off, failed, done)", ConnectedPolicy.shouldWait(null, "cur", 2))
     }
 
+    @Test fun desktopFirstWaitsWithAnEmptyQueueButLeavesTimeForALocalFallback() {
+        assertTrue("desktop first waits even with nothing queued", ConnectedPolicy.shouldWait("cur", "cur", 0, desktopFirst = true))
+        assertFalse(ConnectedPolicy.shouldWait("old", "cur", 0, desktopFirst = true))
+        assertFalse(ConnectedPolicy.shouldWait(null, "cur", 0, desktopFirst = true))
+        // The wait ends 15 s before the song does, so a local pick can still join in time.
+        assertEquals(165_000L, ConnectedPolicy.desktopFirstWaitMs(durationMs = 180_000, positionMs = 0))
+        assertEquals(0L, ConnectedPolicy.desktopFirstWaitMs(durationMs = 180_000, positionMs = 170_000))
+        assertEquals(0L, ConnectedPolicy.desktopFirstWaitMs(durationMs = null, positionMs = 0))
+    }
+
     @Test fun serverAiPrefixIsStable() {
         assertEquals("Server AI", ConnectedPolicy.SERVER_AI_PREFIX)
     }

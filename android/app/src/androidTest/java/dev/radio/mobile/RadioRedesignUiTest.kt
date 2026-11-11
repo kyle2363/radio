@@ -7,6 +7,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.*
+import androidx.compose.foundation.layout.width
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.junit4.createEmptyComposeRule
 import androidx.room.Room
@@ -110,6 +112,27 @@ class RadioRedesignUiTest {
         ui = ConnectedUi(ConnectedStatus(enabled = true, permitted = true, lastOk = true, tunable = true))
         state().assertTextEquals("Paired desktop · allowed")
         compose.onNodeWithTag("connected-tuning").assertExists()
+    }
+
+    @Test fun songTitleScrollsInsteadOfTakingMoreThanTwoLines() {
+        var title by mutableStateOf("Short title")
+        compose.setContent { androidx.compose.foundation.layout.Box(androidx.compose.ui.Modifier.width(320.dp)) { SongTitle(title) } }
+        compose.onNodeWithTag("song-title").assertTextEquals("Short title")
+        compose.onNodeWithTag("song-title-scrolling").assertDoesNotExist()
+        title = "A Very Long Live Session Recording Title That Keeps Going Well Past Two Lines On A Phone Screen (Extended Mix)"
+        compose.onNodeWithTag("song-title-scrolling").assertTextEquals(title)
+        compose.onNodeWithTag("song-title").assertDoesNotExist()
+    }
+
+    @Test fun desktopPickTilesShowTheSongBeforeTheReason() {
+        val pick = ConnectedPick(song("a"), "explore", "Something new nearby")
+        compose.setContent { UpNextOptionsCard(listOf(pick, ConnectedPick(song("b"), "wildcard", "A curveball")), {}) }
+        val songTop = compose.onNodeWithText("Song a").getBoundsInRoot().top
+        val reasonTop = compose.onNodeWithText("Explore · Something new nearby").getBoundsInRoot().top
+        assertTrue("song title sits above its reason", songTop < reasonTop)
+        val firstBottom = compose.onNodeWithTag("up-next-option-a").getBoundsInRoot().bottom
+        val secondTop = compose.onNodeWithTag("up-next-option-b").getBoundsInRoot().top
+        assertTrue("picks are separate tiles with space between", secondTop > firstBottom)
     }
 
     @Test fun stationMiniPlayerShowsOnAir() {

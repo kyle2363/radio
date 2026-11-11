@@ -39,8 +39,14 @@ object ConnectedPolicy {
     /**
      * Refill waits for a pending connected answer only while it can: the answer must be for the current song and
      * at least one upcoming entry must remain to keep music going. The source's own 75 s deadline bounds the wait.
+     * Desktop first (checkpoint 4.2) also waits with nothing queued; the caller bounds that wait with [desktopFirstWaitMs].
      */
-    fun shouldWait(pendingAnchor: String?, currentId: String?, upcoming: Int) = pendingAnchor != null && pendingAnchor == currentId && upcoming >= 1
+    fun shouldWait(pendingAnchor: String?, currentId: String?, upcoming: Int, desktopFirst: Boolean = false) =
+        pendingAnchor != null && pendingAnchor == currentId && (upcoming >= 1 || desktopFirst)
+
+    /** With nothing queued, wait for the desktop until 15 s before the current song ends, then let local Radio fill in. */
+    fun desktopFirstWaitMs(durationMs: Long?, positionMs: Long): Long = ((durationMs ?: 0L) - positionMs - DESKTOP_FIRST_MARGIN_MS).coerceAtLeast(0L)
+    const val DESKTOP_FIRST_MARGIN_MS = 15_000L
 
     /** One line under the options card: how the set was ranked and which tuning the desktop actually applied. */
     fun summary(set: ConnectedSet): String {

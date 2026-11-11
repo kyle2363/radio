@@ -12,6 +12,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.radio.mobile.recommendation.ConnectedPick
@@ -46,15 +47,19 @@ fun UpNextOptionsCard(options: List<ConnectedPick>, onPlayNext: (ConnectedPick) 
                 Text("Optional · queue plays on", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             summary?.let { Text(it, Modifier.padding(top = 2.dp, bottom = 4.dp).testTag("up-next-summary"), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-            options.forEach { pick ->
-                Row(Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(vertical = 4.dp).testTag("up-next-option-${pick.song.id}"), verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text(slotLabel(pick.slot) + if (pick.reason.isNotBlank()) " · " + pick.reason else "", maxLines = 2, overflow = TextOverflow.Ellipsis,
-                            style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
-                        Text(pick.song.title, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
-                        Text(songSubtitle(pick.song), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            // Each pick is its own tile: song first, then where it is from, then why the desktop chose it.
+            Column(Modifier.padding(top = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                options.forEach { pick ->
+                    Row(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceContainerHighest, RoundedCornerShape(14.dp))
+                        .padding(start = 12.dp, end = 8.dp, top = 10.dp, bottom = 10.dp).testTag("up-next-option-${pick.song.id}"), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text(pick.song.title, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+                            Text(songSubtitle(pick.song), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(slotLabel(pick.slot) + if (pick.reason.isNotBlank()) " · " + pick.reason else "", maxLines = 2, overflow = TextOverflow.Ellipsis,
+                                style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                        }
+                        OutlinedButton(onClick = { onPlayNext(pick) }, modifier = Modifier.padding(start = 8.dp).testTag("play-next-${pick.song.id}")) { Text("Play next") }
                     }
-                    OutlinedButton(onClick = { onPlayNext(pick) }, modifier = Modifier.testTag("play-next-${pick.song.id}")) { Text("Play next") }
                 }
             }
         }

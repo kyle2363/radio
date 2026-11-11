@@ -171,10 +171,10 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
         Scaffold(
             containerColor = MaterialTheme.colorScheme.background,
             topBar = {
-                Row(Modifier.fillMaxWidth().statusBarsPadding().heightIn(min = 64.dp).padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Row(Modifier.fillMaxWidth().statusBarsPadding().heightIn(min = if (page == "Now playing") 56.dp else 64.dp).padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                     if (showBack) IconButton(onClick = { back() }) { RadioIcon(Symbol.Back, "Back") }
                     Column(Modifier.weight(1f).padding(start = if (!showBack) 12.dp else 0.dp)) {
-                        Text(if (page == "Library" && category == "Playlists" && playlistId != null) playlists.playlists.firstOrNull { it.id == playlistId }?.name ?: "Playlist" else if (page == "Library" && folder != null) library.folders.firstOrNull { it.id == folder }?.name ?: "Folder" else if (page == "Now playing" && showQueue) "Queue" else page, style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(if (page == "Library" && category == "Playlists" && playlistId != null) playlists.playlists.firstOrNull { it.id == playlistId }?.name ?: "Playlist" else if (page == "Library" && folder != null) library.folders.firstOrNull { it.id == folder }?.name ?: "Folder" else if (page == "Now playing" && showQueue) "Queue" else page, style = if (page == "Now playing") MaterialTheme.typography.titleMedium else MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         if (page == "Now playing" && audio.radioActive) OnAirPill("On air · ${if (radio.vibeLocalId != null) "Vibe locked" else moodLabel(radio.mood)}", Modifier.padding(top = 2.dp))
                         else Text(if (page == "Now playing") audio.source.ifBlank{"Local music"} else if (page == "Library" && category == "Playlists" && playlistId != null) "${playlists.songIds(playlistId!!).size} songs · Playlist" else if (library.scanning) "Scanning…" else if (library.root == null) "Connect your music" else "${library.songs.count { it.available }} MP3s", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
@@ -272,7 +272,7 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
                                 Spacer(Modifier.height(20.dp))
                                 Artwork(if (minimal || compact) 160 else 220)
                                 Spacer(Modifier.height(24.dp))
-                                Text(song.title, style = MaterialTheme.typography.headlineSmall, modifier = Modifier.fillMaxWidth())
+                                SongTitle(song.title, Modifier.fillMaxWidth())
                                 Text(songSubtitle(song), color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.fillMaxWidth().padding(top = 4.dp))
                                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                     FilterChip(liked, onClick = { repository.journal.setFavorite(song, !liked) }, enabled = journal.feedbackLoaded && journal.pendingWrites == 0,

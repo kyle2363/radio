@@ -101,10 +101,17 @@ class RadioPlaybackService : MediaSessionService() {
                     // A connected answer for this song is still coming and music remains: wait for it. Its own
                     // 75 s deadline ends the wait (the signal re-runs this block), then offline refills as in 2B.
                     // With nothing upcoming the queue would run dry, so offline refills immediately.
-                    if(dev.radio.mobile.recommendation.ConnectedPolicy.shouldWait(library.radio.connected.status.value.pendingAnchor,expected.currentId,upcoming.size))return@collectLatest
+                    val desktopFirst=library.radio.desktopFirst
+                    if(dev.radio.mobile.recommendation.ConnectedPolicy.shouldWait(library.radio.connected.status.value.pendingAnchor,expected.currentId,upcoming.size,desktopFirst)) {
+                        if(upcoming.isNotEmpty())return@collectLatest
+                        // Desktop first with nothing queued: keep waiting for the answer (it re-runs this block), but leave
+                        // enough of the current song for a local pick to join if the desktop is slow.
+                        val now=engine.state.value
+                        delay(dev.radio.mobile.recommendation.ConnectedPolicy.desktopFirstWaitMs(now.durationMs,now.positionMs))
+                    }
                     // The state change that made this song current arrives just before its actual-start callback marks the
                     // request pending. Give that start a short, bounded moment; the pending signal cancels this delay.
-                    if(upcoming.isNotEmpty() && library.radio.awaitingConnectedStart(expected.currentId))delay(connectedStartGraceMs)
+                    if((upcoming.isNotEmpty() || desktopFirst) && library.radio.awaitingConnectedStart(expected.currentId))delay(connectedStartGraceMs)
                     val batch=withContext(Dispatchers.IO){library.radio.refill(upcoming+setOfNotNull(expected.currentId),dev.radio.mobile.recommendation.ConnectedPolicy.REFILL_BOUND-upcoming.size,expected.playOrder.lastOrNull())}
                     if(batch!=null)beforeRadioRefillCommit()
                     if(batch!=null)library.radio.accept(batch) {
