@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#060e1c">
+  <meta name="description" content="A buildless preview of AI Radio Station."><title>Radio — AI Radio Station</title>
+  <link rel="stylesheet" href="./styles.css"><script type="module" src="./app.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#player">Skip to player</a>
+  <header class="topbar"><a class="brand" href="#player" aria-label="Radio"><svg width="26" height="26" viewBox="0 0 180 180" aria-hidden="true"><path d="M30 90C50 62 70 62 90 90s40 28 60 0" stroke="var(--brand-drift)" stroke-opacity=".18" stroke-width="16" fill="none" stroke-linecap="round"/><path d="M30 90C50 62 70 62 90 90s40 28 60 0" stroke="var(--brand-drift)" stroke-width="5" fill="none" stroke-linecap="round"/></svg><span class="brand-name">Radio</span><span class="mode-pill">Radio</span><span class="demo-pill">DEMO</span></a><a class="repo-link" href="https://github.com/kyle2363/radio" target="_blank" rel="noreferrer">GitHub <span aria-hidden="true">↗</span></a></header>
+  <main id="player" class="app-layout">
+    <section class="main-column" aria-label="Radio player and controls">
+      <article class="now-playing">
+        <div class="visual-column"><canvas id="waveform" width="168" height="168" role="img" aria-label="Animated song visualization"></canvas></div>
+        <div class="song-info"><div class="song-title" id="track-title">Glass Tide</div><div class="song-artist" id="track-artist">Mira Sol</div><div class="badges"><span class="badge b-dim" id="bpm-badge">68 BPM</span><span class="badge b-teal" id="energy-badge">E 34%</span><span class="badge b-blue" id="valence-badge">V 61%</span><span class="badge b-dim" id="trajectory">→ stable</span></div><p id="description" class="description">Soft piano and warm air, moving at an unhurried pace.</p><span class="synthetic-note">FICTIONAL TRACK · SYNTHESIZED AUDIO PREVIEW</span></div>
+      </article>
+      <section class="transport-panel" aria-label="Playback controls">
+        <div class="seek-row"><span id="elapsed">0:00</span><label class="sr-only" for="seek">Seek through track</label><input id="seek" type="range" min="0" max="228" value="0" step="1" aria-valuetext="0:00 of 3:48"><span id="duration">3:48</span></div>
+        <div class="controls"><button id="replay-button" class="ctrl ter" aria-label="Replay track" title="Replay">↶</button><button id="play-button" class="ctrl main" aria-label="Play synthesized demo audio"><span>▶</span></button><button id="next-button" class="ctrl sec" aria-label="Next track" title="Next song">⏭</button><button id="like-button" class="ctrl ter heart" aria-label="Like Glass Tide" aria-pressed="false" title="Like">♡</button><button id="lock-button" class="ctrl ter lock" aria-label="Lock vibe" aria-pressed="false" title="Lock to this song's vibe"><span>♧</span><span>Vibe lock</span></button><label class="volume"><span aria-hidden="true">◖</span><span class="sr-only">Volume</span><input id="volume" type="range" min="0" max="100" value="35"></label></div>
+      </section>
+      <section class="controls-block"><div class="section-label"><span>MOOD</span><span class="section-hint" id="lock-hint">Choose a station mood</span></div><div class="mood-seg" role="group" aria-label="Choose mood"><button class="mood-opt" data-mood="neutral" aria-pressed="false"><span>◌</span>Neutral</button><button class="mood-opt active" data-mood="chill" aria-pressed="true"><span>☾</span>Chill</button><button class="mood-opt" data-mood="energetic" aria-pressed="false"><span>ϟ</span>Energy</button><button class="mood-opt" data-mood="focus" aria-pressed="false"><span>◎</span>Focus</button><button class="mood-opt" data-mood="melancholy" aria-pressed="false"><span>⌁</span>Melancholy</button><button class="mood-opt" data-mood="discovery" aria-pressed="false"><span>⌖</span>Discovery</button></div></section>
+      <section class="controls-block mix-block"><div class="section-label"><span>STATION</span><span class="section-hint" id="station-label">CHILL / LOW KEY</span></div><button id="new-mix" class="new-mix"><span>↻</span> Build a new mix <span class="mix-key">DEMO</span></button></section>
+      <section class="controls-block volume-tuning"><label class="range-label" for="volume-wide"><span>VOLUME</span><span id="volume-value">35%</span></label><input id="volume-wide" type="range" min="0" max="100" value="35" aria-label="Volume"><div class="range-divider"></div><div class="range-label"><span>EXPLORATION (SAMPLE)</span><span>30%</span></div><div class="static-range"><span></span></div></section>
+    </section>
+    <aside class="right-rail" aria-label="Queue and station context"><section class="queue-section"><div class="rail-heading"><span>UP NEXT</span><span id="queue-count">03</span></div><ol id="queue-list" class="queue-list"></ol><p class="queue-caption">A snapshot of this demo station.</p></section><section class="context-section"><span class="badge b-teal" id="context-mood">chill</span><span class="badge b-blue">mood listener</span><span class="badge b-dim" id="context-cluster">C07</span><span class="badge b-dim" id="context-energy">→ energy</span></section><section class="demo-note"><strong>Demo preview</strong><p>Fictional tracks and gentle synthesized tones. No live AI or personal library is connected.</p></section></aside>
+  </main>
+  <section class="project-info"><p>AI Radio Station</p><span>Desktop recommendations with shared listening context. Native Android playback and offline Radio.</span><a href="https://github.com/kyle2363/radio#readme" target="_blank" rel="noreferrer">Project and setup guide ↗</a></section>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+</body>
+</html>
+
