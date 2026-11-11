@@ -1,283 +1,202 @@
-# Radio — AI-Powered Music Station
+# Radio — AI music station and local Android player
 
-An intelligent radio station that listens to your taste, learns your mood, and recommends music from your local MP3 library. Built with FastAPI + React/Electron and a separate native Android app.
+Radio turns your personal MP3 collection into a station that learns what you enjoy. Listen on your computer, or use the Android app to play the music stored on your phone—even offline.
 
-The integration branch is `main`. Desktop playback uses authenticated browser audio or server VLC. Android plays the phone's local music independently through Media3.
+| Surface | What it does |
+| --- | --- |
+| **Android** | Plays music stored on the phone; local library, playlists, offline Radio and optional desktop connections |
+| **Desktop + backend** | Library analysis, AI recommendations, listening sessions, browser or VLC playback, and optional DJ speech |
+| **Browser demo** | Standalone showcase with fictional tracks, deterministic recommendations and browser-synthesized audio |
 
-Android checkpoints 1A–1C, 2A and offline Radio 2B are accepted (2B accepted November 3, 2026). Manual profile sync is future work. See [the Android checkpoint log](docs/ANDROID_APP_PLAN.md), [documentation index](docs/README.md), and [current architecture](docs/ARCHITECTURE.md).
+Android playback stays local and works without the server. Connecting adds catalog matching, explicit profile sync and optional desktop recommendations; it does not stream the desktop music library or take over another playback session.
 
-## Android quick start
+## Choose where to start
 
-From `android/` on Windows, use `./gradlew.bat assembleDebug` to build, `./gradlew.bat installDebug` to install, `./gradlew.bat testDebugUnitTest` for unit tests and `./gradlew.bat lintDebug` for lint. Instrumented tests use `./gradlew.bat connectedDebugAndroidTest` with an emulator/device. This is a standalone Gradle project; desktop Python/Node dependencies are not required for local phone playback. See [USB pairing](docs/MOBILE_PAIRING.md) for optional server catalog import.
+- **Listen on your phone:** follow [Android setup](#android). You only need music on the phone; a desktop connection is optional.
+- **Listen on your computer:** follow [desktop setup](#desktop-and-backend). This requires Python, Node.js and configured AI services.
+- **Try the interface:** run the [standalone browser demo](#standalone-browser-demo), which uses fictional tracks and synthesized audio.
 
-The setup and feature list below describe the desktop/backend surfaces. Use [TESTING.md](docs/TESTING.md) for isolated checks; normal backend startup mutates state and is not a test fixture.
+The setup commands below are for Windows PowerShell and build/run the apps from this repository.
 
-## Features
+## Available today
 
-- **AI music recommendations** via ChromaDB vector search + LLM reranking
-- **Mood detection** — 6 mood states with automatic shifting based on skips and completions
-- **Vibe lock** — lock onto a song's vibe for up to 30 min / 10 songs
-- **Taste constellations** — multi-centroid taste model that forms personal "taste pockets" after 50+ positive signals
-- **Gapless TTS announcements** — Piper TTS (CPU) + OmniVoice (GPU voice cloning) DJ chained between songs via VLC
-- **Dual LLM providers** — Ollama or OpenAI-compatible (llama.cpp), with auto-fallback
-- **Natural language commands** — "more energetic", "play some jazz", "what's next"
-- **Listener archetypes** — explorer, comfort listener, deep listener, mood listener
-- **Onboarding** — seed your taste on first launch with 15-20 neutral songs
-- **Library verification** — compare DB against filesystem, auto-match orphans
-- **DJ effects** — apply slowed_reverb, nightcore, and more to songs on-the-fly
-- **Lyrics timing** — WhisperX forced alignment with word-level timestamps
-- **MuQ-MuLan audio embeddings** — 512-dim vectors for cross-modal text-to-audio search
-- **Recovery songs** — automatically picks safe, well-known tracks after a skip streak
-- **Electron desktop wrapper** — system tray, mini player, widget, global media keys
+Android includes offline Radio, manual profile sync, secure remote connections, automatic desktop address discovery and optional Desktop picks. Radio has an ON AIR station view, mood and exploration controls, Vibe lock, New mix and Not for me with Undo.
 
-## Prerequisites
+Android lyrics, statistics, speech, crossfade, downloads and automatic profile sync are not available yet. Phone playback uses music already stored on the device.
 
-- **Python 3.11+** (the project includes `backend/venv/`; if missing, create it with `python -m venv backend/venv`)
-- **Node.js 20+** with npm
-- **[VLC](https://www.videolan.org/vlc/)** media player (required for server-side VLC output; browser audio works without it)
-- **llama.cpp** — must be installed separately (see [External Dependencies](#external-dependencies))
-- **acestep.cpp** — must be installed separately (only needed for the "understand" ingest phase)
+## Android
 
-### Optional
+### Features
 
-- **NVIDIA GPU + CUDA 12.1+** — for MuQ-MuLan audio embeddings and OmniVoice voice cloning (CPU fallbacks available)
+- Recursive, read-only MP3 scanning through a folder grant; source audio and tags are never modified.
+- Local playback, background and lock-screen controls, playlists, queue editing and shuffle.
+- Paused restoration of the last song, position and queue.
+- Listening history, likes/dislikes and Replay.
+- Offline Radio with local learning, mood/exploration tuning, Vibe lock and automatic queue refill.
+- Sleep timer and optional volume normalization that lowers loud tracks without boosting quiet ones.
+- Ocean Blue / Deep Teal palettes, light/dark appearance and optional Now Playing backdrop.
+- Optional USB pairing, catalog import/content matching, manual profile sync, secure remote hosting and address discovery.
+- Optional Desktop picks and phone-only connected tuning; local playback continues independently.
 
-## External Dependencies
+### Build and install
 
-This project does **not** bundle llama.cpp or acestep.cpp. You must build and install them yourself:
+Use Android Studio or a local Android SDK/toolchain compatible with the checked-in Gradle project. The app requires **Android 15 (API 35) or newer**. Building requires Android SDK 37. You do not need Python, Node.js or a running desktop server to listen on the phone.
 
-| Dependency | Purpose | Port | Source |
-|------------|---------|------|--------|
-| **llama.cpp** (`llama-server.exe`) | LLM chat (reranking, tagging, DJ lines) | 8081 | [ggerganov/llama.cpp](https://github.com/ggerganov/llama.cpp) |
-| **llama.cpp** (`llama-server.exe`) | Text embeddings (vector search) | 8082 | Same as above — run as a separate instance with `--embedding` |
-| **acestep.cpp** (`server.cmd`) | Audio understanding (caption, BPM, key, lyrics skeleton) | 8085 | acestep project |
-| **GGUF model files** | Qwen3.5 9B (chat), Qwen3 4B Embedding (embeddings) | — | HuggingFace |
+From the repository root in PowerShell:
 
-The **Process Manager** in the backend can auto-start llama.cpp and acestep when the backend boots — configure their launch commands in `.env` (see [Configuration](#configuration)). If you already have Ollama running externally, set `CHAT_PROVIDER=ollama` and skip the llama.cpp builds.
-
-## Quick Start
-
-### 1. Clone and set up the backend
-
-```bash
-git clone <repo-url> radio
-cd radio
-
-# Create .env from the example
-copy .env.example .env
-
-# Edit .env — set LLAMA_CHAT_WORK_DIR, LLAMA_EMBED_WORK_DIR, and ACESTEP_WORK_DIR
-# to point at your llama.cpp and acestep.cpp installations
-
-cd backend
-```
-The project expects `backend/venv/` to already exist. If it was stripped from git:
-```bash
-python -m venv venv
+```powershell
+cd android
+.\gradlew.bat assembleDebug
+.\gradlew.bat installDebug
 ```
 
-Install Python dependencies:
-```bash
-venv\Scripts\pip install -r requirements.txt     # Windows
-```
+Installation requires an attached device with USB debugging enabled, or an emulator. The debug APK is generated at `android/app/build/outputs/apk/debug/app-debug.apk`.
 
-### 2. Set up the frontend
+### First listen
 
-```bash
+1. Open the app, grant access to a folder containing your MP3s and scan it.
+2. Open **Library** and choose a song for normal playback.
+3. Open **Radio** to start a station with **Pick for me** or **Start from a song**. Adjust mood and exploration in Radio, or open **Tune** for more controls.
+4. Use **New mix** to replace upcoming Radio picks while keeping songs you added. Use **End** to finish the queue or stop now.
+
+The app restores your last song and position paused. Scanning and playback leave your original audio files and tags unchanged.
+
+For optional desktop connections, start with [USB pairing and matching](docs/MOBILE_PAIRING.md), then [manual profile sync](docs/MOBILE_SYNC.md). Debug USB forwarding uses `127.0.0.1:18766`; release connections require HTTPS. [Remote hosting](docs/REMOTE_HOSTING.md) and [automatic discovery](docs/AUTOMATIC_DISCOVERY.md) have separate setup guides.
+
+## Desktop and backend
+
+### Features
+
+- ChromaDB retrieval, LLM reranking, mood/energy tuning, Vibe lock and taste constellations.
+- Authenticated browser audio or server-side VLC output, with independent listening sessions and coordinated output transfer.
+- Library browsing, collections, search, verification, feedback and listening analytics.
+- Optional Piper / OmniVoice DJ announcements, talk segments and audio effects.
+- Optional MuQ-MuLan audio embeddings and WhisperX lyrics timing.
+- Electron tray, mini-player, widget and media keys.
+
+### Requirements
+
+- Python 3.11+ and the project virtual environment at `backend/venv/`.
+- Node.js 20+ with npm.
+- VLC for server-side VLC output; browser audio is also available.
+- An Ollama or OpenAI-compatible service for chat and embeddings. llama.cpp can serve both as separate processes.
+- Optional external tools/models for audio understanding, GPU embeddings, voice cloning and lyrics alignment. They are not bundled; some optional Python packages are commented out in `backend/requirements.txt`.
+
+### Set up
+
+Run these commands from the repository root in PowerShell. Create the virtual environment only if it is missing:
+
+```powershell
+Copy-Item .env.example .env
+python -m venv backend/venv
+backend\venv\Scripts\python -m pip install -r backend/requirements.txt
 cd frontend
 npm install
 ```
 
-### 3. Run
+Review `.env` before launching. Replace the example model paths and working directories, or disable managed processes and configure an existing provider. Configure both `CHAT_PROVIDER` and `EMBED_PROVIDER` when using Ollama. Always use the project virtual environment for subsequent Python commands.
 
-```bash
-# From frontend/ — starts Vite + Electron (Electron spawns the FastAPI backend automatically)
+From `frontend/`, launch the desktop app:
+
+```powershell
 npm run dev
 ```
 
-### Packaged desktop runtime
+Electron starts the backend. To listen in a browser, start these in separate terminals from the repository root:
 
-`npm run electron:build` packages the Electron UI and copies the frontend build and backend source to the application's resources directory. It does not bundle Python or the backend's installed dependencies. A packaged install therefore requires a compatible Python runtime available on `PATH` with the backend requirements installed, or a compatible `backend/venv` placed beside the copied backend. VLC and optional model servers remain separate dependencies. If Python cannot be started, Radio shows a startup error with the runtime requirement.
-
-Packaged runtime data defaults to `data` inside Electron's per-user application-data directory, so installation under Program Files does not require write access to the installation directory. `RADIO_DATA_DIR` overrides that default; configure `RADIO_MUSIC_DIR` and `RADIO_METADATA_DIR` for an existing library and metadata directory.
-
-Electron app should auto start with 'npm run dev'
-
-For browser verions open `http://localhost:3000` in your browser. The backend runs on `http://localhost:8765`.
-
-## Configuration
-
-Edit `backend/config.py` for path/model/threshold settings, or override via environment variables:
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `OLLAMA_BASE_URL` | `http://192.168.1.20:5002` | Ollama server URL |
-| `CHAT_PROVIDER` | `openai` | `ollama`, `openai`, or `auto` |
-| `EMBED_PROVIDER` | `openai` | `ollama`, `openai`, or `auto` |
-| `OPENAI_BASE_URL_CHAT` | `http://127.0.0.1:8081/v1` | OpenAI-compatible chat endpoint |
-| `OPENAI_BASE_URL_EMBED` | `http://127.0.0.1:8082/v1` | OpenAI-compatible embed endpoint |
-| `OPENAI_API_KEY` | `""` | API key (if required) |
-
-The `.env` file controls the **Process Manager** — external subprocesses the backend can start/stop:
-
-| Variable | Description |
-|----------|-------------|
-| `LLAMA_CHAT_CMD` | Full launch command for the llama.cpp chat server |
-| `LLAMA_CHAT_WORK_DIR` | Working directory (e.g. `C:/path/to/llama.cpp`) |
-| `LLAMA_CHAT_AUTO_START` | `true` to auto-start on backend boot |
-| `LLAMA_EMBED_CMD` | Full launch command for the llama.cpp embeddings server |
-| `LLAMA_EMBED_WORK_DIR` | Working directory |
-| `LLAMA_EMBED_AUTO_START` | `true` to auto-start (disabled by default) |
-| `ACESTEP_CMD` | Launch command for acestep.cpp (manual trigger only) |
-| `ACESTEP_WORK_DIR` | Working directory |
-| `ACESTEP_AUTO_START` | `false` — acestep is only started during "understand" phase |
-
-Copy `.env.example` to `.env` to get started. All 3 commands are pre-filled with sensible defaults for llama.cpp — you only need to update the `*_WORK_DIR` paths.
-
-## Manual Ingest Phases
-
-Ingest phases can be run individually **without starting the server**. Each phase processes only songs that haven't completed it yet, so they are safe to resume.
-
-### From the `backend/ingest.py` shortcut
-
-Edit the last line of `backend/ingest.py` to call the phase you want:
-
-```python
-from ingest.pipeline import *
-results = run_phase_raw()              # change this line
-print(results)
-```
-
-Then run it:
-
-```bash
+```powershell
 cd backend
-venv\Scripts\python ingest.py
+.\venv\Scripts\python main.py
 ```
 
-### Available phases
-
-| Function | What it does |
-|----------|-------------|
-| `run_phase_understand()` | Submit MP3s to acestep.cpp for understanding (req. acestep running) |
-| `run_phase_raw()` | Scan music dir, add new songs to DB, extract album art |
-| `run_phase_analyze()` | librosa per-song audio feature extraction (RMS, crest, spectral) |
-| `run_phase_normalize()` | Library-wide percentile normalization → energy/valence (0-1) |
-| `run_phase_describe()` | Load acestep JSON metadata, generate LLM emotional/genre/instrument tags |
-| `run_phase_embed()` | Build embedding text, upsert to ChromaDB (starts/stops llama.cpp embed server on-demand) |
-| `run_phase_embed_audio()` | MuQ-MuLan audio embeddings → `songs_audio` collection (GPU required) |
-| `run_phase_cluster()` | KMeans with 28 clusters on embedding + audio features |
-| `run_phase_lyrics_timing()` | WhisperX forced alignment for songs with lyrics |
-
-Phases can also be triggered via the HTTP API when the server is running:
-
-```
-POST /api/ingest/run-phase/{name}
+```powershell
+cd frontend
+npm run electron:dev
 ```
 
-Where `{name}` is one of: `understand`, `raw`, `analyze`, `normalize`, `describe`, `embed`, `audio_embed`, `cluster`, `lyrics_timing`.
+Open [the development frontend](http://localhost:3000). The backend binds to `127.0.0.1:8765` by default. See [server access](docs/SERVER_ACCESS.md) for authentication and hosting boundaries.
 
-## Lyrics Process
+Normal backend startup migrates the database, performs maintenance, clears generated caches and may start managed processes. Use the isolated launcher below for verification.
 
-**Note: Lyrics are a manual process.** After acestep generates metadata, it leaves `lyrics: "TODO"` in each JSON file. You must populate lyrics yourself using the helper scripts, then re-run the describe phase to pull them into the database:
+### Configuration
 
-```bash
-# Step 1 — Process MP3s through acestep (leaves lyrics as "TODO")
-python batch_understand.py audio_files/
+The backend loads the root `.env` before reading environment variables. See [the example](.env.example) and [backend configuration](backend/config.py) for the full settings.
 
-# Step 2 — Fill lyrics from lyrics.ovh API
-python batch_fill_lyrics.py --resume
+| Variables | Purpose |
+| --- | --- |
+| `RADIO_DATA_DIR`, `RADIO_MUSIC_DIR`, `RADIO_METADATA_DIR` | Override runtime data, MP3 library and metadata paths |
+| `CHAT_PROVIDER`, `EMBED_PROVIDER` | Select `ollama`, `openai` or `auto` |
+| `OLLAMA_BASE_URL` | Existing Ollama service |
+| `OPENAI_BASE_URL_CHAT`, `OPENAI_BASE_URL_EMBED`, `OPENAI_API_KEY` | OpenAI-compatible endpoints and credentials |
+| `LLAMA_CHAT_CMD`, `LLAMA_CHAT_WORK_DIR`, `LLAMA_CHAT_AUTO_START` | Managed chat service, normally port 8081 |
+| `LLAMA_EMBED_CMD`, `LLAMA_EMBED_WORK_DIR`, `LLAMA_EMBED_AUTO_START` | Managed embedding service, normally port 8082 |
+| `ACESTEP_CMD`, `ACESTEP_WORK_DIR`, `ACESTEP_AUTO_START` | Optional audio-understanding service, normally port 8085; manual by default |
+| `RADIO_TTS_ENABLED`, `RADIO_PROC_MGR_ENABLED` | Speech and process-manager master toggles |
 
-# Alternative: scrape Genius.com (no API key needed)
-python batch_fill_genius.py --resume
+Desktop defaults use `audio_files/` for music, `docs/understand/` for acestep metadata and `data/` for runtime storage. Keep credentials and personal library data out of commits.
 
-# Alternative: general web scrape
-python batch_scrape_lyrics.py --resume
+### Ingest and maintenance
 
-# Alternative: Use a ai agent like opencode to scrape the web for you
+The main ingest pipeline runs sequentially:
 
-# Step 3 — Re-run describe phase (pulls updated lyrics + tags into DB)
-# From backend/ — edit ingest.py to call run_phase_describe(), then:
-venv\Scripts\python ingest.py
+`raw → analyzed → normalized → described → embedded → audio_embedded → clustered`
 
-# Step 4 (optional) — WhisperX forced alignment for word-level timing
-python batch_lyrics_timing_smart.py --resume
+Audio understanding supplies captions/metadata; the describe stage imports that metadata and adds LLM tags. Text embeddings, optional audio embeddings and clustering support recommendations. Export a portable catalog after ingest has settled.
+
+Use the app's ingest controls or the phase functions in [the pipeline](backend/ingest/pipeline.py). The [manual shortcut](backend/ingest.py) selects a phase in source. Lyrics helpers and `batch_*.py` files are operational scripts that can modify metadata or runtime state; inspect their options and targets before running them. They are not test fixtures.
+
+### Packaging
+
+From `frontend/`, `npm run electron:build` packages the Electron UI, frontend build and backend source. It does **not** bundle Python, installed backend dependencies, VLC or model servers. Packaged installs need a compatible Python runtime with dependencies, or a compatible `backend/venv` beside the copied backend.
+
+Packaged runtime data defaults to Electron's per-user application-data directory. Use the path overrides above for an existing music library and metadata.
+
+## Standalone browser demo
+
+The [demo](demo/README.md) runs independently of the backend and Android app. It uses fictional catalog data and original synthesized audio, runs no live AI and never accesses visitor music.
+
+Preview from the repository root:
+
+```powershell
+backend\venv\Scripts\python -B -m http.server 4173 --bind 127.0.0.1 --directory demo
 ```
 
-Songs that can't be matched are marked as `"lyrics not found"` and skipped from timing. Instrumental tracks should be marked manually (`"lyrics": "instrumental"`).
+Open [the local demo](http://127.0.0.1:4173) and click Play to enable audio. The repository includes a [GitHub Pages workflow](.github/workflows/demo-pages.yml); publishing setup is covered in the demo guide.
 
-## Acestep Metadata Pipeline
+## Development and verification
 
-The app uses acestep.cpp for audio understanding. The `batch_understand.py` script processes MP3s in batches, saves JSON metadata to `docs/understand/`, and supports resume via `--resume`:
+Run checks for the surface you change. See [TESTING.md](docs/TESTING.md) for isolation, fixtures and manual checks.
 
-```bash
-# Process all MP3s (supports --resume to skip already-done files)
-python batch_understand.py audio_files/ --concurrency 2
+| Surface | Commands | Run from |
+| --- | --- | --- |
+| Backend | `backend\venv\Scripts\python -B scripts/run_tests.py -q` | Repository root |
+| Frontend | `npm test`, `npm run build` | `frontend/` |
+| Android | `.\gradlew.bat testDebugUnitTest`, `.\gradlew.bat lintDebug`, `.\gradlew.bat assembleDebug` | `android/` |
+| Android device/emulator | `.\gradlew.bat connectedDebugAndroidTest` | `android/` |
+| Demo | `node --test demo/tests/*.test.mjs` | Repository root |
 
-# Use a different LM model
-python batch_understand.py audio_files/ --lm-model acestep-5Hz-lm-4B-Q8_0
+For a disposable desktop test environment, run from the repository root:
+
+```powershell
+backend\venv\Scripts\python -B scripts/run_isolated_app.py --port 18765
 ```
 
-Once JSONs are generated, run the ingest pipeline (see [Manual Ingest Phases](#manual-ingest-phases)).
+Generated media, fixtures and test output belong in `.test-runtime/`. Automated checks must not write to the original music, operational metadata, production database or production Chroma store. Root `test_*.py` scripts are not the backend test suite. Emulator checks do not replace phone acceptance for Bluetooth, battery and playback ergonomics.
 
-## Project Structure
+## Repository map and documentation
 
-```
-radio/
-├── android/                 # Standalone Kotlin/Compose local player (Media3 + Room)
-├── backend/                 # FastAPI Python backend (port 8765)
-│   ├── main.py              # API entry and router integration
-│   ├── config.py            # Paths, model names, thresholds, provider config
-│   ├── ingest.py            # Manual phase execution shortcut
-│   ├── db/                  # SQLite schema, playback store and CRUD helpers
-│   ├── ingest/               # 7-phase ingest pipeline (scanner → clusterer)
-│   ├── engine/               # Recommendation engine
-│   │   ├── player.py         # VLC MediaListPlayer wrapper, gapless chaining
-│   │   ├── queue.py          # threading.Condition-protected song queue
-│   │   ├── taste.py          # 4-layer memory system (immediate → longterm)
-│   │   ├── retriever.py      # ChromaDB + SQLite two-stage retrieval
-│   │   ├── reranker.py       # LLM reranking with deterministic fallback
-│   │   ├── slots.py          # 5-slot allocator (exploit/explore/wildcard/context)
-│   │   ├── transitions.py    # Song-pair transition scoring (rolling average)
-│   │   ├── mood.py           # Mood state machine (6 states) + vibe lock
-│   │   ├── energy.py         # Energy trajectory tracking (last 5 songs)
-│   │   ├── recovery.py       # Recovery song selection after skip streaks
-│   │   ├── archetype.py      # Listener archetype detection (4 archetypes)
-│   │   ├── constellations.py # Multi-centroid taste model ("taste pockets")
-│   │   ├── audio_separator.py# UVR-MDX vocal separation for lyrics alignment
-│   │   ├── process_manager.py# Spawn/monitor llama.cpp + acestep subprocesses
-│   │   ├── dj_effects.py     # DJ audio effects (slowed_reverb, nightcore, etc.)
-│   │   └── sleep_timer.py    # Sleep timer with fade-out
-│   ├── announcer/            # TTS, DJ announcements, talk show
-│   │   ├── voice_manager.py  # Unified OmniVoice + Piper interface
-│   │   ├── announcements.py  # LLM-generated DJ lines with trigger conditions
-│   │   ├── talk_segments.py  # Caller, monologue, guest takeover segments
-│   │   ├── personas.py       # 20+ DJ personas with voice clips
-│   │   └── voices/           # 22 MP3 voice prompt clips
-│   ├── commands/             # NL command parser (regex + LLM tool-calling)
-│   └── llm/                  # LLM provider abstraction (Ollama + OpenAI)
-│       └── muq_engine.py     # MuQ-MuLan audio embedding engine
-│
-├── frontend/                 # Vite + React 18 + Tailwind CSS v4
-│   ├── electron/             # Electron main process (tray, mini player, widget)
-│   └── src/
-│       ├── components/       # ~50 React components
-│       ├── hooks/            # State, playback, mood and UI hooks
-│       ├── api/              # HTTP + WebSocket client
-│       └── styles/           # Tailwind v4 + dark/light theme
-│
-├── audio_files/              # MP3 library
-├── docs/understand/          # Acestep JSON metadata files
-├── data/                     # Runtime data (SQLite DB, ChromaDB, TTS cache, art)
-├── .env.example              # Process manager configuration template
-├── batch_understand.py       # Submit MP3s to acestep /understand
-├── batch_fill_lyrics.py      # Fetch lyrics from lyrics.ovh API
-├── batch_fill_genius.py      # Scrape lyrics from Genius.com
-├── batch_scrape_lyrics.py    # Scrape lyrics from web
-├── batch_lyrics_timing_smart.py  # WhisperX forced alignment (vocals-first)
-└── reembed_all.py            # Re-embed all songs with updated text
-```
+| Path | Contents |
+| --- | --- |
+| `android/` | Standalone Kotlin/Compose app, Room schemas, JVM and instrumented tests |
+| `backend/` | FastAPI, playback sessions, recommendation engine, ingest, speech and portable APIs |
+| `frontend/` | React/Vite UI, browser audio engine and Electron shell |
+| `demo/` | Standalone public browser showcase and tests |
+| `scripts/` | Isolated test runners, launcher and fixture generators |
+| `docs/` | Architecture, operation guides, portable contracts and checkpoint evidence |
+| `.test-runtime/` | Disposable generated test artifacts |
 
-## License
+Start with the [documentation index](docs/README.md). Key guides include [architecture](docs/ARCHITECTURE.md), [desktop usage](docs/APP_USAGE_CHECKLIST.md), [Android checkpoints](docs/ANDROID_APP_PLAN.md), [offline recommendations](docs/OFFLINE_RECOMMENDATIONS.md), [connected recommendations](docs/CONNECTED_RECOMMENDATIONS_PLAN.md) and [connected tuning](docs/CONNECTED_TUNING_PLAN.md).
 
-MIT
+`main` is the integration branch. Repository workflow and implementation constraints are in [AGENTS.md](AGENTS.md).
+
+Checkpoint history: `main` includes Android checkpoints through 4.2, phone-accepted and merged November 11, 2026. The [checkpoint log](docs/ANDROID_APP_PLAN.md) and [redesign plan](docs/RADIO_REDESIGN_PLAN.md) contain verification evidence; their pre-merge headers have not yet been updated.
