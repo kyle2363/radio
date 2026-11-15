@@ -10,6 +10,8 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.Future
 import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.atomic.AtomicBoolean
+import java.nio.ByteBuffer
+import java.nio.charset.CodingErrorAction
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
@@ -35,6 +37,8 @@ class RadioApiClient(private val policy: EndpointPolicy, private val deadlineMs:
         internal enum class ConnectedRoute(val maxRequestBytes: Int, val maxResponseBytes: Int) {
             AVAILABILITY(256 * 1024, 32768), CONTEXT(8 * 1024, 32768), RECOMMEND(16 * 1024, 128 * 1024)
         }
+        internal const val LYRICS_MAX_RESPONSE_BYTES = 512 * 1024
+        private val lyricsPath = Regex("/lyrics\\?revision=[1-9][0-9]{0,18}&manifest_sha256=[0-9a-f]{64}&song_id=[A-Za-z0-9_-]{1,128}")
         private val contextId = "[A-Za-z0-9_-]{16,64}"
         internal fun connectedRoute(path: String): ConnectedRoute? = when {
             path == "/availability" -> ConnectedRoute.AVAILABILITY
@@ -42,6 +46,7 @@ class RadioApiClient(private val policy: EndpointPolicy, private val deadlineMs:
             path.matches(Regex("/contexts/$contextId/recommendations")) -> ConnectedRoute.RECOMMEND
             else -> null
         }
+        internal fun isLyricsPath(path: String): Boolean = path.length <= 1024 && lyricsPath.matches(path)
         private val io = ThreadPoolExecutor(2, 2, 30, TimeUnit.SECONDS, ArrayBlockingQueue(4)) { task -> Thread(task, "radio-connection-io").apply { isDaemon = true } }
         private val deadlines = Executors.newSingleThreadScheduledExecutor { task -> Thread(task, "radio-connection-deadline").apply { isDaemon = true } }
         private val closing = ThreadPoolExecutor(2, 2, 30, TimeUnit.SECONDS, ArrayBlockingQueue(8)) { task -> Thread(task, "radio-connection-close").apply { isDaemon = true } }
@@ -50,9 +55,13 @@ class RadioApiClient(private val policy: EndpointPolicy, private val deadlineMs:
         }
     }
     override suspend fun request(endpoint: String, path: String, body: String?, bearer: String?): RadioResponse {
-        val limit = when { path.startsWith("/events?cursor=") -> 2 * 1024 * 1024; path=="/events" -> 128 * 1024; else -> connectedRoute(path)?.maxResponseBytes ?: 32768 }
+        val limit = when { path.startsWith("/events?cursor=") -> 2 * 1024 * 1024; path=="/events" -> 128 * 1024; isLyricsPath(path) -> LYRICS_MAX_RESPONSE_BYTES; else -> connectedRoute(path)?.maxResponseBytes ?: 32768 }
         val result = execute(endpoint, path, body, bearer, limit, false)
-        return RadioResponse(result.status, result.body.toString(Charsets.UTF_8), result.retryAfterSeconds)
+        val decoded = if (isLyricsPath(path)) try {
+            Charsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT).onUnmappableCharacter(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(result.body)).toString()
+        } catch (_: Exception) { throw ConnectionFailure("The desktop returned invalid lyrics data. Retry the request.") }
+        else result.body.toString(Charsets.UTF_8)
+        return RadioResponse(result.status, decoded, result.retryAfterSeconds)
     }
     override suspend fun download(endpoint: String, path: String, bearer: String, maxBytes: Int): RadioBinaryResponse {
         if (maxBytes !in 1..(16 * 1024 * 1024)) throw ConnectionFailure("Invalid catalog response limit.")
@@ -98,20 +107,22 @@ class RadioApiClient(private val policy: EndpointPolicy, private val deadlineMs:
         val eventWrite = path == "/events"
         val profileRead = path == "/profile"
         val route = connectedRoute(path)
-        if (if (binary) !catalogPath else path !in setOf("/identity", "/pairing/exchange", "/capabilities") && !eventRead && !eventWrite && !profileRead && route == null) throw ConnectionFailure("Unsupported mobile request.")
+        val lyrics = isLyricsPath(path)
+        if (if (binary) !catalogPath else path !in setOf("/identity", "/pairing/exchange", "/capabilities") && !eventRead && !eventWrite && !profileRead && route == null && !lyrics) throw ConnectionFailure("Unsupported mobile request.")
         if (route != null && body == null) throw ConnectionFailure("Unsupported mobile request.")
+        if (lyrics && (body != null || bearer == null)) throw ConnectionFailure("Lyrics require an authenticated GET request.")
         val connection = openConnection(URL("$endpoint/api/portable/v1$path"))
         try {
             connected(connection)
             connection.instanceFollowRedirects = false
             connection.connectTimeout = 5000
-            connection.readTimeout = if (route == ConnectedRoute.RECOMMEND) (recommendDeadlineMs + 5000).toInt() else 10000
+            connection.readTimeout = if (route == ConnectedRoute.RECOMMEND) (recommendDeadlineMs + 5000).toInt() else if (lyrics) deadlineMs.toInt() else 10000
             connection.useCaches = false
             connection.setRequestProperty("Accept", if (path.startsWith("/vectors/") || batchPath) "application/octet-stream" else "application/json")
             connection.setRequestProperty("Accept-Encoding", "identity")
             ensureActive()
             if (bearer != null) {
-                if (path != "/capabilities" && !binary && !eventRead && !eventWrite && !profileRead && route == null) throw ConnectionFailure("Credentials are not allowed on the identity request.")
+                if (path != "/capabilities" && !binary && !eventRead && !eventWrite && !profileRead && route == null && !lyrics) throw ConnectionFailure("Credentials are not allowed on the identity request.")
                 connection.setRequestProperty("Authorization", "Bearer ${WireBase64.secret(bearer)}")
             }
             if (body != null) {

@@ -22,7 +22,7 @@ The setup commands below are for Windows PowerShell and build/run the apps from 
 
 Android includes offline Radio, manual profile sync, secure remote connections, automatic desktop address discovery and optional Desktop picks. Radio has an ON AIR station view, mood and exploration controls, Vibe lock, New mix and Not for me with Undo.
 
-Android lyrics, statistics, speech, crossfade, downloads and automatic profile sync are not available yet. Phone playback uses music already stored on the device.
+This branch adds plain Android lyrics for matched local songs, with a private offline cache; phone acceptance is pending. Statistics, synchronized lyrics, speech, crossfade, downloads and automatic profile sync remain future work. Phone playback uses music already stored on the device.
 
 ## Android
 
@@ -199,4 +199,4 @@ Start with the [documentation index](docs/README.md). Key guides include [archit
 
 `main` is the integration branch. Repository workflow and implementation constraints are in [AGENTS.md](AGENTS.md).
 
-Checkpoint history: `main` includes Android checkpoints through 4.2, phone-accepted and merged November 11, 2026. The [checkpoint log](docs/ANDROID_APP_PLAN.md) and [redesign plan](docs/RADIO_REDESIGN_PLAN.md) contain verification evidence; their pre-merge headers have not yet been updated.
+Checkpoint history: `main` includes Android checkpoints through 5; checkpoint 5 plain lyrics was merged November 14, 2026, with phone acceptance pending. The [checkpoint log](docs/ANDROID_APP_PLAN.md), [redesign plan](docs/RADIO_REDESIGN_PLAN.md) and [lyrics plan](docs/ANDROID_LYRICS_PLAN.md) contain verification evidence.

@@ -65,6 +65,20 @@ def test_missing_collection_allowed_but_storage_error_aborts_snapshot(tmp_path):
         service.snapshot()
 
 
+def test_lyrics_source_uses_existing_database_without_chroma(tmp_path, monkeypatch):
+    import config
+    monkeypatch.setattr(config, "CHROMA_PATH", str(tmp_path / "absent-chroma"))
+    store = PortableProfileStore()
+    service = ServerCatalog(store, root=tmp_path / "catalog", client_factory=None)
+    with database.get_connection_cm() as conn:
+        conn.execute("UPDATE songs SET lyrics=? WHERE id=1", ("  local\r\ntext  ",))
+        conn.commit()
+    songs, embeddings, lyrics = service.source(with_lyrics=True)
+    assert "lyrics" not in songs[0]
+    assert not embeddings
+    assert lyrics["1"] == "local\ntext"
+
+
 def test_revision_and_blob_paths_cannot_escape_catalog_root(tmp_path):
     service, _ = source(tmp_path)
     with pytest.raises(ValueError):

@@ -1,7 +1,46 @@
 # Android app plan
 
-Status: checkpoints through 4.1 are merged into `main`. Checkpoint 4.2 Radio mode redesign was phone-accepted and fully verified November 11, 2026; merging into `main` awaits explicit approval. Direct LAN hosting remains deferred.
+Status: checkpoints through 5 are merged into `main`. Checkpoint 4.2 Radio mode redesign was phone-accepted, fully verified and merged November 11, 2026 (`f676e83`). Checkpoint 5 plain lyrics was merged November 14, 2026; phone acceptance is pending. Direct LAN hosting remains deferred.
 Integration: `android-app`, based on `stability-server-architecture`, reviewed for integration into `main` on November 3. Earlier pending-review notes below are historical checkpoint records, superseded by the November 3 acceptance.
+
+## Plain lyrics checkpoint 5 — November 14, 2026
+
+Approved for implementation November 14. Now Playing → Lyrics opens a selectable,
+scrollable plain-text sheet in normal, Radio, queue and minimal views. Trusted
+local matches select immutable prepared desktop lyrics; successfully fetched text
+is saved privately for offline reading. Lyrics never control playback or sync.
+Missing pairing, matching, capability, text and connection states remain explicit.
+Desktop lyric edits require a new prepared/imported catalog revision.
+
+Room v10 adds a bounded lyrics cache with an explicit v9→v10 migration. All prior
+schema migrations preserve library, playlists, history, bookmarks and sync state.
+The gateway reuses `catalog:read`, with strict query/response bounds and no access
+to desktop song, source-media or timing routes. No dependency was added.
+
+Parallel Luna agents implemented the three layers; the primary agent reviewed and
+verified the final result, including expanded-sheet captures and a late-401
+pairing-ownership fix established with failing tests first.
+
+Verification: guarded backend full suite **928 passed, 9 expected skips**, plus
+**25 final targeted regressions**; Android **150 JVM tests passed**; full API 37
+emulator suite **214/214 passed**, followed by **25/25 affected-class tests** after
+the final connection/observation fixes and a **4/4 UI capture run**. Lint: **zero
+errors, 54 warnings**. Debug app/test builds passed. The full emulator suite
+preceded those final fixes; the affected-class rerun verified them. No frontend
+source changed. Automated tests used synthetic fixtures and an isolated emulator.
+
+APK: `.test-runtime/android-lyrics/radio-checkpoint5-debug.apk`, SHA-256
+`DFA464519C0A3108996F76A384B7494CE23C59CDF205D289862C58807EB1B871`.
+Logs, archived result XML and final light/dark captures are in that directory.
+Details, limitations and phone checks: [ANDROID_LYRICS_PLAN.md](ANDROID_LYRICS_PLAN.md).
+
+Phone check-in: update without clearing app data; restart the desktop on this
+code, prepare/import a catalog and refresh matches if needed. Read lyrics for a
+matched song, then an unmatched/missing-text song; switch songs while loading,
+check saved text offline, and verify Back, queue, Radio, seeking and the sleep
+timer. Review light/dark and large text on the phone. Phone acceptance is pending;
+statistics and synchronized lyrics remain separate increments. This checkpoint is
+committed and merged into `main`.
 
 ## Radio redesign checkpoint 4.2 — November 11, 2026
 
@@ -15,14 +54,13 @@ then an emulator still booting; the full successful run followed completed boot.
 No backend or frontend changes required their suites. The installable APK is
 `.test-runtime/android-checkpoint4.2/radio-checkpoint4.2-debug.apk` (SHA-256
 `27e6609131ccd6b5d0d51ead84d23fd23bd50bfea7806754c1d8dfb84939c071`).
-Committed on `android-4.2-radio-redesign`; merge into `main` awaits explicit approval.
+Implemented on `android-4.2-radio-redesign`; merged into `main` November 11, 2026 (`f676e83`).
 See the local [RADIO_REDESIGN_PLAN.md](RADIO_REDESIGN_PLAN.md) for the detailed design.
 
 After integration, the existing extras roadmap prioritizes lyrics and statistics.
-The proposed next increment is read-only plain lyrics for matched local songs,
-with explicit unavailable/offline states and independent local playback. It still
-needs a scoped design and contract review before implementation; synchronized
-lyrics, automatic sync, speech, crossfade and downloads are separate work.
+Plain lyrics was subsequently implemented as checkpoint 5 above; phone acceptance
+is pending. Synchronized lyrics, automatic sync, speech, crossfade and downloads
+remain separate work.
 
 ## Automatic discovery checkpoint 3B — November 4, 2026
 

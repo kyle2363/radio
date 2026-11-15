@@ -4,6 +4,9 @@ import android.content.Context
 import android.security.NetworkSecurityPolicy
 import androidx.test.platform.app.InstrumentationRegistry
 import dev.radio.mobile.connection.*
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
@@ -75,6 +78,8 @@ class PairingConnectionTest {
         override fun installationMarker() = "synthetic-marker"
         override fun save(record: PairingRecord) { this.record = record }
         override fun forget() { record = null }
+        val lyricPurges = mutableListOf<String>()
+        override suspend fun purgeLyrics(serverId: String) { lyricPurges += serverId }
     }
     @After fun cleanup() {
         fixtureStore().forget()
@@ -315,5 +320,77 @@ class PairingConnectionTest {
         release.countDown()
         assertTrue(finished.await(2, TimeUnit.SECONDS))
         assertFalse("Timed-out request must not acquire output/response after resuming", acquired)
+    }
+    @Test fun staleLyrics401AfterForgetDoesNotResurrectPairing() = runBlocking {
+        val record = pending().copy(deviceId = "synthetic-device", credentialExpiresAt = clock() + 99999)
+        val store = MemoryStore(record)
+        val started = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val lyricsPath = "/lyrics?revision=12&manifest_sha256=${"a".repeat(64)}&song_id=42"
+        val api = RadioTransport { _, path, _, bearer ->
+            when (path) {
+                "/identity" -> { assertNull(bearer); RadioResponse(200, identity()) }
+                lyricsPath -> {
+                    assertEquals(record.bearer, bearer)
+                    started.countDown()
+                    check(release.await(5, TimeUnit.SECONDS))
+                    RadioResponse(401, "")
+                }
+                else -> error("Unexpected request: $path")
+            }
+        }
+        val repository = PairingRepository(store, api, policy, ::clock)
+        val session = repository.connectedSession()
+        val request = async(Dispatchers.IO) { runCatching { repository.connectedRequest(session, lyricsPath) } }
+        assertTrue(withContext(Dispatchers.IO) { started.await(2, TimeUnit.SECONDS) })
+
+        repository.forget()
+        assertNull(store.record)
+        assertEquals(listOf(record.bundle.serverId), store.lyricPurges.toList())
+        release.countDown()
+        request.await()
+
+        assertNull(store.record)
+        // Only forget purged the old pairing's cache; the stale 401 did no work.
+        assertEquals(listOf(record.bundle.serverId), store.lyricPurges.toList())
+    }
+
+    @Test fun staleLyrics401CannotBlockOrPurgeReplacementPairing() = runBlocking {
+        val old = pending().copy(deviceId = "synthetic-device", credentialExpiresAt = clock() + 99999)
+        val store = MemoryStore(old)
+        val started = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val lyricsPath = "/lyrics?revision=12&manifest_sha256=${"a".repeat(64)}&song_id=42"
+        val api = RadioTransport { _, path, _, bearer ->
+            when (path) {
+                "/identity" -> { assertNull(bearer); RadioResponse(200, identity()) }
+                lyricsPath -> {
+                    assertEquals(old.bearer, bearer)
+                    started.countDown()
+                    check(release.await(5, TimeUnit.SECONDS))
+                    RadioResponse(401, "")
+                }
+                else -> error("Unexpected request: $path")
+            }
+        }
+        val repository = PairingRepository(store, api, policy, ::clock)
+        val session = repository.connectedSession()
+        val request = async(Dispatchers.IO) { runCatching { repository.connectedRequest(session, lyricsPath) } }
+        assertTrue(withContext(Dispatchers.IO) { started.await(2, TimeUnit.SECONDS) })
+
+        repository.forget()
+        val purgesAfterForget = store.lyricPurges.toList()
+        val replacement = old.copy(
+            bearer = WireBase64.encode(ByteArray(32) { 4 }),
+            exchangeId = UUID.randomUUID().toString(),
+            generation = old.generation + 1,
+            authorizationBlocked = false,
+        )
+        store.save(replacement)
+        release.countDown()
+        request.await()
+
+        assertEquals(replacement, store.record)
+        assertEquals(purgesAfterForget, store.lyricPurges.toList())
     }
 }

@@ -10,6 +10,24 @@ data class LocalPlaybackStart(@PrimaryKey val attemptId: String, val songId: Str
 @Entity(tableName = "local_playback_snapshot")
 data class LocalPlaybackSnapshot(@PrimaryKey val key: Int = 1, val payload: String)
 
+@Entity(tableName = "local_lyrics_cache", indices = [Index(value = ["serverId", "catalogId", "revision"])])
+data class LocalLyricsCache(
+    @PrimaryKey val cacheKey: String,
+    val serverId: String,
+    val catalogId: String,
+    val manifestSha256: String,
+    val revision: Long,
+    val localSongId: String,
+    val portableSongId: String,
+    val localIdentity: String,
+    val ownerGeneration: Long,
+    val mappingGeneration: Long,
+    val text: String,
+    val textSha256: String,
+    val fetchedAt: Long,
+    val lastViewedAt: Long,
+)
+
 @Entity(tableName = "library_root")
 data class LibraryRoot(@PrimaryKey val key: Int = 1, val uri: String, val folderId: String, val name: String, val scannedAt: Long)
 
@@ -53,6 +71,17 @@ interface LibraryDao {
     @Query("SELECT * FROM local_playback_snapshot WHERE `key` = 1") suspend fun playbackSnapshot(): LocalPlaybackSnapshot?
     @Upsert suspend fun savePlaybackSnapshot(snapshot: LocalPlaybackSnapshot)
     @Query("DELETE FROM local_playback_snapshot") suspend fun clearPlaybackSnapshot()
+}
+
+@Dao
+interface LyricsCacheDao {
+    @Query("SELECT * FROM local_lyrics_cache WHERE cacheKey=:key LIMIT 1") suspend fun get(key: String): LocalLyricsCache?
+    @Query("SELECT * FROM local_lyrics_cache ORDER BY lastViewedAt ASC, fetchedAt ASC") suspend fun all(): List<LocalLyricsCache>
+    @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun save(entry: LocalLyricsCache)
+    @Query("UPDATE local_lyrics_cache SET lastViewedAt=:at WHERE cacheKey=:key") suspend fun viewed(key: String, at: Long)
+    @Query("DELETE FROM local_lyrics_cache WHERE cacheKey=:key") suspend fun delete(key: String)
+    @Query("DELETE FROM local_lyrics_cache WHERE serverId=:serverId") suspend fun deleteServer(serverId: String)
+    @Query("DELETE FROM local_lyrics_cache WHERE serverId=:serverId AND (catalogId!=:catalogId OR revision!=:revision OR manifestSha256!=:manifestSha256)") suspend fun deleteObsolete(serverId: String, catalogId: String, revision: Long, manifestSha256: String)
 }
 
 val LIBRARY_MIGRATION_1_2 = object : Migration(1, 2) {
@@ -117,5 +146,11 @@ val LIBRARY_MIGRATION_8_9 = object : Migration(8, 9) {
         db.execSQL("CREATE TABLE IF NOT EXISTS portable_sync_owner (ownerKey TEXT NOT NULL, serverId TEXT NOT NULL, deviceId TEXT NOT NULL, installationMarker TEXT NOT NULL, quarantined INTEGER NOT NULL, PRIMARY KEY(ownerKey))")
     }
 }
-@Database(entities = [LibraryRoot::class, LocalSong::class, LocalFolder::class, LocalPlaybackStart::class, LocalPlaybackSnapshot::class, LocalPlaylist::class, LocalPlaylistSong::class, LocalLoudness::class, PortableCatalogRevision::class, PortableCatalogSong::class, PortableCatalogVector::class, PortableCatalogActive::class, LocalContentHash::class, PortableMatchDecision::class, LocalListeningEvent::class, LocalEventOutbox::class, LocalJournalClock::class, LocalSongFeedback::class, PortableSyncCursor::class, PortableRemoteEvent::class, PortableProfileRegister::class, PortableSyncOwner::class], version = 9, exportSchema = true)
-abstract class LibraryDatabase : RoomDatabase() { abstract fun library(): LibraryDao; abstract fun playlists(): PlaylistDao; abstract fun loudness(): LoudnessDao; abstract fun catalogs(): PortableCatalogDao; abstract fun matching(): MatchingDao; abstract fun journal(): ListeningJournalDao }
+val LIBRARY_MIGRATION_9_10 = object : Migration(9, 10) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS local_lyrics_cache (cacheKey TEXT NOT NULL, serverId TEXT NOT NULL, catalogId TEXT NOT NULL, manifestSha256 TEXT NOT NULL, revision INTEGER NOT NULL, localSongId TEXT NOT NULL, portableSongId TEXT NOT NULL, localIdentity TEXT NOT NULL, ownerGeneration INTEGER NOT NULL, mappingGeneration INTEGER NOT NULL, text TEXT NOT NULL, textSha256 TEXT NOT NULL, fetchedAt INTEGER NOT NULL, lastViewedAt INTEGER NOT NULL, PRIMARY KEY(cacheKey))")
+        db.execSQL("CREATE INDEX IF NOT EXISTS index_local_lyrics_cache_serverId_catalogId_revision ON local_lyrics_cache (serverId, catalogId, revision)")
+    }
+}
+@Database(entities = [LibraryRoot::class, LocalSong::class, LocalFolder::class, LocalPlaybackStart::class, LocalPlaybackSnapshot::class, LocalPlaylist::class, LocalPlaylistSong::class, LocalLoudness::class, PortableCatalogRevision::class, PortableCatalogSong::class, PortableCatalogVector::class, PortableCatalogActive::class, LocalContentHash::class, PortableMatchDecision::class, LocalListeningEvent::class, LocalEventOutbox::class, LocalJournalClock::class, LocalSongFeedback::class, PortableSyncCursor::class, PortableRemoteEvent::class, PortableProfileRegister::class, PortableSyncOwner::class, LocalLyricsCache::class], version = 10, exportSchema = true)
+abstract class LibraryDatabase : RoomDatabase() { abstract fun library(): LibraryDao; abstract fun playlists(): PlaylistDao; abstract fun loudness(): LoudnessDao; abstract fun catalogs(): PortableCatalogDao; abstract fun matching(): MatchingDao; abstract fun journal(): ListeningJournalDao; abstract fun lyrics(): LyricsCacheDao }

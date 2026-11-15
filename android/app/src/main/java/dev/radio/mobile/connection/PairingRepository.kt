@@ -40,7 +40,11 @@ class PairingRepository(
             }, error = error)
     }
     suspend fun load() = withContext(Dispatchers.IO) { mutex.withLock { publish(store.load()) } }
-    suspend fun forget() = action { store.forget(); "Pairing forgotten on this phone" }
+    suspend fun forget() = action {
+        val serverId = store.load().record?.bundle?.serverId
+        if (serverId != null) runCatching { store.purgeLyrics(serverId) }
+        store.forget(); "Pairing forgotten on this phone"
+    }
     suspend fun pair(bundleText: String) = action {
         val snapshot = usable()
         var record = snapshot.record
@@ -142,7 +146,7 @@ class PairingRepository(
         requireCredential(record)
         val response = transport.request(record.bundle.endpoint, path, body, record.bearer)
         if (response.status == 401) {
-            store.save(record.copy(authorizationBlocked = true)); publish(store.load())
+            store.save(record.copy(authorizationBlocked = true)); runCatching { store.purgeLyrics(session.serverId) }; publish(store.load())
             throw ConnectionFailure("Profile sync credential expired or was revoked. Pending events were kept; pair again to retry.")
         }
         if (response.status == 403) throw ConnectionFailure("Profile sync permission was denied. Allow profile sync for this device in desktop Server Settings, then retry.")
@@ -177,7 +181,18 @@ class PairingRepository(
         } }
         val response = transport.request(record.bundle.endpoint, path, body, record.bearer)
         if (response.status == 401) {
-            withContext(Dispatchers.IO) { mutex.withLock { store.save(record.copy(authorizationBlocked = true)); publish(store.load()) } }
+            withContext(Dispatchers.IO) { mutex.withLock {
+                // A reply from a forgotten/replaced connection has no authority over its successor.
+                val current = store.load().record
+                if (current != null && current.identityAnchor == session.anchor &&
+                    current.installationMarker == session.installationMarker && current.deviceId == session.deviceId &&
+                    current.bearer == session.bearer && current.bundle.serverId == session.serverId &&
+                    current.bundle.endpoint == session.endpoint) {
+                    store.save(current.copy(authorizationBlocked = true))
+                    runCatching { store.purgeLyrics(session.serverId) }
+                    publish(store.load())
+                }
+            } }
             throw ConnectionFailure("Credential expired or revoked. Pair again to use Connected Radio.")
         }
         return response
@@ -219,7 +234,9 @@ class PairingRepository(
         sessionRecord(session)
         if (path == "/catalog" && response.status == 200) session.catalogBatches = response.catalogBatches
         if (response.status == 401 || response.status == 403) {
-            store.save(record.copy(authorizationBlocked = true)); publish(store.load())
+            store.save(record.copy(authorizationBlocked = true))
+            if (response.status == 401) runCatching { store.purgeLyrics(session.serverId) }
+            publish(store.load())
             throw ConnectionFailure("Credential expired or revoked. Previous catalog kept. Pair again to retry.")
         }
         response

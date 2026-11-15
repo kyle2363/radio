@@ -21,6 +21,7 @@ class LibraryMigrationTest {
     @Test fun v6MigrationAddsContentIdentityWithoutChangingPlayback() = verifyMigration(6)
     @Test fun v7MigrationAddsEmptyJournalWithoutReinterpretingHistory() = verifyMigration(7)
     @Test fun v8MigrationAddsSyncStorageAndKeepsPendingBytes() = verifyMigration(8)
+    @Test fun v9MigrationAddsPrivateLyricsCacheWithoutDroppingSyncOwnership() = verifyMigration(9)
     private fun verifyMigration(version: Int) = runBlocking {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val context = instrumentation.targetContext
@@ -47,9 +48,14 @@ class LibraryMigrationTest {
                 db.execSQL("INSERT INTO local_listening_events (eventId,localId,attemptId,kind,occurredAt,logicalClock,payload,listenedMs,completion,terminationReason,provenance) VALUES ('pending-event','keep',NULL,'favorite_changed',3,7,'{\"event_id\":\"pending-event\"}',0,NULL,NULL,'fixture')")
                 db.execSQL("INSERT INTO local_event_outbox (eventId,serverId,deviceId,payload) VALUES ('pending-event','server','device','{\"event_id\":\"pending-event\"}')")
             }
+            if (version >= 9) {
+                db.execSQL("INSERT INTO portable_sync_cursor (serverId,deviceId,cursor,updatedAt,lastSuccessAt) VALUES ('server','device',9,10,11)")
+                db.execSQL("INSERT INTO portable_sync_owner (ownerKey,serverId,deviceId,installationMarker,quarantined) VALUES ('owner','server','device','marker',0)")
+                db.execSQL("INSERT INTO portable_profile_registers (serverId,registerKey,logicalClock,deviceId,eventId,kind,valueJson,payload) VALUES ('server','mood',5,'device','event','profile_mood','\"chill\"','{}')")
+            }
             db.version = version
         }
-        val db = Room.databaseBuilder(context, LibraryDatabase::class.java, file.absolutePath).addMigrations(LIBRARY_MIGRATION_1_2, LIBRARY_MIGRATION_2_3, LIBRARY_MIGRATION_3_4, LIBRARY_MIGRATION_4_5, LIBRARY_MIGRATION_5_6, LIBRARY_MIGRATION_6_7, LIBRARY_MIGRATION_7_8, LIBRARY_MIGRATION_8_9).build()
+        val db = Room.databaseBuilder(context, LibraryDatabase::class.java, file.absolutePath).addMigrations(LIBRARY_MIGRATION_1_2, LIBRARY_MIGRATION_2_3, LIBRARY_MIGRATION_3_4, LIBRARY_MIGRATION_4_5, LIBRARY_MIGRATION_5_6, LIBRARY_MIGRATION_6_7, LIBRARY_MIGRATION_7_8, LIBRARY_MIGRATION_8_9, LIBRARY_MIGRATION_9_10).build()
         try {
             assertEquals("Music", db.library().root()!!.name)
             assertEquals("keep", db.library().allSongs().single().id)
@@ -72,7 +78,13 @@ class LibraryMigrationTest {
                 assertEquals("{\"event_id\":\"pending-event\"}", saved.payload)
                 assertFalse(saved.acknowledged)
             } else assertTrue(db.journal().outbox().isEmpty())
-            assertNull(db.journal().syncCursor("server","device"))
+            if (version < 9) assertNull(db.journal().syncCursor("server","device"))
+            assertTrue(db.lyrics().all().isEmpty())
+            if (version >= 9) {
+                assertEquals(9L, db.journal().syncCursor("server", "device")!!.cursor)
+                assertEquals("device", db.journal().syncOwner("owner")!!.deviceId)
+                assertEquals("chill", db.journal().profileRegisters("server").single().valueJson.trim('"'))
+            }
         } finally { db.close(); context.deleteDatabase(file.absolutePath) }
         Unit
     }

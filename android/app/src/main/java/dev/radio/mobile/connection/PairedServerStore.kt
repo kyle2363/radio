@@ -18,6 +18,7 @@ interface PairingStore {
     fun installationMarker(): String
     fun save(record: PairingRecord)
     fun forget()
+    suspend fun purgeLyrics(serverId: String) = Unit
 }
 
 /** The identity expectation is backed up; secrets and installation marker deliberately are not. */
@@ -95,5 +96,9 @@ class PairedServerStore(context: Context, private val policy: EndpointPolicy, st
         credentialFile.delete()
         if (!identity.edit().clear().commit()) throw ConnectionFailure("Cannot forget pairing. Try again.")
         runCatching { KeyStore.getInstance("AndroidKeyStore").apply { load(null); deleteEntry(keyAlias) } }
+    }
+
+    override suspend fun purgeLyrics(serverId: String) {
+        dev.radio.mobile.data.LyricsRepository.purgeForContext(app, serverId)
     }
 }

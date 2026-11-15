@@ -23,9 +23,10 @@ Start with [the repository README](../README.md) for setup and the application m
 | [MOBILE_CONNECTION_PLAN.md](MOBILE_CONNECTION_PLAN.md) | Future connection/sync architecture and explicitly dated Phase 0 audit |
 | [CONNECTED_RECOMMENDATIONS_PLAN.md](CONNECTED_RECOMMENDATIONS_PLAN.md) | Checkpoint 4 connected recommendations: design, wire contract, acceptance |
 | [CONNECTED_TUNING_PLAN.md](CONNECTED_TUNING_PLAN.md) | Checkpoint 4.1 phone-only tuning of connected recommendations (accepted; merged) |
-| [RADIO_REDESIGN_PLAN.md](RADIO_REDESIGN_PLAN.md) | Checkpoint 4.2 Radio mode redesign: station surface, missing states, work order, acceptance (implemented; awaiting phone acceptance) |
+| [RADIO_REDESIGN_PLAN.md](RADIO_REDESIGN_PLAN.md) | Checkpoint 4.2 Radio mode redesign: station surface, missing states, work order, acceptance (phone-accepted; merged November 11) |
+| [ANDROID_LYRICS_PLAN.md](ANDROID_LYRICS_PLAN.md) | Checkpoint 5: plain lyrics sheet, prepared read-only contract, offline cache and acceptance (merged; phone acceptance pending) |
 
-Checkpoints through 3B automatic discovery are phone-accepted. 2C, 3A and 3B are merged into `main`. Plans are not authorization to begin another checkpoint.
+Checkpoints through 5 are merged into `main`; checkpoint 4.2 was phone-accepted November 11, 2026, and checkpoint 5 phone acceptance is pending. Plans are not authorization to begin another checkpoint.
 
 ## Technical contracts
 

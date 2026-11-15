@@ -20,7 +20,7 @@ class PortableSyncRepositoryTest {
         val context=InstrumentationRegistry.getInstrumentation().targetContext
         val db=Room.inMemoryDatabaseBuilder(context,LibraryDatabase::class.java).addMigrations(
             LIBRARY_MIGRATION_1_2,LIBRARY_MIGRATION_2_3,LIBRARY_MIGRATION_3_4,LIBRARY_MIGRATION_4_5,
-            LIBRARY_MIGRATION_5_6,LIBRARY_MIGRATION_6_7,LIBRARY_MIGRATION_7_8,LIBRARY_MIGRATION_8_9).build()
+            LIBRARY_MIGRATION_5_6,LIBRARY_MIGRATION_6_7,LIBRARY_MIGRATION_7_8,LIBRARY_MIGRATION_8_9,LIBRARY_MIGRATION_9_10).build()
         val identity=identityFixture()
         val event=JSONObject().put("protocol_version",1).put("device_id","device-a").put("event_id","retry-event")
             .put("logical_clock",7).put("occurred_at",1000).put("kind","favorite_changed").put("song_id",JSONObject.NULL).put("local_id","private-song").put("value",true).toString()

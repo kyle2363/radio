@@ -15,7 +15,8 @@ from starlette.responses import JSONResponse, Response
 from portable_sync import SyncConflict
 from mobile_recommendations import CONTEXT_ID, MobileRecommendations, Rejected
 from portable.catalog import canonical_json
-from mobile_catalog import MAX_REVISION, MOBILE_BATCH_COUNT, MOBILE_BATCH_BYTES
+from mobile_catalog import (MAX_REVISION, MOBILE_BATCH_COUNT, MOBILE_BATCH_BYTES,
+                            MOBILE_LYRICS_MAX_RESPONSE_BYTES)
 
 ENDPOINT = "http://127.0.0.1:18766"
 PREFIX = "/api/portable/v1"
@@ -92,6 +93,17 @@ def batch_query(raw):
     if len(digests) > MOBILE_BATCH_COUNT or len(set(digests)) != len(digests):
         raise ValueError()
     return dict(revision=int(match[1]), manifest_sha256=match[2].decode("ascii"), digests=digests)
+
+
+def lyrics_query(raw):
+    """Strict, ordered, ASCII-only query for the prepared lyrics resource."""
+    if len(raw) > 1024:
+        raise ValueError()
+    match = re.fullmatch(rb"revision=([1-9][0-9]{0,18})&manifest_sha256=([0-9a-f]{64})&song_id=([A-Za-z0-9_-]{1,128})", raw)
+    if not match or int(match[1]) > MAX_REVISION:
+        raise ValueError()
+    return {"revision": int(match[1]), "manifest_sha256": match[2].decode("ascii"),
+            "song_id": match[3].decode("ascii")}
 
 
 class Admission:
@@ -216,6 +228,7 @@ class GatewayBoundary:
 
         path = scope.get("path", "")
         is_catalog = path == PREFIX + "/catalog" and scope["method"] == "GET"
+        is_lyrics = path == PREFIX + "/lyrics" and scope["method"] == "GET"
         is_batch = path == PREFIX + "/vector-batch" and scope["method"] == "GET"
         is_vector = bool(re.fullmatch(re.escape(PREFIX) + r"/vectors/[0-9a-f]{64}", path)) and scope["method"] in ("GET", "HEAD")
         is_sync_events = path == PREFIX + "/events" and scope["method"] in ("GET", "POST")
@@ -231,9 +244,9 @@ class GatewayBoundary:
         # The factory supplies this flag explicitly; middleware's inner app is
         # an exception wrapper rather than the FastAPI instance.
         catalog_enabled = self.catalog is not None
-        if (((scope["method"], path) not in ROUTES and not (catalog_enabled and (is_catalog or is_vector or is_batch))
+        if (((scope["method"], path) not in ROUTES and not (catalog_enabled and (is_catalog or is_vector or is_batch or is_lyrics))
              and not (is_sync_events or is_sync_profile) and not is_connected)
-                or (scope.get("query_string") and not (is_catalog or is_batch or sync_get))
+                or (scope.get("query_string") and not (is_catalog or is_batch or is_lyrics or sync_get))
                 or scope.get("raw_path", path.encode()) != path.encode("ascii", errors="replace")):
             return await reject(404, "Mobile route not found")
         try:
@@ -322,12 +335,12 @@ class GatewayBoundary:
                     return await reject(429, "Device request limit exceeded", {"Retry-After": str(retry_after)})
             if scope["mobile_ingress"] == "remote" and path == PREFIX + "/pairing/exchange":
                 return await reject(404, "Remote pairing is unavailable")
-            if (path.endswith("/capabilities") or is_catalog or is_vector or is_batch or is_sync_events or is_sync_profile
+            if (path.endswith("/capabilities") or is_catalog or is_vector or is_batch or is_lyrics or is_sync_events or is_sync_profile
                     or is_connected) and not scope.get("portable_identity"):
                 return await reject(401, "Device bearer required")
             if is_connected and "recommend:read" not in scope["portable_identity"]["scopes"]:
                 return await reject(403, "Device token lacks recommend:read scope")
-            if (is_catalog or is_vector or is_batch) and "catalog:read" not in scope["portable_identity"]["scopes"]:
+            if (is_catalog or is_vector or is_batch or is_lyrics) and "catalog:read" not in scope["portable_identity"]["scopes"]:
                 return await reject(403, "Device token lacks catalog:read scope")
             if is_catalog:
                 try:
@@ -339,6 +352,11 @@ class GatewayBoundary:
                     scope["batch_query"] = batch_query(scope.get("query_string", b""))
                 except ValueError:
                     return await reject(400, "Invalid vector batch query")
+            if is_lyrics:
+                try:
+                    scope["lyrics_query"] = lyrics_query(scope.get("query_string", b""))
+                except ValueError:
+                    return await reject(400, "Invalid lyrics query")
             if sync_get and path.endswith("/events"):
                 try:
                     scope["sync_query"] = sync_query(scope.get("query_string", b""))
@@ -394,7 +412,7 @@ class GatewayBoundary:
         async def buffered():
             return {"type": "http.request", "body": bytes(body), "more_body": False}
 
-        response_limit = (16 * 1024 * 1024 if is_catalog else 8_000_000 if is_batch else
+        response_limit = (16 * 1024 * 1024 if is_catalog else MOBILE_LYRICS_MAX_RESPONSE_BYTES if is_lyrics else 8_000_000 if is_batch else
                           MAX_SYNC_BODY if is_sync_events else 262_144 if is_vector else
                           MAX_RECOMMENDATION_RESPONSE if is_connected else 8192)
         messages, response_size = [], 0
@@ -443,6 +461,8 @@ def create_mobile_gateway(store, identity, pairing, *, catalog=None, monotonic=t
                 "catalog_id": store.catalog_id, "pairing": True,
                 "catalog_import": catalog is not None, "catalog_schema": 1,
                 "catalog_revision": catalog.status()["revision"] if catalog else None,
+                **({"plain_lyrics": True, "plain_lyrics_version": 1,
+                    "plain_lyrics_max_text_bytes": 65536} if catalog is not None else {}),
                 "profile_sync": True, "remote_hosting": True, "connected_recommendations": True, "connected_tuning": True,
                 "offline_recommendations": False, "native_speech_generation": False,
                 "local_music_required": True}
@@ -536,6 +556,24 @@ def create_mobile_gateway(store, identity, pairing, *, catalog=None, monotonic=t
                 raise HTTPException(400, "Invalid prepared vector batch") from None
             except OSError:
                 raise HTTPException(503, "Prepared vector batch unavailable") from None
+
+        @app.get(PREFIX + "/lyrics")
+        def prepared_lyrics(request: Request):
+            query = request.scope["lyrics_query"]
+            try:
+                payload = catalog.lyrics(**query)
+                data = canonical_json(payload)
+                if len(data) > MOBILE_LYRICS_MAX_RESPONSE_BYTES:
+                    raise OSError("Prepared lyrics response unavailable")
+                return Response(data, media_type="application/json")
+            except KeyError as exc:
+                if type(exc).__name__ == "LyricsNotPrepared":
+                    raise HTTPException(404, "lyrics_not_prepared") from None
+                raise HTTPException(404, "Prepared lyric song or revision not found") from None
+            except ValueError:
+                raise HTTPException(409, "Prepared manifest hash mismatch") from None
+            except OSError:
+                raise HTTPException(503, "Prepared lyrics unavailable") from None
 
         @app.api_route(PREFIX + "/vectors/{digest}", methods=["GET", "HEAD"])
         def prepared_vector(digest: str, request: Request):

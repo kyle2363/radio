@@ -12,6 +12,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import re
 import threading
 import time
 
@@ -25,6 +26,9 @@ MOBILE_MAX_VECTOR_TOTAL = 256 * 1024 * 1024
 # Decimal bytes: deliberately well below the future 100 MB transfer ceiling.
 MOBILE_BATCH_BYTES = 8_000_000
 MOBILE_BATCH_COUNT = 64
+MOBILE_LYRICS_MAX_TEXT_BYTES = 65536
+MOBILE_LYRICS_MAX_RESPONSE_BYTES = 512 * 1024
+MOBILE_LYRICS_SIDECAR = "lyrics"
 logger = logging.getLogger(__name__)
 
 
@@ -274,3 +278,67 @@ class PreparedCatalog:
                         raise ValueError("Invalid prepared vector")
                     return data
             raise KeyError("Prepared vector not found")
+
+    def lyrics(self, revision, manifest_sha256, song_id):
+        """Read only the immutable lyric snapshot bound to this full manifest."""
+        with self._lock:
+            catalog = self._catalog(revision)
+            if manifest_sha256 != catalog.manifest["manifest_sha256"]:
+                raise ValueError("Lyrics request must name its exact immutable manifest")
+            song_id = str(song_id)
+            if song_id not in catalog.songs:
+                raise KeyError("Portable song not found")
+            path = self._service.root / str(revision) / MOBILE_LYRICS_SIDECAR
+            index_path = path / "index.json"
+            if path.is_symlink() or index_path.is_symlink() or not index_path.is_file():
+                raise LyricsNotPrepared()
+            if index_path.stat().st_size > 16 * 1024 * 1024:
+                raise OSError("Prepared lyrics snapshot unavailable")
+            try:
+                snapshot = json.loads(index_path.read_bytes())
+                if not isinstance(snapshot, dict) or not isinstance(snapshot.get("songs"), dict):
+                    raise ValueError()
+            except (ValueError, UnicodeError, OSError) as exc:
+                raise OSError("Prepared lyrics snapshot unavailable") from exc
+            expected = {"schema": "radio.portable.lyrics-sidecar", "version": 1,
+                        "catalog_id": catalog.manifest["catalog_id"], "revision": revision,
+                        "manifest_sha256": catalog.manifest["manifest_sha256"]}
+            if any(snapshot.get(key) != value for key, value in expected.items()):
+                raise LyricsNotPrepared()
+            entry = snapshot["songs"].get(song_id)
+            envelope = {"schema": "radio.portable.lyrics", "version": 1,
+                        "catalog_id": expected["catalog_id"], "revision": revision,
+                        "manifest_sha256": expected["manifest_sha256"], "song_id": song_id}
+            if not isinstance(entry, dict):
+                return {**envelope, "status": "unavailable", "reason": "missing",
+                        "text": None, "text_sha256": None}
+            if entry.get("status") == "too_large":
+                return {**envelope, "status": "unavailable", "reason": "too_large",
+                        "text": None, "text_sha256": None}
+            if entry.get("status") == "missing":
+                return {**envelope, "status": "unavailable", "reason": "missing",
+                        "text": None, "text_sha256": None}
+            filename = entry.get("file")
+            if entry.get("status") != "available" or not isinstance(filename, str) or not re.fullmatch(r"[0-9a-f]{64}\.json", filename):
+                raise OSError("Prepared lyrics snapshot unavailable")
+            resource_path = path / filename
+            if resource_path.is_symlink() or not resource_path.is_file() or resource_path.stat().st_size > MOBILE_LYRICS_MAX_RESPONSE_BYTES:
+                raise OSError("Prepared lyrics snapshot unavailable")
+            try:
+                resource = json.loads(resource_path.read_bytes())
+            except (ValueError, UnicodeError, OSError) as exc:
+                raise OSError("Prepared lyrics snapshot unavailable") from exc
+            if not isinstance(resource, dict) or resource.get("song_id") != song_id or not isinstance(resource.get("text"), str):
+                raise OSError("Prepared lyrics snapshot unavailable")
+            text = resource["text"]
+            encoded = text.encode("utf-8")
+            if len(encoded) > MOBILE_LYRICS_MAX_TEXT_BYTES:
+                raise OSError("Prepared lyrics snapshot unavailable")
+            digest = sha256(encoded)
+            if resource.get("text_sha256") != digest:
+                raise OSError("Prepared lyrics snapshot unavailable")
+            return {**envelope, "status": "available", "text": text, "text_sha256": digest}
+
+
+class LyricsNotPrepared(KeyError):
+    """The immutable catalog revision predates prepared lyrics publication."""

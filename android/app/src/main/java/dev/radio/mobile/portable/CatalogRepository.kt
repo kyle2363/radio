@@ -138,6 +138,7 @@ class CatalogRepository internal constructor(private val db: LibraryDatabase, pr
                 beforeActivate()
                 currentCoroutineContext().ensureActive()
                 db.catalogs().activate(PortableCatalogActive(session.serverId, next.catalogId, next.revision, next.sha256))
+                db.lyrics().deleteObsolete(session.serverId, next.catalogId, next.revision, next.sha256)
                 db.catalogs().deleteInactiveSongs()
                 db.catalogs().deleteInactiveVectors()
                 db.catalogs().deleteInactiveRevisions()

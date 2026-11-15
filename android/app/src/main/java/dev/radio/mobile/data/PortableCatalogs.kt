@@ -1,6 +1,10 @@
 package dev.radio.mobile.data
 
 import androidx.room.*
+import java.security.MessageDigest
+import dev.radio.mobile.connection.ConnectionFailure
+import dev.radio.mobile.portable.CatalogJson
+import dev.radio.mobile.portable.CatalogException
 
 /** Metadata is intentionally separate from local songs, playlists and playback. */
 @Entity(tableName = "portable_catalog_revisions", primaryKeys = ["serverId", "manifestSha256"])
@@ -36,4 +40,51 @@ interface PortableCatalogDao {
     @Insert(onConflict = OnConflictStrategy.IGNORE) suspend fun saveSongs(songs: List<PortableCatalogSong>)
     @Insert(onConflict = OnConflictStrategy.IGNORE) suspend fun saveVectors(vectors: List<PortableCatalogVector>)
     @Upsert suspend fun activate(active: PortableCatalogActive)
+}
+
+sealed interface LyricsEnvelope {
+    data class Available(val text: String, val textSha256: String) : LyricsEnvelope
+    data class Unavailable(val reason: String) : LyricsEnvelope
+}
+
+/** Strict client-side envelope and text integrity validation for the optional lyrics route. */
+object LyricsEnvelopeValidator {
+    const val MAX_TEXT_BYTES = 65_536
+    private val sha256 = Regex("[0-9a-f]{64}")
+
+    fun parse(body: String, catalogId: String, revision: Long, manifestSha256: String, songId: String): LyricsEnvelope {
+        try {
+            if (body.toByteArray(Charsets.UTF_8).size > 512 * 1024) fail()
+            val obj = CatalogJson.parseStrict(body.toByteArray(Charsets.UTF_8)).obj()
+            fun text(key: String, max: Int = 4096) = obj[key].text(max)
+            if (text("schema") != "radio.portable.lyrics" || obj["version"].integer() != 1L ||
+                text("catalog_id", 256) != catalogId || obj["revision"].integer() != revision ||
+                text("manifest_sha256", 64) != manifestSha256 || text("song_id", 256) != songId)
+                fail()
+            return when (text("status", 32)) {
+                "available" -> {
+                    if (obj.fields.keys != setOf("schema", "version", "catalog_id", "revision", "manifest_sha256", "song_id", "status", "text", "text_sha256")) fail()
+                    val lyrics = (obj["text"] as? CatalogJson.Str)?.value ?: fail()
+                    val bytes = lyrics.toByteArray(Charsets.UTF_8)
+                    if (bytes.isEmpty() || bytes.size > MAX_TEXT_BYTES || lyrics != lyrics.replace("\r\n", "\n").replace('\r', '\n').trim()) fail()
+                    val digest = text("text_sha256", 64)
+                    if (!sha256.matches(digest) || sha256(bytes) != digest) fail()
+                    LyricsEnvelope.Available(lyrics, digest)
+                }
+                "unavailable" -> {
+                    if (obj.fields.keys != setOf("schema", "version", "catalog_id", "revision", "manifest_sha256", "song_id", "status", "reason", "text", "text_sha256") ||
+                        obj["text"] !== CatalogJson.Null || obj["text_sha256"] !== CatalogJson.Null) fail()
+                    val reason = text("reason", 32)
+                    if (reason !in setOf("missing", "too_large")) fail()
+                    LyricsEnvelope.Unavailable(reason)
+                }
+                else -> fail()
+            }
+        } catch (failure: ConnectionFailure) { throw failure }
+        catch (_: CatalogException) { throw ConnectionFailure("The desktop returned invalid lyrics data. Retry the request.") }
+        catch (_: Exception) { throw ConnectionFailure("The desktop returned invalid lyrics data. Retry the request.") }
+    }
+
+    private fun sha256(bytes: ByteArray) = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+    private fun fail(): Nothing = throw ConnectionFailure("The desktop returned invalid lyrics data. Retry the request.")
 }

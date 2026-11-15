@@ -15,6 +15,17 @@ from portable.catalog import canonical_json, read_catalog, write_catalog
 from portable_identity import ContentIdentityCache
 
 logger = logging.getLogger(__name__)
+LYRICS_SIDECAR = "lyrics"
+LYRICS_MAX_TEXT_BYTES = 65536
+
+
+def _normalize_lyrics(value):
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        value = str(value)
+    value = value.replace("\r\n", "\n").replace("\r", "\n").strip()
+    return value or None
 
 
 def _tags(value):
@@ -56,8 +67,10 @@ class ServerCatalog:
             skipped += not bool(digest)
             progress(completed, len(paths), hashed, skipped)
 
-    def source(self):
+    def source(self, *, with_lyrics=False):
+        """Read catalog rows and their optional lyrics from one SQLite snapshot."""
         with database.get_connection_cm() as conn:
+            conn.execute("BEGIN")
             rows = [dict(row) for row in conn.execute("SELECT * FROM songs ORDER BY id")]
             memberships = {}
             for row in conn.execute("SELECT cs.song_id,c.name FROM collection_songs cs JOIN collections c ON c.id=cs.collection_id ORDER BY c.name"):
@@ -82,6 +95,8 @@ class ServerCatalog:
             # The existing helper constructs PersistentClient and may create a
             # database. Never open it when no existing database is present.
             if not (Path(config.CHROMA_PATH) / "chroma.sqlite3").is_file():
+                if with_lyrics:
+                    return songs, [], {str(row["id"]): _normalize_lyrics(row.get("lyrics")) for row in rows}
                 return songs, []
             from db.chroma import get_chroma_client
             factory = get_chroma_client
@@ -123,22 +138,28 @@ class ServerCatalog:
                                        "metric": metric, "normalization": meta.get("embedding_normalization", "unknown")})
             if collection.count() != count_before:
                 raise RuntimeError("Embedding collection changed during export; retry after ingestion settles")
+        if with_lyrics:
+            lyrics = {str(row["id"]): _normalize_lyrics(row.get("lyrics")) for row in rows}
+            return songs, embeddings, lyrics
         return songs, embeddings
 
     def snapshot(self):
         """Produce/reuse a complete immutable revision outside playback locks."""
         with self._lock:
-            songs, embeddings = self.source()
+            songs, embeddings, lyrics = self.source(with_lyrics=True)
             # Manifest hash is based on source values, including actual float32
             # bytes; provider configuration never substitutes for provenance.
             import numpy as np
             fingerprints = [{**entry, "vector": hashlib.sha256(np.asarray(entry["vector"], dtype="<f4").tobytes()).hexdigest()}
                             for entry in embeddings]
-            digest = hashlib.sha256(canonical_json({"songs": songs, "vectors": sorted(fingerprints, key=lambda row: (row["song_id"], row["space"]))})).hexdigest()
+            digest = hashlib.sha256(canonical_json({"songs": songs, "vectors": sorted(fingerprints, key=lambda row: (row["song_id"], row["space"])),
+                                                   "lyrics": lyrics})).hexdigest()
             with database.get_connection_cm() as conn:
                 meta = dict(conn.execute("SELECT key,value FROM portable_meta"))
             revision = int(meta.get("catalog_revision", 0))
-            if digest == meta.get("catalog_digest") and (self.root / str(revision) / "manifest.json").is_file():
+            existing = self.root / str(revision)
+            if (digest == meta.get("catalog_digest") and (existing / "manifest.json").is_file()
+                    and (existing / "lyrics" / "index.json").is_file()):
                 return read_catalog(self.root / str(revision))
             self.root.mkdir(parents=True, exist_ok=True)
             # Recover a crash after publication but before metadata commit by
@@ -146,6 +167,8 @@ class ServerCatalog:
             revision = max([revision, *[int(path.name) for path in self.root.iterdir() if path.is_dir() and path.name.isdecimal()]]) + 1
             staging = self.root / (".build-" + uuid4().hex)
             write_catalog(staging, songs, embeddings, catalog_id=self.store.catalog_id, revision=revision)
+            self._write_lyrics(staging / LYRICS_SIDECAR, self.store.catalog_id,
+                               revision, read_catalog(staging).manifest["manifest_sha256"], lyrics)
             pool = self.root / "blobs"
             pool.mkdir(exist_ok=True)
             for blob in (staging / "vectors").iterdir():
@@ -174,6 +197,34 @@ class ServerCatalog:
                 conn.executemany("INSERT OR REPLACE INTO portable_meta VALUES (?,?)",
                                  [("catalog_revision", str(revision)), ("catalog_digest", digest)])
             return read_catalog(self.root / str(revision))
+
+    @staticmethod
+    def _write_lyrics(path, catalog_id, revision, manifest_sha256, lyrics):
+        path.mkdir()
+        entries = {}
+        for song_id, text in lyrics.items():
+            if text is None:
+                entries[song_id] = {"status": "missing"}
+                continue
+            encoded = text.encode("utf-8")
+            if len(encoded) > LYRICS_MAX_TEXT_BYTES:
+                entries[song_id] = {"status": "too_large"}
+                continue
+            filename = hashlib.sha256(song_id.encode("utf-8")).hexdigest() + ".json"
+            resource = {"song_id": song_id, "text": text,
+                        "text_sha256": hashlib.sha256(encoded).hexdigest()}
+            with (path / filename).open("wb") as stream:
+                stream.write(canonical_json(resource))
+                stream.flush()
+                os.fsync(stream.fileno())
+            entries[song_id] = {"status": "available", "file": filename}
+        payload = {"schema": "radio.portable.lyrics-sidecar", "version": 1,
+                   "catalog_id": catalog_id, "revision": revision,
+                   "manifest_sha256": manifest_sha256, "songs": entries}
+        with (path / "index.json").open("wb") as stream:
+            stream.write(canonical_json(payload))
+            stream.flush()
+            os.fsync(stream.fileno())
 
     def manifest(self, revision=None, base_revision=None):
         catalog = self.snapshot() if revision is None else self.load(revision)

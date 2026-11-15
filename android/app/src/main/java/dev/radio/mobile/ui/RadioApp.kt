@@ -25,6 +25,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.key
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -40,13 +41,15 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.radio.mobile.ui.theme.*
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.awaitCancellation
 
 private val destinations = listOf("Radio" to Symbol.Radio, "Library" to Symbol.Library, "Settings" to Symbol.Settings)
 
 @Composable
 fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.current), playback: PlaybackController = rememberPlaybackController(), openPlayerRequest: Int = 0,
-    pairingRepository: dev.radio.mobile.connection.PairingRepository? = null) {
+    pairingRepository: dev.radio.mobile.connection.PairingRepository? = null, lyricsRepositoryOverride: LyricsRepository? = null) {
     val appContext=LocalContext.current.applicationContext
+    val lyricsRepository = remember(appContext, repository.db, lyricsRepositoryOverride) { lyricsRepositoryOverride ?: LyricsRepository.get(appContext, repository.db) }
     val pairing= remember(pairingRepository,appContext) { pairingRepository ?: dev.radio.mobile.connection.EndpointPolicy(dev.radio.mobile.BuildConfig.DEBUG).let { p -> dev.radio.mobile.connection.PairingRepository(dev.radio.mobile.connection.PairedServerStore(appContext,p),dev.radio.mobile.connection.RadioApiClient(p),p) } }
     val discovery= remember(pairing,appContext) { dev.radio.mobile.connection.DiscoveryRepository(appContext,pairing) }
     val lifecycleScope=rememberCoroutineScope()
@@ -62,6 +65,7 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
     fun chooseFolder() { picker.launch(library.root?.uri?.let(Uri::parse) ?: DocumentsContract.buildDocumentUri("com.android.externalstorage.documents", "primary:Music")) }
     val lifecycle = LocalLifecycleOwner.current
     val activity = LocalContext.current.playbackActivity()
+    var appInForeground by remember(lifecycle) { mutableStateOf(lifecycle.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) }
     LaunchedEffect(pairing,discovery) { pairing.load(); discovery.load() }
     DisposableEffect(repository, lifecycle, discovery) {
         val observer = LifecycleEventObserver { _, event ->
@@ -99,6 +103,7 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
     var playerMenu by remember { mutableStateOf(false) }
     var showQueue by rememberSaveable { mutableStateOf(false) }
     var showSkip by rememberSaveable { mutableStateOf(false) }
+    var showLyricsSheet by rememberSaveable { mutableStateOf(false) }
     var showSleep by remember { mutableStateOf(false) }
     var addQueueSongs by remember { mutableStateOf(false) }
     var playlistSongIds by remember { mutableStateOf<List<String>?>(null) }
@@ -162,6 +167,27 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
         if (!library.loading && !library.scanning) playback.reconcileLibrary(library.songs, library.accessLost)
     }
     LaunchedEffect(audio.currentId) { repository.radio.updatePlayback(audio) }
+    LaunchedEffect(showLyricsSheet, song, page, appInForeground) {
+        if (showLyricsSheet && song != null && page == "Now playing" && appInForeground) {
+            try {
+                lyricsRepository.open(song)
+                awaitCancellation()
+            } finally {
+                lyricsRepository.close()
+            }
+        } else lyricsRepository.close()
+    }
+    DisposableEffect(lifecycle) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_STOP -> appInForeground = false
+                Lifecycle.Event.ON_START -> appInForeground = true
+                else -> Unit
+            }
+        }
+        lifecycle.lifecycle.addObserver(observer)
+        onDispose { lifecycle.lifecycle.removeObserver(observer) }
+    }
     val showBack = page == "Server" || page == "Matching" || page == "Search" || page == "Now playing" || (page == "Library" && (folder != null || category == "Playlists" && playlistId != null))
     BackHandler(showBack) { back() }
     RadioTheme(
@@ -188,6 +214,8 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
                     if (page == "Now playing" && song != null) Box {
                         IconButton(onClick = { playerMenu = true }, modifier=Modifier.testTag("player-options")) { RadioIcon(Symbol.More, "Player options") }
                         DropdownMenu(playerMenu,{playerMenu=false}) {
+                            DropdownMenuItem(text={Text("Lyrics")},onClick={playerMenu=false;showLyricsSheet=true},modifier=Modifier.testTag("open-lyrics"))
+                            HorizontalDivider()
                             if(audio.radioActive){
                                 DropdownMenuItem(text={Text("Sleep timer")},onClick={playerMenu=false;showSleep=true},trailingIcon={Text(if(audio.sleepTimer.active)sleepLabel(audio.sleepTimer) else "Off",style=MaterialTheme.typography.labelSmall)})
                                 DropdownMenuItem(text={Text("Replay this song")},onClick={playerMenu=false;playback.replay()},modifier=Modifier.testTag("replay-song"))
@@ -364,6 +392,36 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
                 } }, confirmButton = { TextButton(onClick = { showSkip = false }) { Text("Close") } }
             )
             if (showSleep) SleepTimerDialog(audio.sleepTimer, playback) { showSleep = false }
+            if (showLyricsSheet && page == "Now playing" && song != null) {
+                val lyrics by lyricsRepository.state.collectAsState()
+                val matchesCurrentSong = lyrics.songId == song.id
+                val state = if (!matchesCurrentSong) LyricsSheetState(status = "LOADING", loading = true) else when (lyrics.status.name) {
+                    "READY" -> LyricsSheetState(status = "READY", text = lyrics.text,
+                        source = if (lyrics.fromCache) "Saved on this phone" else "From Desktop",
+                        message = lyrics.message, canRefresh = true)
+                    "CHECKING_MATCH" -> LyricsSheetState(status = "CHECKING_MATCH", loading = true,
+                        message = lyrics.message ?: "Checking this song’s match…")
+                    "UNPAIRED" -> LyricsSheetState(status = "UNPAIRED", message = lyrics.message ?: "Connect to your desktop to get lyrics.", action = "SERVER")
+                    "UNMATCHED" -> LyricsSheetState(status = "UNMATCHED", message = lyrics.message ?: "Match this song to get desktop lyrics.", action = "MATCHING")
+                    "UNSUPPORTED_SERVER" -> LyricsSheetState(status = "UNSUPPORTED_SERVER", message = lyrics.message ?: "Update the desktop app to get lyrics.")
+                    "AUTH_REQUIRED" -> LyricsSheetState(status = "AUTH_REQUIRED", message = lyrics.message ?: "Reconnect to your desktop to get lyrics.", action = "SERVER")
+                    "REVISION_UNAVAILABLE" -> LyricsSheetState(status = "REVISION_UNAVAILABLE", message = lyrics.message ?: "Prepare and import a new desktop catalog to get lyrics.", action = "SERVER")
+                    "LOADING" -> LyricsSheetState(status = "LOADING", loading = true, text = lyrics.text,
+                        source = if (lyrics.fromCache) "Saved on this phone" else null, message = lyrics.message)
+                    "NO_LYRICS" -> LyricsSheetState(status = "NO_LYRICS", message = lyrics.message ?: "No lyrics available for this song.", canRefresh = true)
+                    "ERROR" -> LyricsSheetState(status = "ERROR", text = lyrics.text,
+                        source = if (lyrics.text != null) "Saved on this phone" else null,
+                        message = lyrics.message ?: "Desktop unavailable. Retry to check for lyrics.", canRefresh = true)
+                    else -> LyricsSheetState(status = "LOADING", loading = true)
+                }
+                key(song.id) {
+                    LyricsSheet(song, state,
+                        onRefresh = { lifecycleScope.launch { lyricsRepository.refresh() } },
+                        onDismiss = { showLyricsSheet = false },
+                        onServer = { showLyricsSheet = false; navigate("Server") },
+                        onMatching = { showLyricsSheet = false; navigate("Matching") })
+                }
+            }
             if (addQueueSongs) SongPicker("Add to queue", songs, { addQueueSongs = false }) { chosen -> playback.addToQueue(chosen); addQueueSongs = false }
             playlistSongIds?.let { ids -> PlaylistDestinationDialog(ids, playlists, repository.playlists,
                 onDismiss = { playlistSongIds = null }, onAdded = { playlistSongIds = null; message("Playlist saved") }) }

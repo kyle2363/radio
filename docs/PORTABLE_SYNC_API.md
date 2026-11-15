@@ -44,6 +44,7 @@ All paths below are relative to `/api/portable/v1`.
 | GET `/catalog?revision=N` | catalog:read | Previously published revision |
 | GET `/catalog?revision=N&base_revision=M` | catalog:read | Exact-base incremental manifest |
 | GET/HEAD `/vectors/{sha256}` | catalog:read | Little-endian vector bytes; immutable ETag |
+| GET `/lyrics?revision=R&manifest_sha256=H&song_id=S` | catalog:read | Optional prepared plain lyrics for one exact catalog revision |
 | GET `/events?cursor=N&limit=100` | profile:read | Revision-ordered events; next cursor and has_more |
 | POST `/events` | profile:write | Transactional import and accepted/duplicate event IDs |
 | GET `/profile` | profile:read | Materialized shared mutable preferences |
@@ -65,6 +66,28 @@ valid; a storage error or collection-count change aborts export. SQLite metadata
 and Chroma are separate stores, so export after ingestion finishes. Simultaneous
 same-count vector replacements are not a transactional cross-store snapshot.
 Published packages are nevertheless complete and checksum validated.
+
+## Optional plain lyrics (checkpoint 5)
+
+The mobile gateway advertises `plain_lyrics: true`, `plain_lyrics_version: 1`
+and `plain_lyrics_max_text_bytes: 65536` when supported. Older servers omit these
+fields. The lyric route is gateway-only; desktop `/api/songs` and timing routes
+remain outside the mobile allowlist. It uses the existing device credential and
+does not require profile sync or connected recommendation permissions.
+
+Lyrics come from an immutable sidecar published by explicit desktop catalog
+preparation. A phone read never prepares a catalog, generates text or reads music.
+The ordered query must name the full-manifest hash, revision and song ID. Responses
+are bounded to 512 KiB and plain text to 65,536 UTF-8 bytes. Empty/oversized text
+returns `status: unavailable`; old revisions without a sidecar return HTTP 404
+with `lyrics_not_prepared`. A manifest mismatch returns 409. HTTP caches receive
+`Cache-Control: no-store`; Android manages its own validated private offline cache.
+
+Lyric edits require a new prepared/imported revision. The JSON envelope, validation,
+offline behavior and phone acceptance are specified in
+[ANDROID_LYRICS_PLAN.md](ANDROID_LYRICS_PLAN.md). Schema v1 manifests and vector
+transfers remain compatible. Checkpoint verification status belongs to the Android
+checkpoint log.
 
 ## Event envelope
 

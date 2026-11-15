@@ -46,6 +46,139 @@ def test_vector_batches_are_revision_bound_ordered_and_bounded(tmp_path, monkeyp
         job.batch(manifest["revision"], manifest["manifest_sha256"], digests)
 
 
+def test_prepared_lyrics_are_revision_bound_and_lyrics_only_changes_bump_revision(tmp_path):
+    from db import database
+    job, service = prepared(tmp_path)
+    with database.get_connection_cm() as conn:
+        conn.execute("UPDATE songs SET lyrics=? WHERE id=1", ("  first\r\n\r\nverse  \r",))
+        conn.commit()
+    job.prepare(); finish(job)
+    first = job.manifest()
+    resource = job.lyrics(first["revision"], first["manifest_sha256"], "1")
+    assert resource["status"] == "available"
+    assert resource["text"] == "first\n\nverse"
+    assert resource["text_sha256"] == sha256(b"first\n\nverse")
+    with database.get_connection_cm() as conn:
+        conn.execute("UPDATE songs SET lyrics=? WHERE id=1", ("second",))
+        conn.commit()
+    job.prepare(); finish(job)
+    second = job.manifest()
+    assert second["revision"] == first["revision"] + 1
+    assert second["manifest_sha256"] != first["manifest_sha256"]
+    assert job.lyrics(first["revision"], first["manifest_sha256"], "1")["text"] == "first\n\nverse"
+    assert job.lyrics(second["revision"], second["manifest_sha256"], "1")["text"] == "second"
+    assert job.lyrics(second["revision"], second["manifest_sha256"], "2")["reason"] == "missing"
+    with pytest.raises(ValueError):
+        job.lyrics(first["revision"], "0" * 64, "1")
+    with database.get_connection_cm() as conn:
+        conn.execute("UPDATE songs SET lyrics=? WHERE id=1", ("\\" * 65537,))
+        conn.commit()
+    job.prepare(); finish(job)
+    large = job.manifest()
+    unavailable = job.lyrics(large["revision"], large["manifest_sha256"], "1")
+    assert unavailable["status"] == "unavailable" and unavailable["reason"] == "too_large"
+    # Worst case JSON escaping of control characters stays within 512 KiB.
+    with database.get_connection_cm() as conn:
+        conn.execute("UPDATE songs SET lyrics=? WHERE id=1", ("\x01" * 65536,))
+        conn.commit()
+    job.prepare(); finish(job)
+    escaped = job.manifest()
+    assert len(canonical_json(job.lyrics(escaped["revision"], escaped["manifest_sha256"], "1"))) <= 512 * 1024
+
+
+def test_gateway_prepared_lyrics_exact_contract_and_auth(tmp_path):
+    job, _ = prepared(tmp_path)
+    from db import database
+    with database.get_connection_cm() as conn:
+        conn.execute("UPDATE songs SET lyrics='lyric text' WHERE id=1")
+        conn.commit()
+    job.prepare(); finish(job)
+    store, identity, pairing = setup(tmp_path)
+    app = create_mobile_gateway(store, identity, pairing, catalog=job)
+    app.state.admission.enable(1)
+    manifest = job.manifest()
+    token = store.issue_device("Phone", ["catalog:read"])['token']
+    headers = {"Authorization": "Bearer " + token}
+    prefix = "/api/portable/v1/lyrics?revision={}&manifest_sha256={}&song_id=1".format(
+        manifest["revision"], manifest["manifest_sha256"])
+    response = request(app, "GET", prefix, headers)
+    assert response.status_code == 200
+    assert response.json()["text"] == "lyric text"
+    assert response.headers["cache-control"] == "no-store"
+    assert request(app, "GET", prefix).status_code == 401
+    assert request(app, "GET", prefix, headers, b"unexpected").status_code == 400
+    assert request(app, "GET", prefix, dict(headers, Range="bytes=0-10")).status_code == 400
+    assert request(app, "GET", "/api/songs/1/lyrics", headers).status_code == 404
+    assert request(app, "GET", prefix.replace(manifest["manifest_sha256"], "0" * 64), headers).status_code == 409
+    repeated = prefix + "&song_id=1"
+    assert request(app, "GET", repeated, headers).status_code == 400
+    index_path = job.root / str(manifest["revision"]) / "lyrics" / "index.json"
+    index = json.loads(index_path.read_text(encoding="utf-8"))
+    resource_path = index_path.parent / index["songs"]["1"]["file"]
+    resource_path.write_bytes(b"corrupt")
+    assert request(app, "GET", prefix, headers).status_code == 503
+    # Restore the immutable fixture resource for the following missing-index check.
+    resource_path.write_bytes(canonical_json({"song_id": "1", "text": "lyric text",
+                                             "text_sha256": sha256(b"lyric text")}))
+    caps = request(app, "GET", "/api/portable/v1/capabilities", headers).json()
+    assert (caps["plain_lyrics"], caps["plain_lyrics_version"], caps["plain_lyrics_max_text_bytes"]) == (True, 1, 65536)
+    (job.root / str(manifest["revision"]) / "lyrics" / "index.json").unlink()
+    missing_snapshot = request(app, "GET", prefix, headers)
+    assert missing_snapshot.status_code == 404
+    assert missing_snapshot.json()["detail"] == "lyrics_not_prepared"
+    for query in ("song_id=1&revision=1&manifest_sha256=" + manifest["manifest_sha256"],
+                  "revision=1&manifest_sha256=" + manifest["manifest_sha256"] + "&song_id=1&x=1",
+                  "revision=01&manifest_sha256=" + manifest["manifest_sha256"] + "&song_id=1"):
+        assert request(app, "GET", "/api/portable/v1/lyrics?" + query, headers).status_code == 400
+    assert request(app, "POST", "/api/portable/v1/lyrics?" + prefix.split("?", 1)[1], headers).status_code == 404
+    assert request(app, "GET", prefix, {"Authorization": "Bearer " + store.issue_device("Profile", ["profile:read"])['token']}).status_code == 403
+    store.revoke_device(store.authorize(token)["device_id"])
+    assert request(app, "GET", prefix, headers).status_code == 401
+
+
+def test_lyrics_legacy_sidecar_is_not_borrowed_and_prepare_repairs_it(tmp_path):
+    from mobile_catalog import LyricsNotPrepared
+    job, service = prepared(tmp_path)
+    from db import database
+    with database.get_connection_cm() as conn:
+        conn.execute("UPDATE songs SET lyrics='old revision text' WHERE id=1")
+        conn.commit()
+    job.prepare(); finish(job)
+    old = job.manifest()
+    old_index = service.root / str(old["revision"]) / "lyrics" / "index.json"
+    old_index.unlink()
+    with pytest.raises(LyricsNotPrepared):
+        job.lyrics(old["revision"], old["manifest_sha256"], "1")
+    # Same catalog source digest still requires a new revision after a missing
+    # sidecar, preserving the legacy revision as a read-only prepared snapshot.
+    job.prepare(); finish(job)
+    current = job.manifest()
+    assert current["revision"] == old["revision"] + 1
+    assert job.lyrics(current["revision"], current["manifest_sha256"], "1")["text"] == "old revision text"
+    with pytest.raises(LyricsNotPrepared):
+        job.lyrics(old["revision"], old["manifest_sha256"], "1")
+
+
+def test_failed_lyrics_sidecar_publication_keeps_previous_prepared_resource(tmp_path, monkeypatch):
+    job, service = prepared(tmp_path)
+    from db import database
+    with database.get_connection_cm() as conn:
+        conn.execute("UPDATE songs SET lyrics='published text' WHERE id=1")
+        conn.commit()
+    job.prepare(); finish(job)
+    prior = job.manifest()
+    prior_payload = job.lyrics(prior["revision"], prior["manifest_sha256"], "1")
+    with database.get_connection_cm() as conn:
+        conn.execute("UPDATE songs SET lyrics='unpublished text' WHERE id=1")
+        conn.commit()
+    monkeypatch.setattr(service, "_write_lyrics", lambda *args: (_ for _ in ()).throw(OSError("sidecar write failed")))
+    job.prepare(); finish(job)
+    assert job.status()["state"] == "failed"
+    assert job.status()["revision"] == prior["revision"]
+    assert job.manifest() == prior
+    assert job.lyrics(prior["revision"], prior["manifest_sha256"], "1") == prior_payload
+
+
 def test_gateway_batch_auth_negotiation_and_strict_queries(tmp_path):
     job, _ = prepared(tmp_path)
     job.prepare(); finish(job)
@@ -105,7 +238,7 @@ def test_busy_failure_single_job_and_old_revision_retained(tmp_path):
     first = job.manifest()
     entered, release = threading.Event(), threading.Event()
     original = service.source
-    def blocked():
+    def blocked(**kwargs):
         entered.set()
         release.wait(4)
         raise RuntimeError("C:/private/secret path")
@@ -293,13 +426,13 @@ def test_ingest_epoch_change_and_deadline_reject_publication(tmp_path):
     activity = IngestActivity()
     job.ingest_busy, job.ingest_epoch = activity.busy, activity.epoch
     original = service.source
-    def during_export():
+    def during_export(**kwargs):
         @activity.track
         def mutate():
             assert activity.busy()
         mutate()
         assert not activity.busy()
-        return original()
+        return original(**kwargs)
     service.source = during_export
     job.prepare()
     finish(job)

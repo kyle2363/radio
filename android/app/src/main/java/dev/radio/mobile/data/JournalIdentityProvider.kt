@@ -42,6 +42,8 @@ class JournalIdentityProvider(context: Context, db: LibraryDatabase, scope: Coro
     data class Entry(val song: LocalSong, val serverId: String, val catalogId: String, val revision: Long,
         val songId: String, val provenance: String)
     data class MappingSnapshot(val generation: Long = 0, val entries: Map<String, Entry> = emptyMap(), val loaded:Boolean=false)
+    data class OwnerStatus(val generation: Long = 0, val serverId: String? = null, val paired: Boolean = false,
+        val blocked: Boolean = false, val quarantined: Boolean = false)
     private data class Owner(val serverId: String, val deviceId: String, val anchor: String, val marker: String)
     companion object {
       internal fun captureCurrent(song: LocalSong): JournalIdentity = synchronized(lock) {
@@ -62,6 +64,8 @@ class JournalIdentityProvider(context: Context, db: LibraryDatabase, scope: Coro
         internal fun pairingGeneration(): Long = synchronized(lock) { ownerGeneration }
         private val mutable = MutableStateFlow(MappingSnapshot())
         val mappings = mutable.asStateFlow()
+        private val ownerStatusMutable = MutableStateFlow(OwnerStatus())
+        val ownerStatus = ownerStatusMutable.asStateFlow()
         fun invalidateMappings(): Long = synchronized(lock) {
             val generation = mutable.value.generation + 1
             mutable.value = MappingSnapshot(generation)
@@ -77,6 +81,8 @@ class JournalIdentityProvider(context: Context, db: LibraryDatabase, scope: Coro
                 record.deviceId?.let { Owner(record.bundle.serverId, it, record.identityAnchor, record.installationMarker) }
             }
             if (ownership != next) { ownership = next; invalidateMappings() }
+            ownerStatusMutable.value = OwnerStatus(ownerGeneration, snapshot.record?.bundle?.serverId,
+                paired = next != null, blocked = snapshot.record?.authorizationBlocked == true, quarantined = snapshot.quarantined)
         }
     }
 }

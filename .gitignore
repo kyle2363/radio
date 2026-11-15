@@ -51,6 +51,7 @@ docs/*
 !docs/AUTOMATIC_DISCOVERY.md
 !docs/CONNECTED_RECOMMENDATIONS_PLAN.md
 !docs/CONNECTED_TUNING_PLAN.md
+!docs/ANDROID_LYRICS_PLAN.md
 
 #audio files
 audio_files
