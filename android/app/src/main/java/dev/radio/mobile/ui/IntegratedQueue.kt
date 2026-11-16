@@ -118,11 +118,11 @@ fun PlayerTransport(
         }
         Row(Modifier.fillMaxWidth().padding(vertical = if (compact) 4.dp else 12.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             if(audio.radioActive)Spacer(Modifier.size(48.dp)) else IconToggleButton(audio.shuffled, onCheckedChange = { playback.shuffle(it) }) { RadioIcon(Symbol.Shuffle, "Shuffle") }
-            IconButton(onClick = { playback.previous() }, enabled = audio.canPrevious) { RadioIcon(Symbol.Previous, "Previous song") }
-            FilledIconButton(onClick = { playback.toggle() }, enabled = canRead, modifier = Modifier.size(if (compact) 56.dp else 64.dp)) {
+            FilledTonalIconButton(onClick = { playback.previous() }, enabled = audio.canPrevious, modifier = Modifier.size(52.dp)) { RadioIcon(Symbol.Previous, "Previous song") }
+            FilledIconButton(onClick = { playback.toggle() }, enabled = canRead, modifier = Modifier.size(width = if (compact) 76.dp else 92.dp, height = if (compact) 56.dp else 72.dp), shape = dev.radio.mobile.ui.theme.RadioShapes.Squircle) {
                 RadioIcon(if (audio.playWhenReady) Symbol.Pause else Symbol.Play, if (audio.playWhenReady) "Pause" else "Play", Modifier.size(32.dp))
             }
-            IconButton(onClick = { playback.next() }, enabled = audio.canNext, modifier = Modifier.testTag("player-next")) { RadioIcon(Symbol.Next, "Next song") }
+            FilledTonalIconButton(onClick = { playback.next() }, enabled = audio.canNext, modifier = Modifier.size(52.dp).testTag("player-next")) { RadioIcon(Symbol.Next, "Next song") }
             IconToggleButton(queueVisible, onCheckedChange = { onQueueToggle() }) {
                 RadioIcon(if (queueVisible) Symbol.Music else Symbol.Queue, if (queueVisible) "Show artwork" else "Queue")
             }

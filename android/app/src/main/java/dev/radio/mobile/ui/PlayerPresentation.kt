@@ -44,7 +44,7 @@ internal fun shouldAnimateBackdrop(mode: PlayerBackdrop, playing: Boolean, foreg
 
 /** Purely decorative; the animation value is read only during drawing. No media work. */
 @Composable
-fun PlayerBackground(mode: PlayerBackdrop, playing: Boolean, modifier: Modifier = Modifier) {
+fun PlayerBackground(mode: PlayerBackdrop, playing: Boolean, modifier: Modifier = Modifier, tint: Color? = null) {
     val owner = LocalLifecycleOwner.current
     val resolver = LocalContext.current.contentResolver
     var foreground by remember(owner) { mutableStateOf(owner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) }
@@ -78,8 +78,10 @@ fun PlayerBackground(mode: PlayerBackdrop, playing: Boolean, modifier: Modifier 
         }
     }.clipToBounds().drawWithCache {
         val radius = size.width * 1.15f
-        val first = Brush.radialGradient(listOf(colors.primary.copy(alpha = .22f), Color.Transparent), center = Offset.Zero, radius = radius)
-        val second = Brush.radialGradient(listOf(colors.primary.copy(alpha = .13f), Color.Transparent), center = Offset.Zero, radius = radius * .9f)
+        // A mood tint is a dark tone, so it needs more strength than the palette colour to read as a glow.
+        val glow = tint ?: colors.primary
+        val first = Brush.radialGradient(listOf(glow.copy(alpha = if (tint != null) .85f else .22f), Color.Transparent), center = Offset.Zero, radius = radius)
+        val second = Brush.radialGradient(listOf(glow.copy(alpha = if (tint != null) .55f else .13f), Color.Transparent), center = Offset.Zero, radius = radius * .9f)
         onDrawBehind {
             drawRect(colors.background)
             if (mode != PlayerBackdrop.Off) {

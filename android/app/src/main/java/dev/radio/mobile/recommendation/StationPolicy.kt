@@ -3,14 +3,18 @@ package dev.radio.mobile.recommendation
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
-/** The three named exploration settings on the Radio tab. Any other slider value shows the nearest name plus its %. */
+/**
+ * The four named exploration settings on the Radio tab. Closest is 0%: only the most similar songs.
+ * Any other slider value shows the nearest name plus its %.
+ */
 enum class ExplorationPreset(val label: String, val value: Double) {
-    Familiar("Familiar", .10), Balanced("Balanced", .30), Adventurous("Adventurous", .70);
+    Closest("Closest", 0.0), Familiar("Familiar", .10), Balanced("Balanced", .30), Adventurous("Adventurous", .70);
 
     companion object {
         fun nearest(value: Double): ExplorationPreset {
             if (!value.isFinite()) return Balanced
             return when {
+                value < .05 -> Closest
                 value < .20 -> Familiar
                 value <= .50 -> Balanced
                 else -> Adventurous
