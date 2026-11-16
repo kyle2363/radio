@@ -1,4 +1,7 @@
 """Re-embed and cluster all songs (LLM tags already done)."""
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "backend"))
 from db import database
 from ingest import embedder, clusterer
 

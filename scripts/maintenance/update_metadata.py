@@ -4,7 +4,7 @@ import os
 os.environ["CHROMA_NO_ANALYTICS"] = "1"
 os.environ["CHROMA_TELEMETRY_OFF"] = "1"
 
-sys.path.insert(0, "backend")
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "backend"))
 import chromadb
 import config
 from db import database

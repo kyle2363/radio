@@ -12,7 +12,7 @@ import sys
 import re
 from pathlib import Path
 
-BASE_DIR = Path(__file__).resolve().parent
+BASE_DIR = Path(__file__).resolve().parents[2]
 MUSIC_DIR = BASE_DIR / "audio_files"
 UNDERSTAND_DIR = BASE_DIR / "docs" / "understand_new"
 

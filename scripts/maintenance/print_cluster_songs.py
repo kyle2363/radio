@@ -1,7 +1,8 @@
 import sqlite3, json, sys
+from pathlib import Path
 sys.stdout.reconfigure(encoding='utf-8')
 
-conn = sqlite3.connect(r'C:\Users\kyleh\Desktop\data\projects\radio\data\radio.db')
+conn = sqlite3.connect(str(Path(__file__).resolve().parents[2] / 'data' / 'radio.db'))
 c = conn.cursor()
 
 c.execute('SELECT cluster_id, COUNT(*) FROM songs WHERE cluster_id >= 0 GROUP BY cluster_id')

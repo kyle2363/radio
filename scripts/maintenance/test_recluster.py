@@ -1,4 +1,7 @@
 """Mark 5 songs as embedded and re-cluster."""
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "backend"))
 import posthog
 posthog.capture = lambda *a, **k: None
 posthog.disabled = True

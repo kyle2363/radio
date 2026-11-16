@@ -21,7 +21,7 @@ if sys.platform == 'win32':
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 
-UNDERSTAND_DIR = Path(__file__).parent / "docs" / "understand_new"
+UNDERSTAND_DIR = Path(__file__).resolve().parents[2] / "docs" / "understand_new"
 REQUEST_DELAY = 1.0
 
 

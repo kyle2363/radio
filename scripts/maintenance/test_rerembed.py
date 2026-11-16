@@ -1,4 +1,7 @@
 """Delete 5 songs with no embeddings from ChromaDB, then re-embed them."""
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "backend"))
 import posthog
 posthog.capture = lambda *a, **k: None
 posthog.disabled = True

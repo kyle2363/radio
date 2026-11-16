@@ -31,7 +31,6 @@ Thumbs.db
 *.log
 
 #more
-AGENTS.md
 backend/announcer/voices
 docs/*
 !docs/ARCHITECTURE.md

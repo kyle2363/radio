@@ -1,6 +1,6 @@
 """Test clean_lyrics on various understand files."""
 import json, re, sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "backend"))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "backend"))
 import config
 
 sections = r'(?:Verse|Chorus|Intro|Bridge|Outro|Pre[ -]Chorus|Drop|Instrumental|Post[ -]Chorus|Refrain)'

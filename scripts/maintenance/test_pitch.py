@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from pedalboard import PitchShift, Reverb, Limiter, time_stretch
 from pedalboard._pedalboard import Pedalboard
 from pedalboard.io import AudioFile
@@ -58,7 +60,7 @@ def studio_quality_stretch(
 
 if __name__ == "__main__":
     studio_quality_stretch(
-        input_file="C:\\Users\\kyleh\\Desktop\\data\\projects\\radio\\audio_files\\new14mp3\\skele -  i still care but i know that i shouldn't (lyrics) 「AMV」.mp3",
+        input_file=str(Path(__file__).resolve().parents[2] / "audio_files" / "new14mp3") + "\\skele -  i still care but i know that i shouldn't (lyrics) 「AMV」.mp3",
         output_file="track_slowed_reverb.mp3",
         speed_factor=0.85,
         pitch_drop_semitones=-3.0,

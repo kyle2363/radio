@@ -1,12 +1,11 @@
 """
-batch_scrape_lyrics.py
-======================
-Scrapes lyrics from Genius.com for files with "lyrics": "TODO" in docs/understand_new/.
-Constructs direct Genius URLs instead of searching (Genius search is JS-rendered).
-On failure, leaves lyrics as "TODO" for manual fill.
+batch_fill_genius.py
+====================
+Searches Genius.com for lyrics and fills in JSON files.
+No API key needed - uses web scraping.
 
 Usage:
-    python batch_scrape_lyrics.py [--resume] [--dry-run] [--delay 2]
+    python batch_fill_genius.py [--resume] [--dry-run] [--limit N]
 """
 
 import json
@@ -23,13 +22,8 @@ if sys.platform == 'win32':
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 
-UNDERSTAND_DIR = Path(__file__).parent / "docs" / "understand_new"
-HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-    'Accept-Language': 'en-US,en;q=0.9',
-}
-DEFAULT_DELAY = 1.0
+UNDERSTAND_DIR = Path(__file__).resolve().parents[2] / "docs" / "understand_new"
+REQUEST_DELAY = 1.5
 
 
 def clean_filename(fname):
@@ -70,10 +64,35 @@ def clean_filename(fname):
         r'\s*\(ft\..*?\)',
         r'\s*\(feat\..*?\)',
         r"\s*\(w\u2009\u2009/\s+.*?\)",
+        r'\s*\[NCS\s+Release\]',
+        r'\s*\[NCS10\s+Release\]',
+        r'\s*\[NCS\s+Fanmade\]',
+        r'\s*\[NCS\s+Release\s+Music\s+Video\]',
+        r'\s*\[NCN\s+Release\]',
+        r'\s*\[NCS\s+EP\s+Release\]',
+        r'\s*\[NCS\s+Uplifting\s+Release\]',
+        r'\s*\[Copyright\s+Free\]',
+        r'\s*\[Free\s+Download\]',
+        r'\s*\(edit\)',
+        r'\s*\(Audio\)',
+        r'\s*\(cut\)',
+        r'\s*\(2\)',
+        r'\s*\(Lyric\s+Video\)',
+        r'\s*\(Audio\s+Edit\)',
+        r'\s*\[COPYRIGHTED\]',
+        r'\s*\[Privated\s+NCS\s+Release\]',
+        r'\s*\[Deleted\s+NCS\s+Release\]',
+        r'\s*\[Deleted\s+NCS\s+SoundCloud\s+Promotion\]',
+        r'\s*\[Unreleased\]',
+        r'\s*\[Official\s+Audio\]',
+        r'\s*\[Lyrics\]',
+        r'\s*\(Lyric\s+Video\)',
+        r'\s*\(Official\s+Music\s+Video\)',
     ]
     for s in suffixes:
         name = re.sub(s, '', name, flags=re.IGNORECASE)
     name = re.sub(r'^\s*\[.*?\]\s*', '', name)
+    name = re.sub(r'\[.*?\]', '', name)
     name = re.sub(r'[^\x00-\x7F]+', '', name)
     for sep in [' \u2013 ', ' \u2212 ', ' - ']:
         if sep in name:
@@ -85,43 +104,34 @@ def clean_filename(fname):
     return "", name
 
 
-def make_genius_slug(text):
-    """Convert artist/title to Genius URL slug format."""
-    # Lowercase
-    text = text.lower()
-    # Remove special characters except hyphens and spaces
-    text = re.sub(r'[^\w\s-]', '', text)
-    # Replace spaces with hyphens
-    text = re.sub(r'\s+', '-', text)
-    # Remove multiple hyphens
-    text = re.sub(r'-+', '-', text)
-    # Strip leading/trailing hyphens
-    text = text.strip('-')
-    return text
-
-
-def build_genius_urls(artist, title):
-    """Build multiple Genius URL candidates from artist and title."""
-    artist_slug = make_genius_slug(artist)
-    title_slug = make_genius_slug(title)
-
-    if not artist_slug or not title_slug:
-        return []
-
-    # Primary URL: Artist-title-lyrics
-    urls = [f"https://genius.com/{artist_slug}-{title_slug}-lyrics"]
-
-    # Try without "the" prefix
-    if artist_slug.startswith('the-'):
-        urls.append(f"https://genius.com/{artist_slug[4:]}-{title_slug}-lyrics")
-
-    # Try title only (some songs are listed under title only)
-    urls.append(f"https://genius.com/{title_slug}-lyrics")
-
-    # Try artist-title without "lyrics" suffix (some pages)
-    urls.append(f"https://genius.com/{artist_slug}-{title_slug}")
-
-    return urls
+def search_genius(artist, title):
+    """Search Genius for a song and return lyrics."""
+    try:
+        query = f"{artist} {title}"
+        search_url = f"https://genius.com/api/search/song?q={requests.utils.quote(query)}"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+        resp = requests.get(search_url, headers=headers, timeout=10)
+        if resp.status_code != 200:
+            print(f"    Genius search failed: HTTP {resp.status_code}")
+            return None
+        data = resp.json()
+        songs = data.get("response", {}).get("sections", [])
+        if not songs:
+            return None
+        hits = songs[0].get("hits", [])
+        if not hits:
+            return None
+        song_url = hits[0]["result"].get("url")
+        if not song_url:
+            return None
+        print(f"    Found on Genius: {song_url}")
+        lyrics = scrape_lyrics(song_url, headers)
+        return lyrics
+    except Exception as e:
+        print(f"    Genius search error: {e}")
+        return None
 
 
 LANG_PATTERN = re.compile(
@@ -139,6 +149,7 @@ SECTION_RE = re.compile(
 
 
 def has_non_ascii_mostly(s):
+    """Check if a line has non-ASCII characters (language names in non-Latin scripts)."""
     if not s:
         return False
     stripped = re.sub(r'\s*\([^)]*\)\s*$', '', s)
@@ -146,7 +157,7 @@ def has_non_ascii_mostly(s):
     return non_ascii > 0 and len(stripped) < 40
 
 
-def is_genius_junk_line(s):
+def is_bad_line(s):
     if not s:
         return True
     if re.match(r'^\d+\s*Contributors?\s*$', s, re.IGNORECASE):
@@ -173,11 +184,11 @@ def clean_lyrics(text):
 
     lines = text.split('\n')
 
-    # Phase 1: Strip unambiguous junk lines (contributors, embed, language headers, etc.)
+    # Phase 1: Strip unambiguous junk lines
     filtered = []
     for line in lines:
         stripped = line.strip()
-        if is_genius_junk_line(stripped):
+        if is_bad_line(stripped):
             continue
         filtered.append(line)
 
@@ -219,46 +230,41 @@ def clean_lyrics(text):
     return text.strip()
 
 
-def scrape_lyrics(url):
-    """Scrape lyrics from a Genius song page."""
+def scrape_lyrics(url, headers):
+    """Scrape lyrics from a Genius page."""
     try:
-        resp = requests.get(url, headers=HEADERS, timeout=15, allow_redirects=True)
-        if resp.status_code == 404:
+        resp = requests.get(url, headers=headers, timeout=10)
+        if resp.status_code != 200:
             return None
-        resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, 'lxml')
-
-        # Genius lyrics containers
-        containers = soup.select('div[data-lyrics-container="true"]')
-        if not containers:
-            containers = soup.select('div[class*="Lyrics__Container"]')
-        if not containers:
-            containers = soup.select('div.lyrics')
-
+        soup = BeautifulSoup(resp.text, 'html.parser')
+        containers = soup.find_all("div", {"data-lyrics-container": "true"})
         if not containers:
             return None
 
-        lyrics_parts = []
-        for container in containers:
-            for br in container.find_all('br'):
-                br.replace_with('\n')
-            text = container.get_text(separator='\n')
-            if text.strip():
-                lyrics_parts.append(text.strip())
+        parts = []
+        for c in containers:
+            t = c.get_text("\n").strip()
+            if t:
+                parts.append(t)
+        raw = "\n".join(parts)
 
-        if not lyrics_parts:
-            return None
+        lines = raw.split("\n")
+        cleaned = []
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if is_bad_line(stripped):
+                continue
+            cleaned.append(stripped)
 
-        lyrics = '\n\n'.join(lyrics_parts)
+        lyrics = "\n".join(cleaned)
         lyrics = re.sub(r'\n{3,}', '\n\n', lyrics)
-        lyrics = lyrics.strip()
-        lyrics = re.sub(r'\[.*?\]\(.*?\)', '', lyrics)
         lyrics = clean_lyrics(lyrics)
 
-        if len(lyrics) < 20:
-            return None
-
-        return lyrics
+        if len(lyrics) > 10:
+            return lyrics
+        return None
     except Exception as e:
         print(f"    Scrape error: {e}")
         return None
@@ -286,21 +292,22 @@ def detect_language(lyrics):
 def main():
     resume = '--resume' in sys.argv
     dry_run = '--dry-run' in sys.argv
-
-    delay = DEFAULT_DELAY
-    if '--delay' in sys.argv:
-        idx = sys.argv.index('--delay')
+    limit = None
+    if '--limit' in sys.argv:
+        idx = sys.argv.index('--limit')
         if idx + 1 < len(sys.argv):
             try:
-                delay = float(sys.argv[idx + 1])
+                limit = int(sys.argv[idx + 1])
             except ValueError:
                 pass
 
     json_files = sorted(UNDERSTAND_DIR.glob('*.json'))
     json_files = [f for f in json_files if f.name != 'batch_manifest.json']
+    if limit:
+        json_files = json_files[:limit]
 
     print(f"Found {len(json_files)} JSON file(s) in {UNDERSTAND_DIR}")
-    print(f"Resume: {resume}, Dry run: {dry_run}, Delay: {delay}s")
+    print(f"Resume: {resume}, Dry run: {dry_run}")
     print()
 
     if not json_files:
@@ -311,7 +318,6 @@ def main():
     found = 0
     skipped = 0
     failed = 0
-    not_found = 0
 
     for i, filepath in enumerate(json_files, 1):
         safe_name = filepath.name.encode('utf-8', errors='replace').decode('utf-8')
@@ -327,7 +333,7 @@ def main():
                 continue
 
             entry = data[0]
-            if entry.get('lyrics', 'TODO') != 'TODO':
+            if entry.get('lyrics', 'TODO') not in ('TODO', '', 'lyrics not found'):
                 print(f"  Skipping (already has lyrics)")
                 skipped += 1
                 continue
@@ -339,27 +345,18 @@ def main():
 
             artist, title = clean_filename(filepath.name)
             if not artist or not title:
-                print(f"  Could not parse artist/title, leaving as TODO")
-                not_found += 1
+                print(f"  Could not parse artist/title")
                 continue
 
-            print(f"  Looking up: {artist} - {title}")
-            urls = build_genius_urls(artist, title)
-
-            lyrics = None
-            for url in urls:
-                lyrics = scrape_lyrics(url)
-                if lyrics:
-                    print(f"    Found: {url[:70]}...")
-                    break
-                time.sleep(0.5)  # Small delay between URL attempts
+            print(f"  Searching Genius: {artist} - {title}")
+            lyrics = search_genius(artist, title)
 
             if lyrics:
-                lang = detect_language(lyrics)
                 if dry_run:
-                    print(f"    Would save lyrics ({len(lyrics)} chars, lang={lang})")
+                    print(f"    Would save ({len(lyrics)} chars)")
                 else:
                     entry['lyrics'] = lyrics
+                    lang = detect_language(lyrics)
                     if lang:
                         entry['vocal_language'] = lang
                     with open(filepath, 'w', encoding='utf-8') as f:
@@ -367,19 +364,17 @@ def main():
                     print(f"    Saved lyrics ({len(lyrics)} chars, lang={lang})")
                 found += 1
             else:
-                print(f"    Not found on Genius, leaving as TODO")
-                not_found += 1
+                print(f"    Not found on Genius")
 
         except Exception as e:
-            print(f"  ERROR: {e} (leaving as TODO)")
-            not_found += 1
+            print(f"  ERROR: {e}")
 
         print()
         if i < total:
-            time.sleep(delay)
+            time.sleep(REQUEST_DELAY)
 
     print("=" * 60)
-    print(f"Done! Total: {total} | Found: {found} | Skipped: {skipped} | Not Found: {not_found} | Failed: {failed}")
+    print(f"Done! Total: {total} | Found: {found} | Skipped: {skipped} | Failed: {failed}")
 
 
 if __name__ == '__main__':

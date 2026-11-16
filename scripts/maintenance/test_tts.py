@@ -8,7 +8,7 @@ Tests each layer of the TTS system independently:
   5. Queue pre-generation flow
   6. play_chain integration
 
-Run:  backend/venv/Scripts/python test_tts.py
+Run:  backend/venv/Scripts/python scripts/maintenance/test_tts.py
 """
 
 import os
@@ -19,11 +19,12 @@ import hashlib
 import traceback
 
 # Ensure backend is on sys.path
-BACKEND = os.path.join(os.path.dirname(os.path.abspath(__file__)), "backend")
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+BACKEND = os.path.join(ROOT, "backend")
 if BACKEND not in sys.path:
     sys.path.insert(0, BACKEND)
 
-DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+DATA_DIR = os.path.join(ROOT, "data")
 TTS_CACHE = os.path.join(DATA_DIR, "tts_cache")
 PIPER_VOICE_DIR = os.path.join(DATA_DIR, "piper_voice")
 

@@ -13,7 +13,7 @@ except ImportError:
     pass
 
 import sys
-sys.path.insert(0, "backend")
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "backend"))
 
 from db import database
 from ingest.embedder import embed_song

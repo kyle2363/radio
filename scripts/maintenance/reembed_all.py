@@ -8,7 +8,7 @@ import posthog
 posthog.capture = lambda *a, **k: None
 posthog.disabled = True
 
-sys.path.insert(0, "C:/Users/kyleh/Desktop/data/projects/radio/backend")
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "backend"))
 from db import database
 from ingest import embedder, clusterer, pipeline
 

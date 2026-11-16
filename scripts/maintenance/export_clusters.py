@@ -1,6 +1,7 @@
 import sys, os
 sys.stdout.reconfigure(encoding='utf-8')
-sys.path.insert(0, os.path.dirname(__file__))
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.join(ROOT, "backend"))
 from db import database
 
 conn = database.get_connection()
@@ -34,7 +35,7 @@ for c in clusters:
 
 conn.close()
 
-out_path = os.path.join(os.path.dirname(__file__), "..", "cluster_export.txt")
+out_path = os.path.join(ROOT, "cluster_export.txt")
 with open(out_path, "w", encoding="utf-8") as f:
     f.write("\n".join(lines))
 

@@ -27,7 +27,7 @@ if sys.platform == 'win32':
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 
 # ---------- config ----------
-UNDERSTAND_DIR = Path(__file__).parent / "docs" / "understand"
+UNDERSTAND_DIR = Path(__file__).resolve().parents[2] / "docs" / "understand"
 REQUEST_DELAY = 1.0          # seconds between API calls
 MAX_RETRIES = 2
 

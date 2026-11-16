@@ -1,9 +1,10 @@
 import whisperx
 import gc
+from pathlib import Path
 from whisperx.diarize import DiarizationPipeline
 
 device = "cuda"
-audio_file = "C:\\Users\\kyleh\\Desktop\\data\\projects\\radio\\out.wav"
+audio_file = str(Path(__file__).resolve().parents[2] / "out.wav")
 batch_size = 16 # reduce if low on GPU mem
 compute_type = "float16" # change to "int8" if low on GPU mem (may reduce accuracy)
 
