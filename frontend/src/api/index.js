@@ -141,7 +141,8 @@ export const autoMatchFiles = () => post("/api/library/auto-match");
 export const confirmMatch = (orphanId, filepath) => post("/api/library/confirm-match", { orphan_id: orphanId, filepath });
 export const deleteSong = (id) => del(`/api/songs/${id}`);
 export const addUnregisteredSong = (filepath) => post("/api/library/add-unregistered", { filepath });
-export const deleteAllOrphaned = () => post("/api/library/delete-all-orphaned");
+// The count the user confirmed; the server refuses if the library changed since.
+export const deleteAllOrphaned = (expectedCount) => post(`/api/library/delete-all-orphaned?expected_count=${Number(expectedCount)}`);
 
 // ── Ingest ────────────────────────────────────────────────
 export const fetchIngestStatus = () => get("/api/ingest/status");

@@ -10,6 +10,7 @@ import traceback
 import logging
 import os
 import config
+from collections import deque
 from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -87,11 +88,14 @@ class QueueManager:
         self._skip_streak = 0
         self._archetype = "mood_listener"
         self._recently_recommended_ids = set()
+        # Oldest-first age of the ids above, so the cap evicts the oldest pick.
+        self._recent_order = deque()
         self._max_recent_history = 50
         # Seed from DB so the buffer survives restarts
         try:
             recent_ids = database.get_recent_queue_song_ids(self._max_recent_history)
             self._recently_recommended_ids = set(recent_ids)
+            self._recent_order = deque(reversed(recent_ids))  # the query is newest-first
         except Exception:
             pass
         self._pregen_cache = {}
@@ -277,10 +281,19 @@ class QueueManager:
         return any(held[2] is item for held in self._reservations.values())
 
     def _track_recommended(self, pick):
-        self._recently_recommended_ids.add(pick["song_id"])
-        trim_count = len(self._recently_recommended_ids) - self._max_recent_history
-        if trim_count > 0:
-            self._recently_recommended_ids = set(list(self._recently_recommended_ids)[trim_count:])
+        """Remember a consumed AI pick; beyond the cap, forget the oldest one."""
+        song_id = pick["song_id"]
+        recent = self._recently_recommended_ids
+        # Other code resets or replaces the set directly, so rebuild the age
+        # order from it each time (at most 50 ids). Ids with no recorded age
+        # are treated as the oldest.
+        order = deque(i for i in self._recent_order if i in recent and i != song_id)
+        order.extendleft(recent - set(order) - {song_id})
+        recent.add(song_id)
+        order.append(song_id)
+        while len(order) > self._max_recent_history:
+            recent.discard(order.popleft())
+        self._recent_order = order
 
     def reserve_next(self):
         """Claim the first available talk/manual/AI item without consuming it.
