@@ -60,6 +60,7 @@ interface LibraryDao {
     @Query("SELECT * FROM local_folders WHERE rootUri = :uri") suspend fun folders(uri: String): List<LocalFolder>
     @Query("SELECT * FROM local_songs") suspend fun allSongs(): List<LocalSong>
     @Query("SELECT * FROM local_songs WHERE id = :id LIMIT 1") suspend fun song(id: String): LocalSong?
+    @Query("SELECT id FROM local_songs") suspend fun allSongIds(): List<String>
     @Query("UPDATE local_songs SET available = 0 WHERE rootUri = :uri") suspend fun markSongsMissing(uri: String)
     @Query("UPDATE local_folders SET available = 0 WHERE rootUri = :uri") suspend fun markFoldersMissing(uri: String)
     @Upsert suspend fun saveRoot(root: LibraryRoot)
@@ -152,5 +153,13 @@ val LIBRARY_MIGRATION_9_10 = object : Migration(9, 10) {
         db.execSQL("CREATE INDEX IF NOT EXISTS index_local_lyrics_cache_serverId_catalogId_revision ON local_lyrics_cache (serverId, catalogId, revision)")
     }
 }
-@Database(entities = [LibraryRoot::class, LocalSong::class, LocalFolder::class, LocalPlaybackStart::class, LocalPlaybackSnapshot::class, LocalPlaylist::class, LocalPlaylistSong::class, LocalLoudness::class, PortableCatalogRevision::class, PortableCatalogSong::class, PortableCatalogVector::class, PortableCatalogActive::class, LocalContentHash::class, PortableMatchDecision::class, LocalListeningEvent::class, LocalEventOutbox::class, LocalJournalClock::class, LocalSongFeedback::class, PortableSyncCursor::class, PortableRemoteEvent::class, PortableProfileRegister::class, PortableSyncOwner::class, LocalLyricsCache::class], version = 10, exportSchema = true)
+/** Checkpoint 7A: playlist sync flags and shared order keys; existing playlists stay local. */
+val LIBRARY_MIGRATION_10_11 = object : Migration(10, 11) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE local_playlists ADD COLUMN synced INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("ALTER TABLE local_playlists ADD COLUMN remoteDeleted INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("ALTER TABLE local_playlist_songs ADD COLUMN positionKey TEXT")
+    }
+}
+@Database(entities = [LibraryRoot::class, LocalSong::class, LocalFolder::class, LocalPlaybackStart::class, LocalPlaybackSnapshot::class, LocalPlaylist::class, LocalPlaylistSong::class, LocalLoudness::class, PortableCatalogRevision::class, PortableCatalogSong::class, PortableCatalogVector::class, PortableCatalogActive::class, LocalContentHash::class, PortableMatchDecision::class, LocalListeningEvent::class, LocalEventOutbox::class, LocalJournalClock::class, LocalSongFeedback::class, PortableSyncCursor::class, PortableRemoteEvent::class, PortableProfileRegister::class, PortableSyncOwner::class, LocalLyricsCache::class], version = 11, exportSchema = true)
 abstract class LibraryDatabase : RoomDatabase() { abstract fun library(): LibraryDao; abstract fun playlists(): PlaylistDao; abstract fun loudness(): LoudnessDao; abstract fun catalogs(): PortableCatalogDao; abstract fun matching(): MatchingDao; abstract fun journal(): ListeningJournalDao; abstract fun lyrics(): LyricsCacheDao }

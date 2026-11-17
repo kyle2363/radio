@@ -50,6 +50,7 @@ data class LocalSongFeedback(@PrimaryKey val localId: String, val favorite: Bool
     @Query("SELECT * FROM local_event_outbox WHERE eventId IN (:ids)") suspend fun radioOrigins(ids:List<String>): List<LocalEventOutbox>
     @Query("SELECT o.* FROM local_event_outbox o INNER JOIN local_listening_events e ON e.eventId=o.eventId WHERE o.serverId=:serverId AND e.kind IN ('favorite_changed','dislike_changed','blacklist_changed','energy_changed','preference_changed')") suspend fun profileLocalEvents(serverId:String):List<LocalEventOutbox>
     @Query("SELECT * FROM local_event_outbox WHERE acknowledged=0 ORDER BY rowid") suspend fun pendingOutbox(): List<LocalEventOutbox>
+    @Query("SELECT * FROM local_event_outbox WHERE serverId=:serverId AND payload LIKE '%\"kind\":\"playlist_%' ORDER BY rowid") suspend fun playlistOutbox(serverId:String): List<LocalEventOutbox>
     @Query("SELECT COUNT(*) FROM local_event_outbox WHERE acknowledged=0 AND serverId IS NOT NULL") fun observePendingSyncCount():Flow<Int>
     @Query("SELECT * FROM local_event_outbox") suspend fun outbox(): List<LocalEventOutbox>
     @Query("SELECT value FROM local_journal_clock WHERE `key`=1") suspend fun clock(): Long?

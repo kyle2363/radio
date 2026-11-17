@@ -60,16 +60,36 @@ def ordered_members(members):
 def reposition(desired, current):
     """Assign position keys for ``desired`` member order, keeping ``current`` keys where possible.
 
-    Returns {member_key: position}. Keys stay unchanged while they remain
-    increasing, so a single move emits a single member change.
+    Returns {member_key: position}. The longest increasing run of existing keys
+    is kept (same patience algorithm as Android), so one move emits one change.
     """
+    known = [i for i, member in enumerate(desired) if member in current]
+    tails, parent = [], [-1] * len(known)
+    for slot, index in enumerate(known):
+        key = current[desired[index]]
+        lo, hi = 0, len(tails)
+        while lo < hi:
+            mid = (lo + hi) // 2
+            if current[desired[known[tails[mid]]]] < key:
+                lo = mid + 1
+            else:
+                hi = mid
+        if lo > 0:
+            parent[slot] = tails[lo - 1]
+        if lo == len(tails):
+            tails.append(slot)
+        else:
+            tails[lo] = slot
+    kept, cursor = set(), tails[-1] if tails else -1
+    while cursor >= 0:
+        kept.add(known[cursor])
+        cursor = parent[cursor]
     result, previous = {}, None
     for index, member in enumerate(desired):
-        key = current.get(member)
-        if key is not None and (previous is None or key > previous):
-            result[member] = previous = key
-            continue
-        upper = next((current[m] for m in desired[index + 1:]
-                      if m in current and (previous is None or current[m] > previous)), None)
-        previous = result[member] = key_between(previous, upper)
+        if index in kept:
+            previous = current[member]
+        else:
+            upper = next((current[desired[j]] for j in range(index + 1, len(desired)) if j in kept), None)
+            previous = key_between(previous, upper)
+        result[member] = previous
     return result

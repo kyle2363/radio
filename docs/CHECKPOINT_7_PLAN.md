@@ -42,7 +42,17 @@ Two-way sync between Android `LocalPlaylist`/`LocalPlaylistSong` and desktop
   `PortableProfileStore.share_collection` (UI pending); linked collections are
   rebuilt from registers after import and diffed at capture, so imports never
   echo. A remote delete unlinks and keeps the desktop collection.
-  Remaining: desktop "Sync to phone" toggle, then the Android side.
+  Remaining: desktop "Sync to phone" toggle.
+- **Android (implemented November 17, 2026; not phone-tested).** Room v11 adds
+  `synced`/`remoteDeleted` to playlists and `positionKey` to entries
+  (`LIBRARY_MIGRATION_10_11`). `PlaylistSyncRules` mirrors the server rules and
+  reads the same golden file. Playlist menu: **Sync with desktop** / **Stop
+  syncing** (shown once paired). Edits to a synced playlist queue only the changed
+  members in the profile outbox; **Sync now** merges them with downloaded events
+  and rebuilds synced playlists. Desktop-shared playlists appear under **From your
+  desktop** with **Add**. A playlist deleted elsewhere shows a card to remove it or
+  keep it locally. Older apps reject playlist events, so update the APK before
+  sharing a desktop collection. `connectedDebugAndroidTest` not yet run (no device).
 
 Tests: merge golden parity (Python + JVM), concurrent edit conflicts, unmatched
 members, migration, process loss mid-sync, permission revoked.

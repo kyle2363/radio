@@ -117,7 +117,7 @@ Catalog/matching, local offline Radio, manual profile sync, connected recommenda
 | Desktop audio | python-vlc (media list, gapless chaining) + browser audio engine |
 | Android UI | Kotlin 2.2.10, Jetpack Compose (BOM 2026.02.01), Material 3 |
 | Android audio | Media3 ExoPlayer/Session 1.11.1 |
-| Android storage | Room 2.8.5 (schema v10), SharedPreferences for shell prefs |
+| Android storage | Room 2.8.5 (schema v11), SharedPreferences for shell prefs |
 | Android build | AGP 9.5.0, KSP 2.3.12, minSdk 35, compile/target 37, Java 11 |
 | Audio analysis | librosa + mutagen (library-wide normalization) |
 | LLM chat | Ollama or OpenAI-compatible, auto-fallback |
@@ -137,7 +137,7 @@ radio/
 │   ├── app/src/main/java/dev/radio/mobile/
 │   │   ├── MainActivity.kt   # Entry activity, notification intent
 │   │   ├── connection/       # Pairing, discovery, API client, endpoint and signature policy
-│   │   ├── data/             # Room v10, repositories, journal/sync, lyrics cache, playlists, snapshots
+│   │   ├── data/             # Room v11, repositories, journal/sync, lyrics cache, playlists, snapshots
 │   │   ├── music/            # Scanner, ordering, BS.1770 loudness
 │   │   ├── playback/         # Media3 service, controller, normalization, sleep
 │   │   ├── portable/         # Catalog import/validation, matching, sync policy
@@ -145,7 +145,7 @@ radio/
 │   │   └── ui/               # Compose screens, queue, player, settings, theme
 │   ├── app/src/test/         # JVM unit tests
 │   ├── app/src/androidTest/  # Instrumented tests + fixture providers
-│   └── app/schemas/          # Exported Room schemas v1–v10
+│   └── app/schemas/          # Exported Room schemas v1–v11
 │
 ├── backend/
 │   ├── main.py               # FastAPI entry (~4,800 lines, ~156 routes + 1 WS)
@@ -300,7 +300,7 @@ The manifest includes `INTERNET`, foreground media playback, and wake lock permi
 | Package | Responsibility |
 |---|---|
 | `connection/` | `PairingRepository`, `DiscoveryRepository`, `RadioApiClient`, `PairedServerStore`, `ConnectionSecurity` (endpoint policy, signed descriptors) |
-| `data/` | Room v10, `LibraryRepository`, `ListeningJournalRepository`, `PortableSyncRepository`, `LyricsRepository`, `LoudnessRepository`, `PlaybackSnapshotStore`, `Playlists` |
+| `data/` | Room v11, `LibraryRepository`, `ListeningJournalRepository`, `PortableSyncRepository`, `LyricsRepository`, `LoudnessRepository`, `PlaybackSnapshotStore`, `Playlists` |
 | `portable/` | `CatalogRepository`, `CatalogValidator`, `MatchingRepository`, `ConservativeMatcher`, `PortableSyncPolicy` |
 | `recommendation/` | `OfflineRecommender`, `RadioRepository`, `ConnectedRadioSource`, `ConnectedPolicy`, `ConnectedTuning`, `StationPolicy`, `SharedRadioProfile` |
 | `music/` | `LocalMusicScanner`, `LibraryOrdering`, `LoudnessMeter`, `LocalLoudnessAnalyzer` |
@@ -320,7 +320,7 @@ Migration tests replay every exported schema and assert library, playlists, hist
 - Recursive, read-only scans; same-named recordings keep distinct identities
 - Filename-derived labels until server matching exists
 - Sort: modified (newest default), oldest, first seen, title, filename, duration; remembered per view
-- Explicit migrations `v1→v2→v3→v4→v5→v6→v7→v8→v9→v10`; no destructive fallback
+- Explicit migrations `v1→…→v10→v11`; no destructive fallback
 
 ### Playback service
 
@@ -409,7 +409,7 @@ Single-route groups: `/api/recommend`, `/api/archetype`, `/api/announcement`, `/
 
 `songs` carries filepath, path hash, tags, BPM, energy/valence, cluster, description, lyrics, tag sets, counters, `avg_completion`, `recovery_score`, `ingest_phase`, art, `gain_db`, and DJ-effect eligibility. `settings` seeds 69 keys.
 
-### Android Room (schema v10)
+### Android Room (schema v11)
 
 | Entity | Purpose |
 |---|---|
