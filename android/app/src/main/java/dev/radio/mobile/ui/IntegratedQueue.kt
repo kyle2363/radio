@@ -33,6 +33,9 @@ fun IntegratedQueue(audio: PlaybackState, accessAllowed: Boolean, onSelect: (Str
     val scope = rememberCoroutineScope()
     var editing by remember { mutableStateOf(false) }
     var menu by remember { mutableStateOf(false) }
+    // Long-press a row to drag it; swipe it sideways to remove it. Edit mode keeps one-step buttons for accessibility.
+    val reorder = rememberReorderState(list) { key, index -> playback?.moveInQueue(key as String, index) }
+    val haptic = rememberDragHaptic()
     // Start at the current song when opened, then leave browsing under the user's control.
     // Selecting or advancing a track updates the highlight without moving the viewport.
     Column(modifier) {
@@ -60,8 +63,11 @@ fun IntegratedQueue(audio: PlaybackState, accessAllowed: Boolean, onSelect: (Str
                 val song = byId[id] ?: return@itemsIndexed
                 val current = id == audio.currentId
                 val tint = if (current) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                SwipeToRemove(enabled = playback != null && !editing && !current && reorder.draggingKey == null, onRemove = { playback?.removeFromQueue(id) },
+                    modifier = Modifier.reorderable(reorder, id, enabled = playback != null && !editing, onStart = haptic)) {
                 // The current song sits on a rounded tonal block so it is easy to find in a long queue.
                 Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp).clip(RoundedCornerShape(20.dp))
+                    .background(if (reorder.draggingKey == id) MaterialTheme.colorScheme.surfaceContainerHigh else androidx.compose.ui.graphics.Color.Transparent)
                     .background(if (current) MaterialTheme.colorScheme.surfaceContainerHighest else androidx.compose.ui.graphics.Color.Transparent)
                     .selectable(selected = current, enabled = accessAllowed && song.available, role = Role.Button, onClick = { onSelect(id) })
                     .heightIn(min = 60.dp).padding(horizontal = 12.dp, vertical = 8.dp).testTag("queue-row-$id")
@@ -101,6 +107,7 @@ fun IntegratedQueue(audio: PlaybackState, accessAllowed: Boolean, onSelect: (Str
                         }
                     }
                 }
+                }
             }
         }
     }
@@ -109,17 +116,13 @@ fun IntegratedQueue(audio: PlaybackState, accessAllowed: Boolean, onSelect: (Str
 /** One transport shared by the artwork and integrated queue views. */
 @Composable
 fun PlayerTransport(
-    audio: PlaybackState, playback: PlaybackController, position: Float,
+    audio: PlaybackState, playback: PlaybackController, positionMs: () -> Long,
     onScrub: (Float) -> Unit, onScrubFinished: () -> Unit,
     canRead: Boolean, queueVisible: Boolean, onQueueToggle: () -> Unit,
     modifier: Modifier = Modifier, compact: Boolean = false
 ) {
     Column(modifier.fillMaxWidth().padding(bottom = 12.dp).testTag("player-transport")) {
-        PlayerSeekBar(position, (audio.durationMs ?: 0L) / 1000f, onSeek = onScrub, modifier = Modifier.fillMaxWidth(), enabled = audio.seekable, onSeekFinished = onScrubFinished)
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text(playerTime((position * 1000).toLong()), style = MaterialTheme.typography.labelSmall)
-            Text(audio.durationMs?.let(::playerTime) ?: "--:--", style = MaterialTheme.typography.labelSmall)
-        }
+        PlaybackProgress(positionMs, audio.durationMs, audio.seekable, onScrub, onScrubFinished)
         Row(Modifier.fillMaxWidth().padding(vertical = if (compact) 4.dp else 12.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             if(audio.radioActive)Spacer(Modifier.size(48.dp)) else IconToggleButton(audio.shuffled, onCheckedChange = { playback.shuffle(it) }) { RadioIcon(Symbol.Shuffle, "Shuffle") }
             FilledTonalIconButton(onClick = { playback.previous() }, enabled = audio.canPrevious, modifier = Modifier.size(52.dp)) { RadioIcon(Symbol.Previous, "Previous song") }
@@ -134,4 +137,3 @@ fun PlayerTransport(
     }
 }
 
-private fun playerTime(ms: Long): String = "%d:%02d".format(ms / 60000, (ms / 1000) % 60)

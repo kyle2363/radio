@@ -43,11 +43,18 @@ fun LibraryContent(
     sort: LibrarySort, onSort: (LibrarySort) -> Unit, listState: LazyListState,
     onFolder: (String) -> Unit, onSong: (LocalSong, List<LocalSong>, String) -> Unit,
     choose: () -> Unit, rescan: () -> Unit, cancel: () -> Unit, modifier: Modifier = Modifier,
-    onSongAction: (SongAction, LocalSong) -> Unit = { _, _ -> }, playlistContent: @Composable () -> Unit = {}
+    onSongAction: (SongAction, LocalSong) -> Unit = { _, _ -> }, playlistContent: @Composable () -> Unit = {},
+    /** The library already sorted by [sort], when the caller has it, so it is not sorted twice. */
+    sortedSongs: List<LocalSong>? = null, currentId: String? = null,
+    onPlayAll: (List<LocalSong>, String, Boolean) -> Unit = { _, _, _ -> }
 ) {
-    val ordered = remember(state.songs, sort) { orderSongs(state.songs, sort) }
+    val ordered = sortedSongs ?: remember(state.songs, sort) { orderSongs(state.songs, sort) }
     val parent = folderId ?: state.root?.folderId
     val childFolders = remember(state.folders, state.songs, parent, sort) { orderFolders(state.folders, state.songs, parent, sort) }
+    // Computed once per library/folder change, not on every recomposition of the list.
+    val browsingFolders = folderId != null || category == "Folders"
+    val songCounts = remember(ordered) { ordered.groupingBy { it.folderId }.eachCount() }
+    val visible = remember(ordered, browsingFolders, parent) { if (browsingFolders) ordered.filter { it.folderId == parent } else ordered }
     Column(modifier) {
         LibraryStatus(state, choose, rescan, cancel)
         if (state.root == null && !state.loading && !state.scanning) {
@@ -75,30 +82,48 @@ fun LibraryContent(
                     } }
                 }
             }
+            // Opening a folder, going back or switching category fades the new list in.
+            FadeInOnChange("$folderId/$category") {
             if (folderId == null && category == "Playlists") playlistContent()
             else {
                 LazyColumn(state = listState, modifier = Modifier.fillMaxSize().testTag("library-list")) {
-                    val browsingFolders = folderId != null || category == "Folders"
-                    val songCounts = ordered.groupingBy { it.folderId }.eachCount()
                     if (browsingFolders) items(childFolders, key = { "folder:${it.id}" }) { item ->
                         val count = songCounts[item.id] ?: 0
                         val detail = if (count > 0) "$count song${if (count == 1) "" else "s"}" else if (item.path != item.name) item.path else "Folder"
                         LibraryRow(item.name, if (!item.available) "Folder unavailable · saved listing" else detail, Symbol.Folder) { onFolder(item.id) }
                     }
-                    val visible = if (browsingFolders) ordered.filter { it.folderId == parent } else ordered
                     val source = if (!browsingFolders) "All songs" else state.folders.firstOrNull { it.id == parent }?.name ?: "Music"
-                    items(visible, key = { it.id }) { song -> LibraryRow(song.title, songSubtitle(song), Symbol.Music, trailing = { SongActions(song, onSongAction) }) { onSong(song, visible, source) } }
+                    if (visible.count { it.available } > 1) item(key = "play-all") { PlayAllRow(visible.count { it.available }, { onPlayAll(visible, source, false) }, { onPlayAll(visible, source, true) }) }
+                    // Inside a folder every row shares the folder, so rows show artist and length only.
+                    items(visible, key = { it.id }) { song -> LibraryRow(song.title, songSubtitle(song, showFolder = !browsingFolders), Symbol.Music, playing = song.id == currentId,
+                        trailing = { SongActions(song, onSongAction) }) { onSong(song, visible, source) } }
                     if (visible.isEmpty() && (!browsingFolders || childFolders.isEmpty())) item {
                         Text("No MP3s in this ${if (browsingFolders) "folder" else "library"}. Try another folder or rescan after adding files.", Modifier.padding(20.dp))
                     }
                 }
             }
+            }
         }
     }
 }
 
-fun songSubtitle(song: LocalSong): String = listOfNotNull(
+/** "Artist · Folder · 3:45". Inside a folder the folder is the same on every row, so [showFolder] leaves it out. */
+fun songSubtitle(song: LocalSong, showFolder: Boolean = true): String = listOfNotNull(
     if (!song.available) "Missing file" else null,
-    song.folderPath.ifEmpty { "Root folder" },
+    song.artist.ifBlank { null },
+    if (showFolder || song.artist.isBlank() && song.durationMs == null) song.folderPath.ifEmpty { "Root folder" } else null,
     song.durationMs?.let { "%d:%02d".format(it / 60000, (it / 1000) % 60) }
 ).joinToString(" · ")
+
+/** "Play all" and "Shuffle" above a list of songs. */
+@Composable
+fun PlayAllRow(count: Int, onPlay: () -> Unit, onShuffle: () -> Unit, modifier: Modifier = Modifier) {
+    Row(modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+        FilledTonalButton(onClick = onPlay, modifier = Modifier.weight(1f).heightIn(min = 44.dp).testTag("play-all")) {
+            RadioIcon(Symbol.Play, modifier = Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text("Play all · $count")
+        }
+        OutlinedButton(onClick = onShuffle, modifier = Modifier.weight(1f).heightIn(min = 44.dp).testTag("shuffle-all")) {
+            RadioIcon(Symbol.Shuffle, modifier = Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text("Shuffle")
+        }
+    }
+}

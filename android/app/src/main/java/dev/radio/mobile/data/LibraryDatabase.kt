@@ -48,8 +48,10 @@ data class LocalSong(
     val durationMs: Long?,
     val available: Boolean = true
 ) {
-    @get:Ignore val title: String get() = fileName.replace(Regex("(?i)\\.mp3$"), "")
-    @get:Ignore val artist: String get() = "Local MP3"
+    /** Read from the file name ("Artist - Title.mp3"); parsed once per name. */
+    @get:Ignore val title: String get() = dev.radio.mobile.music.SongNames.of(fileName).title
+    /** Empty when the file name has no artist part. */
+    @get:Ignore val artist: String get() = dev.radio.mobile.music.SongNames.of(fileName).artist
     @get:Ignore val seconds: Int get() = ((durationMs ?: 0L) / 1000).toInt()
 }
 
@@ -70,6 +72,8 @@ interface LibraryDao {
     @Query("SELECT * FROM local_playback_starts ORDER BY occurredAt") suspend fun playbackStarts(): List<LocalPlaybackStart>
     @Query("SELECT * FROM local_playback_starts WHERE attemptId=:attempt LIMIT 1") suspend fun playbackStart(attempt: String): LocalPlaybackStart?
     @Query("SELECT * FROM local_playback_snapshot WHERE `key` = 1") suspend fun playbackSnapshot(): LocalPlaybackSnapshot?
+    /** Row 2 holds only the latest position, so a playing queue isn't rewritten whole every few seconds. */
+    @Query("SELECT * FROM local_playback_snapshot WHERE `key` = 2") suspend fun playbackPosition(): LocalPlaybackSnapshot?
     @Upsert suspend fun savePlaybackSnapshot(snapshot: LocalPlaybackSnapshot)
     @Query("DELETE FROM local_playback_snapshot") suspend fun clearPlaybackSnapshot()
 }

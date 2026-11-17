@@ -60,6 +60,28 @@ class RadioRepository internal constructor(context:Context,private val db:Librar
     private var refreshJob:Job?=null
     private var lastAttempt:String?=null
     private val sessionSeed=kotlin.random.Random.nextInt()
+    @Volatile private var catalogCache:LoadedCatalog?=null
+    private fun loadCatalog(saved:PortableCatalogRevision?,legacyOn:Boolean):LoadedCatalog {
+        saved ?: return LoadedCatalog(null,legacyOn,null,emptyList(),false,emptySet())
+        val legacySongIds=mutableSetOf<String>()
+        val stamps=mutableMapOf<File,Pair<Long,Long>>()
+        return try {
+            val catalog=CatalogValidator.manifest(saved.manifest.toByteArray(Charsets.UTF_8))
+            require(catalog.sha256==saved.manifestSha256 && catalog.catalogId==saved.catalogId && catalog.revision==saved.revision)
+            val vectors=catalog.descriptors.mapNotNull { d->
+                val legacy=CatalogVectorPolicy.isLegacyCollection(d.model,d.modelVersion)
+                val identity=CatalogVectorPolicy.identity(d.model,d.modelVersion,saved.manifestSha256,legacyOn)
+                // Even with compatibility off, validate before advertising recovery.
+                if(identity==null && !legacy)return@mapNotNull null
+                val file=File(directory,d.sha256+".bin");stamps[file]=file.length() to file.lastModified();require(file.length()==d.byteLength.toLong());val bytes=file.readBytes();CatalogValidator.validateBlob(d,bytes)
+                val buffer=ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
+                if(legacy)legacySongIds.add(d.songId)
+                if(identity==null)return@mapNotNull null
+                RadioVector(d.songId,d.space,identity.model,identity.version,FloatArray(d.dimension){if(d.dtype=="float32")buffer.float else CatalogValidator.half(buffer.short.toInt() and 65535)})
+            }
+            LoadedCatalog(saved,legacyOn,catalog,vectors,false,legacySongIds,stamps)
+        } catch(cancelled:CancellationException){throw cancelled} catch(_:Exception){LoadedCatalog(saved,legacyOn,null,emptyList(),true,emptySet(),stamps)}
+    }
     @Volatile private var legacyVectorSnapshot=prefs.getString("legacyVectorSnapshot",null)
     @Volatile private var policyRevision=0L
     @Volatile private var syncRevision=0L
@@ -104,7 +126,10 @@ class RadioRepository internal constructor(context:Context,private val db:Librar
         } }
         scope.launch { while(isActive){delay(1000);if(mutable.value.vibeLocalId!=null && System.currentTimeMillis()>=mutable.value.vibeUntil) clearVibe()} }
     }
-    fun updatePlayback(value:PlaybackState) { val changed=playback.currentId!=value.currentId || playback.queueRevision!=value.queueRevision || playback.playOrder!=value.playOrder;playback=value;if(changed)refresh() }
+    fun updatePlayback(value:PlaybackState) {
+        // Pause, play and seek only bump queueRevision; previews depend on the current song and the queue, so those alone
+        // don't recompute. Batches still carry the revision in their token and are fenced by it.
+        val changed=playback.currentId!=value.currentId || playback.playOrder!=value.playOrder || playback.radioActive!=value.radioActive;playback=value;if(changed)refresh() }
     fun setBootstrap(localIds:Set<String>) {
         val selected=localIds.intersect(mutable.value.bootstrapCandidates).sorted().take(5).toSet()
         mutable.update{it.copy(bootstrapLocalIds=selected,bootstrapDismissed=selected.isEmpty())};refresh()
@@ -248,34 +273,17 @@ class RadioRepository internal constructor(context:Context,private val db:Librar
         mutable.update{it.copy(busy=true,error=null)}
         try {
             val available=local.songs.filter{it.available && it.uri.startsWith("content:")}
-            var record:PortableCatalogRevision?=null;var catalog:ValidatedCatalog?=null;var vectors=emptyList<RadioVector>();var damaged=false
-            val legacySongIds=mutableSetOf<String>()
-            CatalogRepository.storageMutex.withLock {
-                record=db.catalogs().latest()
-                record?.let { saved->
-                    try {
-                        catalog=CatalogValidator.manifest(saved.manifest.toByteArray(Charsets.UTF_8))
-                        require(catalog!!.sha256==saved.manifestSha256 && catalog!!.catalogId==saved.catalogId && catalog!!.revision==saved.revision)
-                        vectors=catalog!!.descriptors.mapNotNull { d->
-                            val legacy=CatalogVectorPolicy.isLegacyCollection(d.model,d.modelVersion)
-                            val identity=CatalogVectorPolicy.identity(d.model,d.modelVersion,saved.manifestSha256,inputs.legacyVectorSnapshot==saved.manifestSha256)
-                            // Even with compatibility off, validate before advertising recovery.
-                            if(identity==null && !legacy)return@mapNotNull null
-                            val file=File(directory,d.sha256+".bin");require(file.length()==d.byteLength.toLong());val bytes=file.readBytes();CatalogValidator.validateBlob(d,bytes)
-                            val buffer=ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
-                            if(legacy)legacySongIds.add(d.songId)
-                            if(identity==null)return@mapNotNull null
-                            RadioVector(d.songId,d.space,identity.model,identity.version,FloatArray(d.dimension){if(d.dtype=="float32")buffer.float else CatalogValidator.half(buffer.short.toInt() and 65535)})
-                        }
-                    } catch(cancelled:CancellationException){throw cancelled} catch(_:Exception){damaged=true;catalog=null;vectors=emptyList();legacySongIds.clear()}
-                }
+            // The imported catalog is immutable per manifest: parse, checksum and decode it once, not on every refresh.
+            val loaded=CatalogRepository.storageMutex.withLock {
+                val latest=db.catalogs().latest()
+                val legacyOn=latest!=null && inputs.legacyVectorSnapshot==latest.manifestSha256
+                catalogCache?.takeIf{it.legacyOn==legacyOn && it.record?.manifestSha256==latest?.manifestSha256 && it.record?.serverId==latest?.serverId && it.record?.importedAt==latest?.importedAt && it.filesUnchanged()} ?: loadCatalog(latest,legacyOn).also{catalogCache=it}
             }
+            val record=loaded.record;val catalog=loaded.catalog;val vectors=loaded.vectors;val damaged=loaded.damaged;val legacySongIds=loaded.legacySongIds
             val accepted=available.mapNotNull { song->mapping.entries[song.id]?.takeIf { it.song==song && it.serverId==record?.serverId && it.catalogId==record?.catalogId && it.revision==record?.revision && it.provenance.contains(record!!.manifestSha256) && catalog?.songs?.containsKey(it.songId)==true }?.let{song.id to it.songId} }.toMap()
             val tracks=available.map { song->
-                val sid=accepted[song.id] ?: "local:${song.id}";val metadata=catalog?.songs?.get(sid)?.let(::JSONObject)
-                fun number(key:String)=metadata?.optDouble(key,.5)?.takeIf{it.isFinite()} ?: .5
-                fun labels(key:String):Set<String> {val a=metadata?.optJSONArray(key) ?: return emptySet();return (0 until a.length()).map{a.optString(it)}.toSet()}
-                RadioTrack(sid,song.id,metadata?.optString("artist")?.takeIf{it.isNotBlank()} ?: song.artist,number("energy"),number("valence"),metadata?.takeIf{!it.isNull("cluster_id")}?.optInt("cluster_id"),song.folderPath,labels("genres")+labels("genre_tags"),labels("collections"))
+                val sid=accepted[song.id] ?: "local:${song.id}";val meta=loaded.metadata(sid)
+                RadioTrack(sid,song.id,meta?.artist ?: song.artist.ifBlank{"Local MP3"},meta?.energy ?: .5,meta?.valence ?: .5,meta?.cluster,song.folderPath,meta?.genres.orEmpty(),meta?.collections.orEmpty())
             }
             val byLocal=tracks.associateBy{it.localId}
             val rows=(db.journal().radioTasteEvents()+db.journal().radioRecentEvents(System.currentTimeMillis()-86400000L)+db.journal().radioLastStarts()).distinctBy{it.eventId}.sortedBy{it.logicalClock}
@@ -338,4 +346,23 @@ class RadioRepository internal constructor(context:Context,private val db:Librar
         } catch(cancelled:CancellationException){mutable.update{it.copy(busy=false)};throw cancelled}
         catch(_:Exception){mutable.update{it.copy(loaded=true,busy=false,error="Couldn't prepare local recommendations. Refresh to retry.")};null}
     }
+}
+
+/** Catalog song fields Radio reads, parsed once per catalog. */
+internal data class CatalogTrackMeta(val artist:String?,val energy:Double,val valence:Double,val cluster:Int?,val genres:Set<String>,val collections:Set<String>)
+
+/** One imported catalog, checked and decoded. Keyed by its revision record and whether legacy vectors are allowed. */
+internal class LoadedCatalog(val record:PortableCatalogRevision?,val legacyOn:Boolean,val catalog:ValidatedCatalog?,val vectors:List<RadioVector>,val damaged:Boolean,val legacySongIds:Set<String>,
+    private val stamps:Map<File,Pair<Long,Long>> = emptyMap()) {
+    /** Vector files are checked whole once; afterwards a changed size or modified time (damage, reimport) reloads them. */
+    fun filesUnchanged()=stamps.all{(file,stamp)->file.length()==stamp.first && file.lastModified()==stamp.second}
+    private val parsed=java.util.concurrent.ConcurrentHashMap<String,java.util.Optional<CatalogTrackMeta>>()
+    fun metadata(songId:String):CatalogTrackMeta? = parsed.getOrPut(songId) {
+        java.util.Optional.ofNullable(catalog?.songs?.get(songId)?.let { raw->
+            val metadata=JSONObject(raw)
+            fun number(key:String)=metadata.optDouble(key,.5).takeIf{it.isFinite()} ?: .5
+            fun labels(key:String):Set<String> {val a=metadata.optJSONArray(key) ?: return emptySet();return (0 until a.length()).map{a.optString(it)}.toSet()}
+            CatalogTrackMeta(metadata.optString("artist").takeIf{it.isNotBlank()},number("energy"),number("valence"),if(metadata.isNull("cluster_id"))null else metadata.optInt("cluster_id"),labels("genres")+labels("genre_tags"),labels("collections"))
+        })
+    }.orElse(null)
 }

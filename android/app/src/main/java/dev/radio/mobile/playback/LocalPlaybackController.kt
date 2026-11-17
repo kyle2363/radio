@@ -56,7 +56,13 @@ class LocalPlaybackController(
     private var cachedOrder = emptyList<String>()
     private var source = ""
     private var radioActive = false
+    private var radioStarting = false
+    /** The service sets this while it builds the first Radio batch, so the UI can show that Radio is tuning in. */
+    internal fun setRadioStarting(value: Boolean) { if (radioStarting != value) { radioStarting = value; publish() } }
     private var queueRevision = 0L
+    private var notice: PlaybackNotice? = null
+    /** A one-off message for the UI, such as a Radio start that could not be completed. */
+    internal fun notify(message: String) { notice = PlaybackNotice((notice?.id ?: 0) + 1, message); publish() }
     internal var onRadioStart: (String?) -> Unit = {}
     internal var onNewMix: () -> Unit = {}
     // Station context (checkpoint 4.2): why each queued song is there and where the station started.
@@ -66,7 +72,7 @@ class LocalPlaybackController(
     private fun clearStation() { origins = emptyMap(); seedLocalId = null; seedTitle = null }
     override fun startRadio(seedLocalId: String?) = onRadioStart(seedLocalId)
     override fun newMix() { if (radioActive) onNewMix() }
-    override fun stopRadio() { radioActive=false;clearStation();queueRevision++;publish(checkpoint=true) }
+    override fun stopRadio() { radioActive=false;radioStarting=false;clearStation();queueRevision++;publish(checkpoint=true) }
     override fun endRadio(stopNow: Boolean) {
         if (stopNow) { queueRevision++; player.pause(); if (queue.isNotEmpty()) source = "Custom queue" }
         stopRadio()
@@ -205,7 +211,7 @@ class LocalPlaybackController(
         val duration = player.duration.takeIf { it != C.TIME_UNSET && it > 0 } ?: current?.durationMs
         mutable.value = PlaybackState(
             queue = queue, playOrder = cachedOrder, source = source, currentId = id, radioActive = radioActive, queueRevision = queueRevision,
-            origins = if (radioActive) origins else emptyMap(), stationSeedTitle = if (radioActive) seedTitle else null,
+            origins = if (radioActive) origins else emptyMap(), stationSeedTitle = if (radioActive) seedTitle else null, radioStarting = radioStarting && !radioActive, notice = notice,
             positionMs = player.currentPosition.coerceAtLeast(0),
             durationMs = duration,
             isPlaying = player.isPlaying, playWhenReady = player.playWhenReady && player.playbackState != Player.STATE_ENDED,
@@ -243,7 +249,7 @@ class LocalPlaybackController(
     internal fun updateNormalization(profile: NormalizationProfile) { normalizationProcessor.profile = profile; publish() }
 
     override fun playFrom(items: List<LocalSong>, selectedId: String, source: String) {
-        radioActive=false;clearStation();queueRevision++
+        radioActive=false;radioStarting=false;clearStation();queueRevision++
         val snapshot = playbackQueue(items, selectedId).filter(::validUri)
         val index = snapshot.indexOfFirst { it.id == selectedId }
         if (accessLost || index < 0) { player.pause(); error = "This file is unavailable. Check folder access and rescan."; publish(); return }
@@ -271,7 +277,7 @@ class LocalPlaybackController(
         if (player.playbackState == Player.STATE_IDLE) player.prepare()
         player.play(); publish(checkpoint = true)
     }
-    private fun metadata(song: LocalSong) = MediaMetadata.Builder().setTitle(song.title).setArtist(song.artist)
+    private fun metadata(song: LocalSong) = MediaMetadata.Builder().setTitle(song.title).setArtist(song.artist.ifBlank { null })
         .setAlbumTitle(song.folderPath.ifEmpty { source }).build()
     override fun pause() { if (!closed) { queueRevision++;player.pause(); publish(checkpoint = true) } }
     override fun seek(positionMs: Long) {
@@ -446,9 +452,10 @@ class LocalPlaybackController(
         val before = state.value.playOrder
         val wasEmpty = player.mediaItemCount == 0
         if (wasEmpty) player.pause()
-        val additions = incoming.filter { nativeIndex(it.id) == null }
+        val present = (0 until player.mediaItemCount).mapTo(HashSet()) { player.getMediaItemAt(it).mediaId }
+        val additions = incoming.filter { it.id !in present }
         val incomingById = incoming.associateBy { it.id }
-        queue = queue.map { incomingById[it.id] ?: it } + additions.filter { added -> queue.none { it.id == added.id } }
+        queue = queue.map { incomingById[it.id] ?: it } + additions.filter { it.id !in queueById }
         queueById = queue.associateBy { it.id }
         if (additions.isNotEmpty()) player.addMediaItems(additions.map(::mediaItem))
         source = if(radioActive)"Radio" else "Custom queue"; error = null
@@ -577,8 +584,9 @@ class LocalPlaybackController(
             finishAttempt("attempt_stopped", "source_uri_changed")
             bookmark?.let { restorePaused(it, queue, accessLost = false) }
         } else {
+            // One pass with a lookup: a 2,000-song queue must not cost millions of timeline reads on the main thread.
             for (index in player.mediaItemCount - 1 downTo 0) {
-                if (queue.none { it.id == player.getMediaItemAt(index).mediaId && it.available }) player.removeMediaItem(index)
+                if (queueById[player.getMediaItemAt(index).mediaId]?.available != true) player.removeMediaItem(index)
             }
         }
         publish(checkpoint = true)

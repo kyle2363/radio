@@ -89,6 +89,39 @@ class RadioShellTest {
         compose.onNodeWithText("March 2026").assertIsDisplayed()
     }
 
+    @Test fun bottomBarJumpTwoTabsAwayLandsOnTheTappedTab() {
+        compose.onNodeWithTag("nav-Radio").performClick()
+        compose.onNodeWithTag("radio-screen").assertIsDisplayed()
+        compose.onNodeWithTag("nav-Settings").performClick()
+        compose.onNodeWithTag("settings-scroll").assertIsDisplayed()
+        compose.onNodeWithTag("nav-Settings").assertIsSelected()
+        compose.onNodeWithTag("nav-Radio").performClick()
+        compose.onNodeWithTag("radio-screen").assertIsDisplayed()
+        compose.onNodeWithTag("nav-Radio").assertIsSelected()
+    }
+
+    @Test fun startingRadioShowsTuningInInsteadOfTheStandardPlayer() {
+        playback.holdRadioStart = true
+        scenario.onActivity { playback.startRadio(null) }
+        compose.onNodeWithText("Tuning in…", substring = true).assertIsDisplayed()
+        compose.onNode(hasText("After Hours") and hasAnyAncestor(hasTestTag("mini-player"))).performClick()
+        compose.onNodeWithTag("radio-tuning-in").assertIsDisplayed()
+        compose.onNodeWithTag("player-repeat").assertDoesNotExist()
+        compose.onNodeWithTag("player-next").assertDoesNotExist()
+        compose.onNodeWithTag("player-options").assertDoesNotExist()
+        // Choosing a library song while Radio is tuning in asks first, the same as on air.
+        compose.onNodeWithContentDescription("Back").performClick()
+        compose.onNodeWithText("Songs").performClick()
+        compose.onNodeWithText("Morning Light").performClick()
+        compose.onNodeWithTag("leave-radio-dialog").assertIsDisplayed()
+        compose.onNodeWithTag("leave-radio-cancel").performClick()
+        assertEquals("sample0", playback.state.value.currentId)
+        scenario.onActivity { playback.finishRadioStart() }
+        compose.onNode(hasText("After Hours") and hasAnyAncestor(hasTestTag("mini-player"))).performClick()
+        compose.waitUntil(3000) { compose.onAllNodesWithTag("radio-now-playing").fetchSemanticsNodes().isNotEmpty() }
+        compose.waitUntil(3000) { compose.onAllNodesWithTag("radio-tuning-in").fetchSemanticsNodes().isEmpty() }
+    }
+
     @Test fun nextButtonsWorkInMiniFullAndMinimalPlayers() {
         compose.onNodeWithTag("mini-next").performClick()
         compose.onNodeWithText("Morning Light").assertIsDisplayed().performClick()

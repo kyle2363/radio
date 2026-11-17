@@ -12,7 +12,11 @@ class FakePlaybackController : PlaybackController {
     var replayCount = 0
     var startRadioCount = 0
     var lastRadioSeed: String? = null
-    override fun startRadio(seedLocalId: String?) { lastRadioSeed = seedLocalId; startRadioCount++; mutable.update { it.copy(radioActive = true) } }
+    /** When true, startRadio only reports a pending start (like the service while it builds the batch) until [finishRadioStart]. */
+    var holdRadioStart = false
+    override fun startRadio(seedLocalId: String?) { lastRadioSeed = seedLocalId; startRadioCount++
+        mutable.update { if (holdRadioStart) it.copy(radioStarting = true) else it.copy(radioActive = true, radioStarting = false) } }
+    fun finishRadioStart() { mutable.update { it.copy(radioActive = true, radioStarting = false, source = "Radio") } }
     override fun stopRadio() { mutable.update { it.copy(radioActive = false) } }
     override fun next(reason: String) { lastSkipReason = reason; next() }
     override fun replay() { replayCount++; seek(0) }

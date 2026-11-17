@@ -3,6 +3,7 @@ package dev.radio.mobile.ui
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -15,7 +16,8 @@ import kotlinx.coroutines.launch
 @Composable
 fun PlaylistBrowser(state: PlaylistsState, repository: PlaylistRepository, catalog: List<LocalSong>, accessAllowed: Boolean,
     selectedId: String?, onSelect: (String?) -> Unit, onPlay: (LocalSong, List<LocalSong>, String) -> Unit,
-    onSongAction: (SongAction, LocalSong) -> Unit, modifier: Modifier = Modifier) {
+    onSongAction: (SongAction, LocalSong) -> Unit, modifier: Modifier = Modifier,
+    currentId: String? = null, onPlayAll: (List<LocalSong>, String, Boolean) -> Unit = { list, source, _ -> list.firstOrNull { it.available }?.let { onPlay(it, list, source) } }) {
     val scope = rememberCoroutineScope()
     var nameDialog by remember { mutableStateOf(false) }
     var deleting by remember { mutableStateOf<LocalPlaylist?>(null) }
@@ -27,6 +29,10 @@ fun PlaylistBrowser(state: PlaylistsState, repository: PlaylistRepository, catal
     val ids = remember(state.entries, selectedId) { selectedId?.let(state::songIds).orEmpty() }
     val songs = remember(ids, catalog) { ids.mapNotNull(byId::get) }
     fun report(result: Result<Unit>) { result.exceptionOrNull()?.let { message = it.message ?: "Couldn't update playlist." } }
+    val listState = rememberLazyListState()
+    // Inside a playlist: long-press a song to drag it, swipe it sideways to remove it.
+    val reorder = rememberReorderState(listState) { key, index -> selected?.let { playlist -> scope.launch { report(repository.move(playlist.id, key as String, index)) } } }
+    val haptic = rememberDragHaptic()
     Column(modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
             if (selected == null) {
@@ -35,7 +41,8 @@ fun PlaylistBrowser(state: PlaylistsState, repository: PlaylistRepository, catal
             } else {
                 Text("${ids.size} songs", Modifier.weight(1f), style = MaterialTheme.typography.labelMedium)
                 TextButton(onClick = { adding = true }, enabled = accessAllowed) { Text("Add songs") }
-                TextButton(onClick = { songs.firstOrNull { it.available }?.let { onPlay(it, songs, selected.name) } }, enabled = accessAllowed && songs.any { it.available }) { Text("Play") }
+                TextButton(onClick = { onPlayAll(songs, selected.name, false) }, enabled = accessAllowed && songs.any { it.available }) { Text("Play") }
+                TextButton(onClick = { onPlayAll(songs, selected.name, true) }, enabled = accessAllowed && songs.count { it.available } > 1, modifier = Modifier.testTag("playlist-shuffle")) { Text("Shuffle") }
                 var menu by remember { mutableStateOf(false) }
                 Box {
                     IconButton(onClick = { menu = true }) { RadioIcon(Symbol.More, "Playlist options") }
@@ -57,7 +64,7 @@ fun PlaylistBrowser(state: PlaylistsState, repository: PlaylistRepository, catal
                 }
             }
         }
-        LazyColumn(Modifier.fillMaxSize().testTag("playlist-list")) {
+        LazyColumn(Modifier.fillMaxSize().testTag("playlist-list"), state = listState) {
             if (selected == null) {
                 itemsIndexed(state.playlists, key = { _, it -> it.id }) { _, playlist ->
                     LibraryRow(playlist.name, "${state.songIds(playlist.id).size} songs" + when {
@@ -90,7 +97,9 @@ fun PlaylistBrowser(state: PlaylistsState, repository: PlaylistRepository, catal
             } else {
                 itemsIndexed(ids, key = { _, it -> it }) { index, id ->
                     val song = byId[id]
-                    LibraryRow(song?.title ?: "Unavailable song", song?.let(::songSubtitle) ?: "Not in the selected Music folder", Symbol.Music, trailing = {
+                    SwipeToRemove(enabled = reorder.draggingKey == null, onRemove = { scope.launch { report(repository.remove(selected.id, id)) } },
+                        modifier = Modifier.reorderable(reorder, id, onStart = haptic)) {
+                    LibraryRow(song?.title ?: "Unavailable song", song?.let(::songSubtitle) ?: "Not in the selected Music folder", Symbol.Music, playing = id == currentId, trailing = {
                         var open by remember { mutableStateOf(false) }
                         Box {
                             IconButton(onClick = { open = true }, modifier = Modifier.testTag("playlist-song-menu-$id")) { RadioIcon(Symbol.More, "Playlist song options") }
@@ -103,6 +112,7 @@ fun PlaylistBrowser(state: PlaylistsState, repository: PlaylistRepository, catal
                             }
                         }
                     }) { if (accessAllowed && song?.available == true) onPlay(song, songs, selected.name) }
+                    }
                 }
                 if (ids.isEmpty()) item { Text("This playlist is empty. Add songs to get started.", Modifier.padding(20.dp)) }
             }

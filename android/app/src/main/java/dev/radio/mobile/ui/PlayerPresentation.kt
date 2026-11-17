@@ -99,6 +99,23 @@ fun PlayerBackground(mode: PlayerBackdrop, playing: Boolean, modifier: Modifier 
     })
 }
 
+/**
+ * Seek bar with elapsed and total time. The live position is read only here, so the 4-per-second position ticks
+ * recompose this row instead of the whole player.
+ */
+@Composable
+fun PlaybackProgress(positionMs: () -> Long, durationMs: Long?, seekable: Boolean, onScrub: (Float) -> Unit, onScrubFinished: () -> Unit,
+    timeColor: Color = Color.Unspecified) {
+    val ms = positionMs()
+    Column {
+        PlayerSeekBar(ms / 1000f, (durationMs ?: 0L) / 1000f, onSeek = onScrub, modifier = Modifier.fillMaxWidth(), enabled = seekable, onSeekFinished = onScrubFinished)
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text(clock(ms), style = MaterialTheme.typography.labelSmall, color = timeColor)
+            Text(durationMs?.let(::clock) ?: "--:--", style = MaterialTheme.typography.labelSmall, color = timeColor)
+        }
+    }
+}
+
 /** Material slider gestures, keyboard and accessibility, with a thin native-player appearance. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
