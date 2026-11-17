@@ -30,9 +30,19 @@ Two-way sync between Android `LocalPlaylist`/`LocalPlaylistSong` and desktop
   playlist event table. Explicit `v10→v11` migration, exported schema, migration
   test with existing playlists. Desktop: additive columns on `collections` /
   `collection_songs` after a verified backup.
-- **Server.** New `/api/portable/v1/playlists` event endpoints behind the
-  existing profile-sync permission; reference merge in
-  `backend/portable/playlists.py` with golden fixtures shared with Android.
+- **Server (done November 17, 2026).** No new endpoints: three event kinds ride
+  the existing `/events` exchange and outbox — `playlist_renamed` (value: name,
+  1–80 chars), `playlist_deleted` (value: bool) and `playlist_member_changed`
+  (`song_id` or `local_id`, value: present bool, `position` key). Each needs a
+  UUID `playlist_id`. Registers are last-writer-wins on (clock, device, event id);
+  `GET /profile` returns `playlists: {id: {name, deleted, members[]}}`.
+  Capabilities advertise `playlist_schema: 1`. Rules and position keys live in
+  `backend/portable/playlists.py`; parity cases in
+  `backend/tests/fixtures/playlist_golden.json`. Desktop collections opt in via
+  `PortableProfileStore.share_collection` (UI pending); linked collections are
+  rebuilt from registers after import and diffed at capture, so imports never
+  echo. A remote delete unlinks and keeps the desktop collection.
+  Remaining: desktop "Sync to phone" toggle, then the Android side.
 
 Tests: merge golden parity (Python + JVM), concurrent edit conflicts, unmatched
 members, migration, process loss mid-sync, permission revoked.

@@ -16,11 +16,19 @@ import time
 from uuid import uuid4
 
 from db import database
+from portable import playlists as playlist_rules
 
 SCOPES = frozenset({"catalog:read", "profile:read", "profile:write", "dj:read", "recommend:read"})
 KINDS = frozenset({"song_started", "song_completed", "song_skipped", "song_replayed",
                    "favorite_changed", "dislike_changed", "blacklist_changed",
-                   "energy_changed", "preference_changed"})
+                   "energy_changed", "preference_changed",
+                   "playlist_renamed", "playlist_deleted", "playlist_member_changed"})
+PLAYLIST_KINDS = frozenset({"playlist_renamed", "playlist_deleted", "playlist_member_changed"})
+# Additive (checkpoint 7A); checked on every start so existing stores upgrade.
+_PLAYLIST_SCHEMA = """
+CREATE TABLE IF NOT EXISTS portable_playlists(playlist_id TEXT PRIMARY KEY,collection_id INTEGER,
+ deleted INTEGER NOT NULL DEFAULT 0);
+"""
 _schema_lock = threading.Lock()
 _SCHEMA = """
 CREATE TABLE portable_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
@@ -57,6 +65,9 @@ class PortableProfileStore:
             return
         with _schema_lock, database.get_connection_cm() as conn:
             if conn.execute("SELECT 1 FROM sqlite_master WHERE name='portable_meta'").fetchone():
+                if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='portable_playlists'").fetchone():
+                    conn.executescript(_PLAYLIST_SCHEMA)
+                    conn.commit()
                 return
             backup_dir = Path(database.DB_PATH).parent / "backups"
             backup_dir.mkdir(exist_ok=True)
@@ -64,7 +75,7 @@ class PortableProfileStore:
                 conn.backup(backup)
                 if backup.execute("PRAGMA quick_check").fetchone()[0] != "ok":
                     raise RuntimeError("Portable migration backup failed verification")
-            conn.executescript("BEGIN IMMEDIATE;" + _SCHEMA)
+            conn.executescript("BEGIN IMMEDIATE;" + _SCHEMA + _PLAYLIST_SCHEMA)
             conn.executemany("INSERT INTO portable_meta VALUES (?,?)",
                              [("catalog_id", str(uuid4())), ("schema_version", "1")])
             conn.commit()
@@ -147,7 +158,8 @@ class PortableProfileStore:
         if not isinstance(event, dict) or event.get("protocol_version") != 1:
             raise ValueError("Unsupported event protocol")
         allowed = {"protocol_version", "event_id", "device_id", "logical_clock", "kind", "song_id",
-                   "attempt_id", "occurred_at", "value", "key", "local_id", "reason", "completion", "catalog_id"}
+                   "attempt_id", "occurred_at", "value", "key", "local_id", "reason", "completion", "catalog_id",
+                   "playlist_id", "position"}
         if set(event) - allowed:
             raise ValueError("Unknown event fields")
         _text(event.get("event_id"), "event id")
@@ -167,7 +179,23 @@ class PortableProfileStore:
             raise ValueError("song_id must be a server row ID or null")
         if song_id is not None and event.get("catalog_id") != catalog_id:
             raise ValueError("Song belongs to a different or unspecified source catalog")
-        if kind != "preference_changed" and song_id is None:
+        if kind in PLAYLIST_KINDS:
+            if not playlist_rules.valid_playlist_id(event.get("playlist_id")):
+                raise ValueError("Invalid playlist id")
+            value = event.get("value")
+            if kind == "playlist_renamed" and not playlist_rules.valid_name(value):
+                raise ValueError("Invalid playlist name")
+            if kind != "playlist_renamed" and type(value) is not bool:
+                raise ValueError("Boolean playlist value required")
+            if (kind == "playlist_member_changed") != ("position" in event):
+                raise ValueError("Position belongs only to playlist members")
+            if kind == "playlist_member_changed" and not playlist_rules.valid_key(event["position"]):
+                raise ValueError("Invalid playlist position")
+            if kind != "playlist_member_changed" and (song_id is not None or "local_id" in event):
+                raise ValueError("Song fields belong only to playlist members")
+        elif "playlist_id" in event or "position" in event:
+            raise ValueError("Playlist fields on a non-playlist event")
+        if kind not in ("preference_changed", "playlist_renamed", "playlist_deleted") and song_id is None:
             _text(event.get("local_id"), "local-only song id")
         if kind.startswith("song_"):
             _text(event.get("attempt_id"), "attempt id")
@@ -258,6 +286,8 @@ class PortableProfileStore:
             if sid and kind == "song_skipped" and event.get("reason"):
                 conn.execute("INSERT INTO skip_feedback(session_id,skip_streak,reason,duration) VALUES (NULL,0,?,NULL)", (event["reason"],))
             return
+        if kind in PLAYLIST_KINDS:
+            return self._project_playlist(conn, event)
         local_key = "local:" + canonical([event["device_id"], event.get("local_id")])
         key = ("preference:" + event["key"] if kind == "preference_changed" else kind + ":" + (sid or local_key))
         order = (event["logical_clock"], event["device_id"], event["event_id"])
@@ -290,6 +320,151 @@ class PortableProfileStore:
                 conn.execute("UPDATE songs SET user_energy=?,user_energy_count=?,user_energy_updated_at=? WHERE id=?",
                              (value, int(value is not None), event["occurred_at"], sid))
 
+    # ---- Playlists (checkpoint 7A) -------------------------------------------------
+    # Registers: playlist_name:<pid>, playlist_deleted:<pid>,
+    # playlist_member:<pid>:<song id | local:<id>> = {"present", "position"}.
+
+    @staticmethod
+    def _playlist_keys(pid):
+        return ("playlist_name:" + pid, "playlist_deleted:" + pid, f"playlist_member:{pid}:%")
+
+    @staticmethod
+    def _playlist_ids(conn):
+        ids = {key.split(":")[1] for (key,) in conn.execute("SELECT key FROM portable_registers WHERE key LIKE 'playlist%'")}
+        return sorted(ids)
+
+    def _project_playlist(self, conn, event):
+        pid, kind = event["playlist_id"], event["kind"]
+        if kind == "playlist_member_changed":
+            sid = event.get("song_id")
+            member = sid if sid is not None else "local:" + event["local_id"]
+            key, value = f"playlist_member:{pid}:{member}", {"present": event["value"], "position": event["position"]}
+        else:
+            key = ("playlist_name:" if kind == "playlist_renamed" else "playlist_deleted:") + pid
+            value = event["value"]
+        order = (event["logical_clock"], event["device_id"], event["event_id"])
+        old = conn.execute("SELECT clock,device_id,event_id FROM portable_registers WHERE key=?", (key,)).fetchone()
+        if old and tuple(old) >= order:
+            return
+        conn.execute("INSERT OR REPLACE INTO portable_registers VALUES (?,?,?,?,?)", (key, *order, canonical(value)))
+        self._materialize(conn, pid)
+
+    def _playlist_state(self, conn, pid):
+        """Winning registers for one playlist: name, deleted flag and ordered present members."""
+        state = {"name": None, "deleted": False, "members": []}
+        prefix = f"playlist_member:{pid}:"
+        for key, value in conn.execute("SELECT key,value FROM portable_registers WHERE key IN (?,?) OR key LIKE ?",
+                                       self._playlist_keys(pid)):
+            value = json.loads(value)
+            if key.startswith("playlist_name:"):
+                state["name"] = value
+            elif key.startswith("playlist_deleted:"):
+                state["deleted"] = value
+            elif value["present"]:
+                state["members"].append({"key": key[len(prefix):], "position": value["position"]})
+        state["members"] = playlist_rules.ordered_members(state["members"])
+        return state
+
+    def _materialize(self, conn, pid):
+        """Rebuild the linked desktop collection from winning registers.
+
+        Desktop edits are captured before each import, so the registers already
+        hold them. A delete unlinks and keeps the desktop collection.
+        """
+        state = self._playlist_state(conn, pid)
+        if state["deleted"]:
+            conn.execute("INSERT OR REPLACE INTO portable_playlists VALUES (?,NULL,1)", (pid,))
+            return
+        link = conn.execute("SELECT collection_id FROM portable_playlists WHERE playlist_id=?", (pid,)).fetchone()
+        cid = link[0] if link else None
+        if cid is not None and not conn.execute("SELECT 1 FROM collections WHERE id=?", (cid,)).fetchone():
+            cid = None
+        if cid is None:
+            if state["name"] is None:
+                return
+            cid = conn.execute("INSERT INTO collections(name) VALUES (?)", (state["name"],)).lastrowid
+        elif state["name"] is not None:
+            conn.execute("UPDATE collections SET name=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND name!=?",
+                         (state["name"], cid, state["name"]))
+        conn.execute("INSERT OR REPLACE INTO portable_playlists VALUES (?,?,0)", (pid, cid))
+        conn.execute("DELETE FROM collection_songs WHERE collection_id=?", (cid,))
+        position = 0
+        for member in state["members"]:
+            if member["key"].isdecimal() and conn.execute("SELECT 1 FROM songs WHERE id=?", (member["key"],)).fetchone():
+                conn.execute("INSERT INTO collection_songs(collection_id,song_id,position) VALUES (?,?,?)",
+                             (cid, int(member["key"]), position))
+                position += 1
+        # The projected collection is the desktop baseline: no echo on next capture.
+        conn.executemany("INSERT OR REPLACE INTO portable_desktop_snapshot VALUES (?,?)",
+                         [(k, canonical(v)) for k, v in self._collection_snapshot(conn, pid, cid).items()])
+
+    def _collection_snapshot(self, conn, pid, cid):
+        """Desktop view of a linked collection as register values, reusing current positions."""
+        state = self._playlist_state(conn, pid)
+        row = conn.execute("SELECT name FROM collections WHERE id=?", (cid,)).fetchone() if cid is not None else None
+        if not row:
+            return {"playlist_deleted:" + pid: True}
+        current = {m["key"]: m["position"] for m in state["members"]}
+        desired = [str(r[0]) for r in conn.execute(
+            "SELECT song_id FROM collection_songs WHERE collection_id=? ORDER BY position,added_at,song_id", (cid,))]
+        positions = playlist_rules.reposition(desired, {k: v for k, v in current.items() if k in desired})
+        name = " ".join(row[0].split())[:playlist_rules.NAME_LIMIT].strip() or "Playlist"
+        snapshot = {"playlist_name:" + pid: name}
+        for member in desired:
+            snapshot[f"playlist_member:{pid}:{member}"] = {"present": True, "position": positions[member]}
+        # Desktop only decides catalog songs; phone-only members are left alone.
+        for member, position in current.items():
+            if member.isdecimal() and member not in positions:
+                snapshot[f"playlist_member:{pid}:{member}"] = {"present": False, "position": position}
+        return snapshot
+
+    def share_collection(self, collection_id):
+        """Opt a desktop collection into playlist sync; idempotent. Returns its playlist id."""
+        with self.transaction() as conn:
+            if not conn.execute("SELECT 1 FROM collections WHERE id=?", (collection_id,)).fetchone():
+                raise ValueError("Collection is missing")
+            row = conn.execute("SELECT playlist_id FROM portable_playlists WHERE collection_id=? AND deleted=0",
+                               (collection_id,)).fetchone()
+            if row:
+                return row[0]
+            pid = str(uuid4())
+            conn.execute("INSERT INTO portable_playlists VALUES (?,?,0)", (pid, collection_id))
+            return pid
+
+    def _capture_playlists(self, conn, clock):
+        catalog_id = None
+        for pid, cid in conn.execute("SELECT playlist_id,collection_id FROM portable_playlists WHERE deleted=0").fetchall():
+            snapshot = self._collection_snapshot(conn, pid, cid)
+            keys = self._playlist_keys(pid)
+            query = "SELECT key,value FROM {} WHERE key IN (?,?) OR key LIKE ?"
+            baseline = dict(conn.execute(query.format("portable_desktop_snapshot"), keys))
+            registers = dict(conn.execute(query.format("portable_registers"), keys))
+            for key, value in sorted(snapshot.items()):
+                encoded = canonical(value)
+                if baseline.get(key) == encoded or registers.get(key) == encoded:
+                    if baseline.get(key) != encoded:
+                        conn.execute("INSERT OR REPLACE INTO portable_desktop_snapshot VALUES (?,?)", (key, encoded))
+                    continue
+                clock += 1
+                kind, _, rest = key.partition(":")
+                event = {"protocol_version": 1, "device_id": "server", "event_id": str(uuid4()),
+                         "logical_clock": clock, "playlist_id": pid, "occurred_at": time.time()}
+                if kind == "playlist_member":
+                    member = rest.split(":", 1)[1]
+                    event.update(kind="playlist_member_changed", value=value["present"], position=value["position"])
+                    catalog_id = catalog_id or conn.execute("SELECT value FROM portable_meta WHERE key='catalog_id'").fetchone()[0]
+                    event.update(song_id=member, catalog_id=catalog_id)
+                else:
+                    event.update(kind="playlist_renamed" if kind == "playlist_name" else "playlist_deleted", value=value)
+                conn.execute("INSERT INTO portable_events(device_id,event_id,clock,payload) VALUES ('server',?,?,?)",
+                             (event["event_id"], clock, canonical(event)))
+                conn.execute("INSERT OR REPLACE INTO portable_registers VALUES (?,?,?,?,?)",
+                             (key, clock, "server", event["event_id"], encoded))
+                conn.execute("INSERT OR REPLACE INTO portable_desktop_snapshot VALUES (?,?)", (key, encoded))
+            if snapshot.get("playlist_deleted:" + pid) is True:
+                conn.execute("UPDATE portable_playlists SET collection_id=NULL,deleted=1 WHERE playlist_id=?", (pid,))
+        return clock
+
     def events(self, cursor=0, limit=100):
         if type(cursor) is not int or cursor < 0 or type(limit) is not int or not 1 <= limit <= 500:
             raise ValueError("Invalid cursor or page size")
@@ -313,7 +488,8 @@ class PortableProfileStore:
         result = {"protocol_version": 1, "favorites": {}, "dislikes": {}, "blacklist": {}, "energy": {}, "preferences": {}}
         mapping = {"favorite_changed": "favorites", "dislike_changed": "dislikes", "blacklist_changed": "blacklist", "energy_changed": "energy", "preference": "preferences"}
         with database.get_connection_cm() as conn:
-            for row in conn.execute("SELECT key,value FROM portable_registers"):
+            result["playlists"] = {pid: self._playlist_state(conn, pid) for pid in self._playlist_ids(conn)}
+            for row in conn.execute("SELECT key,value FROM portable_registers WHERE key NOT LIKE 'playlist%'"):
                 kind, _, sid = row[0].partition(":")
                 result[mapping[kind]][sid] = json.loads(row[1])
         return result
@@ -383,3 +559,4 @@ class PortableProfileStore:
                 conn.execute("INSERT INTO portable_events(device_id,event_id,clock,payload) VALUES ('server',?,?,?)", (event["event_id"], clock, canonical(event)))
                 conn.execute("INSERT OR REPLACE INTO portable_registers VALUES (?,?,?,?,?)", (key, clock, "server", event["event_id"], encoded))
                 conn.execute("INSERT OR REPLACE INTO portable_desktop_snapshot VALUES (?,?)", (key, encoded))
+            self._capture_playlists(conn, clock)
