@@ -337,7 +337,7 @@ Queues snapshot the opened list (folder, all songs, search, playlist). Each shuf
 
 ### Offline volume normalization
 
-Optional, default off. Attenuates toward −18 LUFS; quiet, silent, unknown, or invalid files keep original gain — never boosts. Read-only MediaExtractor/MediaCodec measurement with BS.1770 K-weighting, 400 ms blocks, absolute/relative gating. Cached in Room with a URI/size/modified fingerprint; stale results ignored. Analysis is explicit, foreground-only, and pauses off-screen.
+Optional, default off. Attenuates toward −14 LUFS (Spotify’s reference); quiet, silent, unknown, or invalid files keep original gain — never boosts. Read-only MediaExtractor/MediaCodec measurement with BS.1770 K-weighting, 400 ms blocks, absolute/relative gating. Cached in Room with a URI/size/modified fingerprint; stale results ignored. Analysis is explicit, foreground-only, runs up to 4 decoders in parallel, and pauses off-screen.
 
 ### Sleep timer
 

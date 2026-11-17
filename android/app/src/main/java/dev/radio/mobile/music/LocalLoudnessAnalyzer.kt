@@ -35,6 +35,7 @@ class LocalLoudnessAnalyzer(private val resolver: ContentResolver) {
             val info = MediaCodec.BufferInfo()
             var activityAt = android.os.SystemClock.elapsedRealtime()
             var lastProgress = 0L
+            var shorts = ShortArray(0); var floats = FloatArray(0)
             while (!outputEnded) {
                 currentCoroutineContext().ensureActive()
                 if (android.os.SystemClock.elapsedRealtime() - activityAt > 10000) error("Decoder stalled")
@@ -68,7 +69,14 @@ class LocalLoudnessAnalyzer(private val resolver: ContentResolver) {
                             val measurement = checkNotNull(meter)
                             val bytes = if (encoding == AudioFormat.ENCODING_PCM_FLOAT) 4 else 2
                             check(output.remaining() % bytes == 0)
-                            while (output.hasRemaining()) measurement.sample(if (bytes == 4) output.float.toDouble() else output.short / 32768.0)
+                            val count = output.remaining() / bytes
+                            if (bytes == 4) {
+                                if (floats.size < count) floats = FloatArray(count)
+                                output.asFloatBuffer().get(floats, 0, count); measurement.pcmFloat(floats, 0, count)
+                            } else {
+                                if (shorts.size < count) shorts = ShortArray(count)
+                                output.asShortBuffer().get(shorts, 0, count); measurement.pcm16(shorts, 0, count)
+                            }
                             check(info.presentationTimeUs <= 6L * 60 * 60 * 1000000) { "Audio exceeds the analysis limit" }
                             if (info.presentationTimeUs - lastProgress >= 1000000) { lastProgress = info.presentationTimeUs; progress(lastProgress / 1000) }
                         }

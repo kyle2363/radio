@@ -26,7 +26,9 @@ data class LoudnessAnalysis(val running: Boolean = false, val completed: Int = 0
 data class LoudnessState(val enabled: Boolean = false, val measured: Int = 0, val available: Int = 0,
     val failed: Int = 0, val profile: NormalizationProfile = NormalizationProfile(), val loaded: Boolean = false)
 
-/** Explicit foreground analysis, one read-only decoder at a time. Completed work is cached. */
+private val ANALYSIS_WORKERS = (Runtime.getRuntime().availableProcessors() - 1).coerceIn(1, 4)
+
+/** Explicit foreground analysis with a few parallel read-only decoders. Completed work is cached. */
 class LoudnessRepository(context: Context, private val dao: LoudnessDao, private val scope: CoroutineScope, private val library: StateFlow<LibraryState>) {
     private val resolver = context.applicationContext.contentResolver
     private val prefs = context.applicationContext.getSharedPreferences("radio_audio", Context.MODE_PRIVATE)
@@ -56,33 +58,43 @@ class LoudnessRepository(context: Context, private val dao: LoudnessDao, private
         val scan = catalog.root?.scannedAt ?: 0L
         val candidates = catalog.songs.filter { it.available && (songIds == null || it.id in songIds) }
             .filter { song -> saved[song.id]?.let { it.matches(song, scan) && it.status != "failed" } != true }
-        mutableAnalysis.value = LoudnessAnalysis(running = candidates.isNotEmpty(), total = candidates.size,
+        mutableAnalysis.value = LoudnessAnalysis(running = candidates.isNotEmpty(), total = candidates.size, song = candidates.firstOrNull()?.title ?: "",
             message = if (candidates.isEmpty()) "Available songs are already measured." else null)
         if (candidates.isEmpty()) return
         val launched = scope.launch(Dispatchers.Default) {
-            var completed = 0; var failed = 0
+            val completedCount = java.util.concurrent.atomic.AtomicInteger(); val failedCount = java.util.concurrent.atomic.AtomicInteger()
             try {
                 val analyzer = LocalLoudnessAnalyzer(resolver)
-                for (song in candidates) {
-                    ensureActive()
-                    val current = library.value.songs.firstOrNull { it.id == song.id }
-                    if (library.value.accessLost || current == null || !current.available || current.uri != song.uri || current.modifiedAt != song.modifiedAt || current.byteSize != song.byteSize) continue
-                    mutableAnalysis.value = LoudnessAnalysis(true, completed, candidates.size, song.title, failed = failed)
-                    val record = try {
-                        val result = analyzer.analyze(Uri.parse(song.uri)) { ms -> mutableAnalysis.update { it.copy(positionMs = ms) } }
-                        LocalLoudness(song.id, song.uri, song.modifiedAt, song.byteSize, scan, LOUDNESS_ALGORITHM,
-                            result.integratedLufs, result.samplePeak, if (result.integratedLufs == null) "silent" else "measured", System.currentTimeMillis())
-                    } catch (cancelled: CancellationException) { throw cancelled }
-                    catch (_: Exception) {
-                        failed++
-                        LocalLoudness(song.id, song.uri, song.modifiedAt, song.byteSize, scan, LOUDNESS_ALGORITHM, null, null, "failed", System.currentTimeMillis())
+                val queue = java.util.concurrent.ConcurrentLinkedQueue(candidates)
+                // Independent read-only decoders; each worker measures one song at a time.
+                coroutineScope {
+                    repeat(ANALYSIS_WORKERS.coerceAtMost(candidates.size)) {
+                        launch {
+                            while (true) {
+                                ensureActive()
+                                val song = queue.poll() ?: break
+                                val current = library.value.songs.firstOrNull { it.id == song.id }
+                                if (library.value.accessLost || current == null || !current.available || current.uri != song.uri || current.modifiedAt != song.modifiedAt || current.byteSize != song.byteSize) continue
+                                mutableAnalysis.update { it.copy(song = song.title) }
+                                val record = try {
+                                    val result = analyzer.analyze(Uri.parse(song.uri))
+                                    LocalLoudness(song.id, song.uri, song.modifiedAt, song.byteSize, scan, LOUDNESS_ALGORITHM,
+                                        result.integratedLufs, result.samplePeak, if (result.integratedLufs == null) "silent" else "measured", System.currentTimeMillis())
+                                } catch (cancelled: CancellationException) { throw cancelled }
+                                catch (_: Exception) {
+                                    failedCount.incrementAndGet()
+                                    LocalLoudness(song.id, song.uri, song.modifiedAt, song.byteSize, scan, LOUDNESS_ALGORITHM, null, null, "failed", System.currentTimeMillis())
+                                }
+                                ensureActive()
+                                dao.save(record)
+                                val done = completedCount.incrementAndGet()
+                                mutableAnalysis.update { it.copy(completed = done, failed = failedCount.get()) }
+                                yield()
+                            }
+                        }
                     }
-                    ensureActive()
-                    dao.save(record)
-                    completed++
-                    mutableAnalysis.update { it.copy(completed = completed, failed = failed) }
-                    yield()
                 }
+                val completed = completedCount.get(); val failed = failedCount.get()
                 mutableAnalysis.value = LoudnessAnalysis(completed = completed, total = candidates.size, failed = failed,
                     message = "Analysis complete. $completed checked" + if (failed > 0) " · $failed could not be measured." else ".")
             } catch (cancelled: CancellationException) {
