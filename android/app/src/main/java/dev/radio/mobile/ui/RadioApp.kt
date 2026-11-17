@@ -87,7 +87,7 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
     var appearance by rememberSaveable { mutableStateOf(prefs.getString("appearance", "System") ?: "System") }
     var opening by rememberSaveable { mutableStateOf(prefs.getString("opening", "Last screen") ?: "Last screen") }
     var minimal by rememberSaveable { mutableStateOf(prefs.getBoolean("minimal", false)) }
-    var backdrop by rememberSaveable { mutableStateOf(prefs.getString("backdrop", "Static") ?: "Static") }
+    var backdrop by rememberSaveable { mutableStateOf(prefs.getString("backdrop", "Animated") ?: "Animated") }
     var page by rememberSaveable { mutableStateOf(when (opening) {
         "Last screen" -> prefs.getString("last_screen", "Library") ?: "Library"
         else -> opening
@@ -292,7 +292,7 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
                 } else BoxWithConstraints(Modifier.padding(insets).consumeWindowInsets(insets).fillMaxSize()) {
                     val compact = maxHeight < 520.dp
                     // On air the glow takes the station's mood colour; normal playback keeps the palette colour.
-                    PlayerBackground(PlayerBackdrop.entries.firstOrNull { it.name == backdrop } ?: PlayerBackdrop.Static, audio.isPlaying, Modifier.matchParentSize(),
+                    PlayerBackground(PlayerBackdrop.entries.firstOrNull { it.name == backdrop } ?: PlayerBackdrop.Animated, audio.isPlaying, Modifier.matchParentSize(),
                         tint = if (audio.radioActive) Color(MoodColors.of(radio.mood).field) else null)
                     Column(Modifier.fillMaxSize().navigationBarsPadding()) {
                         if (audio.radioActive && !showQueue) {
@@ -379,7 +379,7 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { PlayerBackdrop.entries.forEach { option ->
                         FilterChip(backdrop == option.name, onClick = { backdrop = option.name; prefs.edit().putString("backdrop", backdrop).apply() }, label = { Text(option.label) })
                     } }
-                    Text("Animated moves while music plays. Motion stops when paused or hidden, and follows the phone’s animation setting.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("Applies to the player and Radio. Moving drifts while music plays; it stops when paused or hidden, and follows the phone’s animation setting.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     SettingsCard {
                     SectionLabel("Opening screen")

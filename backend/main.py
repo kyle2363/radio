@@ -50,6 +50,8 @@ from engine import energy as energy_engine
 from engine.process_manager import get_process_manager
 
 logging.basicConfig(level=logging.INFO)
+# httpx logs every request at INFO (e.g. llama.cpp /v1/models health polls); keep warnings only.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 from access_logging import configure_access_logging
 configure_access_logging()
 logging.getLogger("torio._extension.utils").setLevel(logging.ERROR)
