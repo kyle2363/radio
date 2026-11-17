@@ -425,9 +425,10 @@ fun WhyThisSongSheet(song: LocalSong?, origin: StationOrigin?, radio: RadioState
             }
             if (song != null) OutlinedCard(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text(song.title, style = MaterialTheme.typography.titleSmall)
+                    // The reason is the answer to the sheet's question, so it leads and is the largest text.
+                    Text(originExplanation(origin), style = MaterialTheme.typography.titleLarge, modifier = Modifier.testTag("why-song-reason"))
+                    Text(song.title, Modifier.padding(top = 6.dp), style = MaterialTheme.typography.titleSmall)
                     Text(songSubtitle(song), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Text(originExplanation(origin), style = MaterialTheme.typography.bodyMedium, modifier = Modifier.testTag("why-song-reason"))
                 }
             }
             StationDetails(radio)
@@ -468,10 +469,10 @@ fun SongTitle(title: String, modifier: Modifier = Modifier) {
 fun StationMiniPlayer(song: LocalSong, status: String, playWhenReady: Boolean, canPlay: Boolean, canNext: Boolean, onOpen: () -> Unit, onToggle: () -> Unit, onNext: () -> Unit, mood: String = "neutral") {
     val colors = LocalStationColors.current
     // The mood's dark tone fills the pill, so "on air" is recognisable from any tab.
-    Surface(color = Color(dev.radio.mobile.ui.theme.MoodColors.of(mood).field), contentColor = Color.White, shape = RoundedCornerShape(34.dp),
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp).testTag("mini-player")) {
+    Surface(color = Color(dev.radio.mobile.ui.theme.MoodColors.of(mood).field), contentColor = Color.White, shape = RoundedCornerShape(18.dp),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 4.dp).testTag("mini-player")) {
         Row(Modifier.padding(start = 16.dp, end = 4.dp).heightIn(min = 68.dp), verticalAlignment = Alignment.CenterVertically) {
-            Box(Modifier.size(44.dp).background(Color(colors.tile), RoundedCornerShape(8.dp)), contentAlignment = Alignment.Center) {
+            Box(Modifier.size(44.dp).background(Color(colors.tile), RoundedCornerShape(8.dp)).clickable(role = Role.Button, onClickLabel = "Open player", onClick = onOpen), contentAlignment = Alignment.Center) {
                 CompositionLocalProvider(LocalContentColor provides Color(0xFFBFD0EA)) { RadioIcon(Symbol.Music, modifier = Modifier.size(20.dp)) }
             }
             Column(Modifier.weight(1f).clickable(role = Role.Button, onClickLabel = "Open player", onClick = onOpen).padding(horizontal = 12.dp, vertical = 8.dp)) {
@@ -513,7 +514,7 @@ fun RadioNowPlaying(
                 OriginLine(song, audio.origins[song.id])
             }
             IconToggleButton(liked, { onLike() }, enabled = feedbackReady, modifier = Modifier.testTag("favorite-song")) {
-                CompositionLocalProvider(LocalContentColor provides if (liked) OnAirText else LocalContentColor.current) { RadioIcon(Symbol.Heart, if (liked) "Liked" else "Like") }
+                CompositionLocalProvider(LocalContentColor provides if (liked) OnAirText else LocalContentColor.current) { RadioIcon(if (liked) Symbol.HeartFilled else Symbol.Heart, if (liked) "Liked" else "Like") }
             }
         }
         audio.error?.let { message ->
@@ -555,7 +556,7 @@ fun RadioNowPlaying(
             FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally)) {
                 if (audio.sleepTimer.active) AssistChip(onSleep, { Text("Sleep · ${sleepLabel(audio.sleepTimer)}") }, Modifier.testTag("sleep-countdown"), leadingIcon = { RadioIcon(Symbol.Clock, modifier = Modifier.size(16.dp)) })
                 if (locked) SuggestionChip({}, { Text("Vibe · ${radio.vibeSongsLeft} songs · ${vibeMinutes(radio)} min") }, enabled = false, modifier = Modifier.testTag("vibe-chip"))
-                else if (!radio.vibeAvailable) Text("Vibe lock needs a matched song with recommendation data.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                else if (!radio.vibeAvailable) Text(if (radio.legacyVectorTracks > 0 && !radio.legacyVectorsEnabled) "Vibe lock needs desktop similarity. Turn it on in Settings → Radio." else radio.vibeReason ?: "Vibe lock needs a matched song with recommendation data.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             val nextSong = audio.playOrder.indexOf(audio.currentId).takeIf { it >= 0 }?.let { audio.playOrder.getOrNull(it + 1) }?.let { id -> audio.queue.firstOrNull { it.id == id } }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {

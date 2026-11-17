@@ -3,6 +3,46 @@
 Status: checkpoints through 5 are merged into `main`. Checkpoint 4.2 Radio mode redesign was phone-accepted, fully verified and merged November 11, 2026 (`f676e83`). Checkpoint 5 plain lyrics was merged November 14, 2026; phone acceptance is pending. Direct LAN hosting remains deferred.
 Integration: `android-app`, based on `stability-server-architecture`, reviewed for integration into `main` on November 3. Earlier pending-review notes below are historical checkpoint records, superseded by the November 3 acceptance.
 
+## Visual redesign checkpoint 6 — November 16, 2026
+
+In progress on `android-6-visual-redesign`; not phone-tested and not merged.
+Design canvas: [Radio mobile redesign directions](https://claude.ai/artifact/BVVjtfJeH6ktGmFAyMn2Fy)
+(the "Hybrid" rows). Presentation only: no schema, wire or playback-service change.
+
+- **Foundations.** Heavier headings (`ui/theme/Type.kt`), rounder Material shapes
+  and a small shape vocabulary (`ui/theme/Shape.kt`), and one colour set per Radio
+  mood (`ui/theme/MoodColors.kt`). Mood colour means "on air": it fills the
+  on-air mini-player, tints the Now Playing glow, and marks the selected mood chip.
+  Normal playback keeps the palette colours.
+- **Shell.** Radio, Library and Settings sit in a horizontal pager. Tapping the
+  bottom bar jumps without sliding; swiping is disabled inside a folder or
+  playlist. Mini-players are inset rounded pills.
+- **Radio and Now Playing.** Wide rounded play button with tonal side buttons, a
+  visible Lyrics button beside NEXT (the overflow item remains), rounder station
+  card. The artwork square and line seek bar are unchanged by request.
+- **Exploration.** A fourth preset, Closest (0%), sits before Familiar. Values
+  under 5% now read "Closest"; 5–19% still read "Familiar".
+- **Library, Search, Settings.** Category chips replace the tab row and share a
+  row with the sort control; Search uses a pill field; Settings is grouped into
+  cards; the current queue row sits on a tonal block; "Why this song?" leads with
+  the reason.
+
+Verification: `testDebugUnitTest`, `lintDebug`, `assembleDebug` and
+`compileDebugAndroidTestKotlin` pass. `connectedDebugAndroidTest` has not been run
+for this checkpoint. Existing test tags are kept; new ones are `tab-pager`,
+`open-lyrics-button` and `library-category-<name>`.
+
+Phone checks:
+
+1. Swipe Radio ↔ Library ↔ Settings; confirm the Desktop picks carousel and seek
+   bar still scroll and scrub without changing tabs.
+2. Start a station in each mood; confirm the mini-player and Now Playing glow
+   change colour and text stays readable.
+3. Pick Closest, play a few songs, and confirm they stay near the starting song.
+4. On a narrow screen, confirm all four exploration names fit.
+5. Open Lyrics from the visible button in Radio and normal playback.
+6. Library: switch Folders, Playlists and Songs with the chips; change the sort.
+
 ## Plain lyrics checkpoint 5 — November 14, 2026
 
 Approved for implementation November 14. Now Playing → Lyrics opens a selectable,

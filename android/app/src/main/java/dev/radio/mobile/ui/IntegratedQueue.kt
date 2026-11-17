@@ -11,6 +11,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.semantics
@@ -59,10 +60,13 @@ fun IntegratedQueue(audio: PlaybackState, accessAllowed: Boolean, onSelect: (Str
                 val song = byId[id] ?: return@itemsIndexed
                 val current = id == audio.currentId
                 val tint = if (current) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-                Row(Modifier.fillMaxWidth().selectable(selected = current, enabled = accessAllowed && song.available, role = Role.Button, onClick = { onSelect(id) })
-                    .heightIn(min = 60.dp).padding(horizontal = 20.dp, vertical = 8.dp).testTag("queue-row-$id")
+                // The current song sits on a rounded tonal block so it is easy to find in a long queue.
+                Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp).clip(RoundedCornerShape(20.dp))
+                    .background(if (current) MaterialTheme.colorScheme.surfaceContainerHighest else androidx.compose.ui.graphics.Color.Transparent)
+                    .selectable(selected = current, enabled = accessAllowed && song.available, role = Role.Button, onClick = { onSelect(id) })
+                    .heightIn(min = 60.dp).padding(horizontal = 12.dp, vertical = 8.dp).testTag("queue-row-$id")
                     .semantics { if (current) stateDescription = "Current song. ${audio.status}" }, verticalAlignment = Alignment.CenterVertically) {
-                    Box(Modifier.size(36.dp).background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(6.dp)), contentAlignment = Alignment.Center) {
+                    Box(Modifier.size(40.dp).background(MaterialTheme.colorScheme.surfaceVariant, dev.radio.mobile.ui.theme.RadioShapes.Thumb), contentAlignment = Alignment.Center) {
                         CompositionLocalProvider(LocalContentColor provides tint) { RadioIcon(Symbol.Music, modifier = Modifier.size(20.dp)) }
                     }
                     Column(Modifier.weight(1f).padding(start = 14.dp)) {

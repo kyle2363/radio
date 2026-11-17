@@ -207,10 +207,16 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
                     Column(Modifier.weight(1f).padding(start = if (!showBack) 12.dp else 0.dp)) {
                         Text(if (page == "Library" && category == "Playlists" && playlistId != null) playlists.playlists.firstOrNull { it.id == playlistId }?.name ?: "Playlist" else if (page == "Library" && folder != null) library.folders.firstOrNull { it.id == folder }?.name ?: "Folder" else if (page == "Now playing" && showQueue) "Queue" else page, style = if (page == "Now playing") MaterialTheme.typography.titleMedium else if (page in tabPages && !showBack) MaterialTheme.typography.headlineMedium else MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         if (page == "Now playing" && audio.radioActive) OnAirPill("On air · ${if (radio.vibeLocalId != null) "Vibe locked" else moodLabel(radio.mood)}", Modifier.padding(top = 2.dp))
+                        else if (page == "Radio") Text(when {
+                            library.accessLost -> "Music folder access was lost"
+                            library.scanning -> "Scanning your library…"
+                            radio.loaded -> "%,d songs ready on this phone".format(radio.diagnostics.eligibleTracks)
+                            else -> radio.status
+                        }, style = MaterialTheme.typography.labelSmall, color = if (library.accessLost) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.testTag("radio-status"))
                         else Text(if (page == "Now playing") audio.source.ifBlank{"Local music"} else if (page == "Library" && category == "Playlists" && playlistId != null) "${playlists.songIds(playlistId!!).size} songs · Playlist" else if (library.scanning) "Scanning…" else if (library.root == null) "Connect your music" else "${library.songs.count { it.available }} MP3s", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
+                    if (page == "Radio" && audio.radioActive) IconButton(onClick = { openTune = true }, modifier = Modifier.testTag("tune-radio")) { RadioIcon(Symbol.Settings, "Tune station") }
                     if (page == "Library") {
-                        if (library.root != null) IconButton(onClick = { repository.rescan() }, enabled = !library.scanning && !library.loading) { RadioIcon(Symbol.Refresh, "Rescan library") }
                         IconButton(onClick = { query = ""; navigate("Search") }, enabled = library.root != null) { RadioIcon(Symbol.Search, "Search library") }
                     }
                     if (page == "Now playing" && !showQueue && !audio.radioActive) IconButton(onClick = { minimal = !minimal; prefs.edit().putBoolean("minimal", minimal).apply() }) {
@@ -242,14 +248,14 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
                 }
             },
             bottomBar = {
-                if (page != "Search" && page != "Now playing") Column {
+                if (page != "Search" && page != "Now playing") Column(Modifier.background(MaterialTheme.colorScheme.surfaceContainer)) {
                     if (song != null && audio.radioActive) StationMiniPlayer(song, "On air · ${if (radio.vibeLocalId != null) "Vibe locked" else moodLabel(radio.mood)}", audio.playWhenReady,
                         canPlay = !library.accessLost && song.available, canNext = audio.canNext, onOpen = { navigate("Now playing") }, onToggle = { playback.toggle() }, onNext = { playback.next() }, mood = radio.mood)
                     // Normal playback: a tonal pill in the app's own palette. The mood-coloured pill above means "on air".
-                    else if (song != null) Surface(color = MaterialTheme.colorScheme.primaryContainer, contentColor = MaterialTheme.colorScheme.onPrimaryContainer, shape = RoundedCornerShape(34.dp),
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)) {
+                    else if (song != null) Surface(color = MaterialTheme.colorScheme.primaryContainer, contentColor = MaterialTheme.colorScheme.onPrimaryContainer, shape = RoundedCornerShape(18.dp),
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 4.dp)) {
                         Row(Modifier.padding(start = 12.dp, end = 6.dp).heightIn(min = 64.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Artwork(40)
+                            Box(Modifier.clickable(role = Role.Button, onClickLabel = "Open player") { navigate("Now playing") }) { Artwork(40) }
                             Column(Modifier.weight(1f).clickable(role = Role.Button, onClickLabel = "Open player") { navigate("Now playing") }.padding(horizontal = 12.dp, vertical = 8.dp)) {
                                 Text(song.title, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleSmall)
                                 Text("${audio.status} · ${song.artist}", maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall)
@@ -258,7 +264,7 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
                             IconButton(onClick = { playback.next() }, enabled = audio.canNext, modifier = Modifier.testTag("mini-next")) { RadioIcon(Symbol.Next, "Next song") }
                         }
                     }
-                    NavigationBar(containerColor = MaterialTheme.colorScheme.surfaceContainer) {
+                    NavigationBar(containerColor = MaterialTheme.colorScheme.surfaceContainer, windowInsets = WindowInsets(0), modifier = Modifier.navigationBarsPadding().height(68.dp)) {
                         destinations.forEach { (label, symbol) ->
                             val selected = page == label || label == "Settings" && page in listOf("Server", "Matching")
                             NavigationBarItem(selected = selected, onClick = { navigate(label) }, modifier = Modifier.testTag("nav-$label"), icon = { RadioIcon(symbol) },
@@ -278,7 +284,7 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
                 "Radio" -> RadioContent(radio,repository.radio,audio,playback,library,onLibrary={navigate("Library")},onPlayer={navigate("Now playing")},connected=connected,modifier=Modifier.padding(insets),
                     paired=paired,onChooseFolder={chooseFolder()},onRescan={repository.rescan()},onFullQueue={showQueue=true;navigate("Now playing")},onEnd={endSheet=true},openTune=openTune,onTuneOpened={openTune=false},onServer={navigate("Server")})
                 "Search" -> Column(Modifier.padding(insets).imePadding()) {
-                    OutlinedTextField(query, onValueChange = { query = it }, placeholder = { Text("Search songs and filenames") }, singleLine = true, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp).testTag("search-input"))
+                    OutlinedTextField(query, onValueChange = { query = it }, placeholder = { Text("Search songs and filenames") }, singleLine = true, shape = RoundedCornerShape(28.dp), leadingIcon = { RadioIcon(Symbol.Search) }, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp).testTag("search-input"))
                     val results = remember(songs, query) { songs.filter { query.isNotBlank() && (it.title + " " + it.fileName + " " + it.folderPath).contains(query, ignoreCase = true) } }
                     LazyColumn { items(results, key = { it.id }) { item ->
                         LibraryRow(item.title, songSubtitle(item), Symbol.Music, trailing = { SongActions(item, ::songAction) }) { focus.clearFocus(); keyboard?.hide(); if (playSong(item, results, "Search results")) navigate("Now playing") }
@@ -289,12 +295,13 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
                     audio.error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(bottom = 12.dp)) }
                     Text("Choose a song from your library.")
                     TextButton(onClick = { navigate("Library") }) { Text("Browse music") }
-                } else BoxWithConstraints(Modifier.padding(insets).consumeWindowInsets(insets).fillMaxSize()) {
-                    val compact = maxHeight < 520.dp
+                } else BoxWithConstraints(Modifier.consumeWindowInsets(insets).fillMaxSize()) {
+                    // The backdrop fills the whole screen (behind the transparent top bar); only the content is inset.
+                    val compact = maxHeight - insets.calculateTopPadding() - insets.calculateBottomPadding() < 520.dp
                     // On air the glow takes the station's mood colour; normal playback keeps the palette colour.
                     PlayerBackground(PlayerBackdrop.entries.firstOrNull { it.name == backdrop } ?: PlayerBackdrop.Animated, audio.isPlaying, Modifier.matchParentSize(),
                         tint = if (audio.radioActive) Color(MoodColors.of(radio.mood).field) else null)
-                    Column(Modifier.fillMaxSize().navigationBarsPadding()) {
+                    Column(Modifier.fillMaxSize().padding(insets).navigationBarsPadding()) {
                         if (audio.radioActive && !showQueue) {
                             val options = dev.radio.mobile.recommendation.ConnectedPolicy.visibleOptions(connected, audio.currentId, audio.radioActive, audio.playOrder.toSet(), repository.radio::isDisliked) { id -> library.songs.any { it.id == id && it.available } }
                             RadioNowPlaying(audio, song, radio, position, liked, feedbackReady = journal.feedbackLoaded && journal.pendingWrites == 0, canRead = !library.accessLost && song.available,
@@ -319,7 +326,7 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
                                     FilterChip(liked, onClick = { repository.journal.setFavorite(song, !liked) }, enabled = journal.feedbackLoaded && journal.pendingWrites == 0,
                                         modifier = Modifier.testTag("favorite-song"), label = { Text(if (liked) "Liked" else "Like", fontWeight = if (liked) FontWeight.Bold else FontWeight.Normal) },
                                         colors = FilterChipDefaults.filterChipColors(selectedContainerColor = MaterialTheme.colorScheme.primary, selectedLabelColor = MaterialTheme.colorScheme.onPrimary, selectedLeadingIconColor = MaterialTheme.colorScheme.onPrimary),
-                                        leadingIcon = { RadioIcon(Symbol.Heart) })
+                                        leadingIcon = { RadioIcon(if (liked) Symbol.HeartFilled else Symbol.Heart) })
                                 }
                                 if (!minimal) {
                                     HorizontalDivider(Modifier.padding(top = 8.dp))

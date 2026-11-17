@@ -46,20 +46,6 @@ fun RadioContent(radio:RadioState,repository:RadioRepository,audio:PlaybackState
     }
     fun start(seed:String?){playback.startRadio(seed);onPlayer()}
     LazyColumn(modifier.fillMaxSize().testTag("radio-screen"),contentPadding=PaddingValues(start=16.dp,end=16.dp,bottom=16.dp),verticalArrangement=Arrangement.spacedBy(16.dp)) {
-        item(key="header") {
-            Row(Modifier.fillMaxWidth().padding(start=4.dp,top=12.dp),verticalAlignment=Alignment.Bottom) {
-                Column(Modifier.weight(1f)) {
-                    Text("Radio",Modifier.semantics{heading()},style=MaterialTheme.typography.headlineMedium)
-                    Text(when {
-                        library.accessLost -> "Music folder access was lost"
-                        library.scanning -> "Scanning your library…"
-                        radio.loaded -> "%,d songs ready on this phone".format(radio.diagnostics.eligibleTracks)
-                        else -> radio.status
-                    },style=MaterialTheme.typography.bodySmall,color=if(library.accessLost)MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.testTag("radio-status"))
-                }
-                if(onAir)OutlinedButton(onClick={tuning=true},modifier=Modifier.testTag("tune-radio")){RadioIcon(Symbol.Settings,modifier=Modifier.size(16.dp));Spacer(Modifier.width(6.dp));Text("Tune")}
-            }
-        }
         item(key="station") {
             when {
                 onAir -> OnAirStationCard(audio,radio,onOpenPlayer=onPlayer,onVibe={if(radio.vibeLocalId!=null)repository.clearVibe() else repository.lockVibe()},
@@ -166,7 +152,7 @@ fun RadioContent(radio:RadioState,repository:RadioRepository,audio:PlaybackState
                 Text(preset.label,Modifier.weight(1f),style=MaterialTheme.typography.bodySmall,
                     textAlign=when(index){0->androidx.compose.ui.text.style.TextAlign.Start;ExplorationPreset.entries.lastIndex->androidx.compose.ui.text.style.TextAlign.End;else->androidx.compose.ui.text.style.TextAlign.Center},
                     color=if(ExplorationPreset.nearest(exploration.toDouble())==preset)MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant)}}
-            Text("At Familiar, Radio stays near the starting song. Listening taste breaks near ties.",Modifier.padding(top=8.dp),style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("At Closest (0%), Radio keeps to the most similar songs. Listening taste breaks near ties.",Modifier.padding(top=8.dp),style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
             HorizontalDivider(Modifier.padding(top=16.dp))
             val connectedTuning by repository.connectedTuning.collectAsState()
             DesktopPicksSection(connected,paired,connectedTuning,onToggle=repository::setConnectedEnabled,onChange=repository::setConnectedTuning,onPair=onServer)

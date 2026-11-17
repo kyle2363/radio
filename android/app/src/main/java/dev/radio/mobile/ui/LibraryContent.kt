@@ -7,7 +7,11 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
+import dev.radio.mobile.ui.theme.RadioShapes
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.liveRegion
@@ -53,22 +57,33 @@ fun LibraryContent(
                 Button(onClick = choose) { Text("Choose Music folder") }
             }
         } else if (state.root != null) {
-            if (folderId == null) PrimaryTabRow(selectedTabIndex = listOf("Folders", "Playlists", "Songs").indexOf(category)) {
-                listOf("Folders", "Playlists", "Songs").forEach { tab -> Tab(selected = category == tab, onClick = { onCategory(tab) }, text = { Text(tab) }, unselectedContentColor = MaterialTheme.colorScheme.onSurfaceVariant) }
-            }
             var menu by remember { mutableStateOf(false) }
-            if (folderId == null && category == "Playlists") playlistContent()
-            else {
-                Box(Modifier.padding(start = 8.dp)) {
-                    TextButton(onClick = { menu = true }) { Text(sort.label, style = MaterialTheme.typography.labelMedium); Text("  ⌄") }
+            val showSort = folderId != null || category != "Playlists"
+            // Category chips with mixed shapes; the sort control shares their row (and stands alone inside a folder).
+            Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                if (folderId == null) listOf("Folders" to CircleShape, "Playlists" to CircleShape, "Songs" to CircleShape).forEach { (tab, shape) ->
+                    val chosen = category == tab
+                    FilterChip(chosen, onClick = { onCategory(tab) }, label = { Text(tab, fontWeight = if (chosen) FontWeight.Bold else FontWeight.Medium) }, shape = shape,
+                        colors = FilterChipDefaults.filterChipColors(selectedContainerColor = MaterialTheme.colorScheme.primary, selectedLabelColor = MaterialTheme.colorScheme.onPrimary),
+                        modifier = Modifier.heightIn(min = 40.dp).testTag("library-category-$tab"))
+                }
+                Spacer(Modifier.weight(1f))
+                if (showSort) Box {
+                    TextButton(onClick = { menu = true }, contentPadding = PaddingValues(horizontal = 4.dp), modifier = Modifier.heightIn(min = 40.dp)) { Text("${sort.label} ▾", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Medium, maxLines = 1, softWrap = false) }
                     DropdownMenu(menu, onDismissRequest = { menu = false }) { LibrarySort.entries.forEach { item ->
                         DropdownMenuItem(text = { Text(item.label) }, onClick = { onSort(item); menu = false })
                     } }
                 }
+            }
+            if (folderId == null && category == "Playlists") playlistContent()
+            else {
                 LazyColumn(state = listState, modifier = Modifier.fillMaxSize().testTag("library-list")) {
                     val browsingFolders = folderId != null || category == "Folders"
+                    val songCounts = ordered.groupingBy { it.folderId }.eachCount()
                     if (browsingFolders) items(childFolders, key = { "folder:${it.id}" }) { item ->
-                        LibraryRow(item.name, if (!item.available) "Folder unavailable · saved listing" else item.path, Symbol.Folder) { onFolder(item.id) }
+                        val count = songCounts[item.id] ?: 0
+                        val detail = if (count > 0) "$count song${if (count == 1) "" else "s"}" else if (item.path != item.name) item.path else "Folder"
+                        LibraryRow(item.name, if (!item.available) "Folder unavailable · saved listing" else detail, Symbol.Folder) { onFolder(item.id) }
                     }
                     val visible = if (browsingFolders) ordered.filter { it.folderId == parent } else ordered
                     val source = if (!browsingFolders) "All songs" else state.folders.firstOrNull { it.id == parent }?.name ?: "Music"
