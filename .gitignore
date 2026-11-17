@@ -51,6 +51,7 @@ docs/*
 !docs/CONNECTED_RECOMMENDATIONS_PLAN.md
 !docs/CONNECTED_TUNING_PLAN.md
 !docs/ANDROID_LYRICS_PLAN.md
+!docs/CHECKPOINT_7_PLAN.md
 
 #audio files
 audio_files

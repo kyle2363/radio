@@ -6,7 +6,7 @@ An AI-driven radio station for a personal MP3 library. Three surfaces share this
 - **Desktop** — React/Vite UI in an Electron shell, with selectable server-side VLC or browser-owned audio.
 - **Android** — a native Kotlin/Compose app that plays the phone's local music independently of the server and is the active development focus.
 
-Android playback remains local and independent. Checkpoints 1A–1C implement USB pairing, secure credential handling, catalog import/content matching, and separate Server/Matching screens. Accepted checkpoint 2A adds the local journal, feedback and Replay. Checkpoint 2B adds offline Radio, bounded service refill, local learning and Vibe lock; accepted November 3, 2026. Checkpoints 2C manual profile sync and 3A secure remote hosting are implemented, verified and phone-accepted. Checkpoint 3B automatic discovery is phone-accepted. Checkpoints 2C–3B are merged into `main` (November 7, 2026). Checkpoint 4 connected recommendations (`docs/CONNECTED_RECOMMENDATIONS_PLAN.md`) and checkpoint 4.1 phone-only connected tuning (`docs/CONNECTED_TUNING_PLAN.md`) are merged into `main`; 4.1 was phone-accepted November 7, 2026. Checkpoint 4.2 Radio mode redesign was phone-accepted, fully verified and merged into `main` November 11, 2026 (`f676e83`; `docs/RADIO_REDESIGN_PLAN.md`). Checkpoint 5 plain lyrics is merged into `main` (November 14, 2026, `5a35dad`; `docs/ANDROID_LYRICS_PLAN.md`). Checkpoint 6 visual redesign is in progress on `android-6-visual-redesign`. See `docs/ANDROID_APP_PLAN.md`, `docs/MOBILE_SYNC.md` and `docs/MOBILE_CONNECTION_PLAN.md`.
+Android playback remains local and independent. Checkpoints 1A–1C implement USB pairing, secure credential handling, catalog import/content matching, and separate Server/Matching screens. Accepted checkpoint 2A adds the local journal, feedback and Replay. Checkpoint 2B adds offline Radio, bounded service refill, local learning and Vibe lock; accepted November 3, 2026. Checkpoints 2C manual profile sync and 3A secure remote hosting are implemented, verified and phone-accepted. Checkpoint 3B automatic discovery is phone-accepted. Checkpoints 2C–3B are merged into `main` (November 7, 2026). Checkpoint 4 connected recommendations (`docs/CONNECTED_RECOMMENDATIONS_PLAN.md`) and checkpoint 4.1 phone-only connected tuning (`docs/CONNECTED_TUNING_PLAN.md`) are merged into `main`; 4.1 was phone-accepted November 7, 2026. Checkpoint 4.2 Radio mode redesign was phone-accepted, fully verified and merged into `main` November 11, 2026 (`f676e83`; `docs/RADIO_REDESIGN_PLAN.md`). Checkpoint 5 plain lyrics is merged into `main` (November 14, 2026, `5a35dad`; `docs/ANDROID_LYRICS_PLAN.md`). Checkpoint 6 visual redesign was phone-accepted November 17, 2026 on `android-6-visual-redesign` (not yet merged). Checkpoint 7 (playlist sync and listening stats) is planned in `docs/CHECKPOINT_7_PLAN.md`. See `docs/ANDROID_APP_PLAN.md`, `docs/MOBILE_SYNC.md` and `docs/MOBILE_CONNECTION_PLAN.md`.
 
 ## Quick Start
 
@@ -360,7 +360,7 @@ Implemented: local scan/playback, background/lock-screen control, paused restora
 
 Checkpoint 4 connected recommendations and 4.1 connected tuning are merged into `main`; checkpoint 4.2 desktop-first refill and Radio mode redesign are phone-accepted and merged November 11, 2026.
 
-Checkpoint 5 adds plain lyrics from prepared desktop catalogs and a private offline cache; merged into `main` November 14, 2026. Checkpoint 6 visual redesign is in progress. Not implemented: automatic sync, synchronized lyrics, statistics, speech, crossfade, and downloads.
+Checkpoint 5 adds plain lyrics from prepared desktop catalogs and a private offline cache; merged into `main` November 14, 2026. Checkpoint 6 visual redesign is phone-accepted. Not implemented: automatic sync, synchronized lyrics, statistics, speech, crossfade, and downloads.
 
 | Increment | Deliverable | State |
 |---|---|---|
@@ -374,7 +374,8 @@ Checkpoint 5 adds plain lyrics from prepared desktop catalogs and a private offl
 | 4.1 | Connected tuning (phone-only overrides in Radio → Tune) | Phone-accepted and merged November 7, 2026 |
 | 4.2 | Radio mode redesign (station surface, End/New mix/Not for me, missing states) | Phone-accepted, fully verified and merged November 11, 2026 |
 | 5 | Plain lyrics with a private offline cache | Merged into main November 14, 2026 |
-| 6 | Visual redesign (mood colours, shapes, tab pager) | In progress on `android-6-visual-redesign` |
+| 6 | Visual redesign (mood colours, shapes, tab pager) | Phone-accepted November 17, 2026; unmerged |
+| 7 | Playlist sync, listening stats, sync on open | Planned (`docs/CHECKPOINT_7_PLAN.md`) |
 
 At each checkpoint: installable build, verification summary and limitations, and a short phone test list. A successful build is not approval to start the next increment.
 
@@ -505,6 +506,7 @@ Prefer a new seed row over hardcoding a value in application code.
 | `docs/CONNECTED_RECOMMENDATIONS_PLAN.md` | Checkpoint 4 connected recommendations |
 | `docs/CONNECTED_TUNING_PLAN.md` | Checkpoint 4.1 phone-only tuning |
 | `docs/ANDROID_LYRICS_PLAN.md` | Checkpoint 5 plain lyrics |
+| `docs/CHECKPOINT_7_PLAN.md` | Checkpoint 7 playlist sync and stats |
 | `docs/MUSIC_MATCHING.md` | Phone-to-catalog content matching |
 | `docs/PORTABLE_MEDIA_PLAN.md` | Portable media design |
 | `docs/README.md` | Documentation index and ownership |

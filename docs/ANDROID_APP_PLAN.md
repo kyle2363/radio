@@ -1,11 +1,11 @@
 # Android app plan
 
-Status: checkpoints through 5 are merged into `main`. Checkpoint 4.2 Radio mode redesign was phone-accepted, fully verified and merged November 11, 2026 (`f676e83`). Checkpoint 5 plain lyrics was merged November 14, 2026; phone acceptance is pending. Direct LAN hosting remains deferred.
+Status: checkpoints through 5 are merged into `main`. Checkpoint 4.2 Radio mode redesign was phone-accepted, fully verified and merged November 11, 2026 (`f676e83`). Checkpoint 5 plain lyrics was merged November 14, 2026. Checkpoint 6 visual redesign was phone-accepted November 17, 2026 (unmerged). Checkpoint 7 is planned in `docs/CHECKPOINT_7_PLAN.md`. Direct LAN hosting remains deferred.
 Integration: `android-app`, based on `stability-server-architecture`, reviewed for integration into `main` on November 3. Earlier pending-review notes below are historical checkpoint records, superseded by the November 3 acceptance.
 
 ## Visual redesign checkpoint 6 — November 16, 2026
 
-In progress on `android-6-visual-redesign`; not phone-tested and not merged.
+Phone-accepted November 17, 2026 on `android-6-visual-redesign`; not yet merged into `main`.
 Design canvas: [Radio mobile redesign directions](https://claude.ai/artifact/BVVjtfJeH6ktGmFAyMn2Fy)
 (the "Hybrid" rows). Presentation only: no schema, wire or playback-service change.
 
@@ -29,7 +29,7 @@ Design canvas: [Radio mobile redesign directions](https://claude.ai/artifact/BVV
 
 Verification: `testDebugUnitTest`, `lintDebug`, `assembleDebug` and
 `compileDebugAndroidTestKotlin` pass. `connectedDebugAndroidTest` has not been run
-for this checkpoint. Existing test tags are kept; new ones are `tab-pager`,
+for this checkpoint; the phone checks below passed on device. Existing test tags are kept; new ones are `tab-pager`,
 `open-lyrics-button` and `library-category-<name>`.
 
 Phone checks:
