@@ -487,9 +487,11 @@ def run_phase_lyrics_timing():
     print("Phase 6: Generating lyrics timing (WhisperX forced alignment)...")
 
     import sys
-    # Ensure project root is on path for batch_lyrics_timing imports
-    if config.BASE_DIR not in sys.path:
-        sys.path.insert(0, config.BASE_DIR)
+    # The WhisperX helpers live with the maintenance scripts. Append (never
+    # prepend) so nothing in that folder can shadow a backend module.
+    maintenance_dir = os.path.join(config.BASE_DIR, "scripts", "maintenance")
+    if maintenance_dir not in sys.path:
+        sys.path.append(maintenance_dir)
     from batch_lyrics_timing_smart import process_song, should_skip_lyrics_alignment
 
     conn = database.get_connection()

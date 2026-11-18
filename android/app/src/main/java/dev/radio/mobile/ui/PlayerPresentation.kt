@@ -37,14 +37,15 @@ import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.sin
 
-enum class PlayerBackdrop(val label: String) { Off("Off"), Static("Static"), Animated("Animated") }
+/** Stored names stay stable for saved prefs; labels are what Settings shows. */
+enum class PlayerBackdrop(val label: String) { Animated("Moving"), Static("Still"), Off("Off") }
 
 internal fun shouldAnimateBackdrop(mode: PlayerBackdrop, playing: Boolean, foreground: Boolean, animationsEnabled: Boolean) =
     mode == PlayerBackdrop.Animated && playing && foreground && animationsEnabled
 
 /** Purely decorative; the animation value is read only during drawing. No media work. */
 @Composable
-fun PlayerBackground(mode: PlayerBackdrop, playing: Boolean, modifier: Modifier = Modifier) {
+fun PlayerBackground(mode: PlayerBackdrop, playing: Boolean, modifier: Modifier = Modifier, tint: Color? = null) {
     val owner = LocalLifecycleOwner.current
     val resolver = LocalContext.current.contentResolver
     var foreground by remember(owner) { mutableStateOf(owner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) }
@@ -64,7 +65,7 @@ fun PlayerBackground(mode: PlayerBackdrop, playing: Boolean, modifier: Modifier 
     val phase = remember { Animatable(0f) }
     LaunchedEffect(moving) {
         if (moving) while (true) {
-            phase.animateTo(1f, tween(((1f - phase.value) * 24000).toInt().coerceAtLeast(1), easing = LinearEasing))
+            phase.animateTo(1f, tween(((1f - phase.value) * 16000).toInt().coerceAtLeast(1), easing = LinearEasing))
             phase.snapTo(0f) // Same position at both ends of the circular path.
         }
     }
@@ -78,21 +79,41 @@ fun PlayerBackground(mode: PlayerBackdrop, playing: Boolean, modifier: Modifier 
         }
     }.clipToBounds().drawWithCache {
         val radius = size.width * 1.15f
-        val first = Brush.radialGradient(listOf(colors.primary.copy(alpha = .22f), Color.Transparent), center = Offset.Zero, radius = radius)
-        val second = Brush.radialGradient(listOf(colors.primary.copy(alpha = .13f), Color.Transparent), center = Offset.Zero, radius = radius * .9f)
+        // A mood tint is a dark tone, so it needs more strength than the palette colour to read as a glow.
+        val glow = tint ?: colors.primary
+        val first = Brush.radialGradient(listOf(glow.copy(alpha = if (tint != null) .85f else .22f), Color.Transparent), center = Offset.Zero, radius = radius)
+        val second = Brush.radialGradient(listOf(glow.copy(alpha = if (tint != null) .55f else .13f), Color.Transparent), center = Offset.Zero, radius = radius * .9f)
         onDrawBehind {
             drawRect(colors.background)
             if (mode != PlayerBackdrop.Off) {
                 val angle = phase.value * (2 * PI).toFloat()
-                val x = size.width * (.18f + .18f * cos(angle))
-                val y = size.height * (.83f + .10f * sin(angle))
+                // Two glows on different loops (1x and 2x) so the field drifts rather than rotating rigidly.
+                val x = size.width * (.22f + .30f * cos(angle))
+                val y = size.height * (.78f + .16f * sin(angle))
                 translate(x, y) { drawCircle(first, radius, center = Offset.Zero) }
-                translate(size.width - x * .6f, size.height * .96f - (y - size.height * .83f)) {
-                    drawCircle(second, radius * .9f, center = Offset.Zero)
-                }
+                val x2 = size.width * (.80f + .22f * sin(angle * 2))
+                val y2 = size.height * (.30f + .20f * cos(angle))
+                translate(x2, y2) { drawCircle(second, radius * .9f, center = Offset.Zero) }
             }
         }
     })
+}
+
+/**
+ * Seek bar with elapsed and total time. The live position is read only here, so the 4-per-second position ticks
+ * recompose this row instead of the whole player.
+ */
+@Composable
+fun PlaybackProgress(positionMs: () -> Long, durationMs: Long?, seekable: Boolean, onScrub: (Float) -> Unit, onScrubFinished: () -> Unit,
+    timeColor: Color = Color.Unspecified) {
+    val ms = positionMs()
+    Column {
+        PlayerSeekBar(ms / 1000f, (durationMs ?: 0L) / 1000f, onSeek = onScrub, modifier = Modifier.fillMaxWidth(), enabled = seekable, onSeekFinished = onScrubFinished)
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text(clock(ms), style = MaterialTheme.typography.labelSmall, color = timeColor)
+            Text(durationMs?.let(::clock) ?: "--:--", style = MaterialTheme.typography.labelSmall, color = timeColor)
+        }
+    }
 }
 
 /** Material slider gestures, keyboard and accessibility, with a thin native-player appearance. */

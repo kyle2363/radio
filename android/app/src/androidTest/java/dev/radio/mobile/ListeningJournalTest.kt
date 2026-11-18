@@ -20,7 +20,7 @@ class ListeningJournalTest {
         val song = LocalSong("song", "root", "folder", "content://fixture/song", "Song.mp3", "", 1, 1, 1, 10000)
         val identity = JournalIdentity("device", localId = song.id)
         try {
-            repo.started(song, "skip", 0, identity)
+            repo.started(song, "skip", 0, identity, dev.radio.mobile.playback.PlayContext("playlist", "pl1", null, "tap"))
             repo.finished(identity, "skip", "song_skipped", 500, 10000, "wrong_mood")
             repo.started(song, "technical", 0, identity)
             repo.finished(identity, "technical", "attempt_stopped", 500, 10000, "decoder_error")
@@ -32,6 +32,31 @@ class ListeningJournalTest {
             assertFalse(JSONObject(rows.single { it.attemptId == "technical" && it.kind == "attempt_stopped" }.payload).has("reason"))
             assertFalse(JSONObject(rows.single { it.attemptId == "navigation" && it.kind == "song_skipped" }.payload).has("reason"))
             assertEquals(5, db.journal().outbox().size)
+            // 8A: the context row is written with its start, kept local (never in the outbox), and absent when no context was given.
+            val context = db.journal().playContext("skip")!!
+            assertEquals("playlist", context.sourceKind); assertEquals("pl1", context.sourceId); assertEquals("tap", context.trigger)
+            assertEquals(rows.single { it.attemptId == "skip" && it.kind == "song_started" }.occurredAt, context.startedAt)
+            assertEquals(null, db.journal().playContext("technical"))
+            assertFalse(db.journal().outbox().any { it.payload.contains("sourceKind") || it.payload.contains("playlist\"") })
+        } finally { scope.coroutineContext[Job]!!.cancelAndJoin(); db.close() }
+    }
+    @Test fun automaticPlaylistsComeFromRealJournalWrites() = runBlocking {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val db = Room.inMemoryDatabaseBuilder(context, LibraryDatabase::class.java).build()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val repo = ListeningJournalRepository(context, db, scope)
+        fun song(id: String) = LocalSong(id, "root", "folder", "content://fixture/$id", "$id.mp3", "", 1, 1, 1, 10000)
+        val (a, b, c) = listOf(song("a"), song("b"), song("c"))
+        try {
+            listOf("a1", "a2").forEach { attempt -> repo.started(a, attempt, 0, repo.identity(a)); repo.finished(repo.identity(a), attempt, "song_completed", 10000, 10000, "natural_end") }
+            repo.started(b, "b1", 0, repo.identity(b)); repo.finished(repo.identity(b), "b1", "song_skipped", 1000, 10000, "explicit_navigation")
+            repo.setFavorite(c, true)
+            withTimeout(5000) { repo.state.first { it.pendingWrites == 0 && it.feedback["c"]?.favorite == true } }
+            val lists = SmartLists.build(repo.smartListRows.first(), setOf("c"), setOf("a", "b", "c"))
+            assertEquals(listOf("a"), lists[SmartList.Top])
+            // Starts written in the same millisecond can tie, so only membership is fixed here; order is unit-tested.
+            assertEquals(setOf("a", "b"), lists[SmartList.Recent]!!.toSet())
+            assertEquals(listOf("c"), lists[SmartList.Liked])
         } finally { scope.coroutineContext[Job]!!.cancelAndJoin(); db.close() }
     }
     @Test fun historicStartsAreNotBackfilledAndExplicitReplayRetryIsIdempotent() = runBlocking {

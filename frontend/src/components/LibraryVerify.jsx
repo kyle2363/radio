@@ -11,6 +11,8 @@ function LibraryVerify({ addToast }) {
   const [autoMatching, setAutoMatching] = useState(false);
   const [expandedSection, setExpandedSection] = useState("orphaned");
   const [manualMatchId, setManualMatchId] = useState(null);
+  const [applyingMatches, setApplyingMatches] = useState(false);
+  const [confirmDeleteAll, setConfirmDeleteAll] = useState(false);
 
   const fetchVerify = useCallback(async () => {
     setLoading(true);
@@ -32,18 +34,43 @@ function LibraryVerify({ addToast }) {
   const handleAutoMatch = useCallback(async () => {
     setAutoMatching(true);
     try {
+      // Auto-match only proposes. Nothing changes until a match is applied below.
       const data = await api.autoMatchFiles();
       setMatchedResults(data);
-      addToast?.(`Auto-matched ${data.match_count} song(s)`, "success");
-      // Refresh orphaned/unregistered lists
-      await fetchVerify();
       if (data.match_count > 0) {
+        addToast?.(`Found ${data.match_count} possible match(es). Review and apply them below.`, "success");
         setExpandedSection("matched");
+      } else {
+        addToast?.("No matching files found", "success");
       }
     } catch (err) {
       addToast?.("Auto-match failed: " + (err.message || "unknown"), "error");
     }
     setAutoMatching(false);
+  }, [addToast]);
+
+  const handleApplyMatches = useCallback(async (matches) => {
+    setApplyingMatches(true);
+    const failed = [];
+    for (const match of matches) {
+      try {
+        await api.confirmMatch(match.orphan_id, match.new_filepath);
+      } catch (err) {
+        failed.push(match);
+      }
+    }
+    const applied = matches.length - failed.length;
+    // Keep only the proposals that were neither applied nor attempted.
+    setMatchedResults((current) => {
+      if (!current) return current;
+      const done = new Set(matches.filter((m) => !failed.includes(m)).map((m) => m.orphan_id));
+      const remaining = current.matched.filter((m) => !done.has(m.orphan_id));
+      return { ...current, matched: remaining, match_count: remaining.length };
+    });
+    if (applied > 0) addToast?.(`Applied ${applied} match(es)`, "success");
+    if (failed.length > 0) addToast?.(`${failed.length} match(es) could not be applied`, "error");
+    setApplyingMatches(false);
+    fetchVerify();
   }, [fetchVerify, addToast]);
 
   const handleDelete = useCallback(async (songId, songTitle) => {
@@ -77,14 +104,19 @@ function LibraryVerify({ addToast }) {
     }
   }, [fetchVerify, addToast]);
 
-  const handleDeleteAllOrphaned = useCallback(async () => {
+  const handleDeleteAllOrphaned = useCallback(async (count) => {
+    setConfirmDeleteAll(false);
     try {
-      const data = await api.deleteAllOrphaned();
+      const data = await api.deleteAllOrphaned(count);
       addToast?.(`Deleted ${data.deleted} orphaned song(s)`, "success");
-      fetchVerify();
+      setMatchedResults(null);
     } catch (err) {
-      addToast?.("Failed to delete orphaned: " + (err.message || "unknown"), "error");
+      // Refusals arrive as {"detail": "..."}; show the sentence, not the JSON.
+      let reason = err.message || "unknown";
+      try { reason = JSON.parse(reason).detail || reason; } catch (_) {}
+      addToast?.(reason, "error");
     }
+    fetchVerify();
   }, [fetchVerify, addToast]);
 
   const formatSize = (bytes) => {
@@ -172,9 +204,9 @@ function LibraryVerify({ addToast }) {
             {autoMatching ? "Matching..." : "Auto-Match"}
           </button>
         )}
-        {orphaned.length > 0 && (
+        {orphaned.length > 0 && !confirmDeleteAll && (
           <button
-            onClick={handleDeleteAllOrphaned}
+            onClick={() => setConfirmDeleteAll(true)}
             style={{
               fontSize: "10px", padding: "4px 10px", borderRadius: "5px",
               background: "#1e0808", border: "1px solid #3a1010",
@@ -183,6 +215,32 @@ function LibraryVerify({ addToast }) {
           >
             Delete all orphaned
           </button>
+        )}
+        {orphaned.length > 0 && confirmDeleteAll && (
+          <div style={{ display: "inline-flex", alignItems: "center", gap: "6px", fontSize: "10px", color: "var(--danger)" }}>
+            <AlertTriangle size={11} />
+            Remove {orphaned.length} {orphaned.length === 1 ? "song" : "songs"} and their listening history? This cannot be undone.
+            <button
+              onClick={() => handleDeleteAllOrphaned(orphaned.length)}
+              style={{
+                fontSize: "10px", padding: "4px 10px", borderRadius: "5px",
+                background: "#3a0000", border: "1px solid #6a1010",
+                color: "var(--danger)", cursor: "pointer", fontWeight: 600,
+              }}
+            >
+              Delete {orphaned.length}
+            </button>
+            <button
+              onClick={() => setConfirmDeleteAll(false)}
+              style={{
+                fontSize: "10px", padding: "4px 10px", borderRadius: "5px",
+                background: "var(--bg-elevated)", border: "1px solid var(--border)",
+                color: "var(--text-secondary)", cursor: "pointer",
+              }}
+            >
+              Cancel
+            </button>
+          </div>
         )}
         {!hasIssues && !loading && (
           <div style={{
@@ -207,7 +265,19 @@ function LibraryVerify({ addToast }) {
           >
             <ChevronDown size={12} style={{ transform: expandedSection === "matched" ? "rotate(0deg)" : "rotate(-90deg)", transition: "transform 0.2s" }} />
             <CheckCircle size={12} style={{ color: "#4ade80" }} />
-            Matched ({matchedResults.match_count})
+            Proposed matches ({matchedResults.matched.length})
+            <button
+              onClick={(event) => { event.stopPropagation(); handleApplyMatches(matchedResults.matched); }}
+              disabled={applyingMatches}
+              style={{
+                marginLeft: "8px", fontSize: "10px", padding: "3px 10px", borderRadius: "5px",
+                background: "var(--accent-muted)", border: "1px solid var(--border)",
+                color: "var(--accent)", cursor: "pointer", fontWeight: 500,
+                opacity: applyingMatches ? 0.5 : 1,
+              }}
+            >
+              {applyingMatches ? "Applying..." : "Apply all"}
+            </button>
           </div>
           {expandedSection === "matched" && (
             <div style={{ display: "flex", flexDirection: "column", gap: "4px", paddingLeft: "18px" }}>
@@ -225,6 +295,17 @@ function LibraryVerify({ addToast }) {
                     <span style={{ color: "var(--text-secondary)", marginLeft: "6px" }}>{formatPath(m.new_filepath)}</span>
                   </div>
                   <span style={{ fontSize: "9px", color: "var(--text-muted)", flexShrink: 0 }}>{Math.round(m.score * 100)}% match</span>
+                  <button
+                    onClick={() => handleApplyMatches([m])}
+                    disabled={applyingMatches}
+                    style={{
+                      fontSize: "10px", padding: "2px 8px", borderRadius: "4px", flexShrink: 0,
+                      background: "var(--bg-elevated)", border: "1px solid var(--border)",
+                      color: "var(--accent)", cursor: "pointer", opacity: applyingMatches ? 0.5 : 1,
+                    }}
+                  >
+                    Apply
+                  </button>
                 </div>
               ))}
             </div>

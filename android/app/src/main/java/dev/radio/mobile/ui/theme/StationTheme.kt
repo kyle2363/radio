@@ -55,6 +55,6 @@ fun StationTheme(colors: StationColors, enabled: Boolean = true, content: @Compo
         }
     }
     CompositionLocalProvider(LocalStationColors provides colors) {
-        MaterialTheme(colorScheme = scheme, typography = MaterialTheme.typography, content = content)
+        MaterialTheme(colorScheme = scheme, typography = MaterialTheme.typography, shapes = MaterialTheme.shapes, content = content)
     }
 }

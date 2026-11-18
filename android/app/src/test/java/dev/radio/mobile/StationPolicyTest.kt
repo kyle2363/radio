@@ -1,6 +1,7 @@
 package dev.radio.mobile
 
 import dev.radio.mobile.recommendation.*
+import dev.radio.mobile.ui.theme.MoodColors
 import dev.radio.mobile.ui.theme.StationColors
 import org.junit.Assert.*
 import org.junit.Test
@@ -10,6 +11,8 @@ class StationPolicyTest {
         RadioPick("s", "l", 1.0, .5, null, slot = slot, reason = reason)
 
     @Test fun presetsUseFixedValuesAndDefaultIsBalanced() {
+        assertEquals(0.0, ExplorationPreset.Closest.value, 0.0)
+        assertEquals(ExplorationPreset.Closest, ExplorationPreset.entries.first())
         assertEquals(.10, ExplorationPreset.Familiar.value, 0.0)
         assertEquals(.30, ExplorationPreset.Balanced.value, 0.0)
         assertEquals(.70, ExplorationPreset.Adventurous.value, 0.0)
@@ -17,7 +20,9 @@ class StationPolicyTest {
     }
 
     @Test fun nearestPresetBoundaries() {
-        assertEquals(ExplorationPreset.Familiar, ExplorationPreset.nearest(0.0))
+        assertEquals(ExplorationPreset.Closest, ExplorationPreset.nearest(0.0))
+        assertEquals(ExplorationPreset.Closest, ExplorationPreset.nearest(.04))
+        assertEquals(ExplorationPreset.Familiar, ExplorationPreset.nearest(.05))
         assertEquals(ExplorationPreset.Familiar, ExplorationPreset.nearest(.19))
         assertEquals(ExplorationPreset.Balanced, ExplorationPreset.nearest(.21))
         assertEquals(ExplorationPreset.Balanced, ExplorationPreset.nearest(.49))
@@ -29,7 +34,8 @@ class StationPolicyTest {
     @Test fun summaryShowsNameAndPercent() {
         assertEquals("Balanced · 30%", ExplorationPreset.summary(.30))
         assertEquals("Balanced · 42%", ExplorationPreset.summary(.42))
-        assertEquals("Familiar · 0%", ExplorationPreset.summary(0.0))
+        assertEquals("Closest · 0%", ExplorationPreset.summary(0.0))
+        assertEquals("Familiar · 10%", ExplorationPreset.summary(.10))
         assertEquals("Adventurous · 100%", ExplorationPreset.summary(1.0))
     }
 
@@ -87,6 +93,20 @@ class StationPolicyTest {
             assertTrue("on air ${colors.name}", contrast(colors.onAirText, colors.base) >= 4.5)
             assertTrue("white ${colors.name}", contrast(0xFFFFFFFF, colors.panel) >= 4.5)
         }
+    }
+
+    @Test fun everyMoodHasReadableColors() {
+        assertEquals(OfflineRecommender.MOODS.keys, MoodColors.all.map { it.mood }.toSet())
+        MoodColors.all.forEach { mood ->
+            StationColors.all.forEach { station ->
+                assertTrue("${mood.mood} accent on ${station.name}", contrast(mood.accent, station.base) >= 4.5)
+                assertTrue("${mood.mood} accent on ${station.name} panel", contrast(mood.accent, station.panel) >= 4.5)
+            }
+            assertTrue("${mood.mood} text on accent", contrast(mood.onAccent, mood.accent) >= 4.5)
+            assertTrue("${mood.mood} white on field", contrast(0xFFFFFFFF, mood.field) >= 4.5)
+        }
+        assertEquals(MoodColors.of("chill"), MoodColors.of("CHILL"))
+        assertEquals("neutral", MoodColors.of("not a mood").mood)
     }
 
     private fun contrast(a: Long, b: Long): Double {

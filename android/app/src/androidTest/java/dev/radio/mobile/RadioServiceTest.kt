@@ -135,6 +135,7 @@ class RadioServiceTest {
         val entered=CompletableDeferred<Unit>();val release=CompletableDeferred<Unit>()
         RadioPlaybackService.beforeRadioStartCommit={entered.complete(Unit);release.await()}
         main{playback.startRadio()};await("Start batch wasn't deferred"){entered.isCompleted}
+        assertTrue("A pending start should be visible while the batch is built", playback.state.value.radioStarting)
         lateinit var future:com.google.common.util.concurrent.ListenableFuture<MediaController>
         main{future=MediaController.Builder(context,SessionToken(context,ComponentName(context,RadioPlaybackService::class.java))).buildAsync()}
         val media=future.get(10,TimeUnit.SECONDS)
@@ -144,6 +145,7 @@ class RadioServiceTest {
             val before=playback.state.value
             release.complete(Unit);Thread.sleep(500)
             assertEquals(before.playOrder,playback.state.value.playOrder);assertFalse(playback.state.value.radioActive);assertFalse(playback.state.value.playWhenReady)
+            assertFalse("A fenced start must not stay pending",playback.state.value.radioStarting)
         }finally{release.complete(Unit);main{media.release()}}
     }
     @Test fun delayedStartCannotOverrideSleepExpiryWithoutAnAudibleAttempt() {
@@ -168,6 +170,7 @@ class RadioServiceTest {
             playback.state.value.radioActive && playback.state.value.isPlaying && playback.state.value.source == "Radio" &&
                 playback.state.value.queue.size >= 5
         }
+        assertFalse("A committed start must not stay pending", playback.state.value.radioStarting)
         await("Starting Radio didn't create one actual local playback start") { starts() == manualStarts + 1 }
         val radioState = playback.state.value
         assertNotEquals(manualQueue.playOrder, radioState.playOrder)

@@ -2,6 +2,9 @@ package dev.radio.mobile.music
 
 import kotlin.math.*
 
+/** Matches Spotify's default normal-volume reference. */
+const val NORMALIZATION_TARGET_LUFS = -14.0
+
 const val LOUDNESS_ALGORITHM = "bs1770-stereo-v1"
 
 data class LoudnessResult(val integratedLufs: Double?, val samplePeak: Double, val frames: Long)
@@ -39,17 +42,33 @@ class LoudnessMeter(private val rate: Int, private val channels: Int) {
     private var index = 0; private var channel = 0; private var energy = 0.0; private var sum = 0.0
     private var frames = 0L; private var peak = 0.0
 
-    fun sample(value: Double) {
-        require(value.isFinite()) { "Invalid PCM sample" }
-        peak = max(peak, abs(value))
-        val weighted = highPass[channel].step(shelf[channel].step(value))
-        energy += weighted * weighted
-        if (++channel != channels) return
-        channel = 0
-        sum += energy - window[index]; window[index] = energy; energy = 0.0
-        index = (index + 1) % window.size
-        frames++
-        if (frames >= window.size && (frames - window.size) % hop == 0L) blocks += max(0.0, sum / window.size)
+    fun sample(value: Double) = feed(1) { value }
+    /** Interleaved 16-bit PCM, scaled exactly as `sample(value / 32768.0)`. */
+    fun pcm16(data: ShortArray, offset: Int, count: Int) = feed(count) { data[offset + it] / 32768.0 }
+    /** Interleaved float PCM, identical to calling `sample` per value. */
+    fun pcmFloat(data: FloatArray, offset: Int, count: Int) = feed(count) { data[offset + it].toDouble() }
+
+    // Batch loop with per-call state hoisted into locals; arithmetic order matches the per-sample path.
+    private inline fun feed(count: Int, value: (Int) -> Double) {
+        var peak = peak; var channel = channel; var energy = energy; var sum = sum; var index = index; var frames = frames
+        val size = window.size
+        try {
+            for (i in 0 until count) {
+                val x = value(i)
+                require(x.isFinite()) { "Invalid PCM sample" }
+                peak = max(peak, abs(x))
+                val weighted = highPass[channel].step(shelf[channel].step(x))
+                energy += weighted * weighted
+                if (++channel != channels) continue
+                channel = 0
+                sum += energy - window[index]; window[index] = energy; energy = 0.0
+                index++; if (index == size) index = 0
+                frames++
+                if (frames >= size && (frames - size) % hop == 0L) blocks += max(0.0, sum / size)
+            }
+        } finally {
+            this.peak = peak; this.channel = channel; this.energy = energy; this.sum = sum; this.index = index; this.frames = frames
+        }
     }
     fun result(): LoudnessResult {
         require(channel == 0 && frames >= window.size) { "Audio is too short for integrated loudness" }
@@ -64,7 +83,7 @@ class LoudnessMeter(private val rate: Int, private val channels: Int) {
 }
 
 /** Attenuation only: never boost quiet/silent/unknown tracks or use invalid measurements. */
-fun normalizationGain(lufs: Double?, targetLufs: Double = -18.0): Float {
+fun normalizationGain(lufs: Double?, targetLufs: Double = NORMALIZATION_TARGET_LUFS): Float {
     if (lufs == null || !lufs.isFinite() || lufs !in -70.0..10.0 || !targetLufs.isFinite() || targetLufs !in -30.0..-10.0) return 1f
     return 10.0.pow((targetLufs - lufs).coerceIn(-60.0, 0.0) / 20.0).toFloat()
 }

@@ -4,6 +4,8 @@ import dev.radio.mobile.data.LocalSong
 import dev.radio.mobile.recommendation.StationOrigin
 import kotlinx.coroutines.flow.StateFlow
 
+data class PlaybackNotice(val id: Long, val message: String)
+
 /** Repeat off plays the queue once; all wraps at the end; one holds the current song. */
 enum class RepeatMode { OFF, ALL, ONE }
 
@@ -30,6 +32,10 @@ data class PlaybackState(
     val origins: Map<String, StationOrigin> = emptyMap(),
     /** Title of the song the station started from; null for Pick for me or outside Radio. */
     val stationSeedTitle: String? = null,
+    /** Radio was requested and its first batch is still being chosen; the queue below is still the old one. */
+    val radioStarting: Boolean = false,
+    /** The latest one-off message for the UI; a new [PlaybackNotice.id] means a new message. */
+    val notice: PlaybackNotice? = null,
 ) {
     val current: LocalSong? get() = queue.firstOrNull { it.id == currentId }
     val status: String get() = when {
@@ -49,7 +55,8 @@ fun playbackQueue(items: List<LocalSong>, selectedId: String): List<LocalSong> {
 
 interface PlaybackController {
     val state: StateFlow<PlaybackState>
-    fun playFrom(items: List<LocalSong>, selectedId: String, source: String)
+    fun playFrom(items: List<LocalSong>, selectedId: String, source: PlaySource)
+    fun playFrom(items: List<LocalSong>, selectedId: String, source: String) = playFrom(items, selectedId, PlaySource.of(source))
     fun toggle()
     fun pause()
     fun next()

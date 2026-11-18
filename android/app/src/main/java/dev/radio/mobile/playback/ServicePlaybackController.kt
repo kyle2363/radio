@@ -57,7 +57,7 @@ class ServicePlaybackController(context: Context) : PlaybackController {
             if (bound) pending += action
         }
     }
-    override fun playFrom(items: List<LocalSong>, selectedId: String, source: String) {
+    override fun playFrom(items: List<LocalSong>, selectedId: String, source: PlaySource) {
         val snapshot = items.toList()
         command { it.playFrom(snapshot, selectedId, source) }
     }

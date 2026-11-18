@@ -12,7 +12,7 @@ internal class InitializingPlaybackController(private val engine: PlaybackContro
         val actions = pending.toList(); pending.clear()
         actions.forEach { it() }
     }
-    override fun playFrom(items: List<LocalSong>, selectedId: String, source: String) {
+    override fun playFrom(items: List<LocalSong>, selectedId: String, source: PlaySource) {
         val snapshot = items.toList()
         command { engine.playFrom(snapshot, selectedId, source) }
     }

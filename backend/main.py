@@ -16,6 +16,8 @@ except ImportError:
 import asyncio
 import json
 import logging
+import math
+import re
 import sys
 import threading
 import tempfile
@@ -48,6 +50,8 @@ from engine import energy as energy_engine
 from engine.process_manager import get_process_manager
 
 logging.basicConfig(level=logging.INFO)
+# httpx logs every request at INFO (e.g. llama.cpp /v1/models health polls); keep warnings only.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 from access_logging import configure_access_logging
 configure_access_logging()
 logging.getLogger("torio._extension.utils").setLevel(logging.ERROR)
@@ -55,6 +59,14 @@ logger = logging.getLogger(__name__)
 _playback_logger = logging.getLogger(__name__ + ".playback")
 _server_ready = False
 _server_settings = load_server_settings()
+
+
+def _clear_stale_session_filters():
+    """Genre/artist filters are session-only; a persisted value (for example
+    from a settings import) must not silently narrow every later session."""
+    for key in ("genre_filter", "artist_filter"):
+        if database.get_setting(key):
+            database.set_setting(key, "")
 
 
 @asynccontextmanager
@@ -71,9 +83,7 @@ async def lifespan(app):
     database.init_db()
     database.close_stale_sessions()
     database.cleanup_old_mood_repulsion(days=30)
-    # Reset stale genre/artist filters (session-only)
-    if database.get_setting("genre_filter") == "jazz":
-        database.set_setting("genre_filter", "")
+    _clear_stale_session_filters()
     # Seed recommendation_filters if not present
     if not database.get_setting("recommendation_filters"):
         database.set_setting("recommendation_filters", json.dumps({
@@ -1468,7 +1478,11 @@ def library_verify():
 
 @app.post("/api/library/auto-match")
 def library_auto_match():
-    """Attempt to match orphaned DB entries to unregistered files by filename similarity."""
+    """Propose matches between orphaned DB entries and unregistered files.
+
+    Read-only: nothing is written here. The client shows the proposals and
+    applies the ones the user accepts through /api/library/confirm-match.
+    """
     from ingest.metadata import normalize_filename, _find_best_match
     from ingest.scanner import compute_file_hash
 
@@ -1492,14 +1506,15 @@ def library_auto_match():
     # Build unregistered list indexed by normalized stem
     from ingest.scanner import find_audio_files
     disk_files = find_audio_files(config.MUSIC_DIR)
-    unregistered_stems = {}  # normalized_stem -> filepath
-    unregistered_by_path = {}
+    # normalized_stem -> [filepath, ...]. Same-named files in different folders
+    # share a key; the matcher treats that as ambiguous instead of guessing.
+    unregistered_stems = {}
+    unregistered_total = 0
     for fp in disk_files:
         if compute_file_hash(fp) not in known_paths:
             stem = os.path.splitext(os.path.basename(fp))[0]
-            norm = normalize_filename(stem)
-            unregistered_stems[norm] = fp
-            unregistered_by_path[fp] = stem
+            unregistered_stems.setdefault(normalize_filename(stem), []).append(fp)
+            unregistered_total += 1
 
     # Match each orphan against unregistered files
     matched = []
@@ -1522,17 +1537,13 @@ def library_auto_match():
                 o_with_reason["reason"] = f"filepath owned by song {existing['id']}"
                 unmatched_orphans.append(o_with_reason)
                 continue
-            try:
-                new_hash = compute_file_hash(best_path)
-                database.update_song(o["id"], filepath=best_path, file_hash=new_hash)
-            except Exception as e:
-                o_with_reason = dict(o)
-                o_with_reason["reason"] = str(e)
-                unmatched_orphans.append(o_with_reason)
-                continue
-            # Remove matched path so it can't be re-matched to another orphan
+            # Remove the proposed path so it can't be offered to another orphan
             norm_best = normalize_filename(os.path.splitext(os.path.basename(best_path))[0])
-            unregistered_stems.pop(norm_best, None)
+            remaining = [path for path in unregistered_stems.get(norm_best, []) if path != best_path]
+            if remaining:
+                unregistered_stems[norm_best] = remaining
+            else:
+                unregistered_stems.pop(norm_best, None)
             matched.append({
                 "orphan_id": o["id"],
                 "old_filepath": o["filepath"],
@@ -1564,11 +1575,12 @@ def library_auto_match():
     return {
         "matched": matched,
         "match_count": len(matched),
+        "applied": False,
         "unmatched_orphans": unmatched_orphans,
         "unregistered_remaining": remaining_unregistered,
         "stats": {
             "orphaned_total": len(orphaned),
-            "unregistered_total": len(unregistered_stems),
+            "unregistered_total": unregistered_total,
             "matched": len(matched),
             "unmatched_orphans": len(unmatched_orphans),
             "remaining_files": len(remaining_unregistered),
@@ -1580,9 +1592,25 @@ def _validate_filepath_in_music_dir(filepath: str) -> str:
     """Resolve and validate that a filepath is within MUSIC_DIR. Returns the resolved path."""
     resolved = os.path.realpath(filepath)
     music_dir = os.path.realpath(config.MUSIC_DIR)
-    if not resolved.startswith(music_dir):
+    # Compare whole path components: a plain prefix test would accept a
+    # sibling such as "audio_files_old". normcase handles Windows casing.
+    folder, candidate = os.path.normcase(music_dir), os.path.normcase(resolved)
+    try:
+        inside = candidate != folder and os.path.commonpath([folder, candidate]) == folder
+    except ValueError:  # different drives
+        inside = False
+    if not inside:
         raise HTTPException(status_code=403, detail="Filepath is outside the music directory")
     return resolved
+
+
+def _music_dir_has_audio() -> bool:
+    """True when the configured music folder exists and holds at least one audio file."""
+    from ingest.scanner import AUDIO_EXTS
+    for _root, _dirs, filenames in os.walk(config.MUSIC_DIR):
+        if any(os.path.splitext(name)[1].lower() in AUDIO_EXTS for name in filenames):
+            return True
+    return False
 
 
 @app.post("/api/library/confirm-match")
@@ -1675,14 +1703,30 @@ def library_add_unregistered(req: dict):
 
 
 @app.post("/api/library/delete-all-orphaned")
-def library_delete_all_orphaned():
-    """Delete all orphaned DB entries (songs whose files are missing)."""
+def library_delete_all_orphaned(expected_count: int | None = Query(None)):
+    """Delete all orphaned DB entries (songs whose files are missing).
+
+    Deleting a song also removes its history, so this refuses to run when the
+    music folder itself is missing or empty (an unmounted drive or a wrong
+    RADIO_MUSIC_DIR would otherwise make every song look orphaned), and when
+    the caller confirmed a different number of songs than would be deleted.
+    """
+    if not _music_dir_has_audio():
+        raise HTTPException(
+            status_code=409,
+            detail="The music folder is missing or has no audio files. Nothing was deleted; "
+                   "check that the library is available before removing orphaned songs.")
     all_filepaths = database.get_all_filepaths()
     orphan_ids = []
     for song_id, fp in all_filepaths:
         if not os.path.exists(fp):
             orphan_ids.append(song_id)
 
+    if expected_count is not None and expected_count != len(orphan_ids):
+        raise HTTPException(
+            status_code=409,
+            detail=f"The library changed: {len(orphan_ids)} songs are orphaned now, not "
+                   f"{expected_count}. Nothing was deleted; review the list again.")
     if not orphan_ids:
         return {"status": "none", "deleted": 0}
 
@@ -3275,9 +3319,43 @@ def get_settings():
     return settings
 
 
+_SETTING_KEY_RE = re.compile(r"[a-z][a-z0-9_]{0,63}")
+_SETTING_MAX_LENGTH = 20000  # the largest real values are small JSON blobs (hotkeys, filters)
+# Numeric settings whose range the engine relies on. Others stay free-form text.
+_SETTING_RANGES = {"exploration_level": (0.0, 1.0), "jitter_strength": (0.0, 1.0)}
+
+
+def _validated_setting(key, value):
+    """Return the text to store for a setting, or raise ValueError saying why not."""
+    if not isinstance(key, str) or not _SETTING_KEY_RE.fullmatch(key):
+        raise ValueError("Setting names use lowercase letters, digits and underscores")
+    if isinstance(value, bool):
+        text = "true" if value else "false"
+    elif value is None:
+        text = ""
+    elif isinstance(value, (str, int, float)):
+        text = str(value)
+    else:
+        raise ValueError(f"Setting '{key}' must be text, a number or true/false")
+    if len(text) > _SETTING_MAX_LENGTH:
+        raise ValueError(f"Setting '{key}' is too long")
+    if key in _SETTING_RANGES:
+        low, high = _SETTING_RANGES[key]
+        try:
+            number = float(text)
+        except ValueError:
+            number = math.nan
+        if not (math.isfinite(number) and low <= number <= high):
+            raise ValueError(f"Setting '{key}' must be a number from {low:g} to {high:g}")
+    return text
+
+
 @app.put("/api/settings/{key}")
 def update_setting(key: str, body: dict):
-    value = body.get("value", "")
+    try:
+        value = _validated_setting(key, body.get("value", ""))
+    except ValueError as invalid:
+        raise HTTPException(422, str(invalid))
     if key == 'llm_reranking_enabled':
         if type(value) is bool:
             enabled = value
@@ -3372,51 +3450,77 @@ def export_settings():
 
 @app.post("/api/settings/import")
 def import_settings(body: dict):
-    """Import settings from JSON export. Merges with existing data."""
+    """Import settings from JSON export. Merges with existing data.
+
+    The file is untrusted input: entries that are malformed or out of range
+    are skipped (and reported) rather than written.
+    """
     data = body.get("data", body)
+    if not isinstance(data, dict):
+        raise HTTPException(422, "Settings import must be a JSON object")
     imported_settings = 0
     imported_collections = 0
     imported_metadata = 0
+    skipped_settings = []
 
-    if "settings" in data:
-        for key, value in data["settings"].items():
-            database.set_setting(key, str(value))
+    settings = data.get("settings")
+    if isinstance(settings, dict):
+        for key, value in settings.items():
+            try:
+                database.set_setting(key, _validated_setting(key, value))
+            except ValueError:
+                skipped_settings.append(str(key))
+                continue
             imported_settings += 1
 
-    if "collections" in data:
-        for col in data["collections"]:
-            existing = database.get_collection_by_name(col.get("name", ""))
-            if existing:
+    collections = data.get("collections")
+    if isinstance(collections, list):
+        for col in collections:
+            if not isinstance(col, dict):
                 continue
-            col_id = database.create_collection(
-                col.get("name", "Imported"),
-                col.get("description", ""),
-            )
-            for i, song_id in enumerate(col.get("song_ids", [])):
-                database.add_to_collection(col_id, song_id, position=i)
+            name = col.get("name")
+            if not isinstance(name, str) or not name.strip():
+                name = "Imported"
+            if database.get_collection_by_name(name):
+                continue
+            description = col.get("description")
+            col_id = database.create_collection(name, description if isinstance(description, str) else "")
+            song_ids = col.get("song_ids")
+            position = 0
+            for song_id in song_ids if isinstance(song_ids, list) else []:
+                # Song ids from another library may not exist here.
+                if type(song_id) is not int or not database.get_song(song_id):
+                    continue
+                database.add_to_collection(col_id, song_id, position=position)
+                position += 1
             imported_collections += 1
 
-    if "song_metadata" in data:
-        for song_id_str, meta in data["song_metadata"].items():
+    song_metadata = data.get("song_metadata")
+    if isinstance(song_metadata, dict):
+        for song_id_str, meta in song_metadata.items():
             try:
                 song_id = int(song_id_str)
             except (ValueError, TypeError):
                 continue
+            if not isinstance(meta, dict) or not database.get_song(song_id):
+                continue
             updates = {}
-            if meta.get("user_tags") is not None:
+            if isinstance(meta.get("user_tags"), str):
                 updates["user_tags"] = meta["user_tags"]
-            if meta.get("user_notes") is not None:
+            if isinstance(meta.get("user_notes"), str):
                 updates["user_notes"] = meta["user_notes"]
-            if meta.get("dj_effect_eligible") is not None:
+            if meta.get("dj_effect_eligible") in (0, 1, True, False, "0", "1"):
                 updates["dj_effect_eligible"] = int(meta["dj_effect_eligible"])
             if updates:
                 database.update_song(song_id, **updates)
                 imported_metadata += 1
 
-    logger.info("Settings import: %d settings, %d collections, %d song metadata", imported_settings, imported_collections, imported_metadata)
+    logger.info("Settings import: %d settings (%d skipped), %d collections, %d song metadata",
+                imported_settings, len(skipped_settings), imported_collections, imported_metadata)
     return {
         "status": "imported",
         "settings_count": imported_settings,
+        "skipped_settings": skipped_settings,
         "collections_count": imported_collections,
         "song_metadata_count": imported_metadata,
     }
@@ -3424,45 +3528,59 @@ def import_settings(body: dict):
 
 @app.post("/api/settings/wipe-db")
 def wipe_database():
-    """Wipe all database data, embeddings, and cached files. Requires restart."""
+    """Wipe the database and embeddings, then clear caches. Requires restart.
+
+    All or nothing, and recoverable: the SQLite files and the Chroma folder are
+    renamed into a timestamped backup folder under the data directory. A rename
+    either happens completely or not at all, and if any of them fails the
+    earlier ones are undone, so a failed wipe leaves the library as it was.
+    Regenerable caches (art, speech) are deleted only after that succeeds.
+    """
     import shutil
-    import config
-    import os
+    from db.chroma import release_chroma_client
 
+    backup_dir = os.path.join(config.DATA_DIR, "wiped-" + datetime.now().strftime("%Y%m%d-%H%M%S"))
+    # Chroma first: it is the store most likely to be held open.
+    targets = [config.CHROMA_PATH, config.DB_PATH, config.DB_PATH + "-wal", config.DB_PATH + "-shm"]
+    moved = []
     try:
-        # Close any existing DB connection
-        try:
-            conn = database.get_connection()
-            conn.close()
-        except Exception:
-            pass
-
-        # Remove DB file
-        if os.path.exists(config.DB_PATH):
-            os.remove(config.DB_PATH)
-            logger.info(f"Removed DB: {config.DB_PATH}")
-
-        # Remove ChromaDB data
-        if os.path.exists(config.CHROMA_PATH):
-            shutil.rmtree(config.CHROMA_PATH)
-            logger.info(f"Removed ChromaDB: {config.CHROMA_PATH}")
-
-        # Remove art files
-        if os.path.exists(config.ART_DIR):
-            shutil.rmtree(config.ART_DIR)
-            logger.info(f"Removed art dir: {config.ART_DIR}")
-
-        # Remove TTS cache
-        tts_cache = config.TTS_CACHE_DIR
-        if os.path.exists(tts_cache):
-            shutil.rmtree(tts_cache)
-            logger.info(f"Removed TTS cache: {tts_cache}")
-
-        logger.info("Full database wipe complete")
-        return {"status": "wiped", "message": "Database wiped. Please restart the server."}
+        # A running Chroma keeps its files open, which blocks the move on Windows.
+        release_chroma_client()
+        os.makedirs(backup_dir, exist_ok=True)
+        for source in targets:
+            if os.path.exists(source):
+                destination = os.path.join(backup_dir, os.path.basename(source))
+                os.rename(source, destination)
+                moved.append((source, destination))
     except Exception as e:
-        logger.error(f"Database wipe failed: {e}")
-        return {"status": "error", "message": str(e)}
+        restored = True
+        for source, destination in reversed(moved):
+            try:
+                os.rename(destination, source)
+            except OSError as undo_error:
+                restored = False
+                logger.error("Could not restore %s from %s: %s", source, destination, undo_error)
+        if restored:
+            try:
+                os.rmdir(backup_dir)
+            except OSError:
+                pass
+        logger.error("Database wipe failed: %s", e)
+        raise HTTPException(
+            status_code=409,
+            detail=(f"Wipe failed and nothing was removed: {e}. Stop playback and ingest, then try again."
+                    if restored else
+                    f"Wipe failed part-way: {e}. The moved files are in {backup_dir}."))
+
+    for cache_dir in (config.ART_DIR, config.TTS_CACHE_DIR):
+        shutil.rmtree(cache_dir, ignore_errors=True)
+    logger.info("Database wiped; previous data moved to %s", backup_dir)
+    return {
+        "status": "wiped",
+        "backup": backup_dir,
+        "message": f"Database wiped. The previous data was moved to {backup_dir}; "
+                   "delete that folder once you are sure. Please restart the server.",
+    }
 
 
 @app.post("/api/taste/reseed")

@@ -15,6 +15,7 @@ enum class Symbol(val path: String, val filled: Boolean = false) {
     More("M13.5 5 A1.5 1.5 0 1 1 10.5 5 A1.5 1.5 0 1 1 13.5 5 Z M13.5 12 A1.5 1.5 0 1 1 10.5 12 A1.5 1.5 0 1 1 13.5 12 Z M13.5 19 A1.5 1.5 0 1 1 10.5 19 A1.5 1.5 0 1 1 13.5 19 Z", true),
     Clock("M21 12 A9 9 0 1 1 3 12 A9 9 0 1 1 21 12 M12 7 V12 L15 14"),
     Add("M12 4 V20 M4 12 H20"),
+    Sort("M7 4 V20 M3 16 L7 20 L11 16 M17 20 V4 M13 8 L17 4 L21 8"),
     Up("M5 14 L12 7 L19 14"),
     Down("M5 10 L12 17 L19 10"),
     Remove("M4 6 H20 M9 6 V3 H15 V6 M6 6 L7 21 H17 L18 6"),
@@ -32,6 +33,7 @@ enum class Symbol(val path: String, val filled: Boolean = false) {
     Settings("M4 6 H20 M4 12 H20 M4 18 H20 M8 3 V9 M16 9 V15 M10 15 V21"),
     Queue("M4 5 H20 M4 10 H20 M4 15 H13 M17 14 L22 18 L17 22 Z"),
     Heart("M12 20 L3 11 C-1 3 8 0 12 7 C16 0 25 3 21 11 Z"),
+    HeartFilled("M12 20 L3 11 C-1 3 8 0 12 7 C16 0 25 3 21 11 Z", true),
     Shuffle("M3 6 H6 C12 6 12 18 18 18 H21 M18 15 L21 18 L18 21 M3 18 H6 C8 18 9 16 10 14 M14 10 C16 6 18 6 21 6 M18 3 L21 6 L18 9"),
     Lock("M4 11 H20 V20 H4 Z M8 11 V8.5 A4 4 0 0 1 16 8.5 V11"),
     Minimize("M4 8 H9 V3 M20 16 H15 V21"),
@@ -41,6 +43,10 @@ enum class Symbol(val path: String, val filled: Boolean = false) {
     Check("M5 12 L10 17 L19 7"),
     Block("M20 12 A8 8 0 1 1 4 12 A8 8 0 1 1 20 12 M6.5 6.5 L17.5 17.5"),
     Warning("M12 4 L21 20 H3 Z M12 10 V14 M12 17 V17.5"),
+    Gem("M6 3 H18 L22 9 L12 21 L2 9 Z M2 9 H22 M12 21 L8 9 L12 3 L16 9 L12 21"),
+    Chart("M5 20 V13 M12 20 V5 M19 20 V9 M3 20 H21"),
+    Person("M16 8 A4 4 0 1 1 8 8 A4 4 0 1 1 16 8 M4 21 C4 16 8 14 12 14 C16 14 20 16 20 21"),
+    Sliders("M6 4 V20 M12 4 V20 M18 4 V20 M3 9 H9 M9 15 H15 M15 7 H21"),
     Forward("M9 5 L16 12 L9 19")
 }
 

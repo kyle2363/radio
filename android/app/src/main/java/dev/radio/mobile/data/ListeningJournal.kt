@@ -4,10 +4,15 @@ import androidx.room.*
 import kotlinx.coroutines.flow.Flow
 
 /** Immutable observations. Extra diagnostic fields deliberately stay outside the wire payload. */
-@Entity(tableName = "local_listening_events", indices = [Index(value = ["attemptId", "kind"], unique = true)])
+@Entity(tableName = "local_listening_events", indices = [Index(value = ["attemptId", "kind"], unique = true), Index(value = ["kind", "occurredAt"]), Index(value = ["localId", "kind"])])
 data class LocalListeningEvent(@PrimaryKey val eventId: String, val localId: String, val attemptId: String?,
     val kind: String, val occurredAt: Long, val logicalClock: Long, val payload: String,
     val listenedMs: Long, val completion: Double?, val terminationReason: String?, val provenance: String)
+
+/** Where an actual start came from (checkpoint 8A). Local only: never synced, never in the wire payload. */
+@Entity(tableName = "local_play_context", indices = [Index(value = ["startedAt"])])
+data class LocalPlayContext(@PrimaryKey val attemptId: String, val localId: String, val sourceKind: String, val sourceId: String?,
+    val stationOrigin: String?, val trigger: String, val startedAt: Long)
 
 @Entity(tableName = "local_event_outbox")
 data class LocalEventOutbox(@PrimaryKey val eventId: String, val serverId: String?, val deviceId: String, val payload: String,
@@ -39,6 +44,8 @@ data class LocalSongFeedback(@PrimaryKey val localId: String, val favorite: Bool
     @Query("SELECT * FROM local_listening_events ORDER BY logicalClock DESC LIMIT 200") fun observeEvents(): Flow<List<LocalListeningEvent>>
     @Query("SELECT * FROM local_song_feedback") fun observeFeedback(): Flow<List<LocalSongFeedback>>
     @Query("SELECT * FROM local_song_feedback") suspend fun allFeedback(): List<LocalSongFeedback>
+    /** Everything the automatic playlists (Top 100, Recently played, Liked songs) are built from; re-emits on each journal write. */
+    @Query("SELECT localId, kind, completion, occurredAt FROM local_listening_events WHERE kind IN ('song_started','song_completed','song_skipped','attempt_stopped','favorite_changed')") fun observeSmartListRows(): Flow<List<SmartListRow>>
     @Query("SELECT * FROM local_listening_events WHERE attemptId=:attempt AND kind='song_started' LIMIT 1") suspend fun start(attempt: String): LocalListeningEvent?
     @Query("SELECT * FROM local_listening_events WHERE attemptId=:attempt AND kind=:kind LIMIT 1") suspend fun event(attempt: String, kind: String): LocalListeningEvent?
     @Query("SELECT * FROM local_listening_events WHERE attemptId=:attempt AND kind IN ('song_completed','song_skipped','attempt_stopped') LIMIT 1") suspend fun terminal(attempt: String): LocalListeningEvent?
@@ -50,6 +57,7 @@ data class LocalSongFeedback(@PrimaryKey val localId: String, val favorite: Bool
     @Query("SELECT * FROM local_event_outbox WHERE eventId IN (:ids)") suspend fun radioOrigins(ids:List<String>): List<LocalEventOutbox>
     @Query("SELECT o.* FROM local_event_outbox o INNER JOIN local_listening_events e ON e.eventId=o.eventId WHERE o.serverId=:serverId AND e.kind IN ('favorite_changed','dislike_changed','blacklist_changed','energy_changed','preference_changed')") suspend fun profileLocalEvents(serverId:String):List<LocalEventOutbox>
     @Query("SELECT * FROM local_event_outbox WHERE acknowledged=0 ORDER BY rowid") suspend fun pendingOutbox(): List<LocalEventOutbox>
+    @Query("SELECT * FROM local_event_outbox WHERE serverId=:serverId AND payload LIKE '%\"kind\":\"playlist_%' ORDER BY rowid") suspend fun playlistOutbox(serverId:String): List<LocalEventOutbox>
     @Query("SELECT COUNT(*) FROM local_event_outbox WHERE acknowledged=0 AND serverId IS NOT NULL") fun observePendingSyncCount():Flow<Int>
     @Query("SELECT * FROM local_event_outbox") suspend fun outbox(): List<LocalEventOutbox>
     @Query("SELECT value FROM local_journal_clock WHERE `key`=1") suspend fun clock(): Long?
@@ -66,6 +74,11 @@ data class LocalSongFeedback(@PrimaryKey val localId: String, val favorite: Bool
     @Query("SELECT * FROM portable_sync_owner WHERE ownerKey=:ownerKey") suspend fun syncOwner(ownerKey:String):PortableSyncOwner?
     @Query("SELECT * FROM portable_sync_owner ORDER BY ownerKey") suspend fun syncOwners():List<PortableSyncOwner>
     @Insert suspend fun insert(event: LocalListeningEvent)
+    @Insert(onConflict = OnConflictStrategy.IGNORE) suspend fun playContext(value: LocalPlayContext)
+    /** One row per actual start with its outcome and context (checkpoint 8B); stats never read raw events. */
+    @Query("SELECT s.attemptId AS attemptId, s.localId AS localId, s.occurredAt AS startedAt, t.kind AS endKind, t.listenedMs AS listenedMs, t.completion AS completion, t.terminationReason AS terminationReason, c.sourceKind AS sourceKind, c.sourceId AS sourceId, c.stationOrigin AS stationOrigin, c.`trigger` AS `trigger` FROM local_listening_events s LEFT JOIN local_listening_events t ON t.attemptId=s.attemptId AND t.kind IN ('song_completed','song_skipped','attempt_stopped') LEFT JOIN local_play_context c ON c.attemptId=s.attemptId WHERE s.kind='song_started' AND s.attemptId IS NOT NULL ORDER BY s.occurredAt") suspend fun statsAttempts(): List<StatsAttempt>
+    @Query("SELECT * FROM local_play_context WHERE attemptId=:attempt") suspend fun playContext(attempt: String): LocalPlayContext?
+    @Query("SELECT * FROM local_play_context ORDER BY startedAt") suspend fun playContexts(): List<LocalPlayContext>
     @Insert suspend fun enqueue(event: LocalEventOutbox)
     @Upsert suspend fun clock(value: LocalJournalClock)
     @Upsert suspend fun feedback(value: LocalSongFeedback)

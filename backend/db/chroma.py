@@ -32,6 +32,36 @@ def get_chroma_client():
     return _chroma_client
 
 
+def release_chroma_client():
+    """Stop Chroma and forget cached clients so its folder can be moved.
+
+    Every PersistentClient for one path shares a single running system that
+    keeps the store's files open; on Windows that blocks renaming or deleting
+    the folder. Returns True when a running system was stopped. The next
+    get_chroma_client() call starts a fresh one.
+    """
+    import sys
+
+    global _chroma_client
+    with _chroma_lock:
+        _chroma_client = None
+    embedder = sys.modules.get("ingest.embedder")
+    if embedder is not None:
+        embedder._chroma_client = None
+    if "chromadb" not in sys.modules:
+        return False  # never started; do not load the library just to stop it
+    from chromadb.api.shared_system_client import SharedSystemClient
+
+    systems = list(SharedSystemClient._identifier_to_system.values())
+    for system in systems:
+        try:
+            system.stop()
+        except Exception as error:
+            logger.warning("Could not stop a ChromaDB system: %s", error)
+    SharedSystemClient.clear_system_cache()
+    return bool(systems)
+
+
 def get_chroma_collection(name="songs"):
     """Get or create a ChromaDB collection by name."""
     client = get_chroma_client()

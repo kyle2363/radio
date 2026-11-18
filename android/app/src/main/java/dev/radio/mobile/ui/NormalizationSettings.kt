@@ -19,7 +19,7 @@ fun NormalizationSettings(repository: LoudnessRepository, library: LibraryState,
             Text("Volume normalization", Modifier.weight(1f), style = MaterialTheme.typography.titleSmall)
             Switch(state.enabled, onCheckedChange = repository::setEnabled, modifier = Modifier.testTag("normalization-switch"))
         }
-        Text("Lowers louder measured songs toward −18 LUFS. Quiet, silent and unmeasured songs stay unchanged. Your phone volume and music files stay under your control.", style = MaterialTheme.typography.bodySmall)
+        Text("Lowers louder measured songs toward −14 LUFS (Spotify’s level). Quiet, silent and unmeasured songs stay unchanged. Your phone volume and music files stay under your control.", style = MaterialTheme.typography.bodySmall)
         Text("${state.measured} / ${state.available} songs measured" + if (state.failed > 0) " · ${state.failed} need retry" else "", Modifier.padding(vertical = 8.dp), style = MaterialTheme.typography.labelMedium)
         if (currentId != null && state.enabled) Text(if (state.profile.gain(currentId) < 1f) "Current song: volume reduced" else "Current song: original level", style = MaterialTheme.typography.bodySmall)
         if (analysis.running) {

@@ -999,10 +999,15 @@ function SettingsContent({ addToast, sectionSpacing, onSectionSpacingChange, rig
                   <button onClick={async () => {
                     setWiping(true);
                     try {
-                      await api.wipeDatabase();
-                      addToast?.("Database wiped. Reloading...", "success");
-                      setTimeout(() => window.location.reload(), 1500);
-                    } catch (e) { addToast?.("Wipe failed: " + (e.message || "unknown error"), "error"); }
+                      const result = await api.wipeDatabase();
+                      addToast?.(`Database wiped. The old data was kept in ${result?.backup || "the data folder"}. Reloading...`, "success");
+                      setTimeout(() => window.location.reload(), 4000);
+                    } catch (e) {
+                      // Refusals arrive as {"detail": "..."}; show the sentence, not the JSON.
+                      let reason = e.message || "unknown error";
+                      try { reason = JSON.parse(reason).detail || reason; } catch (_) {}
+                      addToast?.(reason, "error");
+                    }
                     setWiping(false);
                   }} disabled={wiping}
                     style={{ fontSize: "11px", padding: "5px 12px", borderRadius: "5px", background: "#3a0000", border: "1px solid #6a1010", color: "var(--danger)", cursor: "pointer", fontWeight: 600 }}>

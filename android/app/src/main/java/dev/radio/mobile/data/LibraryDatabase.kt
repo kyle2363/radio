@@ -48,8 +48,10 @@ data class LocalSong(
     val durationMs: Long?,
     val available: Boolean = true
 ) {
-    @get:Ignore val title: String get() = fileName.replace(Regex("(?i)\\.mp3$"), "")
-    @get:Ignore val artist: String get() = "Local MP3"
+    /** Read from the file name ("Artist - Title.mp3"); parsed once per name. */
+    @get:Ignore val title: String get() = dev.radio.mobile.music.SongNames.of(fileName).title
+    /** Empty when the file name has no artist part. */
+    @get:Ignore val artist: String get() = dev.radio.mobile.music.SongNames.of(fileName).artist
     @get:Ignore val seconds: Int get() = ((durationMs ?: 0L) / 1000).toInt()
 }
 
@@ -60,6 +62,7 @@ interface LibraryDao {
     @Query("SELECT * FROM local_folders WHERE rootUri = :uri") suspend fun folders(uri: String): List<LocalFolder>
     @Query("SELECT * FROM local_songs") suspend fun allSongs(): List<LocalSong>
     @Query("SELECT * FROM local_songs WHERE id = :id LIMIT 1") suspend fun song(id: String): LocalSong?
+    @Query("SELECT id FROM local_songs") suspend fun allSongIds(): List<String>
     @Query("UPDATE local_songs SET available = 0 WHERE rootUri = :uri") suspend fun markSongsMissing(uri: String)
     @Query("UPDATE local_folders SET available = 0 WHERE rootUri = :uri") suspend fun markFoldersMissing(uri: String)
     @Upsert suspend fun saveRoot(root: LibraryRoot)
@@ -69,6 +72,8 @@ interface LibraryDao {
     @Query("SELECT * FROM local_playback_starts ORDER BY occurredAt") suspend fun playbackStarts(): List<LocalPlaybackStart>
     @Query("SELECT * FROM local_playback_starts WHERE attemptId=:attempt LIMIT 1") suspend fun playbackStart(attempt: String): LocalPlaybackStart?
     @Query("SELECT * FROM local_playback_snapshot WHERE `key` = 1") suspend fun playbackSnapshot(): LocalPlaybackSnapshot?
+    /** Row 2 holds only the latest position, so a playing queue isn't rewritten whole every few seconds. */
+    @Query("SELECT * FROM local_playback_snapshot WHERE `key` = 2") suspend fun playbackPosition(): LocalPlaybackSnapshot?
     @Upsert suspend fun savePlaybackSnapshot(snapshot: LocalPlaybackSnapshot)
     @Query("DELETE FROM local_playback_snapshot") suspend fun clearPlaybackSnapshot()
 }
@@ -152,5 +157,22 @@ val LIBRARY_MIGRATION_9_10 = object : Migration(9, 10) {
         db.execSQL("CREATE INDEX IF NOT EXISTS index_local_lyrics_cache_serverId_catalogId_revision ON local_lyrics_cache (serverId, catalogId, revision)")
     }
 }
-@Database(entities = [LibraryRoot::class, LocalSong::class, LocalFolder::class, LocalPlaybackStart::class, LocalPlaybackSnapshot::class, LocalPlaylist::class, LocalPlaylistSong::class, LocalLoudness::class, PortableCatalogRevision::class, PortableCatalogSong::class, PortableCatalogVector::class, PortableCatalogActive::class, LocalContentHash::class, PortableMatchDecision::class, LocalListeningEvent::class, LocalEventOutbox::class, LocalJournalClock::class, LocalSongFeedback::class, PortableSyncCursor::class, PortableRemoteEvent::class, PortableProfileRegister::class, PortableSyncOwner::class, LocalLyricsCache::class], version = 10, exportSchema = true)
+/** Checkpoint 7A: playlist sync flags and shared order keys; existing playlists stay local. */
+val LIBRARY_MIGRATION_10_11 = object : Migration(10, 11) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE local_playlists ADD COLUMN synced INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("ALTER TABLE local_playlists ADD COLUMN remoteDeleted INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("ALTER TABLE local_playlist_songs ADD COLUMN positionKey TEXT")
+    }
+}
+/** Checkpoint 8A: local-only play context per actual start, and journal indices for stats. */
+val LIBRARY_MIGRATION_11_12 = object : Migration(11, 12) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS local_play_context (attemptId TEXT NOT NULL, localId TEXT NOT NULL, sourceKind TEXT NOT NULL, sourceId TEXT, stationOrigin TEXT, `trigger` TEXT NOT NULL, startedAt INTEGER NOT NULL, PRIMARY KEY(attemptId))")
+        db.execSQL("CREATE INDEX IF NOT EXISTS index_local_play_context_startedAt ON local_play_context (startedAt)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS index_local_listening_events_kind_occurredAt ON local_listening_events (kind, occurredAt)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS index_local_listening_events_localId_kind ON local_listening_events (localId, kind)")
+    }
+}
+@Database(entities = [LibraryRoot::class, LocalSong::class, LocalFolder::class, LocalPlaybackStart::class, LocalPlaybackSnapshot::class, LocalPlaylist::class, LocalPlaylistSong::class, LocalLoudness::class, PortableCatalogRevision::class, PortableCatalogSong::class, PortableCatalogVector::class, PortableCatalogActive::class, LocalContentHash::class, PortableMatchDecision::class, LocalListeningEvent::class, LocalEventOutbox::class, LocalJournalClock::class, LocalSongFeedback::class, PortableSyncCursor::class, PortableRemoteEvent::class, PortableProfileRegister::class, PortableSyncOwner::class, LocalLyricsCache::class, LocalPlayContext::class], version = 12, exportSchema = true)
 abstract class LibraryDatabase : RoomDatabase() { abstract fun library(): LibraryDao; abstract fun playlists(): PlaylistDao; abstract fun loudness(): LoudnessDao; abstract fun catalogs(): PortableCatalogDao; abstract fun matching(): MatchingDao; abstract fun journal(): ListeningJournalDao; abstract fun lyrics(): LyricsCacheDao }

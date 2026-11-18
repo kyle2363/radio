@@ -1,5 +1,10 @@
 package dev.radio.mobile.ui
 
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.SizeTransform
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.verticalScroll
@@ -28,7 +33,7 @@ import dev.radio.mobile.recommendation.*
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun RadioContent(radio:RadioState,repository:RadioRepository,audio:PlaybackState,playback:PlaybackController,library:LibraryState,onLibrary:()->Unit,onPlayer:()->Unit,modifier:Modifier=Modifier,connected:ConnectedUi=ConnectedUi(),
-    paired:Boolean=false,onChooseFolder:()->Unit={},onRescan:()->Unit={},onFullQueue:()->Unit={},onEnd:()->Unit={},openTune:Boolean=false,onTuneOpened:()->Unit={},onServer:()->Unit={}) {
+    paired:Boolean=false,onChooseFolder:()->Unit={},onRescan:()->Unit={},onFullQueue:()->Unit={},onEnd:()->Unit={},openTune:Boolean=false,onTuneOpened:()->Unit={},onServer:()->Unit={},positionMs:()->Long={audio.positionMs}) {
     var tuning by remember { mutableStateOf(false) }
     var confirm by remember { mutableStateOf(false) }
     var seedPicker by remember { mutableStateOf(false) }
@@ -46,26 +51,16 @@ fun RadioContent(radio:RadioState,repository:RadioRepository,audio:PlaybackState
     }
     fun start(seed:String?){playback.startRadio(seed);onPlayer()}
     LazyColumn(modifier.fillMaxSize().testTag("radio-screen"),contentPadding=PaddingValues(start=16.dp,end=16.dp,bottom=16.dp),verticalArrangement=Arrangement.spacedBy(16.dp)) {
-        item(key="header") {
-            Row(Modifier.fillMaxWidth().padding(start=4.dp,top=12.dp),verticalAlignment=Alignment.Bottom) {
-                Column(Modifier.weight(1f)) {
-                    Text("Radio",Modifier.semantics{heading()},style=MaterialTheme.typography.headlineMedium)
-                    Text(when {
-                        library.accessLost -> "Music folder access was lost"
-                        library.scanning -> "Scanning your library…"
-                        radio.loaded -> "%,d songs ready on this phone".format(radio.diagnostics.eligibleTracks)
-                        else -> radio.status
-                    },style=MaterialTheme.typography.bodySmall,color=if(library.accessLost)MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.testTag("radio-status"))
-                }
-                if(onAir)OutlinedButton(onClick={tuning=true},modifier=Modifier.testTag("tune-radio")){RadioIcon(Symbol.Settings,modifier=Modifier.size(16.dp));Spacer(Modifier.width(6.dp));Text("Tune")}
-            }
-        }
         item(key="station") {
-            when {
-                onAir -> OnAirStationCard(audio,radio,onOpenPlayer=onPlayer,onVibe={if(radio.vibeLocalId!=null)repository.clearVibe() else repository.lockVibe()},
-                    onNewMix={playback.newMix()},onEnd=onEnd)
-                block!=null -> BlockedStationCard(block,library.scannedCount,library.songs.size,onChooseFolder,onLibrary,onRescan)
-                else -> OffAirStationCard(canStart,onPickForMe={if(audio.queue.isNotEmpty())confirm=true else start(null)},onFromSong={seedPicker=true})
+            // Off air ↔ on air crossfades, and the card eases to its new height.
+            val card=when{onAir->"on";block!=null->"blocked";else->"off"}
+            AnimatedContent(card,transitionSpec={(fadeIn(Motion.standard()) togetherWith fadeOut(Motion.quick())).using(SizeTransform(clip=false))},label="station-card"){shown->
+            when(shown) {
+                "on" -> OnAirStationCard(audio,radio,onOpenPlayer=onPlayer,onVibe={if(radio.vibeLocalId!=null)repository.clearVibe() else repository.lockVibe()},
+                    onNewMix={playback.newMix()},onEnd=onEnd,positionMs=positionMs)
+                "blocked" -> if(block!=null) BlockedStationCard(block,library.scannedCount,library.songs.size,onChooseFolder,onLibrary,onRescan)
+                else -> OffAirStationCard(canStart && !audio.radioStarting,onPickForMe={if(audio.queue.isNotEmpty())confirm=true else start(null)},onFromSong={seedPicker=true})
+            }
             }
         }
         radio.error?.let{error->item(key="error"){Text(error,Modifier.padding(horizontal=4.dp),color=MaterialTheme.colorScheme.error)}}
@@ -123,7 +118,8 @@ fun RadioContent(radio:RadioState,repository:RadioRepository,audio:PlaybackState
             TextButton(onClick={showDiagnostics=true},modifier=Modifier.testTag("recommendation-details")){Text("Station details")}
         }
     }
-    if(seedPicker) StartFromSongSheet(library.songs.filter{it.available && !repository.isDisliked(it.id)},audio.queue.size,audio.source,
+    val seedSongs=remember(library.songs,seedPicker){ if(seedPicker) library.songs.filter{it.available && !repository.isDisliked(it.id)}.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER){it:dev.radio.mobile.data.LocalSong->it.title}) else emptyList() }
+    if(seedPicker) StartFromSongSheet(seedSongs,audio.queue.size,audio.source,
         onStart={id->seedPicker=false;start(id)},onDismiss={seedPicker=false})
     if(bootstrapPicker) BootstrapSongPicker(
         songs=library.songs.filter { it.available && it.id in radio.bootstrapCandidates },
@@ -166,7 +162,7 @@ fun RadioContent(radio:RadioState,repository:RadioRepository,audio:PlaybackState
                 Text(preset.label,Modifier.weight(1f),style=MaterialTheme.typography.bodySmall,
                     textAlign=when(index){0->androidx.compose.ui.text.style.TextAlign.Start;ExplorationPreset.entries.lastIndex->androidx.compose.ui.text.style.TextAlign.End;else->androidx.compose.ui.text.style.TextAlign.Center},
                     color=if(ExplorationPreset.nearest(exploration.toDouble())==preset)MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant)}}
-            Text("At Familiar, Radio stays near the starting song. Listening taste breaks near ties.",Modifier.padding(top=8.dp),style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("At Closest (0%), Radio keeps to the most similar songs. Listening taste breaks near ties.",Modifier.padding(top=8.dp),style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
             HorizontalDivider(Modifier.padding(top=16.dp))
             val connectedTuning by repository.connectedTuning.collectAsState()
             DesktopPicksSection(connected,paired,connectedTuning,onToggle=repository::setConnectedEnabled,onChange=repository::setConnectedTuning,onPair=onServer)

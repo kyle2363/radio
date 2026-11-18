@@ -73,6 +73,8 @@ class LyricsRepository internal constructor(
     private val identityFor: (LocalSong) -> JournalIdentity = { JournalIdentityProvider.captureCurrent(it) },
     private val now: () -> Long = System::currentTimeMillis,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
+    /** Rebuilds the mapping cache after pairing, catalog or decision changes invalidated it. */
+    private val reloadMappings: suspend () -> Unit = {},
 ) {
     private val mutable = MutableStateFlow(LyricsState())
     val state: StateFlow<LyricsState> = mutable.asStateFlow()
@@ -154,7 +156,12 @@ class LyricsRepository internal constructor(
             var mapping = mappings()
             if (!mapping.loaded) {
                 publish(generation, LyricsState(song.id, LyricsStatus.CHECKING_MATCH, message = "Checking this song’s match…"))
-                mapping = awaitMappings() ?: run {
+                // Nothing else reloads an invalidated cache until the Matching screen opens.
+                // A load can also bail out when the library changes mid-read, so try twice.
+                mapping = (1..2).firstNotNullOfOrNull {
+                    scope.launch { runCatching { reloadMappings() } }
+                    awaitMappings()
+                } ?: run {
                     publish(generation, LyricsState(song.id, LyricsStatus.ERROR, message = "Matching is still unavailable. Check the Matching screen and retry."))
                     return@withContext
                 }
@@ -341,7 +348,7 @@ class LyricsRepository internal constructor(
                 LyricsRepository(db, PairedLyricsGateway(pairing), {
                     val snapshot = store.load()
                     !snapshot.quarantined && snapshot.record?.let { it.deviceId != null && !it.authorizationBlocked } == true
-                }).also { instance = it }
+                }, reloadMappings = { dev.radio.mobile.portable.MatchingRepository.get(app).load() }).also { instance = it }
             }
         }
 

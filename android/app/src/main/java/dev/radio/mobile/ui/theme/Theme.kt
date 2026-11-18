@@ -87,6 +87,7 @@ fun RadioTheme(
     MaterialTheme(
         colorScheme = colorScheme,
         typography = Typography,
+        shapes = RadioMaterialShapes,
         content = content
     )
 }

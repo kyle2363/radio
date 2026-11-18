@@ -143,7 +143,7 @@ The main ingest pipeline runs sequentially:
 
 Audio understanding supplies captions/metadata; the describe stage imports that metadata and adds LLM tags. Text embeddings, optional audio embeddings and clustering support recommendations. Export a portable catalog after ingest has settled.
 
-Use the app's ingest controls or the phase functions in [the pipeline](backend/ingest/pipeline.py). The [manual shortcut](backend/ingest.py) selects a phase in source. Lyrics helpers and `batch_*.py` files are operational scripts that can modify metadata or runtime state; inspect their options and targets before running them. They are not test fixtures.
+Use the app's ingest controls or the phase functions in [the pipeline](backend/ingest/pipeline.py). The [manual shortcut](scripts/maintenance/run_ingest_phase.py) selects a phase in source. Lyrics helpers and the other files in [scripts/maintenance](scripts/maintenance) are operational scripts that can modify metadata or runtime state; inspect their options and targets before running them. They are not test fixtures.
 
 ### Packaging
 
@@ -181,7 +181,7 @@ For a disposable desktop test environment, run from the repository root:
 backend\venv\Scripts\python -B scripts/run_isolated_app.py --port 18765
 ```
 
-Generated media, fixtures and test output belong in `.test-runtime/`. Automated checks must not write to the original music, operational metadata, production database or production Chroma store. Root `test_*.py` scripts are not the backend test suite. Emulator checks do not replace phone acceptance for Bluetooth, battery and playback ergonomics.
+Generated media, fixtures and test output belong in `.test-runtime/`. Automated checks must not write to the original music, operational metadata, production database or production Chroma store. The `test_*.py` scripts in `scripts/maintenance/` are not the backend test suite. Emulator checks do not replace phone acceptance for Bluetooth, battery and playback ergonomics.
 
 ## Repository map and documentation
 

@@ -12,7 +12,11 @@ class FakePlaybackController : PlaybackController {
     var replayCount = 0
     var startRadioCount = 0
     var lastRadioSeed: String? = null
-    override fun startRadio(seedLocalId: String?) { lastRadioSeed = seedLocalId; startRadioCount++; mutable.update { it.copy(radioActive = true) } }
+    /** When true, startRadio only reports a pending start (like the service while it builds the batch) until [finishRadioStart]. */
+    var holdRadioStart = false
+    override fun startRadio(seedLocalId: String?) { lastRadioSeed = seedLocalId; startRadioCount++
+        mutable.update { if (holdRadioStart) it.copy(radioStarting = true) else it.copy(radioActive = true, radioStarting = false) } }
+    fun finishRadioStart() { mutable.update { it.copy(radioActive = true, radioStarting = false, source = "Radio") } }
     override fun stopRadio() { mutable.update { it.copy(radioActive = false) } }
     override fun next(reason: String) { lastSkipReason = reason; next() }
     override fun replay() { replayCount++; seek(0) }
@@ -22,10 +26,10 @@ class FakePlaybackController : PlaybackController {
         mutable.update { old -> old.copy(currentId = id, positionMs = 0, durationMs = old.queue.first { it.id == id }.durationMs,
             isPlaying = playing, playWhenReady = playing, seekable = true, canPrevious = true, canNext = old.queue.indexOfFirst { it.id == id } < old.queue.lastIndex) }
     }
-    override fun playFrom(items: List<LocalSong>, selectedId: String, source: String) {
+    override fun playFrom(items: List<LocalSong>, selectedId: String, source: dev.radio.mobile.playback.PlaySource) {
         val queue = playbackQueue(items, selectedId)
         if (queue.isEmpty()) return
-        mutable.value = PlaybackState(queue = queue, source = source, playOrder = queue.map { it.id })
+        mutable.value = PlaybackState(queue = queue, source = source.label, playOrder = queue.map { it.id })
         select(selectedId, true)
     }
     override fun toggle() { mutable.update { it.copy(isPlaying = !it.isPlaying, playWhenReady = !it.playWhenReady) } }

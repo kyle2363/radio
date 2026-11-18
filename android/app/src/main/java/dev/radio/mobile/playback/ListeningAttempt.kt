@@ -8,10 +8,12 @@ class ListeningAttempt(val id: String, val songId: String) {
     private var started = false
     private var finished = false
     val isFinished: Boolean get() = finished
-    fun observe(now: Long, isPlaying: Boolean): Boolean {
+    private var rate = 1f
+    /** [rate] is the playback speed from now on: at 1.5x, ten seconds of listening covers fifteen seconds of the song. */
+    fun observe(now: Long, isPlaying: Boolean, rate: Float = 1f): Boolean {
         if (finished) return false
-        last?.let { if (audible) listened += (now - it).coerceAtLeast(0) }
-        last = now; audible = isPlaying
+        last?.let { if (audible) listened += ((now - it).coerceAtLeast(0) * this.rate).toLong() }
+        last = now; audible = isPlaying; this.rate = rate
         return if (isPlaying && !started) { started = true; true } else false
     }
     fun finish(now: Long): Long? {

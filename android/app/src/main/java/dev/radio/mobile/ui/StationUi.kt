@@ -2,6 +2,12 @@
 
 package dev.radio.mobile.ui
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.border
@@ -19,6 +25,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
@@ -26,13 +33,17 @@ import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.radio.mobile.data.LocalSong
 import dev.radio.mobile.playback.PlaybackState
 import dev.radio.mobile.recommendation.*
+import androidx.compose.ui.graphics.luminance
 import dev.radio.mobile.ui.theme.LocalStationColors
+import dev.radio.mobile.ui.theme.MoodColors
+import dev.radio.mobile.ui.theme.RadioShapes
 
 // Checkpoint 4.2 Radio surfaces. Copy and layout follow the accepted redesign canvas.
 
@@ -56,8 +67,8 @@ fun OnAirPill(text: String, modifier: Modifier = Modifier) {
 @Composable
 private fun StationSurface(modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) {
     val colors = LocalStationColors.current
-    Surface(modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp), color = Color(colors.base), contentColor = Color.White) {
-        Column(Modifier.padding(horizontal = 18.dp, vertical = 18.dp), verticalArrangement = Arrangement.spacedBy(12.dp), content = content)
+    Surface(modifier.fillMaxWidth(), shape = RoundedCornerShape(36.dp), color = Color(colors.base), contentColor = Color.White) {
+        Column(Modifier.padding(horizontal = 20.dp, vertical = 20.dp), verticalArrangement = Arrangement.spacedBy(12.dp), content = content)
     }
 }
 
@@ -78,7 +89,7 @@ private fun StationOutlinedButton(text: String, onClick: () -> Unit, modifier: M
 @Composable
 private fun StationFilledButton(text: String, onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true, symbol: Symbol? = null) {
     val colors = LocalStationColors.current
-    Button(onClick, modifier.fillMaxWidth().heightIn(min = 52.dp), enabled = enabled,
+    Button(onClick, modifier.fillMaxWidth().heightIn(min = 60.dp), enabled = enabled, shape = RadioShapes.Squircle,
         colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Color(colors.base), disabledContainerColor = Color(colors.track), disabledContentColor = Color(0xFF8B9AB0))) {
         symbol?.let { RadioIcon(it, modifier = Modifier.size(20.dp)); Spacer(Modifier.width(8.dp)) }
         Text(text, style = MaterialTheme.typography.titleSmall)
@@ -137,7 +148,8 @@ fun BlockedStationCard(block: StationBlock, scanned: Int, total: Int, onChooseFo
 }
 
 @Composable
-fun OnAirStationCard(audio: PlaybackState, radio: RadioState, onOpenPlayer: () -> Unit, onVibe: () -> Unit, onNewMix: () -> Unit, onEnd: () -> Unit, modifier: Modifier = Modifier) {
+fun OnAirStationCard(audio: PlaybackState, radio: RadioState, onOpenPlayer: () -> Unit, onVibe: () -> Unit, onNewMix: () -> Unit, onEnd: () -> Unit, modifier: Modifier = Modifier,
+    positionMs: () -> Long = { audio.positionMs }) {
     val colors = LocalStationColors.current
     val muted = Color(colors.muted)
     val song = audio.current
@@ -146,6 +158,7 @@ fun OnAirStationCard(audio: PlaybackState, radio: RadioState, onOpenPlayer: () -
         Row(verticalAlignment = Alignment.CenterVertically) {
             OnAirPill("On air")
             Spacer(Modifier.weight(1f))
+            Box(Modifier.padding(end = 6.dp).size(8.dp).background(Color(MoodColors.of(radio.mood).accent), CircleShape))
             Text("${moodLabel(radio.mood)} · ${ExplorationPreset.nearest(radio.exploration).label}", color = muted, fontSize = 12.sp, modifier = Modifier.testTag("station-tuning-label"))
         }
         if (song != null) Row(Modifier.fillMaxWidth().clickable(role = Role.Button, onClickLabel = "Open player", onClick = onOpenPlayer).testTag("station-now-playing"),
@@ -154,13 +167,13 @@ fun OnAirStationCard(audio: PlaybackState, radio: RadioState, onOpenPlayer: () -
                 CompositionLocalProvider(LocalContentColor provides Color(0xFFBFD0EA)) { RadioIcon(Symbol.Music, modifier = Modifier.size(26.dp)) }
             }
             Column(Modifier.weight(1f).padding(start = 14.dp)) {
-                Text(song.title, style = MaterialTheme.typography.titleMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                Text("${song.folderPath.ifBlank { "Local music" }} · ${clock(audio.positionMs)} / ${audio.durationMs?.let(::clock) ?: "--:--"}",
-                    color = muted, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(song.title, style = MaterialTheme.typography.titleLarge, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                StationElapsed(song.folderPath.ifBlank { "Local music" }, positionMs, audio.durationMs, muted)
             }
         }
         val duration = audio.durationMs ?: 0L
-        LinearProgressIndicator(progress = { if (duration > 0) (audio.positionMs.toFloat() / duration).coerceIn(0f, 1f) else 0f }, Modifier.fillMaxWidth(),
+        // The progress lambda is read while drawing, so position ticks redraw the bar without recomposing the card.
+        LinearProgressIndicator(progress = { if (duration > 0) (positionMs().toFloat() / duration).coerceIn(0f, 1f) else 0f }, Modifier.fillMaxWidth(),
             color = Color(colors.progress), trackColor = Color(colors.track), drawStopIndicator = {})
         Text(audio.stationSeedTitle?.let { "Station started from $it" } ?: "Station picked for you", color = muted, fontSize = 12.sp, modifier = Modifier.testTag("station-seed"))
         if (locked) Row(Modifier.fillMaxWidth().background(Color(colors.panel), RoundedCornerShape(14.dp)).padding(horizontal = 12.dp, vertical = 10.dp).testTag("station-vibe"),
@@ -187,8 +200,16 @@ internal fun vibeMinutes(radio: RadioState) = ((radio.vibeUntil - System.current
 @Composable
 fun MoodChips(selected: String, onSelect: (String) -> Unit, enabled: Boolean = true) {
     FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(0.dp)) {
+        // Each mood has its own colour: a dot when unselected, the whole chip when selected.
+        val lightSurface = MaterialTheme.colorScheme.surface.luminance() > .5f
         OfflineRecommender.MOODS.keys.forEach { mood ->
-            FilterChip(selected == mood, onClick = { onSelect(mood) }, enabled = enabled, label = { Text(moodLabel(mood)) }, modifier = Modifier.testTag("radio-mood-$mood"))
+            val colors = MoodColors.of(mood)
+            val chosen = selected == mood
+            FilterChip(chosen, onClick = { onSelect(mood) }, enabled = enabled, label = { Text(moodLabel(mood), fontWeight = if (chosen) FontWeight.Bold else FontWeight.Medium) },
+                leadingIcon = { Box(Modifier.size(10.dp).background(Color(if (chosen) colors.onAccent else if (lightSurface) colors.field else colors.accent), CircleShape)) },
+                shape = CircleShape,
+                colors = FilterChipDefaults.filterChipColors(selectedContainerColor = Color(colors.accent), selectedLabelColor = Color(colors.onAccent)),
+                modifier = Modifier.testTag("radio-mood-$mood"))
         }
     }
 }
@@ -199,8 +220,10 @@ fun ExplorationPresets(value: Double, onSelect: (ExplorationPreset) -> Unit, ena
     SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth().testTag("radio-presets")) {
         ExplorationPreset.entries.forEachIndexed { index, preset ->
             SegmentedButton(selected = current == preset, onClick = { onSelect(preset) }, enabled = enabled,
-                shape = SegmentedButtonDefaults.itemShape(index, ExplorationPreset.entries.size), modifier = Modifier.testTag("radio-preset-${preset.name.lowercase()}"),
-                icon = {}) { Text(preset.label, maxLines = 1) }
+                shape = SegmentedButtonDefaults.itemShape(index, ExplorationPreset.entries.size),
+                // Four names share the row: the longest gets more room and all use a smaller label so none is cut off.
+                modifier = Modifier.weight(if (preset == ExplorationPreset.Adventurous) 1.4f else 1f).testTag("radio-preset-${preset.name.lowercase()}"),
+                contentPadding = PaddingValues(horizontal = 4.dp), icon = {}) { Text(preset.label, maxLines = 1, softWrap = false, style = MaterialTheme.typography.labelMedium) }
         }
     }
 }
@@ -361,9 +384,11 @@ fun StartFromSongSheet(songs: List<LocalSong>, queueSize: Int, queueSource: Stri
             }
             HorizontalDivider()
             Column(Modifier.padding(horizontal = 24.dp, vertical = 14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                if (queueSize > 0) Row(Modifier.fillMaxWidth().background(Color(0xFFFFF4E5), RoundedCornerShape(14.dp)).padding(12.dp).testTag("radio-seed-replace-warning")) {
+                // A warm caution tone that suits both light and dark sheets.
+                val darkSheet = MaterialTheme.colorScheme.surface.luminance() < .5f
+                if (queueSize > 0) Row(Modifier.fillMaxWidth().background(if (darkSheet) Color(0xFF4A3310) else Color(0xFFFFF4E5), RoundedCornerShape(14.dp)).padding(12.dp).testTag("radio-seed-replace-warning")) {
                     Text("This replaces your current queue ($queueSize ${if (queueSize == 1) "song" else "songs"}${queueSource.takeIf { it.isNotBlank() }?.let { " from “$it”" } ?: ""}). The song playing now stops.",
-                        color = Color(0xFF7A3E00), style = MaterialTheme.typography.bodySmall)
+                        color = if (darkSheet) Color(0xFFFFD8A8) else Color(0xFF7A3E00), style = MaterialTheme.typography.bodySmall)
                 }
                 Button({ selected?.let(onStart) }, Modifier.fillMaxWidth().heightIn(min = 52.dp).testTag("confirm-start-radio"), enabled = selected != null,
                     colors = ButtonDefaults.buttonColors(containerColor = Color(LocalStationColors.current.base), contentColor = Color.White)) {
@@ -410,9 +435,10 @@ fun WhyThisSongSheet(song: LocalSong?, origin: StationOrigin?, radio: RadioState
             }
             if (song != null) OutlinedCard(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text(song.title, style = MaterialTheme.typography.titleSmall)
+                    // The reason is the answer to the sheet's question, so it leads and is the largest text.
+                    Text(originExplanation(origin), style = MaterialTheme.typography.titleLarge, modifier = Modifier.testTag("why-song-reason"))
+                    Text(song.title, Modifier.padding(top = 6.dp), style = MaterialTheme.typography.titleSmall)
                     Text(songSubtitle(song), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Text(originExplanation(origin), style = MaterialTheme.typography.bodyMedium, modifier = Modifier.testTag("why-song-reason"))
                 }
             }
             StationDetails(radio)
@@ -450,11 +476,13 @@ fun SongTitle(title: String, modifier: Modifier = Modifier) {
 
 /** Mini-player while on air: station surface, ON AIR dot, Pause and Skip. */
 @Composable
-fun StationMiniPlayer(song: LocalSong, status: String, playWhenReady: Boolean, canPlay: Boolean, canNext: Boolean, onOpen: () -> Unit, onToggle: () -> Unit, onNext: () -> Unit) {
+fun StationMiniPlayer(song: LocalSong, status: String, playWhenReady: Boolean, canPlay: Boolean, canNext: Boolean, onOpen: () -> Unit, onToggle: () -> Unit, onNext: () -> Unit, mood: String = "neutral") {
     val colors = LocalStationColors.current
-    Surface(color = Color(colors.base), contentColor = Color.White, modifier = Modifier.fillMaxWidth().testTag("mini-player")) {
+    // The mood's dark tone fills the pill, so "on air" is recognisable from any tab.
+    Surface(color = Color(dev.radio.mobile.ui.theme.MoodColors.of(mood).field), contentColor = Color.White, shape = RoundedCornerShape(18.dp),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 4.dp).testTag("mini-player")) {
         Row(Modifier.padding(start = 16.dp, end = 4.dp).heightIn(min = 68.dp), verticalAlignment = Alignment.CenterVertically) {
-            Box(Modifier.size(44.dp).background(Color(colors.tile), RoundedCornerShape(8.dp)), contentAlignment = Alignment.Center) {
+            Box(Modifier.size(44.dp).background(Color(colors.tile), RoundedCornerShape(8.dp)).clickable(role = Role.Button, onClickLabel = "Open player", onClick = onOpen), contentAlignment = Alignment.Center) {
                 CompositionLocalProvider(LocalContentColor provides Color(0xFFBFD0EA)) { RadioIcon(Symbol.Music, modifier = Modifier.size(20.dp)) }
             }
             Column(Modifier.weight(1f).clickable(role = Role.Button, onClickLabel = "Open player", onClick = onOpen).padding(horizontal = 12.dp, vertical = 8.dp)) {
@@ -470,21 +498,46 @@ fun StationMiniPlayer(song: LocalSong, status: String, playWhenReady: Boolean, c
     }
 }
 
+/** Shown in Now Playing while Radio chooses its first songs, so the old queue's controls never appear in between. */
+@Composable
+fun RadioTuningIn(mood: String, modifier: Modifier = Modifier) {
+    val colors = LocalStationColors.current
+    Column(modifier.padding(horizontal = 24.dp).testTag("radio-tuning-in"), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+        Box(Modifier.size(160.dp).background(Color(colors.tile), RoundedCornerShape(20.dp)), contentAlignment = Alignment.Center) {
+            CircularProgressIndicator(Modifier.size(56.dp), color = Color(MoodColors.of(mood).accent), strokeWidth = 4.dp)
+        }
+        Spacer(Modifier.height(24.dp))
+        Text("Tuning in…", style = MaterialTheme.typography.titleLarge)
+        Text("Picking songs for a ${moodLabel(mood)} station on this phone", Modifier.padding(top = 6.dp), style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
+    }
+}
+
+/** "Folder · 1:23 / 4:56"; its own scope so a position tick recomposes only this line. */
+@Composable
+private fun StationElapsed(folder: String, positionMs: () -> Long, durationMs: Long?, color: Color) {
+    Text("$folder · ${clock(positionMs())} / ${durationMs?.let(::clock) ?: "--:--"}",
+        color = color, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+}
+
 /** Radio Now Playing body below the top bar (station theme is provided by the caller). */
 @Composable
 fun RadioNowPlaying(
-    audio: PlaybackState, song: LocalSong, radio: RadioState, position: Float, liked: Boolean, feedbackReady: Boolean, canRead: Boolean, minimal: Boolean, compact: Boolean,
+    audio: PlaybackState, song: LocalSong, radio: RadioState, positionMs: () -> Long, liked: Boolean, feedbackReady: Boolean, canRead: Boolean, minimal: Boolean, compact: Boolean,
     options: List<ConnectedPick>, optionsSummary: String?,
     onScrub: (Float) -> Unit, onScrubFinished: () -> Unit, onLike: () -> Unit, onNotForMe: () -> Unit,
     onPrevious: () -> Unit, onToggle: () -> Unit, onNext: () -> Unit, onVibe: () -> Unit,
     onShowQueue: () -> Unit, onSleep: () -> Unit, onPlayNext: (ConnectedPick) -> Unit, onRescan: () -> Unit,
-    journalError: String?, onRetryJournal: () -> Unit, modifier: Modifier = Modifier,
+    journalError: String?, onRetryJournal: () -> Unit, modifier: Modifier = Modifier, onLyrics: (() -> Unit)? = null,
+    /** The live sleep countdown, read only by its chip. */
+    sleep: () -> dev.radio.mobile.playback.SleepTimerState = { audio.sleepTimer },
 ) {
     val locked = radio.vibeLocalId != null
     val colors = LocalStationColors.current
     Column(modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp).testTag("radio-now-playing"), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         Spacer(Modifier.height(4.dp))
-        Box(Modifier.align(Alignment.CenterHorizontally).size(if (minimal || compact || audio.error != null) 160.dp else 220.dp)
+        val artSize by animateDpAsState(if (minimal || compact || audio.error != null) 160.dp else 220.dp, Motion.standard(), label = "station-artwork")
+        Box(Modifier.align(Alignment.CenterHorizontally).size(artSize)
             .background(Color(colors.tile), RoundedCornerShape(20.dp)), contentAlignment = Alignment.Center) {
             CompositionLocalProvider(LocalContentColor provides if (audio.error != null) OnAirText else Color(0xFFBFD0EA)) {
                 RadioIcon(if (audio.error != null) Symbol.Warning else Symbol.Music, modifier = Modifier.size(56.dp))
@@ -496,7 +549,7 @@ fun RadioNowPlaying(
                 OriginLine(song, audio.origins[song.id])
             }
             IconToggleButton(liked, { onLike() }, enabled = feedbackReady, modifier = Modifier.testTag("favorite-song")) {
-                CompositionLocalProvider(LocalContentColor provides if (liked) OnAirText else LocalContentColor.current) { RadioIcon(Symbol.Heart, if (liked) "Liked" else "Like") }
+                CompositionLocalProvider(LocalContentColor provides if (liked) OnAirText else LocalContentColor.current) { RadioIcon(if (liked) Symbol.HeartFilled else Symbol.Heart, if (liked) "Liked" else "Like") }
             }
         }
         audio.error?.let { message ->
@@ -510,42 +563,45 @@ fun RadioNowPlaying(
                 }
             }
         }
-        Column {
-            PlayerSeekBar(position, (audio.durationMs ?: 0L) / 1000f, onSeek = onScrub, modifier = Modifier.fillMaxWidth(), enabled = audio.seekable, onSeekFinished = onScrubFinished)
-            Row(Modifier.fillMaxWidth()) {
-                Text(clock((position * 1000).toLong()), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Spacer(Modifier.weight(1f))
-                Text(audio.durationMs?.let(::clock) ?: "--:--", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-        }
+        PlaybackProgress(positionMs, audio.durationMs, audio.seekable, onScrub, onScrubFinished, timeColor = MaterialTheme.colorScheme.onSurfaceVariant)
         Row(Modifier.fillMaxWidth().testTag("player-transport"), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onNotForMe, enabled = feedbackReady && audio.canNext, modifier = Modifier.testTag("not-for-me")) { RadioIcon(Symbol.Block, "Not for me (dislike and skip)") }
-            IconButton(onPrevious, enabled = audio.canPrevious) { RadioIcon(Symbol.Previous, "Previous song") }
-            FilledIconButton(onToggle, enabled = canRead, modifier = Modifier.size(72.dp),
+            val tonal = IconButtonDefaults.filledTonalIconButtonColors(containerColor = Color(colors.panel), contentColor = Color.White)
+            FilledTonalIconButton(onNotForMe, enabled = feedbackReady && audio.canNext, modifier = Modifier.size(48.dp).testTag("not-for-me"), shape = RadioShapes.Soft, colors = tonal) { RadioIcon(Symbol.Block, "Not for me (dislike and skip)") }
+            FilledTonalIconButton(onPrevious, enabled = audio.canPrevious, modifier = Modifier.size(52.dp), colors = tonal) { RadioIcon(Symbol.Previous, "Previous song") }
+            FilledIconButton(onToggle, enabled = canRead, modifier = Modifier.size(width = if (compact) 76.dp else 92.dp, height = if (compact) 60.dp else 76.dp), shape = RadioShapes.Squircle,
                 colors = IconButtonDefaults.filledIconButtonColors(containerColor = Color.White, contentColor = Color(colors.base))) {
-                RadioIcon(if (audio.playWhenReady) Symbol.Pause else Symbol.Play, if (audio.playWhenReady) "Pause" else "Play", Modifier.size(30.dp))
+                RadioIcon(if (audio.playWhenReady) Symbol.Pause else Symbol.Play, if (audio.playWhenReady) "Pause" else "Play", Modifier.size(32.dp))
             }
-            IconButton(onNext, enabled = audio.canNext, modifier = Modifier.testTag("player-next")) { RadioIcon(Symbol.Next, "Next song") }
-            IconToggleButton(locked, { onVibe() }, enabled = locked || radio.vibeAvailable, modifier = Modifier.testTag("vibe-lock"),
-                colors = IconButtonDefaults.iconToggleButtonColors(checkedContainerColor = Color(colors.progress), checkedContentColor = Color(colors.base))) {
+            FilledTonalIconButton(onNext, enabled = audio.canNext, modifier = Modifier.size(52.dp).testTag("player-next"), colors = tonal) { RadioIcon(Symbol.Next, "Next song") }
+            val moodColors = MoodColors.of(radio.mood)
+            FilledTonalIconToggleButton(locked, { onVibe() }, enabled = locked || radio.vibeAvailable, modifier = Modifier.size(48.dp).testTag("vibe-lock"), shape = RadioShapes.Soft,
+                colors = IconButtonDefaults.filledTonalIconToggleButtonColors(containerColor = Color(colors.panel), contentColor = Color.White,
+                    checkedContainerColor = Color(moodColors.accent), checkedContentColor = Color(moodColors.onAccent))) {
                 RadioIcon(Symbol.Lock, if (locked) "Release vibe lock" else "Vibe lock")
             }
         }
-        if (!minimal) {
+        AnimatedVisibility(!minimal, enter = expandVertically(Motion.standard()) + fadeIn(Motion.standard()), exit = shrinkVertically(Motion.quick()) + fadeOut(Motion.quick())) {
+          Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
             FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally)) {
-                if (audio.sleepTimer.active) AssistChip(onSleep, { Text("Sleep · ${sleepLabel(audio.sleepTimer)}") }, Modifier.testTag("sleep-countdown"), leadingIcon = { RadioIcon(Symbol.Clock, modifier = Modifier.size(16.dp)) })
+                if (audio.sleepTimer.active) AssistChip(onSleep, { Text("Sleep · ${sleepLabel(sleep())}") }, Modifier.testTag("sleep-countdown"), leadingIcon = { RadioIcon(Symbol.Clock, modifier = Modifier.size(16.dp)) })
                 if (locked) SuggestionChip({}, { Text("Vibe · ${radio.vibeSongsLeft} songs · ${vibeMinutes(radio)} min") }, enabled = false, modifier = Modifier.testTag("vibe-chip"))
-                else if (!radio.vibeAvailable) Text("Vibe lock needs a matched song with recommendation data.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                else if (!radio.vibeAvailable) Text(if (radio.legacyVectorTracks > 0 && !radio.legacyVectorsEnabled) "Vibe lock needs desktop similarity. Turn it on in Settings → Radio." else radio.vibeReason ?: "Vibe lock needs a matched song with recommendation data.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             val nextSong = audio.playOrder.indexOf(audio.currentId).takeIf { it >= 0 }?.let { audio.playOrder.getOrNull(it + 1) }?.let { id -> audio.queue.firstOrNull { it.id == id } }
-            Row(Modifier.fillMaxWidth().background(Color(colors.panel), RoundedCornerShape(14.dp)).clickable(role = Role.Button, onClickLabel = "Show queue", onClick = onShowQueue)
-                .heightIn(min = 48.dp).padding(horizontal = 14.dp).testTag("next-up"), verticalAlignment = Alignment.CenterVertically) {
-                Text("NEXT", color = Color(colors.progress), fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
-                Text(nextSong?.title ?: "Radio is picking…", Modifier.weight(1f).padding(horizontal = 12.dp),
-                    maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
-                RadioIcon(Symbol.Forward, modifier = Modifier.size(18.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Row(Modifier.weight(1f).background(Color(colors.panel), CircleShape).clip(CircleShape).clickable(role = Role.Button, onClickLabel = "Show queue", onClick = onShowQueue)
+                    .heightIn(min = 52.dp).padding(horizontal = 18.dp).testTag("next-up"), verticalAlignment = Alignment.CenterVertically) {
+                    Text("NEXT", color = Color(colors.progress), fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
+                    Text(nextSong?.title ?: "Radio is picking…", Modifier.weight(1f).padding(horizontal = 12.dp),
+                        maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
+                    RadioIcon(Symbol.Forward, modifier = Modifier.size(18.dp))
+                }
+                // Lyrics is one tap away here; the overflow menu keeps its own Lyrics item.
+                if (onLyrics != null) FilledTonalButton(onLyrics, Modifier.heightIn(min = 52.dp).testTag("open-lyrics-button"), shape = RadioShapes.Soft,
+                    colors = ButtonDefaults.filledTonalButtonColors(containerColor = Color(colors.tile), contentColor = Color.White)) { Text("Lyrics") }
             }
             if (options.isNotEmpty()) UpNextOptionsCard(options, onPlayNext, summary = optionsSummary)
+          }
         }
         journalError?.let { failure ->
             Row(Modifier.fillMaxWidth().background(Color(colors.panel), RoundedCornerShape(14.dp)).padding(start = 14.dp), verticalAlignment = Alignment.CenterVertically) {

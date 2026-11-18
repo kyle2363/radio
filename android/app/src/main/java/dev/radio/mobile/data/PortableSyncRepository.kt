@@ -12,6 +12,7 @@ import dev.radio.mobile.portable.PortableRegisterOrder
 import dev.radio.mobile.portable.PortableSyncBatcher
 import dev.radio.mobile.portable.PortableProfileKey
 import dev.radio.mobile.portable.PortableSyncChanges
+import dev.radio.mobile.portable.PlaylistSyncRules
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -42,6 +43,8 @@ class PortableSyncRepository internal constructor(
     private val pairing: PairingRepository,
     private val db: LibraryDatabase,
     private val now: () -> Long = System::currentTimeMillis,
+    /** Projects merged shared playlists onto synced local playlists inside the sync transaction. */
+    private val applyPlaylists: suspend (serverId: String) -> Unit = {},
 ) {
     private val mutex = Mutex()
     private val mutable = MutableStateFlow(PortableSyncState())
@@ -200,15 +203,17 @@ class PortableSyncRepository internal constructor(
 
     private data class DecodedEvent(val device:String,val id:String,val clock:Long,val occurred:Double,val kind:String,val localId:String?)
     private fun validateEvent(event:CatalogJson.Obj):DecodedEvent {
-        val allowed=setOf("protocol_version","event_id","device_id","logical_clock","kind","song_id","attempt_id","occurred_at","value","key","local_id","reason","completion","catalog_id")
+        val allowed=setOf("protocol_version","event_id","device_id","logical_clock","kind","song_id","attempt_id","occurred_at","value","key","local_id","reason","completion","catalog_id","playlist_id","position")
         if(event.fields.keys.any { it !in allowed } || event.requiredLong("protocol_version")!=1L) throw SyncProtocolFailure("Downloaded event has unsupported protocol fields.")
         val device=event.requiredString("device_id",128);val id=event.requiredString("event_id",128)
         val clock=event.requiredLong("logical_clock");val occurred=event.requiredNumber("occurred_at");val kind=event.requiredString("kind",64)
         if(clock !in 0..MAX_SAFE_INTEGER || !occurred.isFinite() || occurred !in 0.0..253402300799.0 || kind !in EVENT_KINDS) throw SyncProtocolFailure("Downloaded event has invalid clock, time, or kind.")
-        val songField=event.fields["song_id"] ?: throw SyncProtocolFailure("Downloaded event is missing song_id.")
+        val playlist=kind in PlaylistSyncRules.KINDS
+        if(playlist) validatePlaylistEvent(event,kind) else if("playlist_id" in event.fields || "position" in event.fields) throw SyncProtocolFailure("Downloaded event has playlist fields on a non-playlist event.")
+        val songField=event.fields["song_id"] ?: if(playlist) CatalogJson.Null else throw SyncProtocolFailure("Downloaded event is missing song_id.")
         val songId=when(songField){CatalogJson.Null->null;is CatalogJson.Str->songField.value.takeIf { it.matches(Regex("[0-9]+")) } ?: throw SyncProtocolFailure("Downloaded event has an invalid song id.");else->throw SyncProtocolFailure("Downloaded event has an invalid song id.")}
         val localId=event.fields["local_id"]?.let { (it as? CatalogJson.Str)?.value?.takeIf(String::isNotBlank) ?: throw SyncProtocolFailure("Downloaded local ID is invalid.") }
-        if(songId!=null){event.requiredString("catalog_id",128)} else if(kind!="preference_changed" && localId.isNullOrBlank()) throw SyncProtocolFailure("Downloaded local-only event is missing its origin ID.")
+        if(songId!=null){event.requiredString("catalog_id",128)} else if(kind!="preference_changed" && kind!="playlist_renamed" && kind!="playlist_deleted" && localId.isNullOrBlank()) throw SyncProtocolFailure("Downloaded local-only event is missing its origin ID.")
         if(kind.startsWith("song_")) event.requiredString("attempt_id",128)
         if(kind in setOf("favorite_changed","dislike_changed","blacklist_changed")) if(event.required("value") !is CatalogJson.Bool) throw SyncProtocolFailure("Downloaded event requires a boolean value.")
         if(kind=="energy_changed") { val value=event.required("value");if(value!=CatalogJson.Null && ((value as? CatalogJson.Num)?.token?.toDoubleOrNull()?.let { it.isFinite() && it in 0.0..1.0 }!=true)) throw SyncProtocolFailure("Downloaded energy value is invalid.") }
@@ -216,6 +221,17 @@ class PortableSyncRepository internal constructor(
         event.fields["reason"]?.let { val reason=(it as? CatalogJson.Str)?.value;if(reason !in SKIP_REASONS)throw SyncProtocolFailure("Downloaded skip reason is invalid.") }
         event.fields["completion"]?.let { val completion=(it as? CatalogJson.Num)?.token?.toDoubleOrNull();if(completion?.isFinite()!=true || completion !in 0.0..1.0)throw SyncProtocolFailure("Downloaded completion value is invalid.") }
         return DecodedEvent(device,id,clock,occurred,kind,localId)
+    }
+
+    private fun validatePlaylistEvent(event:CatalogJson.Obj,kind:String) {
+        if(!PlaylistSyncRules.validPlaylistId(event.requiredString("playlist_id",36))) throw SyncProtocolFailure("Downloaded playlist id is invalid.")
+        val value=event.required("value")
+        val valid=if(kind=="playlist_renamed") (value as? CatalogJson.Str)?.value?.let(PlaylistSyncRules::validName)==true else value is CatalogJson.Bool
+        if(!valid) throw SyncProtocolFailure("Downloaded playlist value is invalid.")
+        val position=event.fields["position"]
+        if((kind=="playlist_member_changed") != (position!=null)) throw SyncProtocolFailure("Downloaded playlist position is misplaced.")
+        if(position!=null && (position as? CatalogJson.Str)?.value?.let(PlaylistSyncRules::validKey)!=true) throw SyncProtocolFailure("Downloaded playlist position is invalid.")
+        if(kind!="playlist_member_changed" && ((event.fields["song_id"] ?: CatalogJson.Null)!=CatalogJson.Null || "local_id" in event.fields)) throw SyncProtocolFailure("Downloaded playlist event has misplaced song fields.")
     }
 
     private fun validateAcknowledgements(body: String, expected: Set<String>): List<String> {
@@ -242,9 +258,25 @@ class PortableSyncRepository internal constructor(
     private suspend fun mergeRegistersInside(serverId:String, ownDeviceId:String, incoming:List<PortableRemoteEvent>, includeLocal:Boolean) {
         val dao = db.journal()
         val candidates = mutableMapOf<String, MutableList<Pair<PortableRegisterCandidate, Pair<String, String>>>>()
+        fun addPlaylist(event: JSONObject, kind: String) {
+            val device = event.optString("device_id"); val eventId = event.optString("event_id"); val clock = event.optLong("logical_clock", -1)
+            val playlistId = event.optString("playlist_id")
+            if (device.isBlank() || eventId.isBlank() || clock < 0 || !PlaylistSyncRules.validPlaylistId(playlistId)) return
+            val songId = if (event.isNull("song_id")) null else event.optString("song_id").takeIf { it.isNotBlank() }
+            val localId = event.optString("local_id").takeIf { it.isNotBlank() }
+            if (kind == "playlist_member_changed" && songId == null && localId == null) return
+            val key = PlaylistSyncRules.registerKey(kind, playlistId, songId, localId)
+            val value = when (kind) {
+                "playlist_member_changed" -> PlaylistSyncRules.memberValue(event.optBoolean("value"), event.optString("position"))
+                "playlist_renamed" -> JSONObject.quote(event.optString("value"))
+                else -> event.optBoolean("value").toString()
+            }
+            candidates.getOrPut(key) { mutableListOf() }.add(PortableRegisterCandidate(clock, device, eventId, value) to (kind to canonical(event)))
+        }
         fun add(payloadText: String, fallbackLocalId: String? = null) {
             val event = JSONObject(payloadText)
             val kind = event.optString("kind")
+            if (kind in PlaylistSyncRules.KINDS) { addPlaylist(event, kind); return }
             if (kind !in MUTABLE_KINDS) return
             val device = event.optString("device_id")
             val eventId = event.optString("event_id")
@@ -266,7 +298,10 @@ class PortableSyncRepository internal constructor(
             val candidate=PortableRegisterCandidate(register.logicalClock,register.deviceId,register.eventId,register.valueJson)
             candidates.getOrPut(register.registerKey){mutableListOf()}.add(candidate to (register.kind to register.payload))
         }
-        if(includeLocal) dao.profileLocalEvents(serverId).filter { it.deviceId==ownDeviceId }.forEach { add(it.payload) }
+        if(includeLocal) {
+            dao.profileLocalEvents(serverId).filter { it.deviceId==ownDeviceId }.forEach { add(it.payload) }
+            dao.playlistOutbox(serverId).filter { it.deviceId==ownDeviceId }.forEach { add(it.payload) }
+        }
         incoming.forEach { add(it.payload,it.localId) }
         for ((key, rows) in candidates) {
             val winner = PortableRegisterOrder.winner(rows.map { it.first }) ?: continue
@@ -274,6 +309,7 @@ class PortableSyncRepository internal constructor(
             dao.profileRegister(PortableProfileRegister(serverId, key, winner.logicalClock, winner.deviceId, winner.eventId, kind, winner.value, payload))
         }
         projectSharedFeedback(serverId, dao)
+        applyPlaylists(serverId)
     }
 
     private suspend fun projectSharedFeedback(serverId:String, dao:ListeningJournalDao) {
@@ -358,7 +394,7 @@ class PortableSyncRepository internal constructor(
 
     companion object {
         private const val MAX_SAFE_INTEGER = 9007199254740991L
-        private val EVENT_KINDS = setOf("song_started", "song_completed", "song_skipped", "song_replayed", "favorite_changed", "dislike_changed", "blacklist_changed", "energy_changed", "preference_changed")
+        private val EVENT_KINDS = setOf("song_started", "song_completed", "song_skipped", "song_replayed", "favorite_changed", "dislike_changed", "blacklist_changed", "energy_changed", "preference_changed") + PlaylistSyncRules.KINDS
         private val SKIP_REASONS = setOf("too_intense","too_slow","too_samey","wrong_mood","just_skip")
         private val MUTABLE_KINDS = setOf("favorite_changed", "dislike_changed", "blacklist_changed", "energy_changed", "preference_changed")
         private const val MAX_PAGES=1000
@@ -367,7 +403,8 @@ class PortableSyncRepository internal constructor(
         fun get(context: Context, pairing: PairingRepository): PortableSyncRepository = instance?.takeIf { it.pairing === pairing } ?: synchronized(this) {
             instance?.takeIf { it.pairing === pairing } ?: run {
                 instance?.close()
-                PortableSyncRepository(context, pairing, LibraryRepository.get(context).db).also { instance = it }
+                val library = LibraryRepository.get(context)
+                PortableSyncRepository(context, pairing, library.db, applyPlaylists = { library.playlists.applyShared(it) }).also { instance = it }
             }
         }
     }

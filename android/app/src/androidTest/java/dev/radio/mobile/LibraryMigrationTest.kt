@@ -22,6 +22,8 @@ class LibraryMigrationTest {
     @Test fun v7MigrationAddsEmptyJournalWithoutReinterpretingHistory() = verifyMigration(7)
     @Test fun v8MigrationAddsSyncStorageAndKeepsPendingBytes() = verifyMigration(8)
     @Test fun v9MigrationAddsPrivateLyricsCacheWithoutDroppingSyncOwnership() = verifyMigration(9)
+    @Test fun v10MigrationKeepsPlaylistsLocalAndUnsynced() = verifyMigration(10)
+    @Test fun v11MigrationAddsEmptyLocalPlayContextAndStatsIndices() = verifyMigration(11)
     private fun verifyMigration(version: Int) = runBlocking {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val context = instrumentation.targetContext
@@ -55,7 +57,7 @@ class LibraryMigrationTest {
             }
             db.version = version
         }
-        val db = Room.databaseBuilder(context, LibraryDatabase::class.java, file.absolutePath).addMigrations(LIBRARY_MIGRATION_1_2, LIBRARY_MIGRATION_2_3, LIBRARY_MIGRATION_3_4, LIBRARY_MIGRATION_4_5, LIBRARY_MIGRATION_5_6, LIBRARY_MIGRATION_6_7, LIBRARY_MIGRATION_7_8, LIBRARY_MIGRATION_8_9, LIBRARY_MIGRATION_9_10).build()
+        val db = Room.databaseBuilder(context, LibraryDatabase::class.java, file.absolutePath).addMigrations(LIBRARY_MIGRATION_1_2, LIBRARY_MIGRATION_2_3, LIBRARY_MIGRATION_3_4, LIBRARY_MIGRATION_4_5, LIBRARY_MIGRATION_5_6, LIBRARY_MIGRATION_6_7, LIBRARY_MIGRATION_7_8, LIBRARY_MIGRATION_8_9, LIBRARY_MIGRATION_9_10, LIBRARY_MIGRATION_10_11, LIBRARY_MIGRATION_11_12).build()
         try {
             assertEquals("Music", db.library().root()!!.name)
             assertEquals("keep", db.library().allSongs().single().id)
@@ -67,7 +69,11 @@ class LibraryMigrationTest {
             val bookmark = LocalPlaybackSnapshot(payload = "bookmark row")
             db.library().savePlaybackSnapshot(bookmark)
             assertEquals(bookmark, db.library().playbackSnapshot())
-            if (version >= 4) assertEquals(listOf("keep"), db.playlists().songs("pl"))
+            if (version >= 4) {
+                assertEquals(listOf("keep"), db.playlists().songs("pl"))
+                assertFalse(db.playlists().playlist("pl")!!.synced)
+                assertNull(db.playlists().entries("pl").single().positionKey)
+            }
             if (version >= 5) assertEquals(-12.0, db.loudness().observe().first().single().integratedLufs!!, 0.0)
             assertNull(db.catalogs().latest())
             if (version >= 8) assertEquals("pending-event", db.journal().events().single().eventId)
@@ -80,6 +86,7 @@ class LibraryMigrationTest {
             } else assertTrue(db.journal().outbox().isEmpty())
             if (version < 9) assertNull(db.journal().syncCursor("server","device"))
             assertTrue(db.lyrics().all().isEmpty())
+            assertTrue(db.journal().playContexts().isEmpty())
             if (version >= 9) {
                 assertEquals(9L, db.journal().syncCursor("server", "device")!!.cursor)
                 assertEquals("device", db.journal().syncOwner("owner")!!.deviceId)

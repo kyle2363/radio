@@ -38,6 +38,8 @@ class RadioPlaybackService : MediaSessionService() {
     // repeat use overflow custom-action slots (plain icons in the expanded system controls).
     private val shuffleCommand = SessionCommand(ACTION_TOGGLE_SHUFFLE, Bundle.EMPTY)
     private val repeatCommand = SessionCommand(ACTION_CYCLE_REPEAT, Bundle.EMPTY)
+    private val likeCommand = SessionCommand(ACTION_TOGGLE_LIKE, Bundle.EMPTY)
+    private lateinit var library: LibraryRepository
 
     // In-process binding avoids serializing the entire local catalog over controller IPC.
     // The service is non-exported; Android's media session supplies system/earbud controls.
@@ -47,6 +49,7 @@ class RadioPlaybackService : MediaSessionService() {
     override fun onCreate() {
         super.onCreate()
         val library = repositoryFactory(this)
+        this.library = library
         val attemptIdentities = mutableMapOf<String, JournalIdentity>()
         prefs = PlaybackPrefs(this)
         val stations = StationStore(this)
@@ -62,26 +65,52 @@ class RadioPlaybackService : MediaSessionService() {
             }) { song, attempt, position ->
             attemptIdentities.keys.retainAll(setOf(attempt))
             val identity = attemptIdentities.getOrPut(attempt) { library.journal.identity(song) }
-            library.journal.started(song, attempt, position, identity)
+            library.journal.started(song, attempt, position, identity, engine.startContext)
             library.radio.actualStart(attempt)
             // Prefetch one connected option set for this song. Playback never waits on it.
             library.radio.songStarted(song, engine.state.value)
         }
         var radioRequest: Job? = null
+        var radioStartToken = 0L
         engine.onRadioStart = { seedLocalId ->
             radioRequest?.cancel()
+            val token = ++radioStartToken
             val expected=engine.state.value
             library.radio.updatePlayback(expected)
+            // Visible "tuning in" while the first batch is chosen; only the latest request may clear it.
+            engine.setRadioStarting(true)
             radioRequest=scope.launch {
-                val batch=withContext(Dispatchers.IO){library.radio.startRecommendations(seedLocalId)} ?: return@launch
-                beforeRadioStartCommit()
-                library.radio.accept(batch) {
-                    if(batch.suggestions.isNotEmpty() && engine.state.value.queueRevision==expected.queueRevision && engine.state.value.currentId==expected.currentId) {
-                        val seedTitle=seedLocalId?.let{id->batch.token.library.songs.firstOrNull{it.id==id}?.title}
-                        engine.beginRadio(batch.suggestions.map{it.song},origins(batch),seedLocalId,seedTitle)
-                        if(engine.state.value.radioActive && engine.state.value.error==null)
-                            library.radio.committed(batch,engine.state.value.playOrder.toSet())
+                var fence=expected
+                var started=false
+                try {
+                    // Choosing can come back empty when its inputs moved meanwhile (a journal write landed). Try again with
+                    // fresh state. A batch that was chosen but then fenced (Stop, a sleep expiry, a new queue, a profile
+                    // sync) is never retried: the listener or the system changed course.
+                    for(attempt in 0 until START_ATTEMPTS) {
+                        val batch=withContext(Dispatchers.IO){library.radio.startRecommendations(seedLocalId)}
+                        if(batch!=null) {
+                            beforeRadioStartCommit()
+                            library.radio.accept(batch) {
+                                if(batch.suggestions.isNotEmpty() && engine.state.value.queueRevision==fence.queueRevision && engine.state.value.currentId==fence.currentId) {
+                                    val seedTitle=seedLocalId?.let{id->batch.token.library.songs.firstOrNull{it.id==id}?.title}
+                                    engine.beginRadio(batch.suggestions.map{it.song},origins(batch),seedLocalId,seedTitle)
+                                    started=engine.state.value.radioActive
+                                    if(started && engine.state.value.error==null)
+                                        library.radio.committed(batch,engine.state.value.playOrder.toSet())
+                                }
+                            }
+                        }
+                        if(started || batch!=null || token!=radioStartToken) break
+                        val now=engine.state.value
+                        if(now.queueRevision!=fence.queueRevision) break
+                        fence=now
+                        library.radio.updatePlayback(now)
+                        delay(250)
                     }
+                    if(!started && token==radioStartToken && engine.state.value.queueRevision==fence.queueRevision)
+                        engine.notify("Couldn't start Radio. Try again in a moment.")
+                } finally {
+                    if (token == radioStartToken) engine.setRadioStarting(false)
                 }
             }
         }
@@ -149,6 +178,10 @@ class RadioPlaybackService : MediaSessionService() {
         // system controls never show a stale icon after a restart.
         engine.setRepeat(prefs.repeat)
         clientController = InitializingPlaybackController(engine)
+        // Speed, skip silence, crossfade and the equaliser, edited on the Settings screens.
+        val audioSettings = AudioSettingsStore.get(this)
+        audioSettings.publishEqualizer(engine.describeEffects())
+        scope.launch { audioSettings.settings.collect { engine.applyAudio(it) } }
         scope.launch { library.loudness.state.map { it.profile }.distinctUntilChanged().collect { engine.updateNormalization(it) } }
         scope.launch {
             try {
@@ -179,7 +212,7 @@ class RadioPlaybackService : MediaSessionService() {
                 .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         session = MediaSession.Builder(this, engine.sessionPlayer).setSessionActivity(activity)
-            .setMediaButtonPreferences(mediaButtons(clientController.state.value.shuffled, clientController.state.value.repeat))
+            .setMediaButtonPreferences(mediaButtons(clientController.state.value.shuffled, clientController.state.value.repeat, clientController.state.value.radioActive, liked()))
             .setCallback(object : MediaSession.Callback {
                 override fun onConnect(session: MediaSession, controller: MediaSession.ControllerInfo): MediaSession.ConnectionResult {
                     // System controls can operate the existing queue, not replace it with URIs
@@ -189,8 +222,14 @@ class RadioPlaybackService : MediaSessionService() {
                         .remove(Player.COMMAND_SET_REPEAT_MODE).remove(Player.COMMAND_SET_SPEED_AND_PITCH).build()
                     return MediaSession.ConnectionResult.AcceptedResultBuilder()
                         .setAvailableSessionCommands(MediaSession.ConnectionResult.DEFAULT_SESSION_COMMANDS
-                            .buildUpon().add(shuffleCommand).add(repeatCommand).build())
+                            .buildUpon().add(shuffleCommand).add(repeatCommand).add(likeCommand).build())
                         .setAvailablePlayerCommands(commands).build()
+                }
+
+                override fun onPlayerCommandRequest(session: MediaSession, controller: MediaSession.ControllerInfo, playerCommand: Int): Int {
+                    // Tells the journal whether the next transport command came from the home-screen widget or another system control.
+                    engine.commandOrigin = if (controller.connectionHints.getBoolean(PlayerWidget.HINT_WIDGET)) PlayTrigger.WIDGET else PlayTrigger.MEDIA_BUTTON
+                    return super.onPlayerCommandRequest(session, controller, playerCommand)
                 }
 
                 override fun onCustomCommand(session: MediaSession, controller: MediaSession.ControllerInfo,
@@ -198,6 +237,11 @@ class RadioPlaybackService : MediaSessionService() {
                     when (customCommand.customAction) {
                         ACTION_TOGGLE_SHUFFLE -> clientController.shuffle(!clientController.state.value.shuffled)
                         ACTION_CYCLE_REPEAT -> clientController.setRepeat(clientController.state.value.repeat.next())
+                        ACTION_TOGGLE_LIKE -> {
+                            val song = engine.state.value.current
+                            val journal = library.journal.state.value
+                            if (song != null && journal.feedbackLoaded) library.journal.setFavorite(song, journal.feedback[song.id]?.favorite != true)
+                        }
                         else -> return super.onCustomCommand(session, controller, customCommand, args)
                     }
                     return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
@@ -206,15 +250,37 @@ class RadioPlaybackService : MediaSessionService() {
         // Keep both system buttons aligned with the same shared state the app uses, and
         // remember repeat so it survives the next restart.
         scope.launch {
-            clientController.state.map { it.shuffled to it.repeat }.distinctUntilChanged().collect { (shuffled, repeat) ->
-                session?.setMediaButtonPreferences(mediaButtons(shuffled, repeat))
-                prefs.repeat = repeat
+            clientController.state.map { it.repeat }.distinctUntilChanged().collect { prefs.repeat = it }
+        }
+        // The home-screen widget follows the song and play state; it starts after restoration so it never flashes empty.
+        scope.launch {
+            clientController.state.map { state ->
+                state.current?.let { WidgetState(it.title, it.artist.ifBlank { state.source.ifBlank { "Local music" } }, state.playWhenReady && !state.ended) } ?: WidgetState()
+            }.distinctUntilChanged().collect { widget = it; PlayerWidget.update(this@RadioPlaybackService, it) }
+        }
+        scope.launch {
+            combine(clientController.state.map { listOf(it.shuffled, it.repeat, it.radioActive, it.currentId) }.distinctUntilChanged(),
+                library.journal.state.map { it.feedback }.distinctUntilChanged()) { _, _ -> Unit }.collect {
+                val state = clientController.state.value
+                session?.setMediaButtonPreferences(mediaButtons(state.shuffled, state.repeat, state.radioActive, liked()))
             }
         }
     }
 
-    private fun mediaButtons(shuffled: Boolean, repeat: RepeatMode) =
-        listOf(shuffleButton(shuffled), repeatButton(repeat))
+    private var widget = WidgetState()
+
+    private fun liked(): Boolean = engine.state.value.currentId?.let { library.journal.state.value.feedback[it]?.favorite } == true
+
+    // Stock Android shows two custom buttons beside the transport. On air, shuffle and repeat don't apply, so Like
+    // takes the first slot; otherwise Like follows them and appears where the system shows more buttons.
+    private fun mediaButtons(shuffled: Boolean, repeat: RepeatMode, radio: Boolean, liked: Boolean) =
+        if (radio) listOf(likeButton(liked)) else listOf(shuffleButton(shuffled), repeatButton(repeat), likeButton(liked))
+
+    private fun likeButton(liked: Boolean) = CommandButton.Builder(if (liked) CommandButton.ICON_HEART_FILLED else CommandButton.ICON_HEART_UNFILLED)
+        .setDisplayName(if (liked) "Unlike" else "Like")
+        .setSessionCommand(likeCommand)
+        .setSlots(CommandButton.SLOT_OVERFLOW)
+        .build()
 
     // SystemUI doesn't support BACK_SECONDARY/FORWARD_SECONDARY: Media3 drops those
     // buttons when publishing the framework session. OVERFLOW keeps these separate from
@@ -254,6 +320,7 @@ class RadioPlaybackService : MediaSessionService() {
     // and handles the media notification/foreground lifetime without a second notification.
     override fun onDestroy() {
         scope.cancel()
+        if (initialized) PlayerWidget.update(this, widget.copy(playing = false))
         session?.release()
         session = null
         engine.close()
@@ -264,10 +331,12 @@ class RadioPlaybackService : MediaSessionService() {
         const val ACTION_LOCAL_BIND = "dev.radio.mobile.BIND_PLAYBACK"
         const val ACTION_TOGGLE_SHUFFLE = "dev.radio.mobile.TOGGLE_SHUFFLE"
         const val ACTION_CYCLE_REPEAT = "dev.radio.mobile.CYCLE_REPEAT"
+        const val ACTION_TOGGLE_LIKE = "dev.radio.mobile.TOGGLE_LIKE"
         // Dependency seam lets service instrumentation use an in-memory catalog and journal.
         internal var repositoryFactory: (android.content.Context) -> LibraryRepository = LibraryRepository::get
         internal var beforeRadioStartCommit: suspend () -> Unit = {}
         internal var beforeRadioRefillCommit: suspend () -> Unit = {}
         internal var connectedStartGraceMs = 3000L
+        private const val START_ATTEMPTS = 3
     }
 }
