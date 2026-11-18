@@ -24,8 +24,15 @@ android {
         release {
             optimization {
                 enable = true
-                packageScope = setOf("androidx.**", "kotlin.**", "kotlinx.**")
             }
+        }
+        // Release code, signed with the debug key and profileable, so the :benchmark journeys measure what ships (checkpoint 12.1).
+        create("benchmark") {
+            initWith(getByName("release"))
+            signingConfig = signingConfigs.getByName("debug")
+            matchingFallbacks += listOf("release")
+            isDebuggable = false
+            proguardFiles("benchmark-rules.pro")
         }
     }
     compileOptions {
@@ -56,6 +63,10 @@ dependencies {
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
+    // Installs the bundled baseline profile (src/main/baseline-prof.txt) on sideloaded builds too.
+    implementation(libs.androidx.profileinstaller)
+    // Benchmark builds only: names each composable in Perfetto traces (checkpoint 12.3).
+    "benchmarkImplementation"("androidx.compose.runtime:runtime-tracing")
     testImplementation(libs.junit)
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)

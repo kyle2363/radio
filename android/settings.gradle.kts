@@ -24,3 +24,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "Radio"
 include(":app")
+include(":benchmark")

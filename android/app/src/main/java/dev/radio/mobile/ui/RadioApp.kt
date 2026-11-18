@@ -49,6 +49,7 @@ import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
@@ -272,6 +273,8 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
         appearance = Appearance.entries.firstOrNull { it.name == appearance } ?: Appearance.System
     ) { StationTheme(StationColors.of(RadioPalette.entries.firstOrNull { it.name == palette } ?: RadioPalette.Ocean), enabled = stationMode && page == "Now playing" && (song != null || tuningIn)) {
         Scaffold(
+            // Lets the benchmark and baseline-profile journeys find Compose test tags as resource ids.
+            modifier = Modifier.semantics { testTagsAsResourceId = true },
             containerColor = MaterialTheme.colorScheme.background,
             topBar = {
                 Row(Modifier.fillMaxWidth().statusBarsPadding().heightIn(min = if (page == "Now playing") 56.dp else 64.dp).padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -334,7 +337,7 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
                         modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 4.dp)) {
                         Row(Modifier.padding(start = 12.dp, end = 6.dp).heightIn(min = 64.dp), verticalAlignment = Alignment.CenterVertically) {
                             Box(Modifier.clickable(role = Role.Button, onClickLabel = "Open player") { navigate("Now playing") }) { Artwork(40) }
-                            Column(Modifier.weight(1f).clickable(role = Role.Button, onClickLabel = "Open player") { navigate("Now playing") }.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                            Column(Modifier.weight(1f).testTag("mini-open").clickable(role = Role.Button, onClickLabel = "Open player") { navigate("Now playing") }.padding(horizontal = 12.dp, vertical = 8.dp)) {
                                 Text(song.title, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleSmall)
                                 Text("${audio.status} · ${song.artist.ifBlank { song.folderPath.ifBlank { "Local music" } }}", maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall)
                             }

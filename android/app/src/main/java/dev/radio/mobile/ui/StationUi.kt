@@ -485,7 +485,7 @@ fun StationMiniPlayer(song: LocalSong, status: String, playWhenReady: Boolean, c
             Box(Modifier.size(44.dp).background(Color(colors.tile), RoundedCornerShape(8.dp)).clickable(role = Role.Button, onClickLabel = "Open player", onClick = onOpen), contentAlignment = Alignment.Center) {
                 CompositionLocalProvider(LocalContentColor provides Color(0xFFBFD0EA)) { RadioIcon(Symbol.Music, modifier = Modifier.size(20.dp)) }
             }
-            Column(Modifier.weight(1f).clickable(role = Role.Button, onClickLabel = "Open player", onClick = onOpen).padding(horizontal = 12.dp, vertical = 8.dp)) {
+            Column(Modifier.weight(1f).testTag("mini-open").clickable(role = Role.Button, onClickLabel = "Open player", onClick = onOpen).padding(horizontal = 12.dp, vertical = 8.dp)) {
                 Text(song.title, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleSmall)
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Box(Modifier.size(6.dp).background(OnAirDot, CircleShape)); Spacer(Modifier.width(6.dp))
