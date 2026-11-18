@@ -58,7 +58,7 @@ fun RadioContent(radio:RadioState,repository:RadioRepository,audio:PlaybackState
             AnimatedContent(card,transitionSpec={(fadeIn(Motion.standard()) togetherWith fadeOut(Motion.quick())).using(SizeTransform(clip=false))},label="station-card"){shown->
             when(shown) {
                 "on" -> OnAirStationCard(audio,radio,onOpenPlayer=onPlayer,onVibe={if(radio.vibeLocalId!=null)repository.clearVibe() else repository.lockVibe()},
-                    onNewMix={playback.newMix()},onEnd=onEnd,positionMs=positionMs)
+                    onNewMix={playback.newMix()},onEnd=onEnd,positionMs=positionMs,feel=feels.firstOrNull{it.feelId==radio.feel})
                 "blocked" -> if(block!=null) BlockedStationCard(block,library.scannedCount,library.songs.size,onChooseFolder,onLibrary,onRescan)
                 else -> OffAirStationCard(canStart && !audio.radioStarting,onPickForMe={if(audio.queue.isNotEmpty())confirm=true else start(null)},onFromSong={seedPicker=true})
             }

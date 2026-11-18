@@ -149,7 +149,7 @@ fun BlockedStationCard(block: StationBlock, scanned: Int, total: Int, onChooseFo
 
 @Composable
 fun OnAirStationCard(audio: PlaybackState, radio: RadioState, onOpenPlayer: () -> Unit, onVibe: () -> Unit, onNewMix: () -> Unit, onEnd: () -> Unit, modifier: Modifier = Modifier,
-    positionMs: () -> Long = { audio.positionMs }) {
+    positionMs: () -> Long = { audio.positionMs }, feel: dev.radio.mobile.data.LocalFeel? = null) {
     val colors = LocalStationColors.current
     val muted = Color(colors.muted)
     val song = audio.current
@@ -158,8 +158,9 @@ fun OnAirStationCard(audio: PlaybackState, radio: RadioState, onOpenPlayer: () -
         Row(verticalAlignment = Alignment.CenterVertically) {
             OnAirPill("On air")
             Spacer(Modifier.weight(1f))
-            Box(Modifier.padding(end = 6.dp).size(8.dp).background(Color(MoodColors.of(radio.mood).accent), CircleShape))
-            Text("${moodLabel(radio.mood)} · ${ExplorationPreset.nearest(radio.exploration).label}", color = muted, fontSize = 12.sp, modifier = Modifier.testTag("station-tuning-label"))
+            // A feel station names the feel (checkpoint 9C); otherwise the mood.
+            Box(Modifier.padding(end = 6.dp).size(8.dp).background(feel?.let { feelColor(it.color) } ?: Color(MoodColors.of(radio.mood).accent), CircleShape))
+            Text("${feel?.name ?: moodLabel(radio.mood)} · ${ExplorationPreset.nearest(radio.exploration).label}", color = muted, fontSize = 12.sp, modifier = Modifier.testTag("station-tuning-label"))
         }
         if (song != null) Row(Modifier.fillMaxWidth().clickable(role = Role.Button, onClickLabel = "Open player", onClick = onOpenPlayer).testTag("station-now-playing"),
             verticalAlignment = Alignment.CenterVertically) {
