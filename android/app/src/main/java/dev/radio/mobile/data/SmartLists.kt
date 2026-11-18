@@ -7,7 +7,8 @@ data class SmartListRow(val localId: String, val kind: String, val completion: D
 enum class SmartList(val id: String, val title: String, val description: String) {
     Top("smart:top", "Top 100", "Your most played songs"),
     Recent("smart:recent", "Recently played", "The last 100 songs you played"),
-    Liked("smart:liked", "Liked songs", "Everything you've liked, newest first");
+    Liked("smart:liked", "Liked songs", "Everything you've liked, newest first"),
+    Gems("smart:gems", "Forgotten gems", "Favourites you haven't played in two months");
 
     companion object { fun of(id: String?): SmartList? = entries.firstOrNull { it.id == id } }
 }
@@ -43,6 +44,27 @@ object SmartLists {
         return favorites.filter { it in available }.sortedWith(compareByDescending<String> { latest[it] ?: Long.MIN_VALUE }.thenBy { it })
     }
 
-    fun build(rows: List<SmartListRow>, favorites: Set<String>, available: Set<String>): Map<SmartList, List<String>> = mapOf(
-        SmartList.Top to top(rows, available), SmartList.Recent to recent(rows, available), SmartList.Liked to liked(rows, favorites, available))
+    /**
+     * Songs with strong past signals (liked, or 3+ full listens at a 70%+ full-listen rate) that haven't started in [days]
+     * days. Only songs that were played at least once can be forgotten. Longest-forgotten first.
+     */
+    fun gems(rows: List<SmartListRow>, favorites: Set<String>, available: Set<String>, now: Long, days: Int = 60, limit: Int = LIMIT): List<String> {
+        val cutoff = now - days * 86_400_000L
+        val last = HashMap<String, Long>(); val full = HashMap<String, Int>(); val finished = HashMap<String, Int>()
+        for (row in rows) {
+            if (row.localId !in available) continue
+            when (row.kind) {
+                "song_started" -> last.merge(row.localId, row.occurredAt, ::maxOf)
+                "song_completed" -> { full.merge(row.localId, 1, Int::plus); finished.merge(row.localId, 1, Int::plus) }
+                in terminal -> { finished.merge(row.localId, 1, Int::plus); if ((row.completion ?: 0.0) >= 0.9) full.merge(row.localId, 1, Int::plus) }
+            }
+        }
+        return last.filter { (id, at) ->
+            at < cutoff && (id in favorites || (full[id] ?: 0) >= 3 && (full[id] ?: 0).toDouble() / (finished[id] ?: 1) >= 0.7)
+        }.entries.sortedBy { it.value }.take(limit).map { it.key }
+    }
+
+    fun build(rows: List<SmartListRow>, favorites: Set<String>, available: Set<String>, now: Long = System.currentTimeMillis()): Map<SmartList, List<String>> = mapOf(
+        SmartList.Top to top(rows, available), SmartList.Recent to recent(rows, available), SmartList.Liked to liked(rows, favorites, available),
+        SmartList.Gems to gems(rows, favorites, available, now))
 }

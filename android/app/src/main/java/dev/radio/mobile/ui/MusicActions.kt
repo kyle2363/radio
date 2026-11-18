@@ -15,7 +15,7 @@ import androidx.compose.ui.unit.dp
 import dev.radio.mobile.data.*
 import kotlinx.coroutines.launch
 
-enum class SongAction { PlayNext, AddToQueue, AddToPlaylist }
+enum class SongAction { PlayNext, AddToQueue, AddToPlaylist, Stats }
 
 @Composable
 fun SongActions(song: LocalSong, onAction: (SongAction, LocalSong) -> Unit) {
@@ -26,6 +26,7 @@ fun SongActions(song: LocalSong, onAction: (SongAction, LocalSong) -> Unit) {
             DropdownMenuItem(text = { Text("Play next") }, enabled = song.available, onClick = { open = false; onAction(SongAction.PlayNext, song) })
             DropdownMenuItem(text = { Text("Add to queue") }, enabled = song.available, onClick = { open = false; onAction(SongAction.AddToQueue, song) })
             DropdownMenuItem(text = { Text("Add to playlist") }, onClick = { open = false; onAction(SongAction.AddToPlaylist, song) })
+            DropdownMenuItem(text = { Text("Song stats") }, onClick = { open = false; onAction(SongAction.Stats, song) }, modifier = Modifier.testTag("song-stats-${song.id}"))
         }
     }
 }

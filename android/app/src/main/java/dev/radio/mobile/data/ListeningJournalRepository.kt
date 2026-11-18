@@ -51,6 +51,8 @@ class ListeningJournalRepository(context: Context, private val db: LibraryDataba
     fun retry() { retries.trySend(Unit) }
     /** Rows for the automatic playlists; only collected while they are on screen. */
     val smartListRows: Flow<List<SmartListRow>> = db.journal().observeSmartListRows()
+    /** One row per actual start with outcome and context, for the Stats screen (checkpoint 8B). */
+    suspend fun statsAttempts(): List<StatsAttempt> = db.journal().statsAttempts()
     private fun submit(operation: suspend () -> Unit) {
         pending.incrementAndGet()
         mutable.update { it.copy(pendingWrites = pending.get()) }

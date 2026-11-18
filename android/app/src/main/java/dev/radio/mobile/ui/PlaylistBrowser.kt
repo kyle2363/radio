@@ -95,6 +95,7 @@ fun PlaylistBrowser(state: PlaylistsState, repository: PlaylistRepository, catal
                         SmartList.Top -> "Songs you finish, or play at least halfway, show up here. The more you play one, the higher it goes."
                         SmartList.Recent -> "Songs you play show up here."
                         SmartList.Liked -> "Like a song from the player and it shows up here."
+                        SmartList.Gems -> "Songs you liked or always finish show up here once you haven't played them for two months."
                     }, Modifier.padding(20.dp))
                 }
             } else if (selected == null) {
@@ -103,7 +104,7 @@ fun PlaylistBrowser(state: PlaylistsState, repository: PlaylistRepository, catal
                     itemsIndexed(SmartList.entries, key = { _, it -> it.id }) { _, list ->
                         val count = smartLists?.get(list)?.size
                         LibraryRow(list.title, if (count == null) list.description else "$count songs · ${list.description}",
-                            when (list) { SmartList.Top -> Symbol.Chart; SmartList.Recent -> Symbol.Clock; SmartList.Liked -> Symbol.HeartFilled }) { onSelect(list.id) }
+                            when (list) { SmartList.Top -> Symbol.Chart; SmartList.Recent -> Symbol.Clock; SmartList.Liked -> Symbol.HeartFilled; SmartList.Gems -> Symbol.Gem }) { onSelect(list.id) }
                     }
                     item { Text("Your playlists", Modifier.padding(start = 20.dp, top = 16.dp, bottom = 4.dp), style = MaterialTheme.typography.labelLarge) }
                 }

@@ -75,6 +75,8 @@ data class LocalSongFeedback(@PrimaryKey val localId: String, val favorite: Bool
     @Query("SELECT * FROM portable_sync_owner ORDER BY ownerKey") suspend fun syncOwners():List<PortableSyncOwner>
     @Insert suspend fun insert(event: LocalListeningEvent)
     @Insert(onConflict = OnConflictStrategy.IGNORE) suspend fun playContext(value: LocalPlayContext)
+    /** One row per actual start with its outcome and context (checkpoint 8B); stats never read raw events. */
+    @Query("SELECT s.attemptId AS attemptId, s.localId AS localId, s.occurredAt AS startedAt, t.kind AS endKind, t.listenedMs AS listenedMs, t.completion AS completion, t.terminationReason AS terminationReason, c.sourceKind AS sourceKind, c.sourceId AS sourceId, c.stationOrigin AS stationOrigin, c.`trigger` AS `trigger` FROM local_listening_events s LEFT JOIN local_listening_events t ON t.attemptId=s.attemptId AND t.kind IN ('song_completed','song_skipped','attempt_stopped') LEFT JOIN local_play_context c ON c.attemptId=s.attemptId WHERE s.kind='song_started' AND s.attemptId IS NOT NULL ORDER BY s.occurredAt") suspend fun statsAttempts(): List<StatsAttempt>
     @Query("SELECT * FROM local_play_context WHERE attemptId=:attempt") suspend fun playContext(attempt: String): LocalPlayContext?
     @Query("SELECT * FROM local_play_context ORDER BY startedAt") suspend fun playContexts(): List<LocalPlayContext>
     @Insert suspend fun enqueue(event: LocalEventOutbox)

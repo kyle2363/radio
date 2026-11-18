@@ -43,6 +43,7 @@ enum class Symbol(val path: String, val filled: Boolean = false) {
     Check("M5 12 L10 17 L19 7"),
     Block("M20 12 A8 8 0 1 1 4 12 A8 8 0 1 1 20 12 M6.5 6.5 L17.5 17.5"),
     Warning("M12 4 L21 20 H3 Z M12 10 V14 M12 17 V17.5"),
+    Gem("M6 3 H18 L22 9 L12 21 L2 9 Z M2 9 H22 M12 21 L8 9 L12 3 L16 9 L12 21"),
     Chart("M5 20 V13 M12 20 V5 M19 20 V9 M3 20 H21"),
     Person("M16 8 A4 4 0 1 1 8 8 A4 4 0 1 1 16 8 M4 21 C4 16 8 14 12 14 C16 14 20 16 20 21"),
     Sliders("M6 4 V20 M12 4 V20 M18 4 V20 M3 9 H9 M9 15 H15 M15 7 H21"),
