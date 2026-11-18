@@ -22,6 +22,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.translate
+import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalLifecycleOwner
@@ -63,6 +64,11 @@ fun PlayerBackground(mode: PlayerBackdrop, playing: Boolean, modifier: Modifier 
     }
     val moving = shouldAnimateBackdrop(mode, playing, foreground, animationsEnabled)
     val phase = remember { Animatable(0f) }
+    // Checkpoint 10: the glow breathes with the music's loudness while it moves (never when paused or reduced motion).
+    DisposableEffect(moving) {
+        dev.radio.mobile.playback.AudioLevel.listening = moving
+        onDispose { dev.radio.mobile.playback.AudioLevel.listening = false }
+    }
     LaunchedEffect(moving) {
         if (moving) while (true) {
             phase.animateTo(1f, tween(((1f - phase.value) * 16000).toInt().coerceAtLeast(1), easing = LinearEasing))
@@ -87,6 +93,9 @@ fun PlayerBackground(mode: PlayerBackdrop, playing: Boolean, modifier: Modifier 
             drawRect(colors.background)
             if (mode != PlayerBackdrop.Off) {
                 val angle = phase.value * (2 * PI).toFloat()
+                // Read every frame the phase animation draws; 0 when still. Up to +25% size with a loud passage.
+                val pulse = if (moving) dev.radio.mobile.playback.AudioLevel.level else 0f
+                scale(1f + .25f * pulse, pivot = Offset(size.width / 2, size.height / 2)) {
                 // Two glows on different loops (1x and 2x) so the field drifts rather than rotating rigidly.
                 val x = size.width * (.22f + .30f * cos(angle))
                 val y = size.height * (.78f + .16f * sin(angle))
@@ -94,6 +103,7 @@ fun PlayerBackground(mode: PlayerBackdrop, playing: Boolean, modifier: Modifier 
                 val x2 = size.width * (.80f + .22f * sin(angle * 2))
                 val y2 = size.height * (.30f + .20f * cos(angle))
                 translate(x2, y2) { drawCircle(second, radius * .9f, center = Offset.Zero) }
+                }
             }
         }
     })

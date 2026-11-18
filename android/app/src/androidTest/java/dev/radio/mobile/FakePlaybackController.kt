@@ -60,5 +60,6 @@ class FakePlaybackController : PlaybackController {
     override fun clearUpcoming() { mutable.update { old -> val ids = old.playOrder.take(old.playOrder.indexOf(old.currentId) + 1); old.copy(queue = old.queue.filter { it.id in ids }, playOrder = ids) } }
     override fun setSleepTimer(durationMs: Long, fade: Boolean) { mutable.update { it.copy(sleepTimer = SleepTimerState(durationMs, fade = fade)) } }
     override fun sleepAtTrackEnd() { mutable.update { it.copy(sleepTimer = SleepTimerState(endOfTrack = true)) } }
+    override fun sleepAtQueueEnd() { mutable.update { it.copy(sleepTimer = SleepTimerState(endOfQueue = true)) } }
     override fun cancelSleepTimer() { mutable.update { it.copy(sleepTimer = SleepTimerState()) } }
 }

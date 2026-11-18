@@ -64,7 +64,7 @@ fun IntegratedQueue(audio: PlaybackState, accessAllowed: Boolean, onSelect: (Str
                 val current = id == audio.currentId
                 val tint = if (current) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
                 SwipeToRemove(enabled = playback != null && !editing && !current && reorder.draggingKey == null, onRemove = { playback?.removeFromQueue(id) },
-                    modifier = Modifier.reorderable(reorder, id, enabled = playback != null && !editing, onStart = haptic)) {
+                    modifier = (if (reorder.settlingKey == id || reorder.draggingKey == id) Modifier else springPlacement()).reorderable(reorder, id, enabled = playback != null && !editing, onStart = haptic)) {
                 // The current song sits on a rounded tonal block so it is easy to find in a long queue.
                 Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp).clip(RoundedCornerShape(20.dp))
                     .background(if (reorder.draggingKey == id) MaterialTheme.colorScheme.surfaceContainerHigh else androidx.compose.ui.graphics.Color.Transparent)

@@ -2,6 +2,7 @@
 
 package dev.radio.mobile.ui
 
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.expandVertically
@@ -524,7 +525,7 @@ fun RadioTuningIn(mood: String, modifier: Modifier = Modifier) {
     val colors = LocalStationColors.current
     Column(modifier.padding(horizontal = 24.dp).testTag("radio-tuning-in"), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
         Box(Modifier.size(160.dp).background(Color(colors.tile), RoundedCornerShape(20.dp)), contentAlignment = Alignment.Center) {
-            CircularProgressIndicator(Modifier.size(56.dp), color = Color(MoodColors.of(mood).accent), strokeWidth = 4.dp)
+            TuningDial(mood, Modifier.fillMaxSize().padding(14.dp))
         }
         Spacer(Modifier.height(24.dp))
         Text("Tuning in…", style = MaterialTheme.typography.titleLarge)
@@ -633,5 +634,47 @@ fun RadioNowPlaying(
             }
         }
         Spacer(Modifier.height(8.dp))
+    }
+}
+
+
+/** Checkpoint 10: a stable FM-style frequency for a station (88.1–107.9, odd tenths), shown as the dial settles. */
+fun stationFrequency(station: String): Float {
+    val channels = ((107.9f - 88.1f) / 0.2f).toInt() + 1 // 100 channels
+    val index = Math.floorMod(station.hashCode() * 31 + 7, channels)
+    return (881 + index * 2) / 10f
+}
+
+/**
+ * Checkpoint 10: the station "tuning" animation. The needle sweeps across the band and settles on the station with a
+ * small spring overshoot while the frequency counts in. Compose scales it with the animator setting, so reduced motion
+ * shows the settled dial at once.
+ */
+@Composable
+fun TuningDial(station: String, modifier: Modifier = Modifier) {
+    val accent = Color(MoodColors.of(station.substringBefore(':')).accent)
+    val tick = LocalContentColor.current.copy(alpha = .45f)
+    val target = stationFrequency(station)
+    val needle = remember(station) { androidx.compose.animation.core.Animatable(87.5f) }
+    LaunchedEffect(station) {
+        needle.snapTo(87.5f)
+        needle.animateTo(108f, androidx.compose.animation.core.tween(420, easing = androidx.compose.animation.core.FastOutSlowInEasing))
+        needle.animateTo(target, androidx.compose.animation.core.spring(dampingRatio = .45f, stiffness = 120f))
+    }
+    Column(modifier.testTag("tuning-dial").semantics { this.contentDescription = "Tuning to ${"%.1f".format(target)}" },
+        horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+        Text("%.1f".format(needle.value.coerceIn(87.5f, 108f)), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.height(8.dp))
+        androidx.compose.foundation.Canvas(Modifier.fillMaxWidth().height(36.dp)) {
+            val span = 108f - 87.5f
+            for (i in 0..40) {
+                val x = size.width * i / 40f
+                val major = i % 5 == 0
+                drawLine(tick, androidx.compose.ui.geometry.Offset(x, size.height * (if (major) .25f else .5f)), androidx.compose.ui.geometry.Offset(x, size.height),
+                    strokeWidth = if (major) 2.dp.toPx() else 1.dp.toPx())
+            }
+            val x = size.width * ((needle.value - 87.5f) / span).coerceIn(0f, 1f)
+            drawLine(accent, androidx.compose.ui.geometry.Offset(x, 0f), androidx.compose.ui.geometry.Offset(x, size.height), strokeWidth = 3.dp.toPx(), cap = androidx.compose.ui.graphics.StrokeCap.Round)
+        }
     }
 }

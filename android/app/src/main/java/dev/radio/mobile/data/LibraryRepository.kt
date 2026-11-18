@@ -42,6 +42,8 @@ class LibraryRepository(context: Context, internal val db: LibraryDatabase, conn
     val radio = dev.radio.mobile.recommendation.RadioRepository(context, db, state, journal, scope, connectedLink = connectedLink)
     val loudness = LoudnessRepository(context, db.loudness(), scope, state)
     private var scanJob: Job? = null
+    private val appContext = context.applicationContext
+    private suspend fun reloadMatches() = dev.radio.mobile.portable.MatchingRepository(appContext, db).load()
     private fun hasAccess(uri: Uri) = resolver.persistedUriPermissions.any { it.uri == uri && it.isReadPermission }
     private val ready = scope.launch {
         try { load() } catch (_: Exception) { mutable.update { it.copy(loading = false, error = "Couldn't open the saved library. Restart the app to retry.") } }
@@ -114,7 +116,12 @@ class LibraryRepository(context: Context, internal val db: LibraryDatabase, conn
                     if (!adopted && takeGrant && !alreadyGranted && oldRoot != uri.toString()) runCatching { resolver.releasePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
                 }
             }
-        }.also { scanJob = it }
+        }.also { job ->
+            scanJob = job
+            // Starting the scan cleared the published matches. Republish them however the scan ended, or Radio,
+            // the journal and lyrics treat every song as local-only until the app restarts.
+            job.invokeOnCompletion { scope.launch { runCatching { reloadMatches() } } }
+        }
     }
 
     internal suspend fun close() { scope.coroutineContext[Job]?.cancelAndJoin() }

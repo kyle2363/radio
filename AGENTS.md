@@ -378,7 +378,8 @@ Checkpoint 5 adds plain lyrics from prepared desktop catalogs and a private offl
 | 7 | Playlist sync, sync on open | Planned (`docs/CHECKPOINT_7_PLAN.md`) |
 | 9A–9C | Shared feel rules, personal feels, sprint, this-or-that, feel stations | Phone-accepted and merged November 18, 2026 |
 | 9D–9E | Desktop Feels panel, feel stations, suggestions, review, feel history | Implemented on `desktop-9d-9e` |
-| 8–11 | Listening context + stats, personal feel, polish, daily use | Planned (`docs/CHECKPOINT_8_PLAN.md`) |
+| 10–11 | Animation polish (shared-element player, audio-reactive backdrop, predictive back, springs, tuning dial); daily use (empty-queue Play, swipe rows, QS tile, shortcuts, typo search, Recently heard, finish-queue sleep) | Implemented on `android-10-11`; awaiting phone test |
+| 8C | Fun stats | Planned (`docs/CHECKPOINT_8_PLAN.md`) |
 
 At each checkpoint: installable build, verification summary and limitations, and a short phone test list. A successful build is not approval to start the next increment.
 

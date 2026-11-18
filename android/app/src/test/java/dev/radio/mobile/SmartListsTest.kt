@@ -52,4 +52,14 @@ class SmartListsTest {
         assertEquals(SmartList.Top, SmartList.of("smart:top"))
         assertEquals(null, SmartList.of("playlist-1"))
     }
+
+    // Checkpoint 11: "what was that song?" — every actual start, newest first, repeats kept, at most 50.
+    @Test fun heardListsEveryStartNewestFirst() {
+        val rows = (1..60).map { started(if (it % 2 == 0) "a" else "b", it.toLong()) } + completed("a", 100) + started("gone", 99)
+        val heard = SmartLists.heard(rows, setOf("a", "b"))
+        assertEquals(50, heard.size)
+        assertEquals("a" to 60L, heard.first())
+        assertEquals("b" to 59L, heard[1])
+        assertEquals(listOf("a", "b"), SmartLists.build(rows, emptySet(), setOf("a", "b"))[SmartList.Heard]!!.take(2))
+    }
 }

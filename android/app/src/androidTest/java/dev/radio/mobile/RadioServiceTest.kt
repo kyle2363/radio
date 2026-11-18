@@ -130,6 +130,22 @@ class RadioServiceTest {
         assertEquals("focus", library.radio.state.value.mood)
         assertEquals(startsBefore, starts())
     }
+    // Checkpoint 11: a system Play with an empty queue starts Radio instead of doing nothing.
+    @Test fun systemPlayWithEmptyQueueStartsRadio() {
+        main { playback.pause(); songs.take(3).forEach { playback.removeFromQueue(it.id) } }
+        await("Queue didn't empty") { playback.state.value.queue.isEmpty() }
+        val startsBefore = starts()
+        lateinit var future: com.google.common.util.concurrent.ListenableFuture<MediaController>
+        main { future = MediaController.Builder(context, SessionToken(context, ComponentName(context, RadioPlaybackService::class.java))).buildAsync() }
+        val media = future.get(10, TimeUnit.SECONDS)
+        try {
+            main { media.play() }
+            await("Empty-queue play didn't start Radio") { playback.state.value.radioActive && playback.state.value.isPlaying }
+            await("Radio start wasn't journaled") { starts() > startsBefore }
+            assertNull(playback.state.value.error)
+        } finally { main { media.release() } }
+    }
+
     @Test fun delayedStartCannotOverrideSystemStop() {
         pausedUnstartedQueue()
         val entered=CompletableDeferred<Unit>();val release=CompletableDeferred<Unit>()

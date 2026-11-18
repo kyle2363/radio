@@ -79,3 +79,34 @@ fun PlaylistDestinationDialog(songIds: List<String>, playlists: PlaylistsState, 
         repository.create(name, songIds).onSuccess { onAdded() }.onFailure { error = it.message }; busy = false
     } }, enabled = name.isNotBlank() && !busy) { Text("Create and add") } }, dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } })
 }
+
+/**
+ * Checkpoint 11: swipe a song row right to play it next, left to add it to the queue. The row springs back;
+ * [onAction] shows the usual short confirmation. Unavailable songs don't swipe.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun SwipeSongRow(song: LocalSong, onAction: (SongAction, LocalSong) -> Unit, content: @Composable () -> Unit) {
+    if (!song.available) { content(); return }
+    val state = rememberSwipeToDismissBoxState()
+    val scope = rememberCoroutineScope()
+    SwipeToDismissBox(state, modifier = Modifier.testTag("swipe-${song.id}"),
+        onDismiss = { value ->
+            when (value) {
+                SwipeToDismissBoxValue.StartToEnd -> onAction(SongAction.PlayNext, song)
+                SwipeToDismissBoxValue.EndToStart -> onAction(SongAction.AddToQueue, song)
+                SwipeToDismissBoxValue.Settled -> Unit
+            }
+            scope.launch { state.snapTo(SwipeToDismissBoxValue.Settled) }
+        },
+        backgroundContent = {
+            val direction = state.dismissDirection
+            val label = when (direction) { SwipeToDismissBoxValue.StartToEnd -> "Play next"; SwipeToDismissBoxValue.EndToStart -> "Add to queue"; else -> "" }
+            Box(Modifier.fillMaxSize().padding(horizontal = 24.dp),
+                contentAlignment = if (direction == SwipeToDismissBoxValue.EndToStart) Alignment.CenterEnd else Alignment.CenterStart) {
+                if (label.isNotEmpty()) Text(label, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+            }
+        }) {
+        Surface(color = MaterialTheme.colorScheme.surface) { content() }
+    }
+}

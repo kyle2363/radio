@@ -61,3 +61,18 @@ internal fun <T : Any> rememberLastNonNull(value: T?): T? {
     if (value != null) holder.last = value
     return holder.last
 }
+
+/** Predictive back preview amount (0..1): eased so the first part of the swipe already reads as "going back". */
+internal fun backPreview(progress: Float): Float = FastOutSlowInEasing.transform(progress.coerceIn(0f, 1f))
+
+/**
+ * Checkpoint 10: the mini-player's art and title move into place in Now Playing (and back) instead of cross-fading.
+ * A no-op without a visibility scope (first frame) so nothing ever disappears.
+ */
+@OptIn(androidx.compose.animation.ExperimentalSharedTransitionApi::class)
+@Composable
+internal fun Modifier.sharedPlayer(shared: androidx.compose.animation.SharedTransitionScope, visibility: androidx.compose.animation.AnimatedVisibilityScope?, key: String): Modifier {
+    if (visibility == null) return this
+    return with(shared) { this@sharedPlayer.sharedElement(rememberSharedContentState("player-$key"), visibility,
+        boundsTransform = { _, _ -> androidx.compose.animation.core.spring(dampingRatio = 0.85f, stiffness = 380f) }) }
+}

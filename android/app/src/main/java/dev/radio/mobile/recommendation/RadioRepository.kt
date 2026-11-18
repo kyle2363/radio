@@ -19,6 +19,9 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import org.json.JSONObject
 
+/** How long Radio waits for matches that are being reloaded (after a rescan or app start) before picking anyway. */
+internal const val MATCH_RELOAD_WAIT_MS = 5_000L
+
 data class RadioSuggestion(val song:LocalSong,val pick:RadioPick)
 data class RadioInputToken(val library:LibraryState,val mappings:JournalIdentityProvider.MappingSnapshot,val feedback:ListeningJournalState,val mood:String,val exploration:Double,val vibe:String?,val current:String?,val queueRevision:Long,val playOrder:List<String>,val policyRevision:Long,val bootstrap:Set<String>,val legacyVectorSnapshot:String?,val syncRevision:Long=0,val syncEpoch:Long=0,val feel:String?=null)
 data class RadioBatch(val suggestions:List<RadioSuggestion>,val token:RadioInputToken)
@@ -312,9 +315,18 @@ class RadioRepository internal constructor(context:Context,private val db:Librar
         return feelFeaturesFlow.value
     }
     fun refresh() { connected.revalidate(connectedFence());refreshJob?.cancel();refreshJob=scope.launch {delay(75);compute()} }
-    suspend fun recommendations(exclude:Set<String> = emptySet(),count:Int=5,anchorLocalId:String?=playback.currentId):RadioBatch? { val input=token();val rows=compute(exclude,count,anchorLocalId,publishPreview=false) ?: return null;return if(valid(input))RadioBatch(rows,input) else null }
+    /**
+     * A rescan or app start clears the published matches while they reload. Picking in that gap treats every song as
+     * local-only, so the station ignores similarity. Wait briefly for the reload when a catalog is imported.
+     */
+    private suspend fun awaitMatches() {
+        if(!JournalIdentityProvider.mappings.value.loaded && db.catalogs().latest()!=null)
+            withTimeoutOrNull(MATCH_RELOAD_WAIT_MS){JournalIdentityProvider.mappings.first{it.loaded}}
+    }
+    suspend fun recommendations(exclude:Set<String> = emptySet(),count:Int=5,anchorLocalId:String?=playback.currentId):RadioBatch? { awaitMatches();val input=token();val rows=compute(exclude,count,anchorLocalId,publishPreview=false) ?: return null;return if(valid(input))RadioBatch(rows,input) else null }
     private suspend fun compute(exclude:Set<String> = emptySet(),count:Int=5,anchorLocalId:String?=if(playback.radioActive)playback.playOrder.lastOrNull() ?: playback.currentId else playback.currentId,publishPreview:Boolean=true):List<RadioSuggestion>? = mutex.withLock {
         defaultsReady.await()
+        awaitMatches()
         val local=library.value;val mapping=JournalIdentityProvider.mappings.value
         val inputs=token()
         if(PortableSyncChanges.isApplying || local.loading || local.scanning || !journal.state.value.feedbackLoaded || journal.state.value.pendingWrites>0)return@withLock null

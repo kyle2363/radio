@@ -179,6 +179,19 @@ class RadioPlaybackService : MediaSessionService() {
                 }
             }
         }
+        // Checkpoint 11: Play always does something. With nothing queued, a saved bookmark resumes (it only
+        // exists if restoration hasn't consumed it yet); otherwise Radio starts from the whole library.
+        engine.onEmptyPlay = {
+            scope.launch {
+                val saved = runCatching { library.playbackSnapshots.load() }.getOrNull()
+                val catalog = library.state.value
+                if (saved != null && engine.state.value.queue.isEmpty()) {
+                    engine.restorePaused(saved, catalog.songs, catalog.accessLost)
+                    if (engine.state.value.queue.isNotEmpty()) { engine.toggle(); return@launch }
+                }
+                if (engine.state.value.queue.isEmpty()) engine.startRadio(null)
+            }
+        }
         // Repeat is a preference, not queue content: apply it before the session exists so the
         // system controls never show a stale icon after a restart.
         engine.setRepeat(prefs.repeat)

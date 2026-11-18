@@ -15,7 +15,7 @@ data class NormalizationProfile(val enabled: Boolean = false, val gains: Map<Str
  * This also covers prebuffered/gapless streams. Sleep fading remains downstream volume.
  */
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
-internal class NormalizationAudioProcessor : BaseAudioProcessor() {
+internal class NormalizationAudioProcessor(private val meter: Boolean = false) : BaseAudioProcessor() {
     @Volatile var profile = NormalizationProfile()
     @Volatile var processedMediaId: String = ""
         private set
@@ -40,6 +40,8 @@ internal class NormalizationAudioProcessor : BaseAudioProcessor() {
         val gain = profile.gain(mediaId)
         processedMediaId = mediaId; appliedGain = gain
         val output = replaceOutputBuffer(input.remaining())
+        // Checkpoint 10: measure loudness for the Moving backdrop, only while it listens (main player only).
+        if (meter && AudioLevel.listening) measure(input.duplicate(), gain)
         if (gain == 1f) output.put(input)
         else if (inputAudioFormat.encoding == C.ENCODING_PCM_FLOAT) {
             while (input.remaining() >= 4) output.putFloat(input.float * gain)
@@ -47,6 +49,17 @@ internal class NormalizationAudioProcessor : BaseAudioProcessor() {
             while (input.remaining() >= 2) output.putShort((input.short * gain).roundToInt().coerceIn(-32768, 32767).toShort())
         }
         output.flip()
+    }
+    private fun measure(samples: ByteBuffer, gain: Float) {
+        samples.order(java.nio.ByteOrder.nativeOrder())
+        var sum = 0.0; var count = 0
+        // Every 4th sample is plenty for a glow and keeps the audio thread cheap.
+        if (inputAudioFormat.encoding == C.ENCODING_PCM_FLOAT) {
+            while (samples.remaining() >= 16) { val v = samples.float * gain; sum += v * v; count++; samples.position(samples.position() + 12) }
+        } else {
+            while (samples.remaining() >= 8) { val v = samples.short / 32768f * gain; sum += v * v; count++; samples.position(samples.position() + 6) }
+        }
+        AudioLevel.report(sum, count)
     }
     override fun onReset() { mediaId = ""; processedMediaId = ""; appliedGain = 1f }
 }

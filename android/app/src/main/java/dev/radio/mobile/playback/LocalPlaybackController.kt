@@ -39,7 +39,7 @@ class LocalPlaybackController(
     private val onExplicitReplay: (LocalSong, String) -> Unit = { _, _ -> },
     private val onAudibleStart: (LocalSong, String, Long) -> Unit = { _, _, _ -> }
 ) : PlaybackController {
-    internal val normalizationProcessor = NormalizationAudioProcessor()
+    internal val normalizationProcessor = NormalizationAudioProcessor(meter = true)
     private val renderers = object : DefaultRenderersFactory(context.applicationContext) {
         override fun buildAudioSink(context: Context, enableFloatOutput: Boolean, enableAudioOutputPlaybackParams: Boolean): AudioSink =
             DefaultAudioSink.Builder(context).setEnableFloatOutput(false).setAudioProcessors(arrayOf(normalizationProcessor)).build()
@@ -133,6 +133,8 @@ class LocalPlaybackController(
     private var lastCheckpointAt = 0L
     private var sleepDeadline: SleepDeadline? = null
     private var sleepEndOfTrack = false
+    /** Checkpoint 11: "Finish this playlist" — pause when the last song in play order ends. */
+    private var sleepEndOfQueue = false
     private var sleepJob: Job? = null
 
     /** Set by the media session for the command it is about to dispatch: [PlayTrigger.WIDGET] or [PlayTrigger.MEDIA_BUTTON]. */
@@ -170,9 +172,10 @@ class LocalPlaybackController(
                 }
             }
             override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
-                if (!playWhenReady && reason == Player.PLAY_WHEN_READY_CHANGE_REASON_END_OF_MEDIA_ITEM) { finishAttempt("song_completed", "natural_end"); if (sleepEndOfTrack) cancelSleepTimer() }
+                if (!playWhenReady && reason == Player.PLAY_WHEN_READY_CHANGE_REASON_END_OF_MEDIA_ITEM) { finishAttempt("song_completed", "natural_end"); if (sleepEndOfTrack || sleepEndOfQueue) cancelSleepTimer() }
             }
             override fun onEvents(player: Player, events: Player.Events) {
+                if (sleepEndOfQueue) this@LocalPlaybackController.player.pauseAtEndOfMediaItems = atQueueEnd()
                 val id = player.currentMediaItem?.mediaId
                 if (id != null && id != attemptSong) beginAttempt(id)
                 if (id != null && player.isPlaying && listeningAttempt?.isFinished == true) beginAttempt(id)
@@ -265,7 +268,7 @@ class LocalPlaybackController(
             seekable = (player.isCurrentMediaItemSeekable || player.playbackState == Player.STATE_IDLE) && duration != null && duration > 0 && error == null && canReadCurrent(),
             canNext = !accessLost && next != C.INDEX_UNSET && queue.any { it.available && it.id != id },
             canPrevious = canReadCurrent(), shuffled = player.shuffleModeEnabled, repeat = player.repeatMode.toRepeatMode(), error = error,
-            sleepTimer = SleepTimerState(sleepDeadline?.remaining(android.os.SystemClock.elapsedRealtime()) ?: 0L, sleepEndOfTrack, sleepDeadline?.fade == true)
+            sleepTimer = SleepTimerState(sleepDeadline?.remaining(android.os.SystemClock.elapsedRealtime()) ?: 0L, sleepEndOfTrack, sleepDeadline?.fade == true, sleepEndOfQueue)
         )
         val now = android.os.SystemClock.elapsedRealtime()
         if (checkpoint || now - lastCheckpointAt >= 5000) {
@@ -409,7 +412,10 @@ class LocalPlaybackController(
         if (player.playWhenReady && player.playbackState != Player.STATE_ENDED) { pause(); return }
         resume()
     }
+    /** Checkpoint 11: what Play does with nothing queued (the service resumes the bookmark or starts Radio). */
+    internal var onEmptyPlay: () -> Unit = {}
     private fun resume() {
+        if (player.mediaItemCount == 0 && queue.isEmpty()) { onEmptyPlay(); return }
         queueRevision++
         latestCommand = externalTrigger ?: PlayTrigger.TAP
         if (!canReadCurrent()) { error = "This file is unavailable. Check folder access and rescan."; publish(); return }
@@ -708,9 +714,23 @@ class LocalPlaybackController(
         sleepEndOfTrack = true; player.pauseAtEndOfMediaItems = true
         publish()
     }
+    override fun sleepAtQueueEnd() {
+        queueRevision++
+        cancelSleepTimer()
+        if (player.currentMediaItem == null || radioActive) return
+        sleepEndOfQueue = true; player.pauseAtEndOfMediaItems = atQueueEnd()
+        publish()
+    }
+    /** The current song is the last one that will play: last in (shuffled) order, or held by Repeat one. */
+    private fun atQueueEnd(): Boolean {
+        val timeline = player.currentTimeline
+        if (timeline.isEmpty) return true
+        if (player.repeatMode == Player.REPEAT_MODE_ONE) return true
+        return player.currentMediaItemIndex == timeline.getLastWindowIndex(player.shuffleModeEnabled)
+    }
     override fun cancelSleepTimer() {
         queueRevision++
-        sleepJob?.cancel(); sleepJob = null; sleepDeadline = null; sleepEndOfTrack = false
+        sleepJob?.cancel(); sleepJob = null; sleepDeadline = null; sleepEndOfTrack = false; sleepEndOfQueue = false
         player.pauseAtEndOfMediaItems = false; sleepGain = 1f; applyVolume()
         publish()
     }

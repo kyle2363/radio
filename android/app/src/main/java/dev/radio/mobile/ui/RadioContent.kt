@@ -51,14 +51,23 @@ fun RadioContent(radio:RadioState,repository:RadioRepository,audio:PlaybackState
         else -> null
     }
     fun start(seed:String?){playback.startRadio(seed);onPlayer()}
+    var retune by remember{mutableIntStateOf(0)}
+    var retuning by remember{mutableStateOf(false)}
+    LaunchedEffect(retune){ if(retune>0){ retuning=true; kotlinx.coroutines.delay(1300); retuning=false } }
     LazyColumn(modifier.fillMaxSize().testTag("radio-screen"),contentPadding=PaddingValues(start=16.dp,end=16.dp,bottom=16.dp),verticalArrangement=Arrangement.spacedBy(16.dp)) {
         item(key="station") {
             // Off air ↔ on air crossfades, and the card eases to its new height.
             val card=when{onAir->"on";block!=null->"blocked";else->"off"}
             AnimatedContent(card,transitionSpec={(fadeIn(Motion.standard()) togetherWith fadeOut(Motion.quick())).using(SizeTransform(clip=false))},label="station-card"){shown->
             when(shown) {
-                "on" -> OnAirStationCard(audio,radio,onOpenPlayer=onPlayer,onVibe={if(radio.vibeLocalId!=null)repository.clearVibe() else repository.lockVibe()},
-                    onNewMix={playback.newMix()},onEnd=onEnd,positionMs=positionMs,feel=feels.firstOrNull{it.feelId==radio.feel})
+                "on" -> Box {
+                    OnAirStationCard(audio,radio,onOpenPlayer=onPlayer,onVibe={if(radio.vibeLocalId!=null)repository.clearVibe() else repository.lockVibe()},
+                    onNewMix={retune++;playback.newMix()},onEnd=onEnd,positionMs=positionMs,feel=feels.firstOrNull{it.feelId==radio.feel})
+                    // Checkpoint 10: New mix retunes the dial briefly over the card.
+                    if(retuning) Surface(Modifier.matchParentSize(),shape=androidx.compose.foundation.shape.RoundedCornerShape(24.dp),color=MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha=.94f)){
+                        TuningDial(radio.mood+":"+retune,Modifier.fillMaxSize().padding(24.dp))
+                    }
+                }
                 "blocked" -> if(block!=null) BlockedStationCard(block,library.scannedCount,library.songs.size,onChooseFolder,onLibrary,onRescan)
                 else -> OffAirStationCard(canStart && !audio.radioStarting,onPickForMe={if(audio.queue.isNotEmpty())confirm=true else start(null)},onFromSong={seedPicker=true})
             }

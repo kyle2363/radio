@@ -229,6 +229,39 @@ class RadioRepositoryTest {
             assertTrue(db.journal().events().isEmpty());assertNull(db.library().playbackSnapshot())
         }finally{scope.coroutineContext[Job]!!.cancelAndJoin();db.close();directory.deleteRecursively();context.getSharedPreferences("radio_recommendations",0).edit().clear().commit()}
     }
+    @Test fun recommendationsWaitForMatchesBeingReloaded()=runBlocking {
+        // A rescan or app start clears the published matches while they reload. Radio must not pick in that gap,
+        // or every song looks local-only and the station ignores similarity.
+        val instrument=InstrumentationRegistry.getInstrumentation();val context=instrument.targetContext
+        context.getSharedPreferences("radio_recommendations",0).edit().clear().commit()
+        val db=Room.inMemoryDatabaseBuilder(context,LibraryDatabase::class.java).build();val scope=CoroutineScope(SupervisorJob()+Dispatchers.IO)
+        val directory=File(context.cacheDir,".test-runtime/radio/${UUID.randomUUID()}").apply{mkdirs()}
+        val song=LocalSong("radio-reload","root","folder","content://fixture/reload","Song.mp3","Music",1,1,1,10000)
+        val local=MutableStateFlow(LibraryState(songs=listOf(song),loading=false))
+        try{
+            val fixture=JSONObject(instrument.context.assets.open("mobile_catalog_golden.json").bufferedReader().use{it.readText()}).getJSONArray("cases")
+            val row=(0 until fixture.length()).map{fixture.getJSONObject(it)}.first{it.getString("name")=="full_unicode_numeric"}
+            val manifest=CatalogValidator.manifest(row.getString("manifest_utf8").toByteArray())
+            val record=PortableCatalogRevision(manifest.sha256,"radio-server",manifest.catalogId,manifest.revision,row.getString("manifest_utf8"),2,3,1)
+            db.catalogs().saveRevision(record);db.catalogs().activate(PortableCatalogActive(record.serverId,record.catalogId,record.revision,record.manifestSha256))
+            val blobs=row.getJSONObject("blobs");blobs.keys().forEach{File(directory,"$it.bin").writeBytes(Base64.getDecoder().decode(blobs.getString(it)))}
+            JournalIdentityProvider.invalidateMappings()
+            val journal=ListeningJournalRepository(context,db,scope)
+            withTimeout(10000){JournalIdentityProvider.mappings.first{it.loaded}}
+            fun entries()=listOf(JournalIdentityProvider.Entry(song,record.serverId,record.catalogId,record.revision,"a","confirmed:${manifest.sha256}:hash"))
+            JournalIdentityProvider.publishMappings(JournalIdentityProvider.invalidateMappings(),entries())
+            val radio=RadioRepository(context,db,local,journal,scope,directory)
+            radio.updatePlayback(PlaybackState(queue=listOf(song),currentId=song.id))
+            withTimeout(10000){radio.state.first{it.loaded && !it.busy && it.matched==1}}
+            val generation=JournalIdentityProvider.invalidateMappings()
+            val pending=async(Dispatchers.IO){radio.recommendations(count=1)}
+            delay(500)
+            JournalIdentityProvider.publishMappings(generation,entries())
+            val batch=withTimeout(10000){pending.await()}
+            assertNotNull("Radio gave up instead of waiting for the reload",batch)
+            assertFalse("Radio picked while matches were reloading",batch!!.suggestions.single().pick.vectorFallback)
+        }finally{scope.coroutineContext[Job]!!.cancelAndJoin();db.close();directory.deleteRecursively();context.getSharedPreferences("radio_recommendations",0).edit().clear().commit()}
+    }
     @Test fun localOnlyPreviewIsPureAndPersistedFeedbackExcludesAcrossRestart()=runBlocking {
         val context=InstrumentationRegistry.getInstrumentation().targetContext
         context.getSharedPreferences("radio_recommendations",0).edit().clear().commit()

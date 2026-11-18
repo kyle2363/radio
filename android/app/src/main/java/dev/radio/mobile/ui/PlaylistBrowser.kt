@@ -40,7 +40,11 @@ fun PlaylistBrowser(state: PlaylistsState, repository: PlaylistRepository, catal
     val smartLists by produceState<Map<SmartList, List<String>>?>(null, smartRows, available, favorites) {
         smartRows?.collectLatest { rows -> value = withContext(Dispatchers.Default) { SmartLists.build(rows, favorites, available) } }
     }
-    val smartSongs = remember(smartLists, smart, byId) { smart?.let { smartLists?.get(it) }.orEmpty().mapNotNull(byId::get) }
+    val heard by produceState<List<Pair<LocalSong, Long>>>(emptyList(), smartRows, available, smart, byId) {
+        if (smart == SmartList.Heard) smartRows?.collectLatest { rows -> value = withContext(Dispatchers.Default) { SmartLists.heard(rows, available).mapNotNull { (id, at) -> byId[id]?.let { it to at } } } }
+    }
+    // Recently heard keeps repeats in its own list; the play buttons use each song once.
+    val smartSongs = remember(smartLists, smart, byId) { smart?.let { smartLists?.get(it) }.orEmpty().distinct().mapNotNull(byId::get) }
     val ids = remember(state.entries, selectedId) { selectedId?.let(state::songIds).orEmpty() }
     val songs = remember(ids, catalog) { ids.mapNotNull(byId::get) }
     fun report(result: Result<Unit>) { result.exceptionOrNull()?.let { message = it.message ?: "Couldn't update playlist." } }
@@ -85,10 +89,14 @@ fun PlaylistBrowser(state: PlaylistsState, repository: PlaylistRepository, catal
         }
         LazyColumn(Modifier.fillMaxSize().testTag("playlist-list"), state = listState) {
             if (smart != null) {
-                itemsIndexed(smartSongs, key = { _, it -> it.id }) { index, song ->
+                if (smart == SmartList.Heard) itemsIndexed(heard, key = { index, _ -> "heard:$index" }) { _, (song, at) ->
+                    // Repeats are kept; one tap plays that song again (alone), the time says when it was heard.
+                    SwipeSongRow(song, onSongAction) { LibraryRow(song.title, heardTime(at) + " · " + songSubtitle(song), Symbol.Clock, playing = song.id == currentId,
+                        trailing = { SongActions(song, onSongAction) }) { if (accessAllowed) onPlay(song, listOf(song), PlaySource(smart.title, PlaySource.SMART_LIST, smart.id)) } }
+                } else itemsIndexed(smartSongs, key = { _, it -> it.id }) { index, song ->
                     // The Top 100 shows each song's place.
-                    LibraryRow(if (smart == SmartList.Top) "${index + 1}. ${song.title}" else song.title, songSubtitle(song), Symbol.Music, playing = song.id == currentId,
-                        trailing = { SongActions(song, onSongAction) }) { if (accessAllowed) onPlay(song, smartSongs, PlaySource(smart.title, PlaySource.SMART_LIST, smart.id)) }
+                    SwipeSongRow(song, onSongAction) { LibraryRow(if (smart == SmartList.Top) "${index + 1}. ${song.title}" else song.title, songSubtitle(song), Symbol.Music, playing = song.id == currentId,
+                        trailing = { SongActions(song, onSongAction) }) { if (accessAllowed) onPlay(song, smartSongs, PlaySource(smart.title, PlaySource.SMART_LIST, smart.id)) } }
                 }
                 if (smartLists != null && smartSongs.isEmpty()) item {
                     Text(when (smart) {
@@ -96,6 +104,7 @@ fun PlaylistBrowser(state: PlaylistsState, repository: PlaylistRepository, catal
                         SmartList.Recent -> "Songs you play show up here."
                         SmartList.Liked -> "Like a song from the player and it shows up here."
                         SmartList.Gems -> "Songs you liked or always finish show up here once you haven't played them for two months."
+                        SmartList.Heard -> "Every song you start shows up here with the time you heard it."
                     }, Modifier.padding(20.dp))
                 }
             } else if (selected == null) {
@@ -104,7 +113,7 @@ fun PlaylistBrowser(state: PlaylistsState, repository: PlaylistRepository, catal
                     itemsIndexed(SmartList.entries, key = { _, it -> it.id }) { _, list ->
                         val count = smartLists?.get(list)?.size
                         LibraryRow(list.title, if (count == null) list.description else "$count songs · ${list.description}",
-                            when (list) { SmartList.Top -> Symbol.Chart; SmartList.Recent -> Symbol.Clock; SmartList.Liked -> Symbol.HeartFilled; SmartList.Gems -> Symbol.Gem }) { onSelect(list.id) }
+                            when (list) { SmartList.Top -> Symbol.Chart; SmartList.Recent -> Symbol.Clock; SmartList.Liked -> Symbol.HeartFilled; SmartList.Gems -> Symbol.Gem; SmartList.Heard -> Symbol.Clock }) { onSelect(list.id) }
                     }
                     item { Text("Your playlists", Modifier.padding(start = 20.dp, top = 16.dp, bottom = 4.dp), style = MaterialTheme.typography.labelLarge) }
                 }
@@ -140,7 +149,7 @@ fun PlaylistBrowser(state: PlaylistsState, repository: PlaylistRepository, catal
                 itemsIndexed(ids, key = { _, it -> it }) { index, id ->
                     val song = byId[id]
                     SwipeToRemove(enabled = reorder.draggingKey == null, onRemove = { scope.launch { report(repository.remove(selected.id, id)) } },
-                        modifier = Modifier.reorderable(reorder, id, onStart = haptic)) {
+                        modifier = (if (reorder.settlingKey == id || reorder.draggingKey == id) Modifier else springPlacement()).reorderable(reorder, id, onStart = haptic)) {
                     LibraryRow(song?.title ?: "Unavailable song", song?.let(::songSubtitle) ?: "Not in the selected Music folder", Symbol.Music, playing = id == currentId, trailing = {
                         var open by remember { mutableStateOf(false) }
                         Box {
@@ -189,4 +198,18 @@ private fun SyncMenuItem(playlist: LocalPlaylist, paired: Boolean, onClick: () -
     if (!paired && !playlist.synced) return
     DropdownMenuItem(text = { Text(if (playlist.synced) "Stop syncing" else "Sync with desktop") },
         modifier = Modifier.testTag("playlist-sync-${playlist.id}"), onClick = onClick)
+}
+
+
+/** "Today 21:04", "Yesterday 08:12" or "12 Nov 18:30". */
+internal fun heardTime(at: Long, now: Long = System.currentTimeMillis()): String {
+    val zone = java.time.ZoneId.systemDefault()
+    val time = java.time.Instant.ofEpochMilli(at).atZone(zone)
+    val today = java.time.Instant.ofEpochMilli(now).atZone(zone).toLocalDate()
+    val clock = time.format(java.time.format.DateTimeFormatter.ofPattern("HH:mm"))
+    return when (time.toLocalDate()) {
+        today -> "Today $clock"
+        today.minusDays(1) -> "Yesterday $clock"
+        else -> time.format(java.time.format.DateTimeFormatter.ofPattern("d MMM HH:mm"))
+    }
 }

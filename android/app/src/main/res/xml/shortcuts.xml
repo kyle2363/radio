@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Checkpoint 11: long-press the launcher icon. MainActivity routes each action. -->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut android:shortcutId="radio" android:enabled="true" android:icon="@mipmap/ic_launcher"
+        android:shortcutShortLabel="@string/shortcut_radio">
+        <intent android:action="dev.radio.mobile.SHORTCUT_RADIO"
+            android:targetPackage="dev.radio.mobile" android:targetClass="dev.radio.mobile.MainActivity" />
+    </shortcut>
+    <shortcut android:shortcutId="liked" android:enabled="true" android:icon="@mipmap/ic_launcher"
+        android:shortcutShortLabel="@string/shortcut_liked">
+        <intent android:action="dev.radio.mobile.SHORTCUT_LIKED"
+            android:targetPackage="dev.radio.mobile" android:targetClass="dev.radio.mobile.MainActivity" />
+    </shortcut>
+    <shortcut android:shortcutId="shuffle" android:enabled="true" android:icon="@mipmap/ic_launcher"
+        android:shortcutShortLabel="@string/shortcut_shuffle">
+        <intent android:action="dev.radio.mobile.SHORTCUT_SHUFFLE"
+            android:targetPackage="dev.radio.mobile" android:targetClass="dev.radio.mobile.MainActivity" />
+    </shortcut>
+    <shortcut android:shortcutId="resume" android:enabled="true" android:icon="@mipmap/ic_launcher"
+        android:shortcutShortLabel="@string/shortcut_resume">
+        <intent android:action="dev.radio.mobile.SHORTCUT_RESUME"
+            android:targetPackage="dev.radio.mobile" android:targetClass="dev.radio.mobile.MainActivity" />
+    </shortcut>
+</shortcuts>

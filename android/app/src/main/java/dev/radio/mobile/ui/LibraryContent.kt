@@ -99,8 +99,8 @@ fun LibraryContent(
                 } else if (open != null) {
                     val playable = open.songs.count { it.available }
                     if (playable > 1) item(key = "play-all") { PlayAllRow(playable, { onPlayAll(open.songs, PlaySource(open.name, PlaySource.ARTIST, open.name), false) }, { onPlayAll(open.songs, PlaySource(open.name, PlaySource.ARTIST, open.name), true) }) }
-                    items(open.songs, key = { it.id }) { song -> LibraryRow(song.title, songSubtitle(song, showArtist = false), Symbol.Music, playing = song.id == currentId,
-                        trailing = { SongActions(song, onSongAction) }) { onSong(song, open.songs, PlaySource(open.name, PlaySource.ARTIST, open.name)) } }
+                    items(open.songs, key = { it.id }) { song -> SwipeSongRow(song, onSongAction) { LibraryRow(song.title, songSubtitle(song, showArtist = false), Symbol.Music, playing = song.id == currentId,
+                        trailing = { SongActions(song, onSongAction) }) { onSong(song, open.songs, PlaySource(open.name, PlaySource.ARTIST, open.name)) } } }
                 }
                 if (artists.isEmpty()) item { Text("No MP3s yet. Artists come from file names like “Artist - Title.mp3”.", Modifier.padding(20.dp)) }
                 else if (artist == null && artists.size == 1 && artists[0].name == Artists.UNKNOWN) item {
@@ -122,8 +122,8 @@ fun LibraryContent(
                     val source = if (!browsingFolders) PlaySource.AllSongs else PlaySource(state.folders.firstOrNull { it.id == parent }?.name ?: "Music", PlaySource.FOLDER, parent)
                     if (playable > 1) item(key = "play-all") { PlayAllRow(playable, { onPlayAll(visible, source, false) }, { onPlayAll(visible, source, true) }, trailing = if (showSort) ({ SortButton(sort, onSort) }) else null) }
                     // Inside a folder every row shares the folder, so rows show artist and length only.
-                    items(visible, key = { it.id }) { song -> LibraryRow(song.title, songSubtitle(song, showFolder = !browsingFolders), Symbol.Music, playing = song.id == currentId,
-                        trailing = { SongActions(song, onSongAction) }) { onSong(song, visible, source) } }
+                    items(visible, key = { it.id }) { song -> SwipeSongRow(song, onSongAction) { LibraryRow(song.title, songSubtitle(song, showFolder = !browsingFolders), Symbol.Music, playing = song.id == currentId,
+                        trailing = { SongActions(song, onSongAction) }) { onSong(song, visible, source) } } }
                     if (visible.isEmpty() && (!browsingFolders || childFolders.isEmpty())) item {
                         Text("No MP3s in this ${if (browsingFolders) "folder" else "library"}. Try another folder or rescan after adding files.", Modifier.padding(20.dp))
                     }

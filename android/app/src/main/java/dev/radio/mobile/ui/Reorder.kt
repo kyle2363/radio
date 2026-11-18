@@ -28,6 +28,9 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
 
 /**
  * Long-press a row and drag it to a new place in a LazyColumn. The row follows the finger; the move is committed once,
@@ -37,10 +40,13 @@ class ReorderState internal constructor(private val list: LazyListState, private
     private val onMove: (key: Any, toIndex: Int) -> Unit) {
     var draggingKey by mutableStateOf<Any?>(null); private set
     var offset by mutableFloatStateOf(0f); private set
+    /** Checkpoint 10: the released row springs from where the finger left it into its new slot. */
+    var settlingKey by mutableStateOf<Any?>(null); private set
+    private var settle: Job? = null
     private var scroll: Job? = null
     private var speed = 0f
 
-    internal fun start(key: Any) { draggingKey = key; offset = 0f }
+    internal fun start(key: Any) { settle?.cancel(); settlingKey = null; draggingKey = key; offset = 0f }
     internal fun drag(delta: Float) {
         offset += delta
         val item = list.layoutInfo.visibleItemsInfo.firstOrNull { it.key == draggingKey } ?: return
@@ -70,11 +76,21 @@ class ReorderState internal constructor(private val list: LazyListState, private
             val target = items.firstOrNull { center >= it.offset && center < it.offset + it.size }
                 ?: if (center < (items.firstOrNull()?.offset ?: 0)) items.firstOrNull() else items.lastOrNull()
             val index = (target?.index ?: item.index) - leading()
-            if (target != null && target.index != item.index && index >= 0) onMove(key, index)
+            val moved = target != null && target.index != item.index && index >= 0
+            // After the move the row is laid out at the target's place; keep it visually where it was, then spring home.
+            val start = if (moved) offset - (target!!.offset - item.offset) else offset
+            if (moved) onMove(key, index)
+            speed = 0f; scroll?.cancel(); draggingKey = null
+            settlingKey = key; offset = start
+            settle = scope.launch {
+                Animatable(start).animateTo(0f, spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMediumLow)) { offset = value }
+                settlingKey = null
+            }
+            return
         }
         cancel()
     }
-    internal fun cancel() { draggingKey = null; offset = 0f; speed = 0f; scroll?.cancel() }
+    internal fun cancel() { draggingKey = null; settlingKey = null; settle?.cancel(); offset = 0f; speed = 0f; scroll?.cancel() }
 }
 
 @Composable
@@ -88,8 +104,9 @@ fun rememberReorderState(list: LazyListState, leading: () -> Int = { 0 }, onMove
 /** Lifts and moves the dragged row; long-press anywhere on the row starts the drag. */
 fun Modifier.reorderable(state: ReorderState, key: Any, enabled: Boolean = true, onStart: () -> Unit = {}): Modifier {
     val dragging = state.draggingKey == key
-    val lifted = this.zIndex(if (dragging) 1f else 0f).graphicsLayer {
-        translationY = if (dragging) state.offset else 0f
+    val settling = state.settlingKey == key
+    val lifted = this.zIndex(if (dragging || settling) 1f else 0f).graphicsLayer {
+        translationY = if (dragging || settling) state.offset else 0f
         if (dragging) { shadowElevation = 12f; scaleX = 1.02f; scaleY = 1.02f }
     }
     if (!enabled) return lifted
@@ -131,3 +148,9 @@ fun rememberDragHaptic(): () -> Unit {
     val haptics = LocalHapticFeedback.current
     return remember(haptics) { { haptics.performHapticFeedback(HapticFeedbackType.LongPress) } }
 }
+
+/** Checkpoint 10: other rows glide into place with a spring when the list order changes. */
+@Composable
+fun androidx.compose.foundation.lazy.LazyItemScope.springPlacement(): Modifier =
+    Modifier.animateItem(fadeInSpec = null, fadeOutSpec = null,
+        placementSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessMediumLow))

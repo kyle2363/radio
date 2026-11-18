@@ -251,4 +251,22 @@ class MediaPlaybackTest {
             assertEquals(previousStarts + 1, starts.size)
         }
     }
+
+    // Checkpoint 11: "Finish this playlist" plays every queued song, then pauses without wrapping (even with Repeat all).
+    @Test fun sleepAtQueueEndFinishesTheQueueThenPauses() {
+        var before = 0
+        main {
+            before = starts.size
+            controller.playFrom(listOf(song("short1", 600), song("short2", 600)), "short1", "Finish")
+            controller.setRepeat(RepeatMode.ALL)
+            controller.sleepAtQueueEnd()
+            assertTrue(controller.state.value.sleepTimer.endOfQueue)
+        }
+        await("Queue-end timer didn't stop after the last song") { starts.size == before + 2 && !controller.state.value.playWhenReady && !controller.state.value.sleepTimer.active }
+        main {
+            assertEquals("short2", controller.state.value.currentId)
+            assertEquals(before + 2, starts.size)
+            controller.setRepeat(RepeatMode.OFF)
+        }
+    }
 }

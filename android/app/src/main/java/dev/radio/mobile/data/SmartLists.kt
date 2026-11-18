@@ -8,13 +8,15 @@ enum class SmartList(val id: String, val title: String, val description: String)
     Top("smart:top", "Top 100", "Your most played songs"),
     Recent("smart:recent", "Recently played", "The last 100 songs you played"),
     Liked("smart:liked", "Liked songs", "Everything you've liked, newest first"),
-    Gems("smart:gems", "Forgotten gems", "Favourites you haven't played in two months");
+    Gems("smart:gems", "Forgotten gems", "Favourites you haven't played in two months"),
+    Heard("smart:heard", "Recently heard", "What was that song? Your last 50 plays, with times");
 
     companion object { fun of(id: String?): SmartList? = entries.firstOrNull { it.id == id } }
 }
 
 object SmartLists {
     const val LIMIT = 100
+    const val HEARD_LIMIT = 50
     private val terminal = setOf("song_skipped", "attempt_stopped")
 
     /** A listen is a finished song, or one played at least halfway before moving on. Early skips don't count. */
@@ -36,6 +38,11 @@ object SmartLists {
         for (row in rows) if (row.kind == "song_started" && row.localId in available) latest.merge(row.localId, row.occurredAt, ::maxOf)
         return latest.entries.sortedByDescending { it.value }.take(limit).map { it.key }
     }
+
+    /** Every actual start (repeats kept), newest first, with its time: the "what was that song?" list. */
+    fun heard(rows: List<SmartListRow>, available: Set<String>, limit: Int = HEARD_LIMIT): List<Pair<String, Long>> =
+        rows.asSequence().filter { it.kind == "song_started" && it.localId in available }
+            .sortedByDescending { it.occurredAt }.take(limit).map { it.localId to it.occurredAt }.toList()
 
     /** Current likes, most recently liked first; likes with no dated event (older or synced) follow by name order of id. */
     fun liked(rows: List<SmartListRow>, favorites: Set<String>, available: Set<String>): List<String> {
@@ -66,5 +73,5 @@ object SmartLists {
 
     fun build(rows: List<SmartListRow>, favorites: Set<String>, available: Set<String>, now: Long = System.currentTimeMillis()): Map<SmartList, List<String>> = mapOf(
         SmartList.Top to top(rows, available), SmartList.Recent to recent(rows, available), SmartList.Liked to liked(rows, favorites, available),
-        SmartList.Gems to gems(rows, favorites, available, now))
+        SmartList.Gems to gems(rows, favorites, available, now), SmartList.Heard to heard(rows, available).map { it.first })
 }

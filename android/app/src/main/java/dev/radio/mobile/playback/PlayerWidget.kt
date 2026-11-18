@@ -34,30 +34,7 @@ class PlayerWidget : AppWidgetProvider() {
         if (action !in COMMANDS) { super.onReceive(context, intent); return }
         // A widget tap lets the app start playback from the background for a short while; finish well inside it.
         val pending = goAsync()
-        val app = context.applicationContext
-        val main = Handler(Looper.getMainLooper())
-        val timeout = Runnable { pending.finish() }
-        main.postDelayed(timeout, 9_000)
-        fun connect(attempt: Int) {
-            val future = MediaController.Builder(app, SessionToken(app, ComponentName(app, RadioPlaybackService::class.java)))
-                .setConnectionHints(Bundle().apply { putBoolean(HINT_WIDGET, true) }).buildAsync()
-            future.addListener({
-                val controller = try { future.get() } catch (error: Exception) { null }
-                if (controller == null) {
-                    // The service may still be restoring the last queue before its session exists.
-                    if (attempt < 8) main.postDelayed({ connect(attempt + 1) }, 600) else { Log.w(TAG, "Couldn't reach playback"); main.removeCallbacks(timeout); pending.finish() }
-                    return@addListener
-                }
-                when (action) {
-                    ACTION_TOGGLE -> if (controller.playWhenReady) controller.pause() else controller.play()
-                    ACTION_NEXT -> controller.seekToNext()
-                    ACTION_PREVIOUS -> controller.seekToPrevious()
-                }
-                // Give the command a moment to reach the session before letting go.
-                main.postDelayed({ controller.release(); main.removeCallbacks(timeout); pending.finish() }, 400)
-            }, ContextCompat.getMainExecutor(app))
-        }
-        connect(0)
+        send(context, action!!, widget = true) { pending.finish() }
     }
 
     companion object {
@@ -69,6 +46,44 @@ class PlayerWidget : AppWidgetProvider() {
         const val ACTION_PREVIOUS = "dev.radio.mobile.widget.PREVIOUS"
         private val COMMANDS = setOf(ACTION_TOGGLE, ACTION_NEXT, ACTION_PREVIOUS)
 
+        /**
+         * Sends one transport command through the media session, the same way the lock screen does. Used by the
+         * widget and the Quick Settings tile. Retries while the service is still restoring before its session exists.
+         */
+        fun send(context: Context, action: String, widget: Boolean = false, onDone: () -> Unit = {}) {
+            val finished = java.util.concurrent.atomic.AtomicBoolean(false)
+            val done = { if (finished.compareAndSet(false, true)) onDone() }
+            val app = context.applicationContext
+            val main = Handler(Looper.getMainLooper())
+            val timeout = Runnable { done() }
+            main.postDelayed(timeout, 9_000)
+            fun connect(attempt: Int) {
+                val future = MediaController.Builder(app, SessionToken(app, ComponentName(app, RadioPlaybackService::class.java)))
+                    .setConnectionHints(Bundle().apply { putBoolean(HINT_WIDGET, widget) }).buildAsync()
+                future.addListener({
+                    val controller = try { future.get() } catch (error: Exception) { null }
+                    if (controller == null) {
+                        if (attempt < 8) main.postDelayed({ connect(attempt + 1) }, 600) else { Log.w(TAG, "Couldn't reach playback"); main.removeCallbacks(timeout); done() }
+                        return@addListener
+                    }
+                    when (action) {
+                        ACTION_TOGGLE -> if (controller.playWhenReady) controller.pause() else controller.play()
+                        ACTION_NEXT -> controller.seekToNext()
+                        ACTION_PREVIOUS -> controller.seekToPrevious()
+                    }
+                    // Give the command a moment to reach the session before letting go.
+                    main.postDelayed({ controller.release(); main.removeCallbacks(timeout); done() }, 400)
+                }, ContextCompat.getMainExecutor(app))
+            }
+            connect(0)
+        }
+
+        /** The last song and play state, for the Quick Settings tile. */
+        fun last(context: Context): WidgetState {
+            val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            return WidgetState(prefs.getString("title", null), prefs.getString("subtitle", null), prefs.getBoolean("playing", false))
+        }
+
         /** Called by the playback service whenever the song or play state changes. Cheap when no widget is placed. */
         fun update(context: Context, state: WidgetState) {
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
@@ -76,6 +91,7 @@ class PlayerWidget : AppWidgetProvider() {
             val manager = AppWidgetManager.getInstance(context) ?: return
             val ids = manager.getAppWidgetIds(ComponentName(context, PlayerWidget::class.java))
             if (ids.isNotEmpty()) manager.updateAppWidget(ids, views(context, state))
+            PlaybackTile.refresh(context)
         }
 
         private fun saved(context: Context): WidgetState {
@@ -94,8 +110,8 @@ class PlayerWidget : AppWidgetProvider() {
             setOnClickPendingIntent(R.id.widget_open, open)
             val hasSong = state.title != null
             listOf(R.id.widget_toggle to ACTION_TOGGLE, R.id.widget_next to ACTION_NEXT, R.id.widget_previous to ACTION_PREVIOUS).forEachIndexed { index, (view, action) ->
-                // With nothing queued the buttons open the app instead, where a song can be chosen.
-                setOnClickPendingIntent(view, if (!hasSong) open else PendingIntent.getBroadcast(context, index + 1,
+                // With nothing queued Play still works (it resumes or starts Radio); Previous/Next open the app.
+                setOnClickPendingIntent(view, if (!hasSong && action != ACTION_TOGGLE) open else PendingIntent.getBroadcast(context, index + 1,
                     Intent(context, PlayerWidget::class.java).setAction(action), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT))
             }
         }

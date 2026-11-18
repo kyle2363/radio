@@ -1,7 +1,7 @@
 package dev.radio.mobile.playback
 
-data class SleepTimerState(val remainingMs: Long = 0, val endOfTrack: Boolean = false, val fade: Boolean = false) {
-    val active get() = endOfTrack || remainingMs > 0
+data class SleepTimerState(val remainingMs: Long = 0, val endOfTrack: Boolean = false, val fade: Boolean = false, val endOfQueue: Boolean = false) {
+    val active get() = endOfTrack || endOfQueue || remainingMs > 0
 }
 
 internal data class SleepDeadline(val elapsedMs: Long, val fade: Boolean) {

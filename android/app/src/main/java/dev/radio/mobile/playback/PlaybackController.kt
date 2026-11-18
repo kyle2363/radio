@@ -74,6 +74,8 @@ interface PlaybackController {
     fun clearUpcoming()
     fun setSleepTimer(durationMs: Long, fade: Boolean = true)
     fun sleepAtTrackEnd()
+    /** Pause when the last queued song ends (not offered on air: Radio keeps adding songs). */
+    fun sleepAtQueueEnd() = sleepAtTrackEnd()
     fun cancelSleepTimer()
     fun startRadio(seedLocalId: String? = null) = Unit
     fun stopRadio() = Unit

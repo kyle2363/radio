@@ -7,4 +7,8 @@
     <string name="widget_play">Play</string>
     <string name="widget_pause">Pause</string>
     <string name="widget_next">Next song</string>
+    <string name="shortcut_radio">Radio</string>
+    <string name="shortcut_liked">Liked songs</string>
+    <string name="shortcut_shuffle">Shuffle all</string>
+    <string name="shortcut_resume">Resume</string>
 </resources>

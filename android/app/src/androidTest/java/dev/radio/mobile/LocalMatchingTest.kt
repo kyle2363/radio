@@ -76,6 +76,31 @@ class LocalMatchingTest {
    assertEquals(0,fixture("stats")!!.getInt("writes"))
   } finally {library.close();db.close()}
  }
+ @Test fun rescanRestoresPublishedMatches()=runBlocking {
+  // A rescan clears the published local→catalog mappings; without a reload Radio loses every match.
+  fixture("reset");fixture("grant")
+  val db=Room.inMemoryDatabaseBuilder(context,LibraryDatabase::class.java).build()
+  val library=LibraryRepository(context,db)
+  try {
+   withTimeout(5000){library.state.first{!it.loading}}
+   library.chooseFolder(FixtureDocumentsProvider.tree()).join()
+   val local=library.state.value.songs.first()
+   val bytes=context.contentResolver.openInputStream(Uri.parse(local.uri))!!.use{it.readBytes()}
+   val digest=MessageDigest.getInstance("SHA-256").digest(bytes).joinToString(""){"%02x".format(it)}
+   val manifest="rescan-manifest"
+   db.catalogs().saveRevision(PortableCatalogRevision(manifest,"server","catalog",1,"{}",1,0,1))
+   db.catalogs().saveSongs(listOf(PortableCatalogSong(manifest,"one","{\"artist\":\"Artist\",\"content_sha256\":\"$digest\",\"title\":\"Original\"}")))
+   db.catalogs().activate(PortableCatalogActive("server","catalog",1,manifest))
+   val matching=MatchingRepository(context,db)
+   matching.matchLocalSongs()
+   matching.confirm(local.id,"one")
+   matching.load()
+   assertEquals("one",withTimeout(5000){JournalIdentityProvider.mappings.first{it.loaded && it.entries.containsKey(local.id)}}.entries.getValue(local.id).songId)
+   library.rescan()!!.join()
+   val restored=withTimeout(5000){JournalIdentityProvider.mappings.first{it.loaded && it.entries.containsKey(local.id)}}
+   assertEquals("one",restored.entries.getValue(local.id).songId)
+  } finally {library.close();db.close()}
+ }
  @Test fun cancelledMatchDoesNotPublishResults()=runBlocking {
   val db=Room.inMemoryDatabaseBuilder(context,LibraryDatabase::class.java).build()
   try {

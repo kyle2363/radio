@@ -14,12 +14,14 @@ import dev.radio.mobile.playback.SleepTimerState
 
 fun sleepLabel(timer: SleepTimerState): String = when {
     timer.endOfTrack -> "End of song"
+    timer.endOfQueue -> "End of queue"
     timer.active -> ((timer.remainingMs + 999) / 1000).let { "%d:%02d".format(it / 60, it % 60) }
     else -> "Off"
 }
 
 @Composable
 fun SleepTimerDialog(timer: SleepTimerState, playback: PlaybackController, onDismiss: () -> Unit) {
+    val queue by playback.state.collectAsState()
     var minutes by remember { mutableStateOf("30") }
     var fade by remember { mutableStateOf(true) }
     val value = minutes.toIntOrNull()
@@ -37,6 +39,10 @@ fun SleepTimerDialog(timer: SleepTimerState, playback: PlaybackController, onDis
         OutlinedTextField(minutes, { minutes = it.filter(Char::isDigit).take(3) }, label = { Text("Minutes (1–240)") }, singleLine = true,
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.testTag("sleep-minutes"))
         TextButton(onClick = { playback.sleepAtTrackEnd(); onDismiss() }) { Text("Stop at end of this song") }
+        // Checkpoint 11: finish the playlist, album, folder or queue that is playing. Radio keeps adding songs, so not on air.
+        if (!queue.radioActive && queue.queue.size > 1) TextButton(onClick = { playback.sleepAtQueueEnd(); onDismiss() }, modifier = Modifier.testTag("sleep-queue-end")) {
+            Text("Finish ${queue.source.ifBlank { "the queue" }}")
+        }
         Text("The timer keeps counting while paused. It clears after an app restart; restored playback stays paused.", style = MaterialTheme.typography.bodySmall)
         if (timer.active) TextButton(onClick = { playback.cancelSleepTimer(); onDismiss() }) { Text("Cancel timer") }
     } }, confirmButton = { TextButton(onClick = { playback.setSleepTimer(value!!.toLong() * 60000, fade); onDismiss() }, enabled = value != null && value in 1..240) { Text(if (timer.active) "Replace timer" else "Start timer") } },

@@ -93,6 +93,7 @@ class ServicePlaybackController(context: Context) : PlaybackController {
     override fun clearUpcoming() = command { it.clearUpcoming() }
     override fun setSleepTimer(durationMs: Long, fade: Boolean) = command { it.setSleepTimer(durationMs, fade) }
     override fun sleepAtTrackEnd() = command { it.sleepAtTrackEnd() }
+    override fun sleepAtQueueEnd() = command { it.sleepAtQueueEnd() }
     override fun cancelSleepTimer() = command { it.cancelSleepTimer() }
     override fun startRadio(seedLocalId: String?) = command { it.startRadio(seedLocalId) }
     override fun stopRadio() = command { it.stopRadio() }
