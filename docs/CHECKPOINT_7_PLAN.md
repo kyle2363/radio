@@ -62,6 +62,10 @@ back; reorder on both sides before syncing; delete on one side.
 
 ## 7B — Listening stats (Android, local only)
 
+> Moved November 17, 2026: superseded by checkpoints 8A–8C in
+> `docs/CHECKPOINT_8_PLAN.md`, which first records listening context (Room v12).
+> The text below is kept for history.
+
 A Stats view in Settings (or Library) computed from the local journal: top songs
 and folders by week/month/all time, listening time, skip rate, mood/Radio share,
 and a simple daily listening chart. Read-only queries over existing tables; no

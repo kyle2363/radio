@@ -25,6 +25,8 @@ Start with [the repository README](../README.md) for setup and the application m
 | [CONNECTED_TUNING_PLAN.md](CONNECTED_TUNING_PLAN.md) | Checkpoint 4.1 phone-only tuning of connected recommendations (accepted; merged) |
 | [RADIO_REDESIGN_PLAN.md](RADIO_REDESIGN_PLAN.md) | Checkpoint 4.2 Radio mode redesign: station surface, missing states, work order, acceptance (phone-accepted; merged November 11) |
 | [ANDROID_LYRICS_PLAN.md](ANDROID_LYRICS_PLAN.md) | Checkpoint 5: plain lyrics sheet, prepared read-only contract, offline cache and acceptance (merged; phone acceptance pending) |
+| [CHECKPOINT_7_PLAN.md](CHECKPOINT_7_PLAN.md) | Checkpoint 7: playlist sync and sync on open |
+| [CHECKPOINT_8_PLAN.md](CHECKPOINT_8_PLAN.md) | Checkpoints 8–12: listening context and stats, personal feel, polish, daily use, performance (planned) |
 
 Checkpoints through 5 are merged into `main`; checkpoint 4.2 was phone-accepted November 11, 2026, and checkpoint 5 phone acceptance is pending. Plans are not authorization to begin another checkpoint.
 

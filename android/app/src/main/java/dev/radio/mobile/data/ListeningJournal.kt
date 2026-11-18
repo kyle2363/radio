@@ -39,6 +39,8 @@ data class LocalSongFeedback(@PrimaryKey val localId: String, val favorite: Bool
     @Query("SELECT * FROM local_listening_events ORDER BY logicalClock DESC LIMIT 200") fun observeEvents(): Flow<List<LocalListeningEvent>>
     @Query("SELECT * FROM local_song_feedback") fun observeFeedback(): Flow<List<LocalSongFeedback>>
     @Query("SELECT * FROM local_song_feedback") suspend fun allFeedback(): List<LocalSongFeedback>
+    /** Everything the automatic playlists (Top 100, Recently played, Liked songs) are built from; re-emits on each journal write. */
+    @Query("SELECT localId, kind, completion, occurredAt FROM local_listening_events WHERE kind IN ('song_started','song_completed','song_skipped','attempt_stopped','favorite_changed')") fun observeSmartListRows(): Flow<List<SmartListRow>>
     @Query("SELECT * FROM local_listening_events WHERE attemptId=:attempt AND kind='song_started' LIMIT 1") suspend fun start(attempt: String): LocalListeningEvent?
     @Query("SELECT * FROM local_listening_events WHERE attemptId=:attempt AND kind=:kind LIMIT 1") suspend fun event(attempt: String, kind: String): LocalListeningEvent?
     @Query("SELECT * FROM local_listening_events WHERE attemptId=:attempt AND kind IN ('song_completed','song_skipped','attempt_stopped') LIMIT 1") suspend fun terminal(attempt: String): LocalListeningEvent?

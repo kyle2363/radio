@@ -178,6 +178,10 @@ class RadioPlaybackService : MediaSessionService() {
         // system controls never show a stale icon after a restart.
         engine.setRepeat(prefs.repeat)
         clientController = InitializingPlaybackController(engine)
+        // Speed, skip silence, crossfade and the equaliser, edited on the Settings screens.
+        val audioSettings = AudioSettingsStore.get(this)
+        audioSettings.publishEqualizer(engine.describeEffects())
+        scope.launch { audioSettings.settings.collect { engine.applyAudio(it) } }
         scope.launch { library.loudness.state.map { it.profile }.distinctUntilChanged().collect { engine.updateNormalization(it) } }
         scope.launch {
             try {
@@ -242,6 +246,12 @@ class RadioPlaybackService : MediaSessionService() {
         scope.launch {
             clientController.state.map { it.repeat }.distinctUntilChanged().collect { prefs.repeat = it }
         }
+        // The home-screen widget follows the song and play state; it starts after restoration so it never flashes empty.
+        scope.launch {
+            clientController.state.map { state ->
+                state.current?.let { WidgetState(it.title, it.artist.ifBlank { state.source.ifBlank { "Local music" } }, state.playWhenReady && !state.ended) } ?: WidgetState()
+            }.distinctUntilChanged().collect { widget = it; PlayerWidget.update(this@RadioPlaybackService, it) }
+        }
         scope.launch {
             combine(clientController.state.map { listOf(it.shuffled, it.repeat, it.radioActive, it.currentId) }.distinctUntilChanged(),
                 library.journal.state.map { it.feedback }.distinctUntilChanged()) { _, _ -> Unit }.collect {
@@ -250,6 +260,8 @@ class RadioPlaybackService : MediaSessionService() {
             }
         }
     }
+
+    private var widget = WidgetState()
 
     private fun liked(): Boolean = engine.state.value.currentId?.let { library.journal.state.value.feedback[it]?.favorite } == true
 
@@ -302,6 +314,7 @@ class RadioPlaybackService : MediaSessionService() {
     // and handles the media notification/foreground lifetime without a second notification.
     override fun onDestroy() {
         scope.cancel()
+        if (initialized) PlayerWidget.update(this, widget.copy(playing = false))
         session?.release()
         session = null
         engine.close()

@@ -15,6 +15,7 @@ enum class Symbol(val path: String, val filled: Boolean = false) {
     More("M13.5 5 A1.5 1.5 0 1 1 10.5 5 A1.5 1.5 0 1 1 13.5 5 Z M13.5 12 A1.5 1.5 0 1 1 10.5 12 A1.5 1.5 0 1 1 13.5 12 Z M13.5 19 A1.5 1.5 0 1 1 10.5 19 A1.5 1.5 0 1 1 13.5 19 Z", true),
     Clock("M21 12 A9 9 0 1 1 3 12 A9 9 0 1 1 21 12 M12 7 V12 L15 14"),
     Add("M12 4 V20 M4 12 H20"),
+    Sort("M7 4 V20 M3 16 L7 20 L11 16 M17 20 V4 M13 8 L17 4 L21 8"),
     Up("M5 14 L12 7 L19 14"),
     Down("M5 10 L12 17 L19 10"),
     Remove("M4 6 H20 M9 6 V3 H15 V6 M6 6 L7 21 H17 L18 6"),
@@ -42,6 +43,9 @@ enum class Symbol(val path: String, val filled: Boolean = false) {
     Check("M5 12 L10 17 L19 7"),
     Block("M20 12 A8 8 0 1 1 4 12 A8 8 0 1 1 20 12 M6.5 6.5 L17.5 17.5"),
     Warning("M12 4 L21 20 H3 Z M12 10 V14 M12 17 V17.5"),
+    Chart("M5 20 V13 M12 20 V5 M19 20 V9 M3 20 H21"),
+    Person("M16 8 A4 4 0 1 1 8 8 A4 4 0 1 1 16 8 M4 21 C4 16 8 14 12 14 C16 14 20 16 20 21"),
+    Sliders("M6 4 V20 M12 4 V20 M18 4 V20 M3 9 H9 M9 15 H15 M15 7 H21"),
     Forward("M9 5 L16 12 L9 19")
 }
 

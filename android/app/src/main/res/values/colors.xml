@@ -7,4 +7,10 @@
     <color name="teal_700">#FF018786</color>
     <color name="black">#FF000000</color>
     <color name="white">#FFFFFFFF</color>
+    <!-- Home-screen player widget, in the Ocean Blue palette. -->
+    <color name="widget_background">#FFDBEAFE</color>
+    <color name="widget_title">#FF0F172A</color>
+    <color name="widget_subtitle">#FF334155</color>
+    <color name="widget_accent">#FF2563EB</color>
+    <color name="widget_on_accent">#FFFFFFFF</color>
 </resources>

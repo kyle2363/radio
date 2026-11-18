@@ -3,9 +3,9 @@ package dev.radio.mobile.music
 import dev.radio.mobile.data.LocalSong
 import dev.radio.mobile.data.LocalFolder
 
-enum class LibrarySort(val label: String) {
-    ModifiedNewest("Date modified · newest"), ModifiedOldest("Date modified · oldest"),
-    AddedNewest("Added to app · newest"), Title("Title · A–Z"), Filename("Filename · A–Z"), Duration("Duration · longest")
+enum class LibrarySort(val label: String, val short: String) {
+    ModifiedNewest("Date modified · newest", "Newest"), ModifiedOldest("Date modified · oldest", "Oldest"),
+    AddedNewest("Added to app · newest", "Added"), Title("Title · A–Z", "Title"), Filename("Filename · A–Z", "File"), Duration("Duration · longest", "Length")
 }
 
 fun orderSongs(songs: List<LocalSong>, sort: LibrarySort): List<LocalSong> {

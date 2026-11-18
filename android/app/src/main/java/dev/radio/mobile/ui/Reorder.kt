@@ -112,6 +112,8 @@ fun SwipeToRemove(enabled: Boolean, onRemove: () -> Unit, modifier: Modifier = M
     val scope = rememberCoroutineScope()
     SwipeToDismissBox(state, modifier = modifier, backgroundContent = {
         val start = state.dismissDirection == SwipeToDismissBoxValue.StartToEnd
+        // Draw nothing until the row is actually being swiped, so the queue stays transparent at rest.
+        if (state.dismissDirection == SwipeToDismissBoxValue.Settled) return@SwipeToDismissBox
         Box(Modifier.fillMaxSize().padding(horizontal = 8.dp).background(MaterialTheme.colorScheme.errorContainer, RoundedCornerShape(20.dp)).padding(horizontal = 20.dp),
             contentAlignment = if (start) Alignment.CenterStart else Alignment.CenterEnd) {
             CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.onErrorContainer) { RadioIcon(Symbol.Remove, "Remove") }

@@ -73,7 +73,7 @@ class PlaybackUiTest {
             java.io.File(review, "actual-mp3-player.png").outputStream().use { image.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it) }
             image.recycle()
             compose.onNodeWithContentDescription("Back").performClick()
-            compose.onNodeWithText("Date modified · newest").performClick()
+            compose.onNodeWithTag("sort-button").performClick()
             compose.onNodeWithText("Title · A–Z").performClick()
             assertEquals(listOf("long1", "long2"), playback.state.value.queue.map { it.id })
             compose.onNodeWithContentDescription("Search library").performClick()

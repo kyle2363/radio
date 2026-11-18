@@ -8,12 +8,16 @@ import androidx.media3.common.ForwardingPlayer
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
+import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.common.Timeline
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.audio.AudioSink
 import androidx.media3.exoplayer.audio.DefaultAudioSink
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.extractor.DefaultExtractorsFactory
+import androidx.media3.extractor.mp3.Mp3Extractor
 import androidx.media3.exoplayer.source.ShuffleOrder.DefaultShuffleOrder
 import dev.radio.mobile.data.LocalSong
 import dev.radio.mobile.recommendation.StationOrigin
@@ -40,12 +44,32 @@ class LocalPlaybackController(
         override fun buildAudioSink(context: Context, enableFloatOutput: Boolean, enableAudioOutputPlaybackParams: Boolean): AudioSink =
             DefaultAudioSink.Builder(context).setEnableFloatOutput(false).setAudioProcessors(arrayOf(normalizationProcessor)).build()
     }
+    private val appContext = context.applicationContext
+    private val musicAttributes = AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MUSIC).build()
     private val player = ExoPlayer.Builder(context.applicationContext, renderers).build().apply {
-        setAudioAttributes(AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MUSIC).build(), true)
+        setAudioAttributes(musicAttributes, true)
         setHandleAudioBecomingNoisy(true)
         setWakeMode(C.WAKE_MODE_LOCAL)
         repeatMode = Player.REPEAT_MODE_OFF
     }
+    // Equaliser and bass boost act on the player's audio session, which the crossfade tail shares.
+    private val effects = AudioEffects(player.audioSessionId)
+
+    // Crossfade: near the end of a song a second player (the "tail") takes over the last seconds of the outgoing song
+    // and fades it out, while the real player moves on to the next song and fades it in. The real player stays the only
+    // one the session, journal and queue know about; the tail is just the end of a song.
+    private val tailNormalization = NormalizationAudioProcessor()
+    private val tailRenderers = object : DefaultRenderersFactory(context.applicationContext) {
+        override fun buildAudioSink(context: Context, enableFloatOutput: Boolean, enableAudioOutputPlaybackParams: Boolean): AudioSink =
+            DefaultAudioSink.Builder(context).setEnableFloatOutput(false).setAudioProcessors(arrayOf(tailNormalization)).build()
+    }
+    private var tail: ExoPlayer? = null
+    private var crossfadeMs = 0L
+    private var fadeJob: Job? = null
+    /** The real player's gain from the crossfade and from a fading sleep timer; its volume is their product. */
+    private var fadeGain = 1f
+    private var sleepGain = 1f
+    private fun applyVolume() { player.volume = fadeGain * sleepGain }
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val mutable = MutableStateFlow(PlaybackState())
     override val state: StateFlow<PlaybackState> = mutable.asStateFlow()
@@ -120,7 +144,7 @@ class LocalPlaybackController(
         override fun seekToPreviousMediaItem() = previous()
         override fun setShuffleModeEnabled(shuffleModeEnabled: Boolean) = shuffle(shuffleModeEnabled)
         override fun setRepeatMode(repeatMode: Int) = setRepeat(repeatMode.toRepeatMode())
-        override fun stop() { queueRevision++;finishAttempt("attempt_stopped", "system_stop"); player.pause(); player.stop(); publish(checkpoint = true) }
+        override fun stop() { cancelCrossfade();queueRevision++;finishAttempt("attempt_stopped", "system_stop"); player.pause(); player.stop(); publish(checkpoint = true) }
     }
 
     init {
@@ -138,7 +162,9 @@ class LocalPlaybackController(
                 val id = player.currentMediaItem?.mediaId
                 if (id != null && id != attemptSong) beginAttempt(id)
                 if (id != null && player.isPlaying && listeningAttempt?.isFinished == true) beginAttempt(id)
-                listeningAttempt?.observe(android.os.SystemClock.elapsedRealtime(), player.isPlaying)
+                listeningAttempt?.observe(android.os.SystemClock.elapsedRealtime(), player.isPlaying, player.playbackParameters.speed)
+                // Pausing, losing audio focus or unplugging headphones ends a crossfade at once.
+                if (!player.playWhenReady && fadeJob != null) cancelCrossfade()
                 if (player.playbackState == Player.STATE_ENDED) finishAttempt("song_completed", "natural_end")
                 // Preparing/prefetching, buffering, and pause/resume cannot manufacture starts.
                 if (player.isPlaying && player.playbackState == Player.STATE_READY && !started) {
@@ -152,10 +178,11 @@ class LocalPlaybackController(
                     Player.EVENT_PLAY_WHEN_READY_CHANGED, Player.EVENT_PLAYBACK_STATE_CHANGED, Player.EVENT_SHUFFLE_MODE_ENABLED_CHANGED,
                     Player.EVENT_REPEAT_MODE_CHANGED, Player.EVENT_TIMELINE_CHANGED, Player.EVENT_PLAYER_ERROR))
                 if (player.isPlaying && ticker?.isActive != true) ticker = scope.launch {
-                    while (isActive && player.isPlaying) { publish(); delay(250) }
+                    while (isActive && player.isPlaying) { publish(); maybeCrossfade(); delay(250) }
                 } else if (!player.isPlaying) { ticker?.cancel(); ticker = null }
             }
             override fun onPlayerError(exception: PlaybackException) {
+                cancelCrossfade()
                 finishAttempt("attempt_stopped", "decoder_error")
                 error = "Couldn't play this file. It may be missing, unreadable or unsupported. Try Next, or check the Music folder and rescan."
                 player.pause()
@@ -179,6 +206,7 @@ class LocalPlaybackController(
         listeningAttempt = ListeningAttempt(attemptId, id)
     }
     override fun replay() {
+        cancelCrossfade()
         queueRevision++
         val song = queueById[player.currentMediaItem?.mediaId] ?: return
         if (!canReadCurrent()) return
@@ -246,9 +274,104 @@ class LocalPlaybackController(
         publish()
     }
     internal fun restorationFailed(message: String) { error = message; publish() }
-    internal fun updateNormalization(profile: NormalizationProfile) { normalizationProcessor.profile = profile; publish() }
+    internal fun updateNormalization(profile: NormalizationProfile) { normalizationProcessor.profile = profile; tailNormalization.profile = profile; publish() }
+
+    /** Speed, skip silence, crossfade length and the equaliser. Takes effect immediately, mid-song. */
+    internal fun applyAudio(settings: AudioSettings) {
+        val parameters = PlaybackParameters(settings.speed)
+        player.playbackParameters = parameters; tail?.playbackParameters = parameters
+        player.skipSilenceEnabled = settings.skipSilence
+        crossfadeMs = settings.crossfadeSeconds * 1000L
+        if (crossfadeMs == 0L) cancelCrossfade()
+        effects.apply(settings)
+    }
+    /** What the phone's equaliser offers, or null when it has none. */
+    internal fun describeEffects(): EqualizerInfo? = effects.describe()
+
+    private fun tailPlayer(): ExoPlayer = tail ?: ExoPlayer.Builder(appContext, tailRenderers)
+        // Index seeking makes the tail start at exactly the outgoing song's position, even for variable-bitrate MP3s.
+        .setMediaSourceFactory(DefaultMediaSourceFactory(appContext, DefaultExtractorsFactory().setMp3ExtractorFlags(Mp3Extractor.FLAG_ENABLE_INDEX_SEEKING)))
+        .build().apply {
+            // No audio focus of its own: the real player holds it, and pausing that ends the tail.
+            setAudioAttributes(musicAttributes, false)
+            setAudioSessionId(player.audioSessionId)
+            playbackParameters = player.playbackParameters
+        }.also { tail = it }
+
+    private fun maybeCrossfade() {
+        if (crossfadeMs <= 0 || fadeJob != null || accessLost || error != null || !player.isPlaying) return
+        val duration = player.duration.takeIf { it != C.TIME_UNSET && it > 0 } ?: return
+        val next = adjacent(true)
+        val hasNext = next != C.INDEX_UNSET && next != player.currentMediaItemIndex
+        // The window includes the moment it takes to get the tail ready, so the audible overlap is the chosen length.
+        if (!Crossfade.shouldStart(crossfadeMs + CROSSFADE_LEAD_MS, player.currentPosition, duration, hasNext,
+                player.repeatMode == Player.REPEAT_MODE_ONE, player.pauseAtEndOfMediaItems, fading = false)) return
+        startCrossfade(next, duration)
+    }
+
+    private fun startCrossfade(nextIndex: Int, duration: Long) {
+        val outgoing = player.currentMediaItem ?: return
+        val handover = player.currentPosition + CROSSFADE_LEAD_MS
+        val tail = tailPlayer()
+        tail.volume = 0f
+        tail.setMediaItem(outgoing, handover)
+        tail.prepare()
+        // Lazy, so fadeJob is set before the job can run (and finish) on the immediate dispatcher.
+        val job = scope.launch(start = CoroutineStart.LAZY) {
+            val mine = coroutineContext[Job]
+            try {
+                // Wait for the tail to be ready, then for the real player to reach the handover point.
+                while (tail.playbackState != Player.STATE_READY) {
+                    if (tail.playbackState == Player.STATE_IDLE || tail.playbackState == Player.STATE_ENDED || !stillOn(outgoing)) return@launch
+                    delay(10)
+                }
+                // Starting audio takes a moment; ask for it slightly early so the two copies line up at the handover.
+                while (player.currentPosition < handover - TAIL_START_LATENCY_MS) { if (!stillOn(outgoing)) return@launch; delay(5) }
+                if (player.currentPosition > handover + 100) return@launch // Too late to line up: let the song end normally.
+                tail.volume = sleepGain
+                tail.play()
+                while (player.currentPosition < handover) { if (!stillOn(outgoing)) return@launch; delay(2) }
+                if (nextIndex >= player.mediaItemCount || adjacent(true) != nextIndex) return@launch
+                // Hand over: the outgoing song finished as far as the journal is concerned, and the next one begins.
+                finishAttempt("song_completed", "natural_end")
+                fadeGain = 0f; applyVolume()
+                beginAttempt(player.getMediaItemAt(nextIndex).mediaId)
+                player.seekTo(nextIndex, 0)
+                publish(checkpoint = true)
+                val overlapMs = ((duration - handover) / player.playbackParameters.speed).toLong().coerceAtLeast(1)
+                val begun = android.os.SystemClock.elapsedRealtime()
+                while (true) {
+                    val progress = (android.os.SystemClock.elapsedRealtime() - begun).toFloat() / overlapMs
+                    fadeGain = Crossfade.incoming(progress); applyVolume()
+                    tail.volume = Crossfade.outgoing(progress) * sleepGain
+                    if (progress >= 1f || tail.playbackState == Player.STATE_ENDED) break
+                    delay(40)
+                }
+            } finally {
+                // A cancelled fade was already cleaned up by cancelCrossfade, and a newer one may own the tail now.
+                if (fadeJob === mine) {
+                    fadeJob = null
+                    tail.stop(); tail.clearMediaItems()
+                    fadeGain = 1f; applyVolume()
+                }
+            }
+        }
+        fadeJob = job
+        job.start()
+    }
+    private fun stillOn(item: MediaItem) = player.playWhenReady && player.currentMediaItem?.mediaId == item.mediaId
+
+    /** Any command that changes what plays ends a crossfade first: the tail stops and the real player is at full volume. */
+    private fun cancelCrossfade() {
+        val job = fadeJob ?: return
+        fadeJob = null
+        job.cancel()
+        tail?.let { it.stop(); it.clearMediaItems() }
+        fadeGain = 1f; applyVolume()
+    }
 
     override fun playFrom(items: List<LocalSong>, selectedId: String, source: String) {
+        cancelCrossfade()
         radioActive=false;radioStarting=false;clearStation();queueRevision++
         val snapshot = playbackQueue(items, selectedId).filter(::validUri)
         val index = snapshot.indexOfFirst { it.id == selectedId }
@@ -282,6 +405,7 @@ class LocalPlaybackController(
     override fun pause() { if (!closed) { queueRevision++;player.pause(); publish(checkpoint = true) } }
     override fun seek(positionMs: Long) {
         if (!state.value.seekable) return
+        cancelCrossfade()
         queueRevision++
         player.seekTo(positionMs.coerceIn(0, state.value.durationMs ?: Long.MAX_VALUE)); publish(checkpoint = true)
     }
@@ -301,6 +425,7 @@ class LocalPlaybackController(
     }
     private fun move(index: Int) {
         if (accessLost || index == C.INDEX_UNSET) return
+        cancelCrossfade()
         queueRevision++
         val continuePlaying = player.playWhenReady || error != null
         error = null
@@ -326,6 +451,7 @@ class LocalPlaybackController(
     override fun jumpTo(songId: String) {
         val index = (0 until player.mediaItemCount).firstOrNull { player.getMediaItemAt(it).mediaId == songId } ?: return
         if (accessLost || queue.none { it.id == songId && it.available }) return
+        cancelCrossfade()
         queueRevision++
         error = null; beginAttempt(songId); player.seekTo(index, 0)
         if (player.playbackState == Player.STATE_IDLE) player.prepare()
@@ -335,6 +461,7 @@ class LocalPlaybackController(
         if (index !in 0 until player.mediaItemCount || accessLost) return
         val id = player.getMediaItemAt(index).mediaId
         if (queueById[id]?.available != true) return
+        cancelCrossfade()
         queueRevision++
         if (id != player.currentMediaItem?.mediaId) beginAttempt(id)
         error = null
@@ -496,6 +623,7 @@ class LocalPlaybackController(
         val index = nativeIndex(songId) ?: return
         queueRevision++
         val current = player.currentMediaItem?.mediaId == songId
+        if (current) cancelCrossfade()
         if (current) finishAttempt(if (player.isPlaying) "song_skipped" else "attempt_stopped", "queue_removal")
         val oldOrder = state.value.playOrder
         val successor = oldOrder.drop(oldOrder.indexOf(songId) + 1).firstOrNull { queueById[it]?.available == true }
@@ -544,10 +672,10 @@ class LocalPlaybackController(
                 val now = android.os.SystemClock.elapsedRealtime()
                 if (deadline.remaining(now) == 0L) {
                     queueRevision++
-                    finishAttempt("attempt_stopped", "sleep_timer"); player.pause(); sleepDeadline = null; player.volume = 1f
+                    finishAttempt("attempt_stopped", "sleep_timer"); player.pause(); sleepDeadline = null; sleepGain = 1f; applyVolume()
                     publish(checkpoint = true); break
                 }
-                player.volume = deadline.gain(now)
+                sleepGain = deadline.gain(now); applyVolume()
                 publish()
                 delay(250)
             }
@@ -564,7 +692,7 @@ class LocalPlaybackController(
     override fun cancelSleepTimer() {
         queueRevision++
         sleepJob?.cancel(); sleepJob = null; sleepDeadline = null; sleepEndOfTrack = false
-        player.pauseAtEndOfMediaItems = false; player.volume = 1f
+        player.pauseAtEndOfMediaItems = false; sleepGain = 1f; applyVolume()
         publish()
     }
     override fun reconcileLibrary(songs: List<LocalSong>, accessLost: Boolean) {
@@ -577,6 +705,7 @@ class LocalPlaybackController(
         queue = updated
         queueById = updated.associateBy { it.id }
         if (!canReadCurrent()) {
+            cancelCrossfade()
             finishAttempt("attempt_stopped", "access_lost")
             player.stop()
             error = "Folder access or the current file is unavailable. Choose the Music folder again or rescan."
@@ -594,9 +723,14 @@ class LocalPlaybackController(
     fun close() {
         if (closed) return
         publish(checkpoint = true)
-        closed = true; scope.cancel(); player.release()
+        closed = true; scope.cancel(); tail?.release(); tail = null; effects.release(); player.release()
     }
 }
+
+/** How far ahead of the outgoing song's position the tail is prepared; covers loading it. */
+private const val CROSSFADE_LEAD_MS = 1200L
+/** Roughly how long a prepared player takes to make sound after play(). */
+private const val TAIL_START_LATENCY_MS = 60L
 
 private fun Int.toRepeatMode(): RepeatMode = when (this) {
     Player.REPEAT_MODE_ALL -> RepeatMode.ALL

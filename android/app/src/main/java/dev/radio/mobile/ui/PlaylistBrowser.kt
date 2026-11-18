@@ -11,13 +11,19 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import dev.radio.mobile.data.*
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @Composable
 fun PlaylistBrowser(state: PlaylistsState, repository: PlaylistRepository, catalog: List<LocalSong>, accessAllowed: Boolean,
     selectedId: String?, onSelect: (String?) -> Unit, onPlay: (LocalSong, List<LocalSong>, String) -> Unit,
     onSongAction: (SongAction, LocalSong) -> Unit, modifier: Modifier = Modifier,
-    currentId: String? = null, onPlayAll: (List<LocalSong>, String, Boolean) -> Unit = { list, source, _ -> list.firstOrNull { it.available }?.let { onPlay(it, list, source) } }) {
+    currentId: String? = null, onPlayAll: (List<LocalSong>, String, Boolean) -> Unit = { list, source, _ -> list.firstOrNull { it.available }?.let { onPlay(it, list, source) } },
+    /** Listening history for the automatic playlists; without it they are not shown. */
+    smartRows: Flow<List<SmartListRow>>? = null, favorites: Set<String> = emptySet()) {
     val scope = rememberCoroutineScope()
     var nameDialog by remember { mutableStateOf(false) }
     var deleting by remember { mutableStateOf<LocalPlaylist?>(null) }
@@ -26,6 +32,13 @@ fun PlaylistBrowser(state: PlaylistsState, repository: PlaylistRepository, catal
     var message by remember { mutableStateOf<String?>(null) }
     val selected = state.playlists.firstOrNull { it.id == selectedId }
     val byId = remember(catalog) { catalog.associateBy { it.id } }
+    // Top 100, Recently played and Liked songs, rebuilt off the main thread whenever the journal changes.
+    val smart = SmartList.of(selectedId)
+    val available = remember(catalog) { catalog.filter { it.available }.mapTo(HashSet()) { it.id } }
+    val smartLists by produceState<Map<SmartList, List<String>>?>(null, smartRows, available, favorites) {
+        smartRows?.collectLatest { rows -> value = withContext(Dispatchers.Default) { SmartLists.build(rows, favorites, available) } }
+    }
+    val smartSongs = remember(smartLists, smart, byId) { smart?.let { smartLists?.get(it) }.orEmpty().mapNotNull(byId::get) }
     val ids = remember(state.entries, selectedId) { selectedId?.let(state::songIds).orEmpty() }
     val songs = remember(ids, catalog) { ids.mapNotNull(byId::get) }
     fun report(result: Result<Unit>) { result.exceptionOrNull()?.let { message = it.message ?: "Couldn't update playlist." } }
@@ -35,7 +48,11 @@ fun PlaylistBrowser(state: PlaylistsState, repository: PlaylistRepository, catal
     val haptic = rememberDragHaptic()
     Column(modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-            if (selected == null) {
+            if (smart != null) {
+                Text(if (smartLists == null) "Loading…" else "${smartSongs.size} songs", Modifier.weight(1f), style = MaterialTheme.typography.labelMedium)
+                TextButton(onClick = { onPlayAll(smartSongs, smart.title, false) }, enabled = accessAllowed && smartSongs.isNotEmpty(), modifier = Modifier.testTag("smart-play")) { Text("Play") }
+                TextButton(onClick = { onPlayAll(smartSongs, smart.title, true) }, enabled = accessAllowed && smartSongs.size > 1, modifier = Modifier.testTag("smart-shuffle")) { Text("Shuffle") }
+            } else if (selected == null) {
                 Text("${state.playlists.size} playlists", Modifier.weight(1f), style = MaterialTheme.typography.labelLarge)
                 TextButton(onClick = { nameDialog = true }) { Text("New playlist") }
             } else {
@@ -65,7 +82,29 @@ fun PlaylistBrowser(state: PlaylistsState, repository: PlaylistRepository, catal
             }
         }
         LazyColumn(Modifier.fillMaxSize().testTag("playlist-list"), state = listState) {
-            if (selected == null) {
+            if (smart != null) {
+                itemsIndexed(smartSongs, key = { _, it -> it.id }) { index, song ->
+                    // The Top 100 shows each song's place.
+                    LibraryRow(if (smart == SmartList.Top) "${index + 1}. ${song.title}" else song.title, songSubtitle(song), Symbol.Music, playing = song.id == currentId,
+                        trailing = { SongActions(song, onSongAction) }) { if (accessAllowed) onPlay(song, smartSongs, smart.title) }
+                }
+                if (smartLists != null && smartSongs.isEmpty()) item {
+                    Text(when (smart) {
+                        SmartList.Top -> "Songs you finish, or play at least halfway, show up here. The more you play one, the higher it goes."
+                        SmartList.Recent -> "Songs you play show up here."
+                        SmartList.Liked -> "Like a song from the player and it shows up here."
+                    }, Modifier.padding(20.dp))
+                }
+            } else if (selected == null) {
+                if (smartRows != null) {
+                    item { Text("Made from your listening", Modifier.padding(start = 20.dp, top = 8.dp, bottom = 4.dp), style = MaterialTheme.typography.labelLarge) }
+                    itemsIndexed(SmartList.entries, key = { _, it -> it.id }) { _, list ->
+                        val count = smartLists?.get(list)?.size
+                        LibraryRow(list.title, if (count == null) list.description else "$count songs · ${list.description}",
+                            when (list) { SmartList.Top -> Symbol.Chart; SmartList.Recent -> Symbol.Clock; SmartList.Liked -> Symbol.HeartFilled }) { onSelect(list.id) }
+                    }
+                    item { Text("Your playlists", Modifier.padding(start = 20.dp, top = 16.dp, bottom = 4.dp), style = MaterialTheme.typography.labelLarge) }
+                }
                 itemsIndexed(state.playlists, key = { _, it -> it.id }) { _, playlist ->
                     LibraryRow(playlist.name, "${state.songIds(playlist.id).size} songs" + when {
                         playlist.remoteDeleted -> " · Deleted on desktop"

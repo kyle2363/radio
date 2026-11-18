@@ -49,6 +49,8 @@ class ListeningJournalRepository(context: Context, private val db: LibraryDataba
     fun identity(song: LocalSong) = identities?.capture(song)
         ?: JournalIdentity(deviceId = fallbackDevice, localId = song.id, provenance = "identity_unavailable")
     fun retry() { retries.trySend(Unit) }
+    /** Rows for the automatic playlists; only collected while they are on screen. */
+    val smartListRows: Flow<List<SmartListRow>> = db.journal().observeSmartListRows()
     private fun submit(operation: suspend () -> Unit) {
         pending.incrementAndGet()
         mutable.update { it.copy(pendingWrites = pending.get()) }

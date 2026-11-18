@@ -118,6 +118,9 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
     // The library root the folder belongs to; only a real change of root (not a rotation) resets the folder.
     var folderRoot by rememberSaveable { mutableStateOf<String?>(null) }
     var playlistId by rememberSaveable { mutableStateOf<String?>(null) }
+    var artist by rememberSaveable { mutableStateOf<String?>(null) }
+    val audioSettings = remember(appContext) { AudioSettingsStore.get(appContext) }
+    val favorites = remember(journal.feedback) { journal.feedback.values.filter { it.favorite }.mapTo(HashSet()) { it.localId } }
     var sortName by rememberSaveable { mutableStateOf(prefs.getString("sort", LibrarySort.ModifiedNewest.name) ?: LibrarySort.ModifiedNewest.name) }
     val sort = LibrarySort.entries.firstOrNull { it.name == sortName || it.label == sortName } ?: LibrarySort.ModifiedNewest
     var query by rememberSaveable { mutableStateOf("") }
@@ -149,7 +152,7 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
     val listStates = remember { mutableMapOf<String, LazyListState>() }
     // Scroll positions per folder/category, kept across rotation and theme changes.
     val savedPositions = rememberSaveable { HashMap<String, IntArray>() }
-    val listKey = "${library.root?.uri}/$folder/$category"
+    val listKey = "${library.root?.uri}/$folder/$category/$artist"
     val listState = listStates.getOrPut(listKey) { savedPositions[listKey].let { LazyListState(it?.getOrNull(0) ?: 0, it?.getOrNull(1) ?: 0) } }
     LaunchedEffect(listState, listKey) {
         snapshotFlow { listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset }
@@ -184,7 +187,7 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
         if (target == "Search") searchReturnPage = page
         if (target == "Now playing") playerReturnPage = page
         page = target
-        if (target != "Search") prefs.edit().putString("last_screen", if (target in listOf("Server", "Matching")) "Settings" else target).apply()
+        if (target != "Search") prefs.edit().putString("last_screen", if (target in listOf("Server", "Matching", "Equaliser")) "Settings" else target).apply()
     }
     fun back() {
         if (page == "Now playing" && showQueue) { showQueue = false; return }
@@ -192,9 +195,9 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
         when (page) {
             "Search" -> page = searchReturnPage
             "Now playing" -> page = playerReturnPage
-            "Server" -> page = "Settings"
+            "Server", "Equaliser" -> page = "Settings"
             "Matching" -> page = "Server"
-            "Library" -> if (category == "Playlists" && playlistId != null) playlistId = null else folder = library.folders.firstOrNull { it.id == folder }?.parentId?.takeUnless { it == library.root?.folderId }
+            "Library" -> if (category == "Playlists" && playlistId != null) playlistId = null else if (category == "Artists" && artist != null) artist = null else folder = library.folders.firstOrNull { it.id == folder }?.parentId?.takeUnless { it == library.root?.folderId }
             else -> folder = library.folders.firstOrNull { it.id == folder }?.parentId?.takeUnless { it == library.root?.folderId }
         }
     }
@@ -222,7 +225,7 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
     LaunchedEffect(library.root?.uri, library.loading) {
         if (library.loading) return@LaunchedEffect
         val root = library.root?.uri
-        if (folderRoot != null && folderRoot != root) { folder = null; playlistId = null; savedPositions.clear(); listStates.clear() }
+        if (folderRoot != null && folderRoot != root) { folder = null; playlistId = null; artist = null; savedPositions.clear(); listStates.clear() }
         folderRoot = root
     }
     // One-off playback messages, such as a Radio start that couldn't complete. Shown once, not again after rotation.
@@ -258,7 +261,7 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
         lifecycle.lifecycle.addObserver(observer)
         onDispose { lifecycle.lifecycle.removeObserver(observer) }
     }
-    val showBack = page == "Server" || page == "Matching" || page == "Search" || page == "Now playing" || (page == "Library" && (folder != null || category == "Playlists" && playlistId != null))
+    val showBack = page == "Server" || page == "Matching" || page == "Equaliser" || page == "Search" || page == "Now playing" || (page == "Library" && (folder != null || category == "Playlists" && playlistId != null || category == "Artists" && artist != null))
     BackHandler(showBack) { back() }
     RadioTheme(
         palette = RadioPalette.entries.firstOrNull { it.name == palette } ?: RadioPalette.Ocean,
@@ -270,7 +273,7 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
                 Row(Modifier.fillMaxWidth().statusBarsPadding().heightIn(min = if (page == "Now playing") 56.dp else 64.dp).padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                     if (showBack) IconButton(onClick = { back() }) { RadioIcon(Symbol.Back, "Back") }
                     Column(Modifier.weight(1f).padding(start = if (!showBack) 12.dp else 0.dp)) {
-                        Text(if (page == "Library" && category == "Playlists" && playlistId != null) playlists.playlists.firstOrNull { it.id == playlistId }?.name ?: "Playlist" else if (page == "Library" && folder != null) library.folders.firstOrNull { it.id == folder }?.name ?: "Folder" else if (page == "Now playing" && showQueue) "Queue" else page, style = if (page == "Now playing") MaterialTheme.typography.titleMedium else if (page in tabPages && !showBack) MaterialTheme.typography.headlineMedium else MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(if (page == "Library" && category == "Playlists" && playlistId != null) SmartList.of(playlistId)?.title ?: playlists.playlists.firstOrNull { it.id == playlistId }?.name ?: "Playlist" else if (page == "Library" && category == "Artists" && artist != null) artist!! else if (page == "Library" && folder != null) library.folders.firstOrNull { it.id == folder }?.name ?: "Folder" else if (page == "Now playing" && showQueue) "Queue" else page, style = if (page == "Now playing") MaterialTheme.typography.titleMedium else if (page in tabPages && !showBack) MaterialTheme.typography.headlineMedium else MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         if (page == "Now playing" && tuningIn) OnAirPill("Tuning in…", Modifier.padding(top = 2.dp))
                         else if (page == "Now playing" && audio.radioActive) OnAirPill("On air · ${if (radio.vibeLocalId != null) "Vibe locked" else moodLabel(radio.mood)}", Modifier.padding(top = 2.dp))
                         else if (page == "Radio") Text(when {
@@ -279,7 +282,7 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
                             radio.loaded -> "%,d songs ready on this phone".format(radio.diagnostics.eligibleTracks)
                             else -> radio.status
                         }, style = MaterialTheme.typography.labelSmall, color = if (library.accessLost) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.testTag("radio-status"))
-                        else Text(if (page == "Now playing") audio.source.ifBlank{"Local music"} else if (page == "Library" && category == "Playlists" && playlistId != null) "${playlists.songIds(playlistId!!).size} songs · Playlist" else if (library.scanning) "Scanning…" else if (library.root == null) "Connect your music" else "${library.songs.count { it.available }} MP3s", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        else Text(if (page == "Now playing") audio.source.ifBlank{"Local music"} else if (page == "Equaliser") "Sound for this app" else if (page == "Library" && category == "Playlists" && playlistId != null) SmartList.of(playlistId)?.let { "Automatic · ${it.description}" } ?: "${playlists.songIds(playlistId!!).size} songs · Playlist" else if (page == "Library" && category == "Artists" && artist != null) "Artist" else if (library.scanning) "Scanning…" else if (library.root == null) "Connect your music" else "${library.songs.count { it.available }} MP3s", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     if (page == "Radio" && audio.radioActive) IconButton(onClick = { openTune = true }, modifier = Modifier.testTag("tune-radio")) { RadioIcon(Symbol.Settings, "Tune station") }
                     if (page == "Library") {
@@ -338,7 +341,7 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
                   }
                     NavigationBar(containerColor = MaterialTheme.colorScheme.surfaceContainer, windowInsets = WindowInsets(0), modifier = Modifier.navigationBarsPadding().height(68.dp)) {
                         destinations.forEach { (label, symbol) ->
-                            val selected = page == label || label == "Settings" && page in listOf("Server", "Matching")
+                            val selected = page == label || label == "Settings" && page in listOf("Server", "Matching", "Equaliser")
                             NavigationBarItem(selected = selected, onClick = { navigate(label) }, modifier = Modifier.testTag("nav-$label"), icon = { RadioIcon(symbol) },
                                 label = { Text(label, fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium) })
                         }
@@ -348,13 +351,13 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
             snackbarHost = { SnackbarHost(snackbar) }
         ) { insets ->
             @Composable fun PageBody(target: String) { when (target) {
-                "Library" -> LibraryContent(library, folder, category, onCategory = { category = it; playlistId = null }, sort, onSort = { sortName = it.name; prefs.edit().putString("sort", it.name).apply() }, listState,
+                "Library" -> LibraryContent(library, folder, category, onCategory = { category = it; playlistId = null; artist = null }, sort, onSort = { sortName = it.name; prefs.edit().putString("sort", it.name).apply() }, listState,
                     onFolder = { folder = it }, onSong = { item, context, source -> if (playSong(item, context, source)) navigate("Now playing") },
                     choose = { chooseFolder() }, rescan = { repository.rescan() }, cancel = { repository.cancelScan() }, modifier = Modifier.padding(insets), onSongAction = ::songAction,
                     playlistContent = { PlaylistBrowser(playlists, repository.playlists, library.songs, !library.accessLost, playlistId, { playlistId = it },
                         onPlay = { item, context, source -> if (playSong(item, context, source)) navigate("Now playing") }, onSongAction = ::songAction,
-                        currentId = audio.currentId, onPlayAll = ::playAll) },
-                    sortedSongs = songs, currentId = audio.currentId, onPlayAll = ::playAll)
+                        currentId = audio.currentId, onPlayAll = ::playAll, smartRows = repository.journal.smartListRows, favorites = favorites) },
+                    sortedSongs = songs, currentId = audio.currentId, onPlayAll = ::playAll, artist = artist, onArtist = { artist = it })
                 "Radio" -> RadioContent(radio,repository.radio,audio,playback,library,onLibrary={navigate("Library")},onPlayer={navigate("Now playing")},connected=connected,modifier=Modifier.padding(insets),
                     paired=paired,onChooseFolder={chooseFolder()},onRescan={repository.rescan()},onFullQueue={showQueue=true;navigate("Now playing")},onEnd={endSheet=true},openTune=openTune,onTuneOpened={openTune=false},onServer={navigate("Server")},positionMs=positionMs)
                 "Search" -> Column(Modifier.padding(insets).imePadding()) {
@@ -437,6 +440,9 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
                 "Server" -> Column(Modifier.padding(insets).consumeWindowInsets(insets).imePadding().fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).testTag("server-scroll")) {
                     ServerSettings(pairing, onOpenMatching = { navigate("Matching") }, discoveryRepository = discovery, radioRepository = repository.radio)
                 }
+                "Equaliser" -> Column(Modifier.padding(insets).consumeWindowInsets(insets).fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).testTag("equalizer-scroll")) {
+                    EqualizerScreen(audioSettings)
+                }
                 "Matching" -> Column(Modifier.padding(insets).consumeWindowInsets(insets).imePadding().fillMaxSize().padding(horizontal = 16.dp)) {
                     ServerSettings(pairing, matchingScreen = true, discoveryRepository = discovery)
                 }
@@ -493,6 +499,10 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
                     SectionLabel("Playback")
                     Text("Music keeps playing in the background. After a restart, your last queue returns paused. Sleep timers clear on restart.", Modifier.padding(vertical = 8.dp), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     NormalizationSettings(repository.loudness, library, audio.currentId)
+                    }
+                    SettingsCard {
+                    SectionLabel("Sound")
+                    SoundSettings(audioSettings) { navigate("Equaliser") }
                     }
                     SettingsCard {
                     SectionLabel("Desktop")
