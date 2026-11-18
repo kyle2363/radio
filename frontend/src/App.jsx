@@ -11,6 +11,7 @@ import MiniPlayer from "./components/MiniPlayer";
 import NowPlaying from "./components/NowPlaying";
 import PlayerControls from "./components/PlayerControls";
 import MoodButtons from "./components/MoodButtons";
+import FeelStations from "./components/FeelStations";
 import CommandBar from "./components/CommandBar";
 import QueuePreview from "./components/QueuePreview";
 import VibeLockBadge from "./components/VibeLockBadge";
@@ -774,6 +775,7 @@ function AppInner({ outputPlayback }) {
                 <section><CommandBar onCommandSent={wrappedHandleCommandSent} onClose={() => setCommandExpanded(false)} responseTimeout={commandResponseTimeout} inactiveTimeout={commandInactiveTimeout} onUserActivity={handleUserActivity} lastCommandRef={lastNlActionRef} onUndo={handleUndoNlCommand} nlResponse={nlResponse} nlResponseVisible={nlResponseVisible} nlResponseTimerRef={nlResponseTimerRef} nlPausedRef={nlPausedRef} clearNlResponseTimer={clearNlResponseTimer} startNlResponseTimer={startNlResponseTimer} setNlResponse={setNlResponse} setNlResponseVisible={setNlResponseVisible} /></section>
               )}
               <section><MoodButtons activeMood={moodState} onMoodSet={handleMoodSet} /></section>
+              <section><FeelStations addToast={addToast} /></section>
               <section className="flex items-center gap-4 px-6 py-4" style={{ background: "var(--bg-surface)" }}>
                 <VolumeControl volume={volume} onChange={handleVolumeChange} />
                 <div style={{ width: "1px", height: "24px", background: "var(--border)", flexShrink: 0 }} />

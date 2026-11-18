@@ -4890,6 +4890,28 @@ app.include_router(create_media_router(_get_media_service))
 app.include_router(create_playback_router(_LazyPlaybackSessions(), _playback_hub,
                                          desktop_claim=player_engine.claim))
 app.include_router(create_portable_router(_get_portable_store, _get_portable_catalog))
+from feel_service import FeelService
+from feels_api import create_feels_router
+
+
+def _get_feel_service():
+    return FeelService(_get_portable_store())
+
+
+def _feel_station_ids():
+    return _get_feel_service().active_station_ids()
+
+
+# Every desktop queue reads the persisted feel station, including after a restart.
+from engine.queue import QueueManager as _QueueManager
+_QueueManager.feel_station_ids = staticmethod(_feel_station_ids)
+
+
+def _on_feel_station_change():
+    _get_queue_manager().request_rebuild()
+
+
+app.include_router(create_feels_router(_get_feel_service, on_station_change=_on_feel_station_change))
 # Register the API boundary before the catch-all client mount. Starlette matches
 # routes in registration order, so a Mount("/") registered first would answer
 # /api/auth/* itself (404) and the client could never learn it needs to sign in.

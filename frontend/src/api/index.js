@@ -249,3 +249,22 @@ export const fetchCalibrationSample = (n = 20) => get(`/api/calibration/sample?n
 export const fetchCalibrationAnchors = () => get("/api/calibration/anchors");
 export const setUserEnergy = (songId, value) => post(`/api/songs/${songId}/user-energy`, { value });
 export const clearUserEnergy = (songId) => del(`/api/songs/${songId}/user-energy`);
+
+// ── Feels (checkpoints 9D–9E) ─────────────────────────────
+const enc = encodeURIComponent;
+export const fetchFeels = (includeArchived = false) => get(`/api/feels?include_archived=${includeArchived}`);
+export const createFeel = (name, color) => request("POST", "/api/feels", { name, color });
+export const editFeel = (id, changes) => request("PATCH", `/api/feels/${enc(id)}`, changes);
+export const adoptStarterFeel = (key) => request("POST", `/api/feels/starters/${enc(key)}`);
+export const fetchFeel = (id) => get(`/api/feels/${enc(id)}`);
+export const rateFeel = (id, songId, value) => request("POST", `/api/feels/${enc(id)}/rate`, { song_id: songId, value });
+export const compareFeel = (id, a, b, outcome) => request("POST", `/api/feels/${enc(id)}/compare`, { a, b, outcome });
+export const fetchFeelSprint = (id, n = 20) => get(`/api/feels/${enc(id)}/sprint?n=${n}`);
+export const fetchFeelPairs = (id, n = 10) => get(`/api/feels/${enc(id)}/pairs?n=${n}`);
+export const fetchFeelReview = (id) => get(`/api/feels/${enc(id)}/review`);
+export const fetchFeelStation = () => get("/api/feels/station");
+export const setFeelStation = (feelId) => request("PUT", "/api/feels/station", { feel_id: feelId });
+export const fetchFeelSettings = () => get("/api/feels/settings");
+export const setFeelSuggestions = (mode) => request("PUT", "/api/feels/settings", { suggestions: mode });
+export const fetchSessionFeelSuggestions = () => get("/api/feels/session-suggestions");
+export const fetchSongFeels = (songId) => get(`/api/songs/${songId}/feels`);
