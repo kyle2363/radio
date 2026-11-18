@@ -9,6 +9,8 @@ The fit is a fixed number of Jacobi diagonal-Newton sweeps in sorted song
 order, so Python and Kotlin produce identical numbers (``feel_golden.json``).
 """
 import math
+import re
+import uuid
 
 HALF_LIFE_DAYS = 182.5
 DAY_SECONDS = 86_400.0
@@ -20,6 +22,35 @@ NEIGHBOURS = 5
 NEIGHBOUR_CONFIDENCE = 0.5
 ENERGY_EPSILON = 0.02
 PLAYED_BOOST = 1.25
+# The built-in Energy scale feel; its score is ``songs.user_energy``. Cannot be archived.
+ENERGY_FEEL_ID = "00000000-0000-4000-8000-0000000000e1"
+NAME_LIMIT = 40
+MAX_WEIGHT = 1000.0
+_COLOR = re.compile(r"^#[0-9A-Fa-f]{6}$")
+
+
+def valid_feel_id(value):
+    if not isinstance(value, str):
+        return False
+    try:
+        return str(uuid.UUID(value)) == value
+    except ValueError:
+        return False
+
+
+def valid_definition(feel_id, value):
+    """``feel_defined`` value: {"name", "color" #RRGGBB, "scale" bool, "archived" bool}."""
+    if not isinstance(value, dict) or set(value) != {"name", "color", "scale", "archived"}:
+        return False
+    name = value["name"]
+    if not (isinstance(name, str) and 1 <= len(name) <= NAME_LIMIT and name.strip() == name
+            and not any(ord(c) < 32 for c in name)):
+        return False
+    if not (isinstance(value["color"], str) and _COLOR.match(value["color"])):
+        return False
+    if type(value["scale"]) is not bool or type(value["archived"]) is not bool:
+        return False
+    return feel_id != ENERGY_FEEL_ID or (value["scale"] and not value["archived"])
 
 
 def recency_weight(age_days):

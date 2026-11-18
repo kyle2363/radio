@@ -16,18 +16,31 @@ import time
 from uuid import uuid4
 
 from db import database
+from portable import feel as feel_rules
 from portable import playlists as playlist_rules
 
 SCOPES = frozenset({"catalog:read", "profile:read", "profile:write", "dj:read", "recommend:read"})
 KINDS = frozenset({"song_started", "song_completed", "song_skipped", "song_replayed",
                    "favorite_changed", "dislike_changed", "blacklist_changed",
                    "energy_changed", "preference_changed",
-                   "playlist_renamed", "playlist_deleted", "playlist_member_changed"})
+                   "playlist_renamed", "playlist_deleted", "playlist_member_changed",
+                   "feel_defined", "feel_rated", "feel_compared"})
+FEEL_KINDS = frozenset({"feel_defined", "feel_rated", "feel_compared"})
 PLAYLIST_KINDS = frozenset({"playlist_renamed", "playlist_deleted", "playlist_member_changed"})
 # Additive (checkpoint 7A); checked on every start so existing stores upgrade.
 _PLAYLIST_SCHEMA = """
 CREATE TABLE IF NOT EXISTS portable_playlists(playlist_id TEXT PRIMARY KEY,collection_id INTEGER,
  deleted INTEGER NOT NULL DEFAULT 0);
+"""
+# Additive (checkpoint 9A). Append-only evidence index over feel events; the
+# events themselves stay in portable_events. song_key/other_key are a server
+# song id or "local:<id>".
+_FEEL_SCHEMA = """
+CREATE TABLE IF NOT EXISTS portable_feel_evidence(device_id TEXT NOT NULL,event_id TEXT NOT NULL,
+ feel_id TEXT NOT NULL,kind TEXT NOT NULL,song_key TEXT NOT NULL,other_key TEXT,value REAL,
+ tie INTEGER NOT NULL DEFAULT 0,weight REAL NOT NULL DEFAULT 1,occurred_at REAL NOT NULL,
+ PRIMARY KEY(device_id,event_id));
+CREATE INDEX IF NOT EXISTS idx_portable_feel_evidence_feel ON portable_feel_evidence(feel_id,occurred_at);
 """
 _schema_lock = threading.Lock()
 _SCHEMA = """
@@ -68,17 +81,49 @@ class PortableProfileStore:
                 if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='portable_playlists'").fetchone():
                     conn.executescript(_PLAYLIST_SCHEMA)
                     conn.commit()
+                if not conn.execute("SELECT 1 FROM portable_meta WHERE key='feel_schema'").fetchone():
+                    self._backup(conn, "feel")
+                    conn.executescript("BEGIN IMMEDIATE;" + _FEEL_SCHEMA)
+                    self._migrate_legacy_energy(conn)
+                    conn.commit()
                 return
-            backup_dir = Path(database.DB_PATH).parent / "backups"
-            backup_dir.mkdir(exist_ok=True)
-            with sqlite3.connect(str(backup_dir / f"radio-before-portable-{uuid4().hex}.db")) as backup:
-                conn.backup(backup)
-                if backup.execute("PRAGMA quick_check").fetchone()[0] != "ok":
-                    raise RuntimeError("Portable migration backup failed verification")
-            conn.executescript("BEGIN IMMEDIATE;" + _SCHEMA + _PLAYLIST_SCHEMA)
+            self._backup(conn, "portable")
+            conn.executescript("BEGIN IMMEDIATE;" + _SCHEMA + _PLAYLIST_SCHEMA + _FEEL_SCHEMA)
             conn.executemany("INSERT INTO portable_meta VALUES (?,?)",
                              [("catalog_id", str(uuid4())), ("schema_version", "1")])
+            self._migrate_legacy_energy(conn)
             conn.commit()
+
+    @staticmethod
+    def _backup(conn, label):
+        backup_dir = Path(database.DB_PATH).parent / "backups"
+        backup_dir.mkdir(exist_ok=True)
+        with sqlite3.connect(str(backup_dir / f"radio-before-{label}-{uuid4().hex}.db")) as backup:
+            conn.backup(backup)
+            if backup.execute("PRAGMA quick_check").fetchone()[0] != "ok":
+                raise RuntimeError("Portable migration backup failed verification")
+
+    @staticmethod
+    def _migrate_legacy_energy(conn):
+        """Desktop running-mean ``user_energy`` becomes one weighted Energy rating per song (once)."""
+        catalog_id = conn.execute("SELECT value FROM portable_meta WHERE key='catalog_id'").fetchone()[0]
+        clock = conn.execute("SELECT COALESCE(MAX(clock),0) FROM portable_events").fetchone()[0]
+        rows = conn.execute("SELECT id,user_energy,user_energy_count,user_energy_updated_at FROM songs "
+                            "WHERE user_energy IS NOT NULL AND COALESCE(user_energy_count,0)>0 ORDER BY id").fetchall()
+        for sid, energy, count, updated in rows:
+            rating = feel_rules.legacy_energy_rating(energy, count, updated)
+            weight = min(rating["weight"], feel_rules.MAX_WEIGHT)
+            value = min(1.0, max(0.0, rating["value"]))
+            clock += 1
+            event = {"protocol_version": 1, "device_id": "server", "event_id": f"legacy-energy:{sid}",
+                     "logical_clock": clock, "kind": "feel_rated", "feel_id": feel_rules.ENERGY_FEEL_ID,
+                     "song_id": str(sid), "catalog_id": catalog_id, "value": value, "weight": weight,
+                     "occurred_at": rating["at"]}
+            conn.execute("INSERT INTO portable_events(device_id,event_id,clock,payload) VALUES ('server',?,?,?)",
+                         (event["event_id"], clock, canonical(event)))
+            conn.execute("INSERT INTO portable_feel_evidence VALUES ('server',?,?,'rated',?,NULL,?,0,?,?)",
+                         (event["event_id"], feel_rules.ENERGY_FEEL_ID, str(sid), value, weight, rating["at"]))
+        conn.execute("INSERT OR REPLACE INTO portable_meta VALUES ('feel_schema','1')")
 
     @contextmanager
     def transaction(self):
@@ -159,7 +204,7 @@ class PortableProfileStore:
             raise ValueError("Unsupported event protocol")
         allowed = {"protocol_version", "event_id", "device_id", "logical_clock", "kind", "song_id",
                    "attempt_id", "occurred_at", "value", "key", "local_id", "reason", "completion", "catalog_id",
-                   "playlist_id", "position"}
+                   "playlist_id", "position", "feel_id", "other_song_id", "other_local_id", "weight"}
         if set(event) - allowed:
             raise ValueError("Unknown event fields")
         _text(event.get("event_id"), "event id")
@@ -177,8 +222,15 @@ class PortableProfileStore:
         song_id = event.get("song_id")
         if song_id is not None and (not isinstance(song_id, str) or not song_id.isascii() or not song_id.isdecimal()):
             raise ValueError("song_id must be a server row ID or null")
-        if song_id is not None and event.get("catalog_id") != catalog_id:
+        other_id = event.get("other_song_id")
+        if other_id is not None and (not isinstance(other_id, str) or not other_id.isascii() or not other_id.isdecimal()):
+            raise ValueError("other_song_id must be a server row ID or null")
+        if (song_id is not None or other_id is not None) and event.get("catalog_id") != catalog_id:
             raise ValueError("Song belongs to a different or unspecified source catalog")
+        if kind in FEEL_KINDS:
+            PortableProfileStore._validate_feel(event, kind)
+        elif set(event) & {"feel_id", "other_song_id", "other_local_id", "weight"}:
+            raise ValueError("Feel fields on a non-feel event")
         if kind in PLAYLIST_KINDS:
             if not playlist_rules.valid_playlist_id(event.get("playlist_id")):
                 raise ValueError("Invalid playlist id")
@@ -195,7 +247,7 @@ class PortableProfileStore:
                 raise ValueError("Song fields belong only to playlist members")
         elif "playlist_id" in event or "position" in event:
             raise ValueError("Playlist fields on a non-playlist event")
-        if kind not in ("preference_changed", "playlist_renamed", "playlist_deleted") and song_id is None:
+        if kind not in ("preference_changed", "playlist_renamed", "playlist_deleted", "feel_defined") and song_id is None:
             _text(event.get("local_id"), "local-only song id")
         if kind.startswith("song_"):
             _text(event.get("attempt_id"), "attempt id")
@@ -217,6 +269,60 @@ class PortableProfileStore:
             raise ValueError("Invalid completion ratio")
         if len(canonical(event)) > 4096:
             raise ValueError("Event too large")
+
+    @staticmethod
+    def _validate_feel(event, kind):
+        if not feel_rules.valid_feel_id(event.get("feel_id")):
+            raise ValueError("Invalid feel id")
+        value = event.get("value")
+        has_other = "other_song_id" in event or "other_local_id" in event
+        if kind == "feel_defined":
+            if not feel_rules.valid_definition(event["feel_id"], value):
+                raise ValueError("Invalid feel definition")
+            if event.get("song_id") is not None or "local_id" in event or has_other or "weight" in event:
+                raise ValueError("Song fields belong only to feel ratings and comparisons")
+            return
+        if kind == "feel_rated":
+            if type(value) not in (int, float) or not math.isfinite(value) or not 0 <= value <= 1:
+                raise ValueError("Feel rating must be within [0,1]")
+            if has_other:
+                raise ValueError("A rating names one song")
+            weight = event.get("weight", 1.0)
+            if type(weight) not in (int, float) or not math.isfinite(weight) or not 0 < weight <= feel_rules.MAX_WEIGHT:
+                raise ValueError("Invalid rating weight")
+            return
+        if value not in ("win", "tie") or "weight" in event:
+            raise ValueError("Comparison value must be win or tie")
+        other = event.get("other_song_id")
+        if other is None:
+            _text(event.get("other_local_id"), "other local-only song id")
+        elif "other_local_id" in event:
+            raise ValueError("Comparison names one other song")
+        first = event.get("song_id") or "local:" + str(event.get("local_id"))
+        second = other or "local:" + str(event.get("other_local_id"))
+        if first == second:
+            raise ValueError("A song cannot be compared with itself")
+
+    @staticmethod
+    def _project_feel(conn, event):
+        kind = event["kind"]
+        if kind == "feel_defined":
+            key = "feel:" + event["feel_id"]
+            order = (event["logical_clock"], event["device_id"], event["event_id"])
+            old = conn.execute("SELECT clock,device_id,event_id FROM portable_registers WHERE key=?", (key,)).fetchone()
+            if not old or tuple(old) < order:
+                conn.execute("INSERT OR REPLACE INTO portable_registers VALUES (?,?,?,?,?)",
+                             (key, *order, canonical(event["value"])))
+            return
+        song = event.get("song_id") or "local:" + event["local_id"]
+        if kind == "feel_rated":
+            other, value, tie, weight = None, float(event["value"]), 0, float(event.get("weight", 1.0))
+        else:
+            other = event.get("other_song_id") or "local:" + event["other_local_id"]
+            value, tie, weight = None, int(event["value"] == "tie"), 1.0
+        conn.execute("INSERT INTO portable_feel_evidence VALUES (?,?,?,?,?,?,?,?,?,?)",
+                     (event["device_id"], event["event_id"], event["feel_id"], kind[5:], song, other, value, tie,
+                      weight, float(event["occurred_at"])))
 
     def import_events(self, device_id, events):
         _text(device_id, "device id")
@@ -288,6 +394,8 @@ class PortableProfileStore:
             return
         if kind in PLAYLIST_KINDS:
             return self._project_playlist(conn, event)
+        if kind in FEEL_KINDS:
+            return self._project_feel(conn, event)
         local_key = "local:" + canonical([event["device_id"], event.get("local_id")])
         key = ("preference:" + event["key"] if kind == "preference_changed" else kind + ":" + (sid or local_key))
         order = (event["logical_clock"], event["device_id"], event["event_id"])
@@ -485,8 +593,8 @@ class PortableProfileStore:
                 "cursor": page[-1][0] if page else cursor, "has_more": len(rows) > limit, "logical_clock": high}
 
     def profile(self):
-        result = {"protocol_version": 1, "favorites": {}, "dislikes": {}, "blacklist": {}, "energy": {}, "preferences": {}}
-        mapping = {"favorite_changed": "favorites", "dislike_changed": "dislikes", "blacklist_changed": "blacklist", "energy_changed": "energy", "preference": "preferences"}
+        result = {"protocol_version": 1, "favorites": {}, "dislikes": {}, "blacklist": {}, "energy": {}, "preferences": {}, "feels": {}}
+        mapping = {"favorite_changed": "favorites", "dislike_changed": "dislikes", "blacklist_changed": "blacklist", "energy_changed": "energy", "preference": "preferences", "feel": "feels"}
         with database.get_connection_cm() as conn:
             result["playlists"] = {pid: self._playlist_state(conn, pid) for pid in self._playlist_ids(conn)}
             for row in conn.execute("SELECT key,value FROM portable_registers WHERE key NOT LIKE 'playlist%'"):
