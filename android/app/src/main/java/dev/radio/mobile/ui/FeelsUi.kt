@@ -6,6 +6,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
@@ -35,12 +36,17 @@ import dev.radio.mobile.playback.PreviewState
 import dev.radio.mobile.portable.FeelRules
 import dev.radio.mobile.recommendation.FeelSprint
 import dev.radio.mobile.recommendation.SprintInput
+import dev.radio.mobile.recommendation.ThisOrThat
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.random.Random
 
-/** Where the Feels page is: the list, one feel, or a sprint over one feel. Hoisted so the app's Back can step out. */
-data class FeelsNav(val feelId: String? = null, val sprint: Boolean = false)
+/**
+ * Where the Feels page is: the list, one feel, or a sprint / this-or-that over one feel. Hoisted so the app's Back
+ * can step out: this-or-that is a sprint-level page ([sprint] and [pairs] true), so `copy(sprint = false)` returns
+ * to the feel and the leftover [pairs] flag is ignored there.
+ */
+data class FeelsNav(val feelId: String? = null, val sprint: Boolean = false, val pairs: Boolean = false)
 
 internal fun feelColor(hex: String): Color = runCatching { Color(hex.toColorInt()) }.getOrDefault(Color.Gray)
 
@@ -72,8 +78,11 @@ fun FeelsScreen(feels: FeelRepository, state: FeelsState, songs: List<LocalSong>
     when {
         !state.loaded -> Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
         state.needsSetup -> FeelSetup(modifier) { keys -> write { feels.setUp(keys) } }
+        open != null && nav.sprint && nav.pairs -> ThisOrThatScreen(feels, state, open.feel, songs, preview, sessions, onMessage,
+            onDone = { onNav(FeelsNav(open.feel.feelId)) }, modifier = modifier)
         open != null && nav.sprint -> FeelSprintScreen(feels, state, open.feel, songs, preview, sessions, onMessage, onDone = { onNav(FeelsNav(open.feel.feelId)) }, modifier = modifier)
-        open != null -> FeelDetail(open, state, songs, onSprint = { onNav(nav.copy(sprint = true)) },
+        open != null -> FeelDetail(open, state, songs, onSprint = { onNav(FeelsNav(open.feel.feelId, sprint = true)) },
+            onPairs = { onNav(FeelsNav(open.feel.feelId, sprint = true, pairs = true)) },
             onEdit = { name, color, archived -> write { feels.edit(open.feel.feelId, name, color, archived) } },
             onRemove = { song -> write { feels.tag(open.feel.feelId, song, false) } }, modifier = modifier)
         else -> FeelList(state, onOpen = { onNav(FeelsNav(it)) }, onCreate = { name, color -> write { feels.create(name, color) } },
@@ -184,7 +193,7 @@ private fun FeelEditDialog(feel: LocalFeel?, onDismiss: () -> Unit, onSave: (nam
 }
 
 @Composable
-private fun FeelDetail(summary: FeelSummary, state: FeelsState, songs: List<LocalSong>, onSprint: () -> Unit,
+private fun FeelDetail(summary: FeelSummary, state: FeelsState, songs: List<LocalSong>, onSprint: () -> Unit, onPairs: () -> Unit,
     onEdit: (String?, String?, Boolean?) -> Unit, onRemove: (LocalSong) -> Unit, modifier: Modifier) {
     val feel = summary.feel
     var editing by remember { mutableStateOf(false) }
@@ -209,12 +218,19 @@ private fun FeelDetail(summary: FeelSummary, state: FeelsState, songs: List<Loca
             }
             Text(if (energy) "A sprint shows about 20 songs, one at a time: rate each Hot, Warm, Mellow or Cold." else "A sprint shows about 20 songs, one at a time: Yes, No or Skip. No is saved too and sharpens the next deck.",
                 Modifier.padding(horizontal = 20.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Text(if (energy) "Rated songs" else "Songs in ${feel.name}", Modifier.padding(start = 20.dp, top = 20.dp, bottom = 4.dp), style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+            val pairable = remember(state.bySong, songs, feel.feelId) { pairPool(state, feel.feelId, songs).size }
+            OutlinedButton(onClick = onPairs, enabled = pairable >= 2, modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp).heightIn(min = 52.dp).testTag("start-pairs"),
+                shape = RadioShapes.Squircle) { Text("This or that") }
+            Text(if (pairable >= 2) "Rounds of 10 pairs: pick which song is more ${feel.name}. Pairs come where the ranking is least sure."
+                else if (energy) "Rate at least 2 songs to compare them." else "Add at least 2 songs to ${feel.name} to compare them.",
+                Modifier.padding(horizontal = 20.dp).testTag("pairs-hint"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("Ranking · ${summary.settled.toInt()}% settled", Modifier.padding(start = 20.dp, top = 20.dp, bottom = 4.dp).testTag("ranking-header"),
+                style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
             if (rows.isEmpty()) Text("Nothing yet. Start a sprint, or tag songs from Now Playing.", Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
                 style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
-        items(rows, key = { it.first.id }) { (song, s) ->
-            LibraryRow(song.title, if (energy) energyBucket(s.score) ?: "" else song.artist.ifBlank { song.folderPath }, Symbol.Music, trailing = {
+        itemsIndexed(rows, key = { _, it -> it.first.id }) { rank, (song, s) ->
+            LibraryRow("${rank + 1}. ${song.title}", if (energy) energyBucket(s.score) ?: "" else song.artist.ifBlank { song.folderPath }, Symbol.Music, trailing = {
                 if (!energy) TextButton(onClick = { onRemove(song) }, modifier = Modifier.testTag("remove-${song.id}")) { Text("Remove") }
             }) {}
         }
@@ -258,7 +274,8 @@ private fun FeelSprintScreen(feels: FeelRepository, state: FeelsState, feel: Loc
         val states = state.bySong.mapNotNull { (id, list) -> list.firstOrNull { it.feelId == feel.feelId }?.let { id to FeelRules.FeelState(it.score, it.confidence, it.member) } }.toMap()
         val ownEnergy = state.bySong.mapNotNull { (id, list) -> list.firstOrNull { it.feelId == FeelCatalog.ENERGY_FEEL_ID }?.let { id to it.score } }.toMap()
         val starter = FeelCatalog.starters.firstOrNull { it.feelId == feel.feelId }
-        FeelSprint.deck(SprintInput(songs, states, energy = ownEnergy, sessions = sessions(),
+        val features = dev.radio.mobile.recommendation.FeelFeatures.latest.value // matched catalog features (9C); your own Energy wins
+        FeelSprint.deck(SprintInput(songs, states, vectors = features.vectors, tags = features.tags, energy = features.energy + ownEnergy, sessions = sessions(),
             hintTags = starter?.hintTags.orEmpty(), hintEnergy = starter?.hintEnergy), Random(System.nanoTime()))
     }
     fun answer(value: Double?) {
@@ -310,6 +327,84 @@ private fun FeelSprintScreen(feels: FeelRepository, state: FeelsState, feel: Loc
             }
         }
         TextButton(onClick = { answer(null) }, Modifier.align(Alignment.CenterHorizontally).testTag("sprint-skip")) { Text("Skip") }
+    }
+}
+
+/** This feel's states for available songs on this phone. */
+private fun feelStates(state: FeelsState, feelId: String, songs: List<LocalSong>): Map<String, FeelRules.FeelState> {
+    val available = songs.filter { it.available }.mapTo(HashSet()) { it.id }
+    return state.bySong.mapNotNull { (id, list) -> list.firstOrNull { it.feelId == feelId }?.takeIf { id in available }
+        ?.let { id to FeelRules.FeelState(it.score, it.confidence, it.member) } }.toMap()
+}
+
+/** Songs this-or-that may pair, matching [ThisOrThat.round]'s pool. */
+private fun pairPool(state: FeelsState, feelId: String, songs: List<LocalSong>) =
+    feelStates(state, feelId, songs).filter { (_, s) -> isEnergy(feelId) || s.member || s.confidence < ThisOrThat.LOW_CONFIDENCE }
+
+@Composable
+private fun ThisOrThatScreen(feels: FeelRepository, state: FeelsState, feel: LocalFeel, songs: List<LocalSong>, preview: PreviewController?,
+    sessions: () -> List<List<String>>, onMessage: (String) -> Unit, onDone: () -> Unit, modifier: Modifier) {
+    val scope = rememberCoroutineScope()
+    // Same as the sprint: pause main music here, resume it (only if it was playing) when the screen goes away.
+    DisposableEffect(preview) { preview?.enterPreview(); onDispose { preview?.exitPreview() } }
+    fun write(block: suspend () -> Result<*>) { scope.launch { block().exceptionOrNull()?.let { onMessage(it.message ?: "Couldn't save that.") } } }
+    val settledNow = state.feels.firstOrNull { it.feel.feelId == feel.feelId }?.settled ?: 0.0
+    var round by remember { mutableIntStateOf(0) }
+    var index by remember(round) { mutableIntStateOf(0) }
+    val before = remember(round) { settledNow }
+    val byId = remember(songs) { songs.associateBy { it.id } }
+    // Fixed per round so answers don't reshuffle the pairs under your thumb.
+    val pairs = remember(feel.feelId, round) {
+        val states = feelStates(state, feel.feelId, songs)
+        ThisOrThat.round(states, sessions().flatten().toSet(), states.keys, Random(System.nanoTime()), scale = isEnergy(feel.feelId))
+            .mapNotNull { (a, b) -> byId[a]?.let { x -> byId[b]?.let { y -> x to y } } }
+    }
+    val pair = pairs.getOrNull(index)
+    fun next() { preview?.stopPreview(); index++ }
+    fun pick(winner: LocalSong, loser: LocalSong, tie: Boolean = false) { next(); write { feels.compare(feel.feelId, winner, loser, tie) } }
+    fun misfit(song: LocalSong) { next(); write { feels.tag(feel.feelId, song, false) } }
+    val clip = preview?.previewState?.collectAsState()?.value
+    Column(modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 12.dp).testTag("this-or-that"),
+        verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Swatch(feel.color, 14)
+            Text("Which is more ${feel.name}?", Modifier.weight(1f).padding(start = 10.dp), style = MaterialTheme.typography.titleMedium)
+            if (pair != null) Text("${index + 1} of ${pairs.size}", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.testTag("pairs-progress"))
+        }
+        if (pair == null) {
+            Text(if (pairs.isEmpty()) "Not enough songs to compare in ${feel.name}." else "Done", style = MaterialTheme.typography.titleLarge, modifier = Modifier.testTag("pairs-done"))
+            if (pairs.isNotEmpty()) Text("Ranking settled: ${before.toInt()}% → ${settledNow.toInt()}%", style = MaterialTheme.typography.bodyLarge, modifier = Modifier.testTag("pairs-settled"))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (pairs.isNotEmpty()) Button(onClick = { round++ }, shape = RadioShapes.Soft, modifier = Modifier.testTag("pairs-again")) { Text("Another round") }
+                OutlinedButton(onClick = onDone, shape = RadioShapes.Soft) { Text("Back to ${feel.name}") }
+            }
+            return@Column
+        }
+        val (left, right) = pair
+        Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            listOf("left" to left, "right" to right).forEach { (side, song) ->
+                val playing = (clip as? PreviewState.Playing)?.songId == song.id
+                Surface(onClick = { if (preview != null) { if (playing) preview.stopPreview() else preview.playPreview(song) } },
+                    modifier = Modifier.weight(1f).fillMaxHeight().testTag("pair-card-$side"), shape = MaterialTheme.shapes.large,
+                    color = if (playing) feelColor(feel.color).copy(alpha = .35f) else MaterialTheme.colorScheme.surfaceContainerLow) {
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        RadioIcon(if (playing) Symbol.Stop else Symbol.Play, if (playing) "Stop clip" else "Play clip", modifier = Modifier.size(28.dp))
+                        Text(song.title, style = MaterialTheme.typography.titleMedium, maxLines = 3, overflow = TextOverflow.Ellipsis, modifier = Modifier.testTag("pair-title-$side"))
+                        Text(song.artist.ifBlank { song.folderPath.ifBlank { "Local MP3" } }, style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        Spacer(Modifier.weight(1f))
+                        TextButton(onClick = { misfit(song) }, contentPadding = PaddingValues(horizontal = 4.dp), modifier = Modifier.testTag("pair-misfit-$side")) {
+                            Text("Doesn't fit", style = MaterialTheme.typography.labelMedium)
+                        }
+                    }
+                }
+            }
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Button(onClick = { pick(left, right) }, Modifier.weight(1f).heightIn(min = 56.dp).testTag("pick-left"), shape = RadioShapes.Squircle) { Text("This one", maxLines = 1) }
+            Button(onClick = { pick(right, left) }, Modifier.weight(1f).heightIn(min = 56.dp).testTag("pick-right"), shape = RadioShapes.Squircle) { Text("That one", maxLines = 1) }
+        }
+        TextButton(onClick = { pick(left, right, tie = true) }, Modifier.align(Alignment.CenterHorizontally).testTag("pick-tie")) { Text("Can't decide") }
     }
 }
 

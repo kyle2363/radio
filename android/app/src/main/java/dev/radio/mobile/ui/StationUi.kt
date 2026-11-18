@@ -214,6 +214,24 @@ fun MoodChips(selected: String, onSelect: (String) -> Unit, enabled: Boolean = t
     }
 }
 
+/** "Your feels" (checkpoint 9C): one chip per active tag feel. Tapping the selected feel returns to the mood station. */
+@Composable
+fun FeelChips(feels: List<dev.radio.mobile.data.LocalFeel>, selected: String?, onSelect: (String?) -> Unit, enabled: Boolean = true) {
+    FlowRow(Modifier.testTag("radio-feels"), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(0.dp)) {
+        feels.forEach { feel ->
+            val chosen = selected == feel.feelId
+            val accent = runCatching { Color(android.graphics.Color.parseColor(feel.color)) }.getOrDefault(MaterialTheme.colorScheme.primary)
+            FilterChip(chosen, onClick = { onSelect(if (chosen) null else feel.feelId) }, enabled = enabled,
+                label = { Text(feel.name, fontWeight = if (chosen) FontWeight.Bold else FontWeight.Medium) },
+                leadingIcon = { Box(Modifier.size(10.dp).background(if (chosen) Color.Black.copy(alpha = .7f) else accent, CircleShape)) },
+                shape = CircleShape,
+                // Feel colours are light tints, so the selected chip uses dark text.
+                colors = FilterChipDefaults.filterChipColors(selectedContainerColor = accent, selectedLabelColor = Color.Black),
+                modifier = Modifier.testTag("radio-feel-${feel.feelId}"))
+        }
+    }
+}
+
 @Composable
 fun ExplorationPresets(value: Double, onSelect: (ExplorationPreset) -> Unit, enabled: Boolean = true) {
     val current = ExplorationPreset.nearest(value)
@@ -457,6 +475,7 @@ internal fun originExplanation(origin: StationOrigin?) = when (origin) {
     StationOrigin.Wildcard -> "A wildcard: less similar on purpose, to keep things fresh."
     StationOrigin.Context -> "Fits right now, close in energy to the last song."
     StationOrigin.Vibe -> "Matches the locked vibe."
+    StationOrigin.Feel -> "In your feel, or close to songs that are."
     StationOrigin.Desktop -> "Picked by your desktop."
     StationOrigin.User -> "You added this song."
     null -> "Radio picked this song on this phone."

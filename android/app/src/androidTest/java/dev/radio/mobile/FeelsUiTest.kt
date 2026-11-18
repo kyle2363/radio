@@ -85,6 +85,47 @@ class FeelsUiTest {
         assertEquals("exit", preview.log.last())
     }
 
+    @Test fun thisOrThatComparesTiesAndRemovesMisfits() {
+        val hype = runBlocking {
+            feels.setUp(setOf("hype")).getOrThrow()
+            val id = db.feels().feels().first { it.name == "Hype" }.feelId
+            tracks.forEach { feels.tag(id, it, true).getOrThrow() }
+            id
+        }
+        val preview = FakePreview()
+        val nav = mutableStateOf(FeelsNav(hype))
+        var shown by mutableStateOf(true)
+        compose.setContent { if (shown) Screen(preview, nav) }
+        compose.waitUntil(5000) { compose.onAllNodesWithTag("ranking-header").fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithTag("start-pairs").assertIsEnabled().performClick()
+        compose.waitForIdle()
+        assertEquals("enter", preview.log.first())
+        compose.onNodeWithText("Which is more Hype?").assertExists()
+        compose.onNodeWithTag("pair-card-left").performClick()
+        assertTrue(preview.log.any { it.startsWith("play:") })
+        compose.onNodeWithTag("pick-left").performClick()
+        compose.onNodeWithTag("pick-tie").performClick()
+        compose.onNodeWithTag("pair-misfit-right").performClick()
+        compose.waitUntil(5000) { runBlocking { db.feels().evidence(hype).size >= tracks.size + 3 } }
+        // Play through the rest of the round to the summary.
+        while (compose.onAllNodesWithTag("pick-right").fetchSemanticsNodes().isNotEmpty()) compose.onNodeWithTag("pick-right").performClick()
+        compose.onNodeWithTag("pairs-settled").assertExists()
+        compose.onNodeWithTag("pairs-again").assertExists()
+        assertTrue(runBlocking { db.feels().states(hype).count { !it.member } } >= 1)
+        nav.value = nav.value.copy(sprint = false) // the app's Back
+        compose.waitUntil(5000) { compose.onAllNodesWithTag("feel-detail").fetchSemanticsNodes().isNotEmpty() }
+        assertEquals("exit", preview.log.last())
+    }
+
+    @Test fun thisOrThatNeedsTwoSongs() {
+        val hype = runBlocking { feels.setUp(setOf("hype")).getOrThrow(); db.feels().feels().first { it.name == "Hype" }.feelId }
+        val nav = mutableStateOf(FeelsNav(hype))
+        compose.setContent { Screen(null, nav) }
+        compose.waitUntil(5000) { compose.onAllNodesWithTag("start-pairs").fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithTag("start-pairs").assertIsNotEnabled()
+        compose.onNodeWithText("Add at least 2 songs to Hype to compare them.").assertExists()
+    }
+
     @Test fun nowPlayingSheetTagsInTwoTaps() {
         runBlocking { feels.setUp(setOf("hype")).getOrThrow() }
         compose.setContent {
