@@ -138,14 +138,24 @@ between different clustering runs.
 
 ## Android performance (checkpoint 12.1–12.2)
 
-Needs the phone connected over USB with the Music folder chosen and one song in the mini-player. From `android/`:
+Needs the phone connected over USB with the Music folder chosen and one song in the mini-player.
 
-- Journeys benchmark (cold start, Library scroll, Now Playing; each without and with the profile):
-  `.\gradlew.bat :benchmark:connectedBenchmarkAndroidTest -P android.testInstrumentationRunnerArguments.class=dev.radio.mobile.benchmark.JourneyBenchmarks`
-  Results: `benchmark/build/outputs/connected_android_test_additional_output/`.
-- Generate the baseline profile:
-  `.\gradlew.bat :benchmark:connectedBenchmarkAndroidTest -P android.testInstrumentationRunnerArguments.class=dev.radio.mobile.benchmark.BaselineProfileGenerator`
-  then copy the generated `*-baseline-prof.txt` to `app/src/main/baseline-prof.txt` and commit it. `profileinstaller` installs it on sideloaded builds.
-- Stats speed: `StatsSpeedTest` (JVM, summary only) and `StatsSpeedDeviceTest` (instrumented, 50 000 events, query + summary under 1 s).
+**Never use `connectedBenchmarkAndroidTest` (or any Gradle `connected…` task) on your daily phone: Gradle uninstalls the app
+afterwards, which deletes listening history, playlists, likes and pairing.** Install as updates and run with `am instrument`:
 
-The app's `benchmark` build type is release code signed with the debug key and `profileable`; it is a separate install from debug (same package), so reinstall the debug build afterwards for daily use.
+1. Back up (debug build only, while it is still installed):
+   `adb exec-out run-as dev.radio.mobile tar cf - databases shared_prefs files no_backup > .test-runtime/phone-backup-<date>/app-data.tar`
+2. From `android/`: `.\gradlew.bat :app:assembleBenchmark :benchmark:assembleBenchmark`
+3. `adb install -r -t app/build/outputs/apk/benchmark/app-benchmark.apk` and
+   `adb install -r -t benchmark/build/outputs/apk/benchmark/benchmark-benchmark.apk`. Same package and debug key, so this is
+   an update and keeps data (check `firstInstallTime` in `adb shell dumpsys package dev.radio.mobile` is unchanged).
+4. Journeys (cold start, Library scroll, Now Playing; each without and with the profile):
+   `adb shell am instrument -w -e class dev.radio.mobile.benchmark.JourneyBenchmarks -e androidx.benchmark.suppressErrors EMULATOR,LOW-BATTERY,UNLOCKED dev.radio.mobile.benchmark/androidx.test.runner.AndroidJUnitRunner`
+5. Baseline profile: same command with `-e class dev.radio.mobile.benchmark.BaselineProfileGenerator`, then
+   `adb pull /sdcard/Android/media/dev.radio.mobile.benchmark/` and copy the `*-baseline-prof.txt` to
+   `app/src/main/baseline-prof.txt`.
+6. Put the daily build back as an update: `.\gradlew.bat assembleDebug`, then `adb install -r -t app/build/outputs/apk/debug/app-debug.apk`.
+   Remove the benchmark runner with `adb uninstall dev.radio.mobile.benchmark` (that package only, never `dev.radio.mobile`).
+
+Stats speed: `StatsSpeedTest` (JVM, summary only) and `StatsSpeedDeviceTest` (instrumented, 50 000 events, query + summary
+under 1 s; uses an in-memory database, but run it on an emulator or with the same `am instrument` approach, not Gradle).

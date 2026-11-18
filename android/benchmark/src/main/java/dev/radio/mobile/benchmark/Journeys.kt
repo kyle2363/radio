@@ -13,8 +13,16 @@ private const val WAIT = 5_000L
  * They assume a phone with the Music folder already chosen; nothing here changes the library or plays music,
  * except opening Now Playing for a song that is already in the mini-player.
  */
+/** The app reopens on the last screen; Now Playing and sub-pages hide the bottom bar, so back out until it shows. */
+private fun MacrobenchmarkScope.toMainScreen() {
+    repeat(3) {
+        if (device.wait(Until.hasObject(By.res("nav-Library")), 1_500)) return
+        device.pressBack(); device.waitForIdle()
+    }
+}
+
 fun MacrobenchmarkScope.openLibrary() {
-    device.wait(Until.hasObject(By.res("nav-Library")), WAIT)
+    toMainScreen()
     device.findObject(By.res("nav-Library"))?.click()
     device.wait(Until.hasObject(By.res("library-list")), WAIT)
     device.waitForIdle()
@@ -28,6 +36,7 @@ fun MacrobenchmarkScope.scrollAllSongs() {
 }
 
 fun MacrobenchmarkScope.openNowPlaying() {
+    toMainScreen()
     val mini = device.wait(Until.findObject(By.res("mini-open")), WAIT) ?: return
     mini.click()
     device.waitForIdle()

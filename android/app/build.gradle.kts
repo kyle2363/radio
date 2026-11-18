@@ -24,7 +24,6 @@ android {
         release {
             optimization {
                 enable = true
-                packageScope = setOf("androidx.**", "kotlin.**", "kotlinx.**")
             }
         }
         // Release code, signed with the debug key and profileable, so the :benchmark journeys measure what ships (checkpoint 12.1).
@@ -33,6 +32,7 @@ android {
             signingConfig = signingConfigs.getByName("debug")
             matchingFallbacks += listOf("release")
             isDebuggable = false
+            proguardFiles("benchmark-rules.pro")
         }
     }
     compileOptions {
