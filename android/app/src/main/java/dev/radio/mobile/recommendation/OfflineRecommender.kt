@@ -8,7 +8,7 @@ data class RadioTrack(val songId:String,val localId:String,val artist:String="",
 data class RadioVector(val songId:String,val space:String,val model:String,val version:String,val values:FloatArray)
 data class RadioEvent(val id:String,val kind:String,val songId:String,val at:Double,val reason:String?=null)
 data class RadioProfile(val events:List<RadioEvent> = emptyList(),val hearts:Set<String> = emptySet(),val dislikes:Set<String> = emptySet(),val current:String?=null,val energyHistory:List<Double> = emptyList(),val skipStreak:Int=0,val userEnergy:Map<String,Double> = emptyMap(),val bootstrap:Set<String> = emptySet())
-data class RadioSettings(val mood:String="neutral",val audioBlend:Double=.65,val exploration:Double=.3,val vibeLock:String?=null,val folders:Set<String> = emptySet(),val genres:Set<String> = emptySet(),val collections:Set<String> = emptySet(),val favoritesOnly:Boolean=false,val energyTarget:Double?=null,val energyDirection:String="stable",val artistPenalty:Double=.12,val recentWindow:Double=1800.0,val skipWindow:Double=86400.0)
+data class RadioSettings(val mood:String="neutral",val audioBlend:Double=.65,val exploration:Double=.3,val vibeLock:String?=null,val folders:Set<String> = emptySet(),val genres:Set<String> = emptySet(),val collections:Set<String> = emptySet(),val favoritesOnly:Boolean=false,val energyTarget:Double?=null,val energyDirection:String="stable",val artistPenalty:Double=.12,val recentWindow:Double=1800.0,val skipWindow:Double=86400.0,/** Feel station scores by song id ([FeelStation]); empty for a mood station. */val feel:Map<String,Double> = emptyMap())
 data class RadioPick(val songId:String,val localId:String,val score:Double,val energy:Double,val cluster:Int?,val slot:String="fallback",val textSimilarity:Double?=null,val audioSimilarity:Double?=null,val energyMatch:Double=0.0,val moodMatch:Double=0.0,val recentPenalty:Double=0.0,val skipPenalty:Double=0.0,val artistPenalty:Double=0.0,val vectorFallback:Boolean=true,val reason:String="Local choice",val evidence:String?=null)
 data class RadioDiagnostics(val eligibleTracks:Int=0,val textVectorTracks:Int=0,val audioVectorTracks:Int=0,val tasteEvents:Int=0,val contributingTasteEvents:Int=0,val hasUsableTaste:Boolean=false,val bootstrapCandidates:Set<String> = emptySet())
 
@@ -125,12 +125,15 @@ class OfflineRecommender(tracks:List<RadioTrack>,vectors:List<RadioVector>,priva
             val rp=penalty(recent[row.songId],settings.recentWindow,.35);val sp=penalty(skipped[row.songId],settings.skipWindow,.55)
             val ap=if(currentArtist.isNotEmpty() && fold(row.artist)==currentArtist) settings.artistPenalty else 0.0
             val cp=if(row.songId==profile.current && tracks.size>1) .5 else 0.0
-            val score=.6*similarity+.2*em+.1*mm+(if(row.songId in profile.hearts || row.favorite) .1 else 0.0)-rp-sp-ap-cp
+            val feel=settings.feel[row.songId] ?: 0.0
+            val score=.6*similarity+.2*em+.1*mm+(if(row.songId in profile.hearts || row.favorite) .1 else 0.0)-rp-sp-ap-cp+feel
             // Describe the strongest contributing modality only when it supports similarity.
             // Similarity is model evidence, never a calibrated confidence percentage.
             val evidence=sims.entries.filter{(space,value)->similarity>.3 && value>.3 && (text==null || audio==null || if(space=="audio")settings.audioBlend>0 else settings.audioBlend<1)}
                 .maxByOrNull{(space,value)->value*if(text!=null && audio!=null){if(space=="audio")settings.audioBlend.coerceIn(0.0,1.0) else 1-settings.audioBlend.coerceIn(0.0,1.0)}else 1.0}
             val reason=when {
+                FeelStation.tier(feel)==FeelStation.Tier.Member->FEEL_MEMBER
+                FeelStation.tier(feel)==FeelStation.Tier.Neighbour->FEEL_NEIGHBOUR
                 evidence!=null->bases[row.songId]?.get(evidence.key) ?: "Local choice"
                 row.songId in profile.hearts || row.favorite->"Liked song"
                 sims.isEmpty()->"Local choice"
@@ -178,7 +181,8 @@ class OfflineRecommender(tracks:List<RadioTrack>,vectors:List<RadioVector>,priva
         recentEvents.forEach{if(it.songId !in cooldown) cooldown.add(it.songId)}
 
         val exploration=settings.exploration.coerceIn(0.0,1.0)
-        val greedy=exploration==0.0
+        // A feel station orders by the feel, so it never uses the pure-similarity (zero exploration) path.
+        val greedy=exploration==0.0 && settings.feel.isEmpty()
         val schedule=if(greedy) listOf("exploit") else if(settings.vibeLock!=null) listOf("exploit","exploit","exploit","exploit","explore") else {
             val exploreCount=1+if(exploration>.6)1 else 0
             val wildcard=if(exploration>.4)1 else 0
@@ -291,6 +295,8 @@ class OfflineRecommender(tracks:List<RadioTrack>,vectors:List<RadioVector>,priva
         return result
     }
     companion object {
+        const val FEEL_MEMBER="In your feel"
+        const val FEEL_NEIGHBOUR="Close to your feel"
         private const val ZERO_TASTE_TIE=0.0001
         private const val ZERO_SEED_WINDOW=0.04
         val MOODS=linkedMapOf("chill" to (.25 to .55),"neutral" to (.5 to .5),"energetic" to (.8 to .65),"focus" to (.4 to .5),"melancholy" to (.3 to .25),"discovery" to (.55 to .55))

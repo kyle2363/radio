@@ -137,6 +137,28 @@ roll back together, including history, counters, mutable projections and receipt
 Imports are limited to 500 events, 4 KiB per event, and 2 MiB per HTTP body. Server
 history and imported history are tracked separately to prevent echo duplicates.
 
+### Feels (checkpoint 9A, `feel_schema: 1`)
+
+Three additional kinds carry personal feels. Every one names a `feel_id`
+(canonical lowercase UUID). Energy is the built-in scale feel
+`00000000-0000-4000-8000-0000000000e1`; it cannot be archived or made a tag.
+
+| Kind | Fields | Semantics |
+|---|---|---|
+| `feel_defined` | `value: {"name" 1–40 chars, "color" "#RRGGBB", "scale" bool, "archived" bool}`; no song fields | Last-writer-wins register; appears in `profile()["feels"]` |
+| `feel_rated` | one song (`song_id`+`catalog_id` or `local_id`), `value` in [0,1], optional `weight` in (0,1000] | Append-only; every rating counts with recency weighting |
+| `feel_compared` | winner as `song_id`/`local_id`, loser as `other_song_id`/`other_local_id`, `value` `"win"` or `"tie"` | Append-only; a song is never compared with itself |
+
+Scoring is defined by `backend/portable/feel.py` (mirrored by Android
+`FeelRules.kt`, parity pinned by `backend/tests/fixtures/feel_golden.json`).
+Clients that compute a new Energy score still emit the ordinary
+`energy_changed` event, so older recommenders keep working. When the feel schema
+is installed (after a verified backup), each desktop song with a running-mean
+`user_energy` becomes one server `feel_rated` Energy event, `event_id`
+`legacy-energy:<song id>`, weighted by `user_energy_count` and dated
+`user_energy_updated_at`. Desktop calibration ratings made after that are not
+yet emitted as feel events (checkpoint 9D).
+
 ## Ordering, retries and conflicts
 
 Persist a device Lamport clock. After reading a page, advance it to at least the

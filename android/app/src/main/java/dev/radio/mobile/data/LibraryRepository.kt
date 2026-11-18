@@ -32,7 +32,10 @@ class LibraryRepository(context: Context, internal val db: LibraryDatabase, conn
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     internal val playbackSnapshots = PlaybackSnapshotStore(db.library(), scope)
     val playlists = PlaylistRepository(db, scope)
-    val journal = ListeningJournalRepository(context, db, scope)
+    /** Untracked listening session (plays and skips not journaled). */
+    val untracked = UntrackedListening(context.applicationContext.getSharedPreferences("radio_untracked", Context.MODE_PRIVATE))
+    val journal = ListeningJournalRepository(context, db, scope, untracked = untracked::active)
+    val feels = FeelRepository(db, scope, identityOf = { journal.identity(it) }, emitEnergy = { song, value -> journal.setEnergy(song, value) })
     private val mutex = Mutex()
     private val mutable = MutableStateFlow(LibraryState())
     val state: StateFlow<LibraryState> = mutable.asStateFlow()
@@ -119,7 +122,7 @@ class LibraryRepository(context: Context, internal val db: LibraryDatabase, conn
     companion object {
         @Volatile private var instance: LibraryRepository? = null
         fun get(context: Context): LibraryRepository = instance ?: synchronized(this) {
-            instance ?: LibraryRepository(context, Room.databaseBuilder(context.applicationContext, LibraryDatabase::class.java, "local-library.db").addMigrations(LIBRARY_MIGRATION_1_2, LIBRARY_MIGRATION_2_3, LIBRARY_MIGRATION_3_4, LIBRARY_MIGRATION_4_5, LIBRARY_MIGRATION_5_6, LIBRARY_MIGRATION_6_7, LIBRARY_MIGRATION_7_8, LIBRARY_MIGRATION_8_9, LIBRARY_MIGRATION_9_10, LIBRARY_MIGRATION_10_11, LIBRARY_MIGRATION_11_12).build()).also { instance = it }
+            instance ?: LibraryRepository(context, Room.databaseBuilder(context.applicationContext, LibraryDatabase::class.java, "local-library.db").addMigrations(LIBRARY_MIGRATION_1_2, LIBRARY_MIGRATION_2_3, LIBRARY_MIGRATION_3_4, LIBRARY_MIGRATION_4_5, LIBRARY_MIGRATION_5_6, LIBRARY_MIGRATION_6_7, LIBRARY_MIGRATION_7_8, LIBRARY_MIGRATION_8_9, LIBRARY_MIGRATION_9_10, LIBRARY_MIGRATION_10_11, LIBRARY_MIGRATION_11_12, LIBRARY_MIGRATION_12_13).build()).also { instance = it }
         }
     }
 }

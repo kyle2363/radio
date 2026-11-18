@@ -149,7 +149,7 @@ fun BlockedStationCard(block: StationBlock, scanned: Int, total: Int, onChooseFo
 
 @Composable
 fun OnAirStationCard(audio: PlaybackState, radio: RadioState, onOpenPlayer: () -> Unit, onVibe: () -> Unit, onNewMix: () -> Unit, onEnd: () -> Unit, modifier: Modifier = Modifier,
-    positionMs: () -> Long = { audio.positionMs }) {
+    positionMs: () -> Long = { audio.positionMs }, feel: dev.radio.mobile.data.LocalFeel? = null) {
     val colors = LocalStationColors.current
     val muted = Color(colors.muted)
     val song = audio.current
@@ -158,8 +158,9 @@ fun OnAirStationCard(audio: PlaybackState, radio: RadioState, onOpenPlayer: () -
         Row(verticalAlignment = Alignment.CenterVertically) {
             OnAirPill("On air")
             Spacer(Modifier.weight(1f))
-            Box(Modifier.padding(end = 6.dp).size(8.dp).background(Color(MoodColors.of(radio.mood).accent), CircleShape))
-            Text("${moodLabel(radio.mood)} · ${ExplorationPreset.nearest(radio.exploration).label}", color = muted, fontSize = 12.sp, modifier = Modifier.testTag("station-tuning-label"))
+            // A feel station names the feel (checkpoint 9C); otherwise the mood.
+            Box(Modifier.padding(end = 6.dp).size(8.dp).background(feel?.let { feelColor(it.color) } ?: Color(MoodColors.of(radio.mood).accent), CircleShape))
+            Text("${feel?.name ?: moodLabel(radio.mood)} · ${ExplorationPreset.nearest(radio.exploration).label}", color = muted, fontSize = 12.sp, modifier = Modifier.testTag("station-tuning-label"))
         }
         if (song != null) Row(Modifier.fillMaxWidth().clickable(role = Role.Button, onClickLabel = "Open player", onClick = onOpenPlayer).testTag("station-now-playing"),
             verticalAlignment = Alignment.CenterVertically) {
@@ -210,6 +211,24 @@ fun MoodChips(selected: String, onSelect: (String) -> Unit, enabled: Boolean = t
                 shape = CircleShape,
                 colors = FilterChipDefaults.filterChipColors(selectedContainerColor = Color(colors.accent), selectedLabelColor = Color(colors.onAccent)),
                 modifier = Modifier.testTag("radio-mood-$mood"))
+        }
+    }
+}
+
+/** "Your feels" (checkpoint 9C): one chip per active tag feel. Tapping the selected feel returns to the mood station. */
+@Composable
+fun FeelChips(feels: List<dev.radio.mobile.data.LocalFeel>, selected: String?, onSelect: (String?) -> Unit, enabled: Boolean = true) {
+    FlowRow(Modifier.testTag("radio-feels"), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(0.dp)) {
+        feels.forEach { feel ->
+            val chosen = selected == feel.feelId
+            val accent = runCatching { Color(android.graphics.Color.parseColor(feel.color)) }.getOrDefault(MaterialTheme.colorScheme.primary)
+            FilterChip(chosen, onClick = { onSelect(if (chosen) null else feel.feelId) }, enabled = enabled,
+                label = { Text(feel.name, fontWeight = if (chosen) FontWeight.Bold else FontWeight.Medium) },
+                leadingIcon = { Box(Modifier.size(10.dp).background(if (chosen) Color.Black.copy(alpha = .7f) else accent, CircleShape)) },
+                shape = CircleShape,
+                // Feel colours are light tints, so the selected chip uses dark text.
+                colors = FilterChipDefaults.filterChipColors(selectedContainerColor = accent, selectedLabelColor = Color.Black),
+                modifier = Modifier.testTag("radio-feel-${feel.feelId}"))
         }
     }
 }
@@ -457,6 +476,7 @@ internal fun originExplanation(origin: StationOrigin?) = when (origin) {
     StationOrigin.Wildcard -> "A wildcard: less similar on purpose, to keep things fresh."
     StationOrigin.Context -> "Fits right now, close in energy to the last song."
     StationOrigin.Vibe -> "Matches the locked vibe."
+    StationOrigin.Feel -> "In your feel, or close to songs that are."
     StationOrigin.Desktop -> "Picked by your desktop."
     StationOrigin.User -> "You added this song."
     null -> "Radio picked this song on this phone."
@@ -531,6 +551,8 @@ fun RadioNowPlaying(
     journalError: String?, onRetryJournal: () -> Unit, modifier: Modifier = Modifier, onLyrics: (() -> Unit)? = null,
     /** The live sleep countdown, read only by its chip. */
     sleep: () -> dev.radio.mobile.playback.SleepTimerState = { audio.sleepTimer },
+    /** Checkpoint 9B: the feel chip that opens the tag sheet. */
+    feelChip: (@Composable () -> Unit)? = null,
 ) {
     val locked = radio.vibeLocalId != null
     val colors = LocalStationColors.current
@@ -583,6 +605,7 @@ fun RadioNowPlaying(
         AnimatedVisibility(!minimal, enter = expandVertically(Motion.standard()) + fadeIn(Motion.standard()), exit = shrinkVertically(Motion.quick()) + fadeOut(Motion.quick())) {
           Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
             FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally)) {
+                feelChip?.invoke()
                 if (audio.sleepTimer.active) AssistChip(onSleep, { Text("Sleep · ${sleepLabel(sleep())}") }, Modifier.testTag("sleep-countdown"), leadingIcon = { RadioIcon(Symbol.Clock, modifier = Modifier.size(16.dp)) })
                 if (locked) SuggestionChip({}, { Text("Vibe · ${radio.vibeSongsLeft} songs · ${vibeMinutes(radio)} min") }, enabled = false, modifier = Modifier.testTag("vibe-chip"))
                 else if (!radio.vibeAvailable) Text(if (radio.legacyVectorTracks > 0 && !radio.legacyVectorsEnabled) "Vibe lock needs desktop similarity. Turn it on in Settings → Radio." else radio.vibeReason ?: "Vibe lock needs a matched song with recommendation data.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)

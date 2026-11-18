@@ -43,7 +43,12 @@ class RadioPlaybackService : MediaSessionService() {
 
     // In-process binding avoids serializing the entire local catalog over controller IPC.
     // The service is non-exported; Android's media session supplies system/earbud controls.
-    inner class LocalBinder : Binder() { val controller: PlaybackController get() = clientController }
+    inner class LocalBinder : Binder() {
+        val controller: PlaybackController get() = clientController
+        val preview: PreviewController get() = previewController
+    }
+    // Feel-sprint clips: a separate bare player with no journal, snapshot or Radio listeners (never plays).
+    private lateinit var previewController: ServicePreviewController
     private val binder = LocalBinder()
 
     override fun onCreate() {
@@ -178,6 +183,9 @@ class RadioPlaybackService : MediaSessionService() {
         // system controls never show a stale icon after a restart.
         engine.setRepeat(prefs.repeat)
         clientController = InitializingPlaybackController(engine)
+        previewController = ServicePreviewController(this, mainPlaying = { engine.state.value.playWhenReady },
+            pauseMain = { clientController.pause() },
+            resumeMain = { if (!clientController.state.value.playWhenReady) clientController.toggle() })
         // Speed, skip silence, crossfade and the equaliser, edited on the Settings screens.
         val audioSettings = AudioSettingsStore.get(this)
         audioSettings.publishEqualizer(engine.describeEffects())
@@ -252,6 +260,13 @@ class RadioPlaybackService : MediaSessionService() {
         scope.launch {
             clientController.state.map { it.repeat }.distinctUntilChanged().collect { prefs.repeat = it }
         }
+        // Untracked listening stays alive while music plays and ends itself after idling or its time limit.
+        scope.launch {
+            clientController.state.map { it.playWhenReady && !it.ended }.distinctUntilChanged().collect { library.untracked.touch(it) }
+        }
+        scope.launch {
+            while (true) { kotlinx.coroutines.delay(60_000); library.untracked.touch(clientController.state.value.let { it.playWhenReady && !it.ended }) }
+        }
         // The home-screen widget follows the song and play state; it starts after restoration so it never flashes empty.
         scope.launch {
             clientController.state.map { state ->
@@ -320,6 +335,7 @@ class RadioPlaybackService : MediaSessionService() {
     // and handles the media notification/foreground lifetime without a second notification.
     override fun onDestroy() {
         scope.cancel()
+        previewController.close()
         if (initialized) PlayerWidget.update(this, widget.copy(playing = false))
         session?.release()
         session = null

@@ -45,6 +45,7 @@ class PortableSyncRepository internal constructor(
     private val now: () -> Long = System::currentTimeMillis,
     /** Projects merged shared playlists onto synced local playlists inside the sync transaction. */
     private val applyPlaylists: suspend (serverId: String) -> Unit = {},
+    private val applyFeels: suspend (serverId: String) -> Unit = {},
 ) {
     private val mutex = Mutex()
     private val mutable = MutableStateFlow(PortableSyncState())
@@ -203,17 +204,18 @@ class PortableSyncRepository internal constructor(
 
     private data class DecodedEvent(val device:String,val id:String,val clock:Long,val occurred:Double,val kind:String,val localId:String?)
     private fun validateEvent(event:CatalogJson.Obj):DecodedEvent {
-        val allowed=setOf("protocol_version","event_id","device_id","logical_clock","kind","song_id","attempt_id","occurred_at","value","key","local_id","reason","completion","catalog_id","playlist_id","position")
+        val allowed=setOf("protocol_version","event_id","device_id","logical_clock","kind","song_id","attempt_id","occurred_at","value","key","local_id","reason","completion","catalog_id","playlist_id","position") + FeelEventRules.FIELDS
         if(event.fields.keys.any { it !in allowed } || event.requiredLong("protocol_version")!=1L) throw SyncProtocolFailure("Downloaded event has unsupported protocol fields.")
         val device=event.requiredString("device_id",128);val id=event.requiredString("event_id",128)
         val clock=event.requiredLong("logical_clock");val occurred=event.requiredNumber("occurred_at");val kind=event.requiredString("kind",64)
         if(clock !in 0..MAX_SAFE_INTEGER || !occurred.isFinite() || occurred !in 0.0..253402300799.0 || kind !in EVENT_KINDS) throw SyncProtocolFailure("Downloaded event has invalid clock, time, or kind.")
         val playlist=kind in PlaylistSyncRules.KINDS
         if(playlist) validatePlaylistEvent(event,kind) else if("playlist_id" in event.fields || "position" in event.fields) throw SyncProtocolFailure("Downloaded event has playlist fields on a non-playlist event.")
-        val songField=event.fields["song_id"] ?: if(playlist) CatalogJson.Null else throw SyncProtocolFailure("Downloaded event is missing song_id.")
+        FeelEventRules.problem(event)?.let { throw SyncProtocolFailure(it) }
+        val songField=event.fields["song_id"] ?: if(playlist || kind=="feel_defined") CatalogJson.Null else throw SyncProtocolFailure("Downloaded event is missing song_id.")
         val songId=when(songField){CatalogJson.Null->null;is CatalogJson.Str->songField.value.takeIf { it.matches(Regex("[0-9]+")) } ?: throw SyncProtocolFailure("Downloaded event has an invalid song id.");else->throw SyncProtocolFailure("Downloaded event has an invalid song id.")}
         val localId=event.fields["local_id"]?.let { (it as? CatalogJson.Str)?.value?.takeIf(String::isNotBlank) ?: throw SyncProtocolFailure("Downloaded local ID is invalid.") }
-        if(songId!=null){event.requiredString("catalog_id",128)} else if(kind!="preference_changed" && kind!="playlist_renamed" && kind!="playlist_deleted" && localId.isNullOrBlank()) throw SyncProtocolFailure("Downloaded local-only event is missing its origin ID.")
+        if(songId!=null){event.requiredString("catalog_id",128)} else if(kind!="preference_changed" && kind!="playlist_renamed" && kind!="playlist_deleted" && kind!="feel_defined" && localId.isNullOrBlank()) throw SyncProtocolFailure("Downloaded local-only event is missing its origin ID.")
         if(kind.startsWith("song_")) event.requiredString("attempt_id",128)
         if(kind in setOf("favorite_changed","dislike_changed","blacklist_changed")) if(event.required("value") !is CatalogJson.Bool) throw SyncProtocolFailure("Downloaded event requires a boolean value.")
         if(kind=="energy_changed") { val value=event.required("value");if(value!=CatalogJson.Null && ((value as? CatalogJson.Num)?.token?.toDoubleOrNull()?.let { it.isFinite() && it in 0.0..1.0 }!=true)) throw SyncProtocolFailure("Downloaded energy value is invalid.") }
@@ -310,6 +312,7 @@ class PortableSyncRepository internal constructor(
         }
         projectSharedFeedback(serverId, dao)
         applyPlaylists(serverId)
+        applyFeels(serverId)
     }
 
     private suspend fun projectSharedFeedback(serverId:String, dao:ListeningJournalDao) {
@@ -394,7 +397,7 @@ class PortableSyncRepository internal constructor(
 
     companion object {
         private const val MAX_SAFE_INTEGER = 9007199254740991L
-        private val EVENT_KINDS = setOf("song_started", "song_completed", "song_skipped", "song_replayed", "favorite_changed", "dislike_changed", "blacklist_changed", "energy_changed", "preference_changed") + PlaylistSyncRules.KINDS
+        private val EVENT_KINDS = setOf("song_started", "song_completed", "song_skipped", "song_replayed", "favorite_changed", "dislike_changed", "blacklist_changed", "energy_changed", "preference_changed") + PlaylistSyncRules.KINDS + FeelEventRules.KINDS
         private val SKIP_REASONS = setOf("too_intense","too_slow","too_samey","wrong_mood","just_skip")
         private val MUTABLE_KINDS = setOf("favorite_changed", "dislike_changed", "blacklist_changed", "energy_changed", "preference_changed")
         private const val MAX_PAGES=1000
@@ -404,8 +407,73 @@ class PortableSyncRepository internal constructor(
             instance?.takeIf { it.pairing === pairing } ?: run {
                 instance?.close()
                 val library = LibraryRepository.get(context)
-                PortableSyncRepository(context, pairing, library.db, applyPlaylists = { library.playlists.applyShared(it) }).also { instance = it }
+                PortableSyncRepository(context, pairing, library.db, applyPlaylists = { library.playlists.applyShared(it) },
+                    applyFeels = { server -> library.feels.applyRemote(library.db.journal().remoteEvents(server).filter { it.kind.startsWith("feel_") }) }).also { instance = it }
             }
         }
+    }
+}
+
+/** Download validation for feel events; mirrors backend/portable_sync.py `_validate_feel`. Returns a problem or null. */
+internal object FeelEventRules {
+    val KINDS = setOf("feel_defined", "feel_rated", "feel_compared")
+    val FIELDS = setOf("feel_id", "other_song_id", "other_local_id", "weight")
+    const val ENERGY_FEEL_ID = "00000000-0000-4000-8000-0000000000e1"
+    private const val MAX_WEIGHT = 1000.0
+    private val UUID = Regex("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+    private val COLOR = Regex("#[0-9A-Fa-f]{6}")
+    private val SONG_ID = Regex("[0-9]+")
+
+    private fun CatalogJson?.number(): Double? = ((this as? CatalogJson.Num)?.token?.toDoubleOrNull())?.takeIf(Double::isFinite)
+    private fun CatalogJson?.text(): String? = (this as? CatalogJson.Str)?.value?.takeIf { it.isNotBlank() && it.length <= 128 && it.none { c -> c.code < 32 } }
+
+    fun validDefinition(feelId: String, value: CatalogJson?): Boolean {
+        val fields = (value as? CatalogJson.Obj)?.fields ?: return false
+        if (fields.keys != setOf("name", "color", "scale", "archived")) return false
+        val name = (fields["name"] as? CatalogJson.Str)?.value ?: return false
+        if (name.length !in 1..40 || name.trim() != name || name.any { it.code < 32 }) return false
+        if ((fields["color"] as? CatalogJson.Str)?.value?.matches(COLOR) != true) return false
+        val scale = (fields["scale"] as? CatalogJson.Bool)?.value ?: return false
+        val archived = (fields["archived"] as? CatalogJson.Bool)?.value ?: return false
+        return feelId != ENERGY_FEEL_ID || (scale && !archived)
+    }
+
+    fun problem(event: CatalogJson.Obj): String? {
+        val kind = (event.fields["kind"] as? CatalogJson.Str)?.value
+        val f = event.fields
+        if (kind !in KINDS) return if (FIELDS.any { it in f }) "Downloaded event has feel fields on a non-feel event." else null
+        val feelId = (f["feel_id"] as? CatalogJson.Str)?.value?.takeIf { it.matches(UUID) } ?: return "Downloaded feel id is invalid."
+        val value = f["value"]
+        val hasOther = "other_song_id" in f || "other_local_id" in f
+        when (kind) {
+            "feel_defined" -> {
+                if (!validDefinition(feelId, value)) return "Downloaded feel definition is invalid."
+                if ((f["song_id"] ?: CatalogJson.Null) != CatalogJson.Null || "local_id" in f || hasOther || "weight" in f)
+                    return "Downloaded feel definition has misplaced song fields."
+            }
+            "feel_rated" -> {
+                if (value.number()?.let { it in 0.0..1.0 } != true) return "Downloaded feel rating is invalid."
+                if (hasOther) return "Downloaded feel rating names more than one song."
+                if (song(f) == null) return "Downloaded feel rating has no song."
+                f["weight"]?.let { w -> if (w.number()?.let { it > 0.0 && it <= MAX_WEIGHT } != true) return "Downloaded feel rating weight is invalid." }
+            }
+            else -> {
+                if ((value as? CatalogJson.Str)?.value !in setOf("win", "tie") || "weight" in f) return "Downloaded feel comparison value is invalid."
+                val first = song(f) ?: return "Downloaded feel comparison has no winner."
+                val otherSong = f["other_song_id"]
+                val second = when {
+                    otherSong == null || otherSong == CatalogJson.Null -> f["other_local_id"].text()?.let { "local:$it" }
+                    "other_local_id" in f -> return "Downloaded feel comparison names more than one other song."
+                    else -> (otherSong as? CatalogJson.Str)?.value?.takeIf { it.matches(SONG_ID) && f["catalog_id"].text() != null }
+                } ?: return "Downloaded feel comparison loser is invalid."
+                if (first == second) return "Downloaded feel comparison names the same song twice."
+            }
+        }
+        return null
+    }
+
+    private fun song(f: Map<String, CatalogJson>): String? = when (val id = f["song_id"]) {
+        null, CatalogJson.Null -> f["local_id"].text()?.let { "local:$it" }
+        else -> (id as? CatalogJson.Str)?.value?.takeIf { it.matches(SONG_ID) && f["catalog_id"].text() != null }
     }
 }

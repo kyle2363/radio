@@ -67,7 +67,7 @@ def create_portable_router(store_factory, catalog_service):
     @router.get("/capabilities")
     def capabilities():
         return {"protocol_version": 1, "catalog_schema": 1, "matching_schema": 1,
-                "profile_schema": 1, "playlist_schema": 1, "media_plan_schema": 1, "automatic_sync": False,
+                "profile_schema": 1, "playlist_schema": 1, "feel_schema": 1, "media_plan_schema": 1, "automatic_sync": False,
                 "local_music_required": True, "offline_recommendations": True,
                 "native_speech_generation": False, "max_event_batch": 500,
                 "event_order": ["logical_clock", "device_id", "event_id"]}

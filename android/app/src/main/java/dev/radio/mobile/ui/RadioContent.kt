@@ -34,6 +34,7 @@ import dev.radio.mobile.recommendation.*
 @Composable
 fun RadioContent(radio:RadioState,repository:RadioRepository,audio:PlaybackState,playback:PlaybackController,library:LibraryState,onLibrary:()->Unit,onPlayer:()->Unit,modifier:Modifier=Modifier,connected:ConnectedUi=ConnectedUi(),
     paired:Boolean=false,onChooseFolder:()->Unit={},onRescan:()->Unit={},onFullQueue:()->Unit={},onEnd:()->Unit={},openTune:Boolean=false,onTuneOpened:()->Unit={},onServer:()->Unit={},positionMs:()->Long={audio.positionMs}) {
+    val feels by repository.feelChoices.collectAsState()
     var tuning by remember { mutableStateOf(false) }
     var confirm by remember { mutableStateOf(false) }
     var seedPicker by remember { mutableStateOf(false) }
@@ -57,7 +58,7 @@ fun RadioContent(radio:RadioState,repository:RadioRepository,audio:PlaybackState
             AnimatedContent(card,transitionSpec={(fadeIn(Motion.standard()) togetherWith fadeOut(Motion.quick())).using(SizeTransform(clip=false))},label="station-card"){shown->
             when(shown) {
                 "on" -> OnAirStationCard(audio,radio,onOpenPlayer=onPlayer,onVibe={if(radio.vibeLocalId!=null)repository.clearVibe() else repository.lockVibe()},
-                    onNewMix={playback.newMix()},onEnd=onEnd,positionMs=positionMs)
+                    onNewMix={playback.newMix()},onEnd=onEnd,positionMs=positionMs,feel=feels.firstOrNull{it.feelId==radio.feel})
                 "blocked" -> if(block!=null) BlockedStationCard(block,library.scannedCount,library.songs.size,onChooseFolder,onLibrary,onRescan)
                 else -> OffAirStationCard(canStart && !audio.radioStarting,onPickForMe={if(audio.queue.isNotEmpty())confirm=true else start(null)},onFromSong={seedPicker=true})
             }
@@ -89,6 +90,13 @@ fun RadioContent(radio:RadioState,repository:RadioRepository,audio:PlaybackState
                 Column(verticalArrangement=Arrangement.spacedBy(8.dp)) {
                     Text("Mood",Modifier.padding(horizontal=4.dp).semantics{heading()},style=MaterialTheme.typography.titleSmall)
                     MoodChips(radio.mood,repository::setMood,enabled=!library.accessLost)
+                }
+            }
+            if(feels.isNotEmpty()) item(key="feels") {
+                Column(verticalArrangement=Arrangement.spacedBy(8.dp)) {
+                    Text("Your feels",Modifier.padding(horizontal=4.dp).semantics{heading()},style=MaterialTheme.typography.titleSmall)
+                    FeelChips(feels,radio.feel,repository::setFeel,enabled=!library.accessLost)
+                    if(radio.feel!=null) Text("Plays your songs in this feel first, then close matches, then the mood.",Modifier.padding(horizontal=4.dp),style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
             item(key="wander") {
@@ -152,6 +160,10 @@ fun RadioContent(radio:RadioState,repository:RadioRepository,audio:PlaybackState
             }
             Text("MOOD",Modifier.padding(top=20.dp,bottom=8.dp),style=MaterialTheme.typography.labelMedium,color=MaterialTheme.colorScheme.onSurfaceVariant)
             MoodChips(radio.mood,repository::setMood)
+            if(feels.isNotEmpty()) {
+                Text("YOUR FEELS",Modifier.padding(top=16.dp,bottom=8.dp),style=MaterialTheme.typography.labelMedium,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                FeelChips(feels,radio.feel,repository::setFeel)
+            }
             var exploration by remember(radio.exploration){mutableFloatStateOf(radio.exploration.toFloat())}
             Row(Modifier.fillMaxWidth().padding(top=16.dp),verticalAlignment=Alignment.CenterVertically) {
                 Text("EXPLORATION",Modifier.weight(1f),style=MaterialTheme.typography.labelMedium,color=MaterialTheme.colorScheme.onSurfaceVariant)

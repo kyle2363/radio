@@ -20,11 +20,13 @@ import kotlinx.coroutines.sync.withLock
 import org.json.JSONObject
 
 data class RadioSuggestion(val song:LocalSong,val pick:RadioPick)
-data class RadioInputToken(val library:LibraryState,val mappings:JournalIdentityProvider.MappingSnapshot,val feedback:ListeningJournalState,val mood:String,val exploration:Double,val vibe:String?,val current:String?,val queueRevision:Long,val playOrder:List<String>,val policyRevision:Long,val bootstrap:Set<String>,val legacyVectorSnapshot:String?,val syncRevision:Long=0,val syncEpoch:Long=0)
+data class RadioInputToken(val library:LibraryState,val mappings:JournalIdentityProvider.MappingSnapshot,val feedback:ListeningJournalState,val mood:String,val exploration:Double,val vibe:String?,val current:String?,val queueRevision:Long,val playOrder:List<String>,val policyRevision:Long,val bootstrap:Set<String>,val legacyVectorSnapshot:String?,val syncRevision:Long=0,val syncEpoch:Long=0,val feel:String?=null)
 data class RadioBatch(val suggestions:List<RadioSuggestion>,val token:RadioInputToken)
 data class RadioState(val loaded:Boolean=false,val busy:Boolean=false,val suggestions:List<RadioSuggestion> = emptyList(),val mood:String="neutral",val exploration:Double=.3,val matched:Int=0,val localOnly:Int=0,val status:String="Loading local Radio…",val error:String?=null,val vibeLocalId:String?=null,val vibeUntil:Long=0,val vibeSongsLeft:Int=0,val generation:Long=0,val vibeAvailable:Boolean=false,val vibeReason:String?=null,
     val diagnostics:RadioDiagnostics=RadioDiagnostics(),val bootstrapLocalIds:Set<String> = emptySet(),val bootstrapCandidates:Set<String> = emptySet(),val bootstrapDismissed:Boolean=false,
-    val suggestionAnchorTitle:String?=null,val catalogSnapshot:String?=null,val legacyVectorTracks:Int=0,val legacyVectorsEnabled:Boolean=false)
+    val suggestionAnchorTitle:String?=null,val catalogSnapshot:String?=null,val legacyVectorTracks:Int=0,val legacyVectorsEnabled:Boolean=false,
+    /** Feel station (checkpoint 9C): the selected feel id, or null for a mood station. */
+    val feel:String?=null)
 
 private const val PLAYED_WINDOW_MS = 3 * 86_400_000L
 
@@ -34,7 +36,7 @@ class RadioRepository internal constructor(context:Context,private val db:Librar
     connectedLink:(()->ConnectedServerLink)?=null) {
     private val prefs=context.getSharedPreferences("radio_recommendations",Context.MODE_PRIVATE)
     private val mutex=Mutex()
-    private val mutable=MutableStateFlow(RadioState(mood=prefs.getString("mood","neutral") ?: "neutral",exploration=prefs.getFloat("exploration",.3f).toDouble(),vibeLocalId=prefs.getString("vibe",null),vibeUntil=prefs.getLong("vibeUntil",0),vibeSongsLeft=prefs.getInt("vibeLeft",0)))
+    private val mutable=MutableStateFlow(RadioState(mood=prefs.getString("mood","neutral") ?: "neutral",exploration=prefs.getFloat("exploration",.3f).toDouble(),vibeLocalId=prefs.getString("vibe",null),vibeUntil=prefs.getLong("vibeUntil",0),vibeSongsLeft=prefs.getInt("vibeLeft",0),feel=prefs.getString("feel",null)))
     val state=mutable.asStateFlow()
     // Connected Radio (checkpoint 4). Off until the listener turns it on; never required for local play.
     private val tuningState=MutableStateFlow(ConnectedTuning.decode(prefs.getString("connected_tuning",null)))
@@ -96,7 +98,7 @@ class RadioRepository internal constructor(context:Context,private val db:Librar
         (0 until saved.length()).map{saved.getString(it)}.takeLast(50)
     }.getOrDefault(emptyList())
     fun token():RadioInputToken { val output=playback;val state=mutable.value
-        return RadioInputToken(library.value,JournalIdentityProvider.mappings.value,journal.state.value,state.mood,state.exploration,state.vibeLocalId,output.currentId,output.queueRevision,output.playOrder,policyRevision,state.bootstrapLocalIds,legacyVectorSnapshot,syncRevision,PortableSyncChanges.revision)
+        return RadioInputToken(library.value,JournalIdentityProvider.mappings.value,journal.state.value,state.mood,state.exploration,state.vibeLocalId,output.currentId,output.queueRevision,output.playOrder,policyRevision,state.bootstrapLocalIds,legacyVectorSnapshot,syncRevision,PortableSyncChanges.revision,state.feel)
     }
     fun valid(value:RadioInputToken)=!PortableSyncChanges.isApplying && token()==value && !library.value.accessLost && !library.value.scanning && journal.state.value.pendingWrites==0
     internal fun <T> accept(batch:RadioBatch, block:()->T):T? = PortableSyncChanges.accept(batch.token.syncEpoch) {
@@ -124,6 +126,13 @@ class RadioRepository internal constructor(context:Context,private val db:Librar
         scope.launch { combine(library,JournalIdentityProvider.mappings,journal.state) { local,mappings,feedback-> Triple(local,mappings,feedback) }.collect { (local,_,feedback)->
             if(!local.loading && !local.scanning && feedback.feedbackLoaded && feedback.pendingWrites==0) refresh()
         } }
+        scope.launch { db.feels().observeFeels().collect { all->
+            val active=all.filter{!it.archived && it.feelId!=FeelCatalog.ENERGY_FEEL_ID}
+            feelChoiceState.value=active
+            // An archived or removed feel ends its station; Radio returns to the mood.
+            mutable.value.feel?.let{id->if(active.none{it.feelId==id})setFeel(null)}
+        } }
+        scope.launch { db.feels().observeStates().map{rows->mutable.value.feel?.let{id->rows.filter{it.feelId==id}}}.distinctUntilChanged().collect { if(it!=null)refresh() } }
         scope.launch { while(isActive){delay(1000);if(mutable.value.vibeLocalId!=null && System.currentTimeMillis()>=mutable.value.vibeUntil) clearVibe()} }
     }
     fun updatePlayback(value:PlaybackState) {
@@ -159,7 +168,16 @@ class RadioRepository internal constructor(context:Context,private val db:Librar
         refresh()
         return true
     }
-    fun setMood(value:String) {if(value !in OfflineRecommender.MOODS)return;prefs.edit().putString("mood",value).putLong("moodAt",System.currentTimeMillis()).apply();mutable.update{it.copy(mood=value)};refresh()}
+    fun setMood(value:String) {if(value !in OfflineRecommender.MOODS)return;prefs.edit().putString("mood",value).putLong("moodAt",System.currentTimeMillis()).remove("feel").apply();mutable.update{it.copy(mood=value,feel=null)};refresh()}
+    private val feelChoiceState=MutableStateFlow<List<LocalFeel>>(emptyList())
+    /** Active tag feels for the "Your feels" row (Energy is a scale, not a station). */
+    val feelChoices:StateFlow<List<LocalFeel>> = feelChoiceState.asStateFlow()
+    /** Selects a feel station, or null to return to the mood station. The mood stays as the fallback. */
+    fun setFeel(id:String?) {
+        if(id==mutable.value.feel)return
+        prefs.edit{if(id==null)remove("feel") else putString("feel",id)}
+        mutable.update{it.copy(feel=id)};refresh()
+    }
     fun setExploration(value:Double) {if(!value.isFinite())return; synchronized(explorationLock){explorationEdited=true;val bounded=value.coerceIn(0.0,1.0);prefs.edit().putFloat("exploration",bounded.toFloat()).apply();mutable.update{it.copy(exploration=bounded)};journal.setSharedExploration(bounded)};refresh()}
     private fun saveVibe(){val value=mutable.value;prefs.edit().putString("vibe",value.vibeLocalId).putLong("vibeUntil",value.vibeUntil).putInt("vibeLeft",value.vibeSongsLeft).apply()}
     fun clearVibe(){mutable.update{it.copy(vibeLocalId=null,vibeUntil=0,vibeSongsLeft=0)};saveVibe();refresh()}
@@ -183,7 +201,7 @@ class RadioRepository internal constructor(context:Context,private val db:Librar
      * Desktop first (checkpoint 4.2): with Desktop picks on and not refused by the desktop, Radio starts with one song
      * and fills the queue from the desktop's answers; local picks only cover a failed, missing or empty answer.
      */
-    val desktopFirst:Boolean get()=connected.enabled && connected.status.value.permitted!=false
+    val desktopFirst:Boolean get()=connected.enabled && connected.status.value.permitted!=false && mutable.value.feel==null
     suspend fun startRecommendations(seedLocalId:String?):RadioBatch? {
         val batch=startBatch(seedLocalId) ?: return null
         return if(desktopFirst)batch.copy(suggestions=batch.suggestions.take(1)) else batch
@@ -245,7 +263,8 @@ class RadioRepository internal constructor(context:Context,private val db:Librar
      */
     suspend fun refill(exclude:Set<String>,room:Int,tail:String?):RadioBatch? {
         val held=connected.set.value
-        if(held==null || room<=0)return recommendations(exclude,room,tail)
+        // The desktop doesn't know phone feels yet (9D): a feel station refills from the phone only.
+        if(held==null || room<=0 || mutable.value.feel!=null)return recommendations(exclude,room,tail)
         connected.revalidate(connectedFence())
         if(connected.set.value!==held)return recommendations(exclude,room,tail)
         val chosen=ConnectedPolicy.refillPicks(held,exclude,mutable.value.vibeLocalId!=null || held.vibeLocked,room,::isDisliked,::playable)
@@ -262,6 +281,36 @@ class RadioRepository internal constructor(context:Context,private val db:Librar
         if(!valid(input) || connected.set.value!==held)return null
         return RadioBatch(first+offline.filter{row->first.none{it.song.id==row.song.id}}.take(rest),input)
     }
+    private suspend fun catalog(legacySnapshot:String?):LoadedCatalog = CatalogRepository.storageMutex.withLock {
+        // The imported catalog is immutable per manifest: parse, checksum and decode it once, not on every refresh.
+        val latest=db.catalogs().latest()
+        val legacyOn=latest!=null && legacySnapshot==latest.manifestSha256
+        catalogCache?.takeIf{it.legacyOn==legacyOn && it.record?.manifestSha256==latest?.manifestSha256 && it.record?.serverId==latest?.serverId && it.record?.importedAt==latest?.importedAt && it.filesUnchanged()} ?: loadCatalog(latest,legacyOn).also{catalogCache=it}
+    }
+    /** Local id to catalog song id, for songs matched to exactly this catalog revision. */
+    private fun accepted(available:List<LocalSong>,mapping:JournalIdentityProvider.MappingSnapshot,loaded:LoadedCatalog):Map<String,String> { val record=loaded.record;val catalog=loaded.catalog
+        return available.mapNotNull { song->mapping.entries[song.id]?.takeIf { it.song==song && it.serverId==record?.serverId && it.catalogId==record?.catalogId && it.revision==record?.revision && it.provenance.contains(record!!.manifestSha256) && catalog?.songs?.containsKey(it.songId)==true }?.let{song.id to it.songId} }.toMap()
+    }
+    private val feelFeaturesFlow=MutableStateFlow(FeelFeatures())
+    @Volatile private var feelFeaturesKey:Any?=null
+    @Synchronized private fun publishFeelFeatures(loaded:LoadedCatalog,accepted:Map<String,String>,generation:Long) {
+        val key=Triple(loaded,generation,accepted)
+        if(key==feelFeaturesKey)return
+        feelFeaturesFlow.value=FeelFeatures.build(accepted,loaded.vectors){loaded.metadata(it)}
+        feelFeaturesKey=key
+        FeelFeatures.latest.value=feelFeaturesFlow.value
+    }
+    /**
+     * Catalog features for feels (checkpoint 9C), keyed by local song id for matched songs only; cached per catalog
+     * revision and matching generation. Empty without an imported, matched catalog.
+     */
+    suspend fun feelFeatures():FeelFeatures {
+        val loaded=catalog(legacyVectorSnapshot)
+        val available=library.value.songs.filter{it.available && it.uri.startsWith("content:")}
+        val mapping=JournalIdentityProvider.mappings.value
+        publishFeelFeatures(loaded,accepted(available,mapping,loaded),mapping.generation)
+        return feelFeaturesFlow.value
+    }
     fun refresh() { connected.revalidate(connectedFence());refreshJob?.cancel();refreshJob=scope.launch {delay(75);compute()} }
     suspend fun recommendations(exclude:Set<String> = emptySet(),count:Int=5,anchorLocalId:String?=playback.currentId):RadioBatch? { val input=token();val rows=compute(exclude,count,anchorLocalId,publishPreview=false) ?: return null;return if(valid(input))RadioBatch(rows,input) else null }
     private suspend fun compute(exclude:Set<String> = emptySet(),count:Int=5,anchorLocalId:String?=if(playback.radioActive)playback.playOrder.lastOrNull() ?: playback.currentId else playback.currentId,publishPreview:Boolean=true):List<RadioSuggestion>? = mutex.withLock {
@@ -273,14 +322,10 @@ class RadioRepository internal constructor(context:Context,private val db:Librar
         mutable.update{it.copy(busy=true,error=null)}
         try {
             val available=local.songs.filter{it.available && it.uri.startsWith("content:")}
-            // The imported catalog is immutable per manifest: parse, checksum and decode it once, not on every refresh.
-            val loaded=CatalogRepository.storageMutex.withLock {
-                val latest=db.catalogs().latest()
-                val legacyOn=latest!=null && inputs.legacyVectorSnapshot==latest.manifestSha256
-                catalogCache?.takeIf{it.legacyOn==legacyOn && it.record?.manifestSha256==latest?.manifestSha256 && it.record?.serverId==latest?.serverId && it.record?.importedAt==latest?.importedAt && it.filesUnchanged()} ?: loadCatalog(latest,legacyOn).also{catalogCache=it}
-            }
-            val record=loaded.record;val catalog=loaded.catalog;val vectors=loaded.vectors;val damaged=loaded.damaged;val legacySongIds=loaded.legacySongIds
-            val accepted=available.mapNotNull { song->mapping.entries[song.id]?.takeIf { it.song==song && it.serverId==record?.serverId && it.catalogId==record?.catalogId && it.revision==record?.revision && it.provenance.contains(record!!.manifestSha256) && catalog?.songs?.containsKey(it.songId)==true }?.let{song.id to it.songId} }.toMap()
+            val loaded=catalog(inputs.legacyVectorSnapshot)
+            val record=loaded.record;val vectors=loaded.vectors;val damaged=loaded.damaged;val legacySongIds=loaded.legacySongIds
+            val accepted=accepted(available,mapping,loaded)
+            publishFeelFeatures(loaded,accepted,mapping.generation)
             val tracks=available.map { song->
                 val sid=accepted[song.id] ?: "local:${song.id}";val meta=loaded.metadata(sid)
                 RadioTrack(sid,song.id,meta?.artist ?: song.artist.ifBlank{"Local MP3"},meta?.energy ?: .5,meta?.valence ?: .5,meta?.cluster,song.folderPath,meta?.genres.orEmpty(),meta?.collections.orEmpty())
@@ -321,7 +366,11 @@ class RadioRepository internal constructor(context:Context,private val db:Librar
                 bootstrap=inputs.bootstrap.mapNotNull{byLocal[it]?.songId}.toSet())
             val vibe=mutable.value.vibeLocalId?.let(accepted::get)?.takeIf{anchor->vectors.any{it.songId==anchor}}
             if(mutable.value.vibeLocalId!=null && vibe==null && (mapping.loaded || damaged || available.none{it.id==mutable.value.vibeLocalId})){mutable.update{it.copy(vibeLocalId=null,vibeUntil=0,vibeSongsLeft=0)};saveVibe()}
-            val settings=RadioSettings(mood=effectiveMood,exploration=mutable.value.exploration,vibeLock=vibe)
+            val feelScores=mutable.value.feel?.let{id->
+                val states=db.feels().states(id).filter{it.songId in byLocal}.associate{it.songId to FeelRules.FeelState(it.score,it.confidence,it.member)}
+                FeelStation.scores(states,feelFeaturesFlow.value.vectors).mapNotNull{(local,score)->byLocal[local]?.songId?.let{it to score}}.toMap()
+            }.orEmpty()
+            val settings=RadioSettings(mood=effectiveMood,exploration=mutable.value.exploration,vibeLock=vibe,feel=feelScores)
             val excluded=tracks.filter{it.localId in exclude || (publishPreview && it.localId in previewExclusions)}.map{it.songId}.toSet()
             val engine=OfflineRecommender(tracks,vectors,sessionSeed)
             val now=System.currentTimeMillis()/1000.0
@@ -349,7 +398,7 @@ class RadioRepository internal constructor(context:Context,private val db:Librar
 }
 
 /** Catalog song fields Radio reads, parsed once per catalog. */
-internal data class CatalogTrackMeta(val artist:String?,val energy:Double,val valence:Double,val cluster:Int?,val genres:Set<String>,val collections:Set<String>)
+internal data class CatalogTrackMeta(val artist:String?,val energy:Double,val valence:Double,val cluster:Int?,val genres:Set<String>,val collections:Set<String>,val tags:Set<String> = emptySet())
 
 /** One imported catalog, checked and decoded. Keyed by its revision record and whether legacy vectors are allowed. */
 internal class LoadedCatalog(val record:PortableCatalogRevision?,val legacyOn:Boolean,val catalog:ValidatedCatalog?,val vectors:List<RadioVector>,val damaged:Boolean,val legacySongIds:Set<String>,
@@ -362,7 +411,8 @@ internal class LoadedCatalog(val record:PortableCatalogRevision?,val legacyOn:Bo
             val metadata=JSONObject(raw)
             fun number(key:String)=metadata.optDouble(key,.5).takeIf{it.isFinite()} ?: .5
             fun labels(key:String):Set<String> {val a=metadata.optJSONArray(key) ?: return emptySet();return (0 until a.length()).map{a.optString(it)}.toSet()}
-            CatalogTrackMeta(metadata.optString("artist").takeIf{it.isNotBlank()},number("energy"),number("valence"),if(metadata.isNull("cluster_id"))null else metadata.optInt("cluster_id"),labels("genres")+labels("genre_tags"),labels("collections"))
+            CatalogTrackMeta(metadata.optString("artist").takeIf{it.isNotBlank()},number("energy"),number("valence"),if(metadata.isNull("cluster_id"))null else metadata.optInt("cluster_id"),labels("genres")+labels("genre_tags"),labels("collections"),
+                (labels("emotional_tags")+labels("genre_tags")+labels("genres")).map{it.trim().lowercase(java.util.Locale.ROOT)}.filter{it.isNotEmpty()}.toSet())
         })
     }.orElse(null)
 }
