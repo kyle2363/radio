@@ -6,7 +6,8 @@ import StatsDashboard from "./StatsDashboard";
 import SessionHistory from "./SessionHistory";
 import MoodTimeline from "./MoodTimeline";
 import FiltersPanel from "./FiltersPanel";
-import CalibrationPanel from "./CalibrationPanel";
+import FeelsPanel from "./FeelsPanel";
+import SongFeels from "./SongFeels";
 import { buildMetadataPayload, metadataSaveMessage } from "./songListHelpers";
 
 const COLUMNS = [
@@ -304,7 +305,7 @@ function SongList({ addToast, currentSongId, onPlay }) {
           <Filter size={10} /> Filters
           {filtersActive && <span style={{ width: 5, height: 5, borderRadius: "50%", background: "#4ade80", display: "inline-block" }} />}
         </div>
-        <div className={`subtab ${tab === "calibration" ? "on" : ""}`} onClick={() => handleTabChange("calibration")}>Calibration</div>
+        <div className={`subtab ${tab === "calibration" ? "on" : ""}`} onClick={() => handleTabChange("calibration")}>Feels</div>
       </div>
 
       {/* Library tab */}
@@ -479,7 +480,7 @@ function SongList({ addToast, currentSongId, onPlay }) {
 
       {/* Calibration tab */}
       {tab === "calibration" && (
-        <CalibrationPanel addToast={addToast} />
+        <FeelsPanel addToast={addToast} />
       )}
 
       {/* Stats tab */}
@@ -499,12 +500,7 @@ function SongList({ addToast, currentSongId, onPlay }) {
           <div style={{ background: "var(--bg-surface)", borderRadius: "12px", padding: "24px", width: "100%", maxWidth: "420px", display: "flex", flexDirection: "column", gap: "16px" }}>
             <h3 style={{ fontSize: "16px", fontWeight: 700, color: "var(--text-primary)" }}>{editingSong.title || "Unknown Title"}</h3>
             <p style={{ fontSize: "12px", color: "var(--text-muted)" }}>{editingSong.artist || "Unknown Artist"}</p>
-            <div>
-              <label style={{ display: "block", fontSize: "11px", color: "var(--text-muted)", marginBottom: "4px" }}>User Tags (comma-separated)</label>
-              <input type="text" value={editTags} onChange={(e) => setEditTags(e.target.value)}
-                placeholder="e.g. favorite, workout, relaxing"
-                style={{ width: "100%", padding: "8px 12px", borderRadius: "8px", background: "var(--bg-elevated)", border: "1px solid var(--border)", color: "var(--text-primary)", fontSize: "12px", outline: "none" }} />
-            </div>
+            <SongFeels songId={editingSong.id} addToast={addToast} />
             <div>
               <label style={{ display: "block", fontSize: "11px", color: "var(--text-muted)", marginBottom: "4px" }}>Notes</label>
               <textarea value={editNotes} onChange={(e) => setEditNotes(e.target.value)}
@@ -663,7 +659,7 @@ const SongRow = React.memo(({ song, isPlaying, flashed, onPlay, onAddToQueue, on
                   padding: "4px", minWidth: "120px", boxShadow: "0 4px 12px rgba(0,0,0,0.3)" }}>
                 <button onClick={(e) => onEditTags(e, song)}
                   style={{ display: "flex", alignItems: "center", gap: "6px", padding: "6px 8px", borderRadius: "4px", fontSize: "11px", color: "var(--text-secondary)", cursor: "pointer", background: "none", border: "none", width: "100%", textAlign: "left" }}>
-                  <Pencil size={11} /> Edit tags
+                  <Pencil size={11} /> Feels & notes
                 </button>
                 <button onClick={(e) => onEditMetadata(e, song)}
                   style={{ display: "flex", alignItems: "center", gap: "6px", padding: "6px 8px", borderRadius: "4px", fontSize: "11px", color: "var(--text-secondary)", cursor: "pointer", background: "none", border: "none", width: "100%", textAlign: "left" }}>

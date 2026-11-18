@@ -9,7 +9,7 @@ const BUCKETS = [
   { key: "cold", label: "Cold", emoji: "❄", value: 0.125, color: "#3498db" },
 ];
 
-function CalibrationPanel({ addToast }) {
+function CalibrationPanel({ addToast, onRate }) {
   const [samples, setSamples] = useState([]);
   const [currentIdx, setCurrentIdx] = useState(0);
   const [ratings, setRatings] = useState({});
@@ -60,7 +60,7 @@ function CalibrationPanel({ addToast }) {
     if (!song || saving) return;
     setSaving(true);
     try {
-      await api.setUserEnergy(song.id, bucket.value);
+      await (onRate ? onRate(song.id, bucket.value) : api.setUserEnergy(song.id, bucket.value));
       setRatings((prev) => ({ ...prev, [song.id]: bucket.value }));
       const next = currentIdx + 1;
       if (next < total) {

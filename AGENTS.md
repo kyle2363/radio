@@ -6,7 +6,7 @@ An AI-driven radio station for a personal MP3 library. Three surfaces share this
 - **Desktop** — React/Vite UI in an Electron shell, with selectable server-side VLC or browser-owned audio.
 - **Android** — a native Kotlin/Compose app that plays the phone's local music independently of the server and is the active development focus.
 
-Android playback remains local and independent. Checkpoints 1A–1C implement USB pairing, secure credential handling, catalog import/content matching, and separate Server/Matching screens. Accepted checkpoint 2A adds the local journal, feedback and Replay. Checkpoint 2B adds offline Radio, bounded service refill, local learning and Vibe lock; accepted November 3, 2026. Checkpoints 2C manual profile sync and 3A secure remote hosting are implemented, verified and phone-accepted. Checkpoint 3B automatic discovery is phone-accepted. Checkpoints 2C–3B are merged into `main` (November 7, 2026). Checkpoint 4 connected recommendations (`docs/CONNECTED_RECOMMENDATIONS_PLAN.md`) and checkpoint 4.1 phone-only connected tuning (`docs/CONNECTED_TUNING_PLAN.md`) are merged into `main`; 4.1 was phone-accepted November 7, 2026. Checkpoint 4.2 Radio mode redesign was phone-accepted, fully verified and merged into `main` November 11, 2026 (`f676e83`; `docs/RADIO_REDESIGN_PLAN.md`). Checkpoint 5 plain lyrics is merged into `main` (November 14, 2026, `5a35dad`; `docs/ANDROID_LYRICS_PLAN.md`). Checkpoint 6 visual redesign was phone-accepted November 17, 2026 and is merged. Checkpoints 9A–9C (shared feel rules, personal feels, feel sprint, this-or-that rankings, feel stations) were phone-accepted and merged into `main` November 18, 2026; 9D–9E are next. Checkpoint 7 (playlist sync, sync on open) is planned in `docs/CHECKPOINT_7_PLAN.md`; checkpoints 8–12 (listening context and stats, personal feel, polish, daily use, performance) in `docs/CHECKPOINT_8_PLAN.md`. See `docs/ANDROID_APP_PLAN.md`, `docs/MOBILE_SYNC.md` and `docs/MOBILE_CONNECTION_PLAN.md`.
+Android playback remains local and independent. Checkpoints 1A–1C implement USB pairing, secure credential handling, catalog import/content matching, and separate Server/Matching screens. Accepted checkpoint 2A adds the local journal, feedback and Replay. Checkpoint 2B adds offline Radio, bounded service refill, local learning and Vibe lock; accepted November 3, 2026. Checkpoints 2C manual profile sync and 3A secure remote hosting are implemented, verified and phone-accepted. Checkpoint 3B automatic discovery is phone-accepted. Checkpoints 2C–3B are merged into `main` (November 7, 2026). Checkpoint 4 connected recommendations (`docs/CONNECTED_RECOMMENDATIONS_PLAN.md`) and checkpoint 4.1 phone-only connected tuning (`docs/CONNECTED_TUNING_PLAN.md`) are merged into `main`; 4.1 was phone-accepted November 7, 2026. Checkpoint 4.2 Radio mode redesign was phone-accepted, fully verified and merged into `main` November 11, 2026 (`f676e83`; `docs/RADIO_REDESIGN_PLAN.md`). Checkpoint 5 plain lyrics is merged into `main` (November 14, 2026, `5a35dad`; `docs/ANDROID_LYRICS_PLAN.md`). Checkpoint 6 visual redesign was phone-accepted November 17, 2026 and is merged. Checkpoints 9A–9C (shared feel rules, personal feels, feel sprint, this-or-that rankings, feel stations) were phone-accepted and merged into `main` November 18, 2026. 9D–9E (desktop Feels panel, feel stations, suggestions, review, feel history) are implemented on `desktop-9d-9e`. Checkpoint 7 (playlist sync, sync on open) is planned in `docs/CHECKPOINT_7_PLAN.md`; checkpoints 8–11 (listening context and stats, personal feel, polish, daily use; performance checkpoint 12 dropped) in `docs/CHECKPOINT_8_PLAN.md`. See `docs/ANDROID_APP_PLAN.md`, `docs/MOBILE_SYNC.md` and `docs/MOBILE_CONNECTION_PLAN.md`.
 
 ## Quick Start
 
@@ -377,7 +377,8 @@ Checkpoint 5 adds plain lyrics from prepared desktop catalogs and a private offl
 | 6 | Visual redesign (mood colours, shapes, tab pager) | Phone-accepted November 17, 2026; merged |
 | 7 | Playlist sync, sync on open | Planned (`docs/CHECKPOINT_7_PLAN.md`) |
 | 9A–9C | Shared feel rules, personal feels, sprint, this-or-that, feel stations | Phone-accepted and merged November 18, 2026 |
-| 8–12 | Listening context + stats, personal feel, polish, daily use, performance | Planned (`docs/CHECKPOINT_8_PLAN.md`) |
+| 9D–9E | Desktop Feels panel, feel stations, suggestions, review, feel history | Implemented on `desktop-9d-9e` |
+| 8–11 | Listening context + stats, personal feel, polish, daily use | Planned (`docs/CHECKPOINT_8_PLAN.md`) |
 
 At each checkpoint: installable build, verification summary and limitations, and a short phone test list. A successful build is not approval to start the next increment.
 
@@ -509,7 +510,7 @@ Prefer a new seed row over hardcoding a value in application code.
 | `docs/CONNECTED_TUNING_PLAN.md` | Checkpoint 4.1 phone-only tuning |
 | `docs/ANDROID_LYRICS_PLAN.md` | Checkpoint 5 plain lyrics |
 | `docs/CHECKPOINT_7_PLAN.md` | Checkpoint 7 playlist sync and sync on open |
-| `docs/CHECKPOINT_8_PLAN.md` | Checkpoints 8–12 stats, personal feel and ranking, polish, daily use, performance |
+| `docs/CHECKPOINT_8_PLAN.md` | Checkpoints 8–11 stats, personal feel and ranking, polish, daily use |
 | `docs/MUSIC_MATCHING.md` | Phone-to-catalog content matching |
 | `docs/PORTABLE_MEDIA_PLAN.md` | Portable media design |
 | `docs/README.md` | Documentation index and ownership |

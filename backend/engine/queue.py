@@ -769,6 +769,7 @@ class QueueManager:
                 constellations=self._constellations,
                 constellations_enabled=(self._db.get_setting("constellations_enabled") or "true") == "true",
                 filler_current_song_id=self._current_song_id,
+                allowed_ids=self._feel_station_allowed(),
                 llm_gate=recommendation_service.DEFAULT_LLM_GATE,
                 gate_priority=recommendation_service.LlmPriorityGate.DESKTOP,
                 step=_log_step,
@@ -872,6 +873,20 @@ class QueueManager:
                 self._broadcast("queue_rebuilding", {"rebuilding": False, "gen": broadcast_gen})
             else:
                 self._broadcast("queue_updated", {"queue": display_queue, "gen": broadcast_gen})
+
+    # Checkpoint 9D: set by main.py; returns the active feel station's song ids or None.
+    feel_station_ids = None
+
+    def _feel_station_allowed(self):
+        """Restrict retrieval to the feel station; normal Radio rules still apply inside it."""
+        if self.feel_station_ids is None:
+            return None
+        try:
+            ids = self.feel_station_ids()
+        except Exception as exc:
+            logger.warning("Feel station unavailable; using the whole library: %s", exc)
+            return None
+        return frozenset(ids) if ids else None
 
     def _single_recommendation_filters(self):
         """Parse the same filter contract for retrieval and its database fallback.
