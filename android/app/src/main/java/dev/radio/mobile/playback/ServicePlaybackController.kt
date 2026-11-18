@@ -18,6 +18,18 @@ class ServicePlaybackController(context: Context) : PlaybackController {
     private val mutable = MutableStateFlow(PlaybackState())
     override val state: StateFlow<PlaybackState> = mutable.asStateFlow()
     private var engine: PlaybackController? = null
+    private var previewEngine: PreviewController? = null
+    private var previewObserver: Job? = null
+    private val previewMutable = MutableStateFlow<PreviewState>(PreviewState.Idle)
+    /** Song clips owned by the service; commands sent before binding run once it connects. */
+    val preview: PreviewController = object : PreviewController {
+        override val previewState: StateFlow<PreviewState> = previewMutable.asStateFlow()
+        override fun enterPreview() = previewCommand { it.enterPreview() }
+        override fun playPreview(song: LocalSong, startFraction: Float) = previewCommand { it.playPreview(song, startFraction) }
+        override fun stopPreview() = previewCommand { it.stopPreview() }
+        override fun exitPreview() = previewCommand { it.exitPreview() }
+    }
+    private fun previewCommand(action: (PreviewController) -> Unit) = command { _ -> previewEngine?.let(action) }
     private var observer: Job? = null
     private val pending = mutableListOf<(PlaybackController) -> Unit>()
     private var bound = false
@@ -28,6 +40,9 @@ class ServicePlaybackController(context: Context) : PlaybackController {
             val controller = (service as? RadioPlaybackService.LocalBinder)?.controller
             if (controller == null) { disconnected(); return }
             engine = controller
+            previewEngine = (service as RadioPlaybackService.LocalBinder).preview
+            previewObserver?.cancel()
+            previewObserver = scope.launch { previewEngine?.previewState?.collect { previewMutable.value = it } }
             observer?.cancel()
             observer = scope.launch { controller.state.collect { mutable.value = it } }
             val actions = pending.toList(); pending.clear()
@@ -44,6 +59,7 @@ class ServicePlaybackController(context: Context) : PlaybackController {
     }
     private fun disconnected() {
         engine = null; observer?.cancel(); observer = null
+        previewEngine = null; previewObserver?.cancel(); previewObserver = null; previewMutable.value = PreviewState.Idle
         mutable.value = mutable.value.copy(isPlaying = false, playWhenReady = false, buffering = false,
             error = "Playback disconnected. Reopen the app to reconnect.")
     }

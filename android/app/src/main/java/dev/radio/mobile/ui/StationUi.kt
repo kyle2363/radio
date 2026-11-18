@@ -531,6 +531,8 @@ fun RadioNowPlaying(
     journalError: String?, onRetryJournal: () -> Unit, modifier: Modifier = Modifier, onLyrics: (() -> Unit)? = null,
     /** The live sleep countdown, read only by its chip. */
     sleep: () -> dev.radio.mobile.playback.SleepTimerState = { audio.sleepTimer },
+    /** Checkpoint 9B: the feel chip that opens the tag sheet. */
+    feelChip: (@Composable () -> Unit)? = null,
 ) {
     val locked = radio.vibeLocalId != null
     val colors = LocalStationColors.current
@@ -583,6 +585,7 @@ fun RadioNowPlaying(
         AnimatedVisibility(!minimal, enter = expandVertically(Motion.standard()) + fadeIn(Motion.standard()), exit = shrinkVertically(Motion.quick()) + fadeOut(Motion.quick())) {
           Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
             FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally)) {
+                feelChip?.invoke()
                 if (audio.sleepTimer.active) AssistChip(onSleep, { Text("Sleep · ${sleepLabel(sleep())}") }, Modifier.testTag("sleep-countdown"), leadingIcon = { RadioIcon(Symbol.Clock, modifier = Modifier.size(16.dp)) })
                 if (locked) SuggestionChip({}, { Text("Vibe · ${radio.vibeSongsLeft} songs · ${vibeMinutes(radio)} min") }, enabled = false, modifier = Modifier.testTag("vibe-chip"))
                 else if (!radio.vibeAvailable) Text(if (radio.legacyVectorTracks > 0 && !radio.legacyVectorsEnabled) "Vibe lock needs desktop similarity. Turn it on in Settings → Radio." else radio.vibeReason ?: "Vibe lock needs a matched song with recommendation data.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)

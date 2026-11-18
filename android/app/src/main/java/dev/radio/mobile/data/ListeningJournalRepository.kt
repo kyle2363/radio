@@ -111,6 +111,12 @@ class ListeningJournalRepository(context: Context, private val db: LibraryDataba
             if (db.journal().event(attempt, "song_replayed") == null) { beforeCommit(); append(identity, id, attempt, "song_replayed", at) }
         } }
     }
+    /** Shares a new Energy score (checkpoint 9B) as the existing `energy_changed` event; both Radios read it unchanged. */
+    fun setEnergy(song: LocalSong, value: Double) {
+        val identity = identity(song); val id = UUID.randomUUID().toString(); val at = System.currentTimeMillis()
+        val bounded = value.coerceIn(0.0, 1.0)
+        submit { db.withTransaction { beforeCommit(); append(identity, id, null, "energy_changed", at, value = bounded) } }
+    }
     fun setFavorite(song: LocalSong, value: Boolean) = setFeedback(song, true, value)
     fun setDisliked(song: LocalSong, value: Boolean) = setFeedback(song, false, value)
     /** Shares the supported default only when a paired server identity exists. This never changes this Radio instance. */
