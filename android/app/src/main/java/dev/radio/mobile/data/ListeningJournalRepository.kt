@@ -81,12 +81,16 @@ class ListeningJournalRepository(context: Context, private val db: LibraryDataba
         // Local-only installation identity is never silently relabeled to a future paired device.
         if (kind != "attempt_stopped") dao.enqueue(LocalEventOutbox(eventId, identity.serverId, identity.deviceId, payload))
     }
-    fun started(song: LocalSong, attempt: String, positionMs: Long, identity: JournalIdentity = identity(song)) {
+    fun started(song: LocalSong, attempt: String, positionMs: Long, identity: JournalIdentity = identity(song),
+        context: dev.radio.mobile.playback.PlayContext? = null) {
         val eventId = UUID.randomUUID().toString(); val at = System.currentTimeMillis()
         submit { db.withTransaction {
             if (db.journal().start(attempt) == null && db.library().playbackStart(attempt) == null) {
                 beforeCommit(); append(identity, eventId, attempt, "song_started", at)
                 db.library().savePlaybackStart(LocalPlaybackStart(attempt, song.id, at, positionMs))
+                // Same transaction as the start: a context row never exists without its start, nor the reverse.
+                if (context != null) db.journal().playContext(LocalPlayContext(attempt, song.id, context.sourceKind, context.sourceId,
+                    context.stationOrigin, context.trigger, at))
             }
         } }
     }

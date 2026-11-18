@@ -1,5 +1,7 @@
 package dev.radio.mobile.ui
 
+import dev.radio.mobile.playback.PlaySource
+
 import android.content.Context
 import android.net.Uri
 import android.provider.DocumentsContract
@@ -168,7 +170,7 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
         message(if (action == SongAction.PlayNext) "Will play next" else "Added to queue")
     }
     /** Plays now, or asks first while Radio is on air. Returns true when playback was replaced. */
-    fun playSong(item: LocalSong, context: List<LocalSong>, source: String): Boolean {
+    fun playSong(item: LocalSong, context: List<LocalSong>, source: PlaySource): Boolean {
         if (library.accessLost || !item.available) { message("This file is unavailable. Check folder access and rescan."); return false }
         if (stationMode) { pendingPlay = PendingPlay(item, context, source); return false }
         playback.playFrom(context, item.id, source)
@@ -201,13 +203,13 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
             else -> folder = library.folders.firstOrNull { it.id == folder }?.parentId?.takeUnless { it == library.root?.folderId }
         }
     }
-    fun startAll(first: LocalSong, context: List<LocalSong>, source: String, shuffle: Boolean) {
+    fun startAll(first: LocalSong, context: List<LocalSong>, source: PlaySource, shuffle: Boolean) {
         playback.playFrom(context, first.id, source)
         playback.shuffle(shuffle)
         navigate("Now playing")
     }
     /** Play all or shuffle a list from its header, asking first while Radio is on air. */
-    fun playAll(context: List<LocalSong>, source: String, shuffle: Boolean) {
+    fun playAll(context: List<LocalSong>, source: PlaySource, shuffle: Boolean) {
         val playable = context.filter { it.available }
         if (library.accessLost || playable.isEmpty()) { message("Check Music folder access before playing."); return }
         val first = if (shuffle) playable.random() else playable.first()
@@ -364,7 +366,7 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
                     OutlinedTextField(query, onValueChange = { query = it }, placeholder = { Text("Search songs and filenames") }, singleLine = true, shape = RoundedCornerShape(28.dp), leadingIcon = { RadioIcon(Symbol.Search) }, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp).testTag("search-input"))
                     val results = remember(songs, query) { songs.filter { query.isNotBlank() && (it.title.contains(query, true) || it.artist.contains(query, true) || it.fileName.contains(query, true) || it.folderPath.contains(query, true)) } }
                     LazyColumn { items(results, key = { it.id }) { item ->
-                        LibraryRow(item.title, songSubtitle(item), Symbol.Music, playing = item.id == audio.currentId, trailing = { SongActions(item, ::songAction) }) { focus.clearFocus(); keyboard?.hide(); if (playSong(item, results, "Search results")) navigate("Now playing") }
+                        LibraryRow(item.title, songSubtitle(item), Symbol.Music, playing = item.id == audio.currentId, trailing = { SongActions(item, ::songAction) }) { focus.clearFocus(); keyboard?.hide(); if (playSong(item, results, PlaySource.Search)) navigate("Now playing") }
                     } }
                     if (query.isNotBlank() && results.isEmpty()) Text("No matching songs", Modifier.padding(20.dp))
                 }
@@ -593,7 +595,7 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
             if (whySheet) WhyThisSongSheet(song, audio.origins[audio.currentId], radio) { whySheet = false }
             pendingPlay?.let { pending ->
                 val (item, context, source) = pending
-                LeaveRadioDialog(if (pending.all) source.ifBlank { "your library" } else item.title, source.ifBlank { "your library" },
+                LeaveRadioDialog(if (pending.all) source.label.ifBlank { "your library" } else item.title, source.label.ifBlank { "your library" },
                     onLeave = { pendingPlay = null; if (pending.all) startAll(item, context, source, pending.shuffle) else { playback.playFrom(context, item.id, source); navigate("Now playing") } },
                     onPlayNext = { pendingPlay = null; playback.addToQueue(if (pending.all) context.filter { it.available } else listOf(item), true); message("Will play next in Radio") },
                     onDismiss = { pendingPlay = null })
@@ -644,7 +646,7 @@ private fun withoutTicks(state: PlaybackState): PlaybackState =
     state.copy(positionMs = 0, sleepTimer = state.sleepTimer.copy(remainingMs = if (state.sleepTimer.remainingMs > 0) 1 else 0))
 
 /** A play waiting for "Leave Radio?": one song, or a whole list played in order or shuffled. */
-private data class PendingPlay(val item: LocalSong, val context: List<LocalSong>, val source: String, val all: Boolean = false, val shuffle: Boolean = false)
+private data class PendingPlay(val item: LocalSong, val context: List<LocalSong>, val source: PlaySource, val all: Boolean = false, val shuffle: Boolean = false)
 
 /** Rescan-on-open runs at most once per process. */
 private object AutoRescan {

@@ -165,5 +165,14 @@ val LIBRARY_MIGRATION_10_11 = object : Migration(10, 11) {
         db.execSQL("ALTER TABLE local_playlist_songs ADD COLUMN positionKey TEXT")
     }
 }
-@Database(entities = [LibraryRoot::class, LocalSong::class, LocalFolder::class, LocalPlaybackStart::class, LocalPlaybackSnapshot::class, LocalPlaylist::class, LocalPlaylistSong::class, LocalLoudness::class, PortableCatalogRevision::class, PortableCatalogSong::class, PortableCatalogVector::class, PortableCatalogActive::class, LocalContentHash::class, PortableMatchDecision::class, LocalListeningEvent::class, LocalEventOutbox::class, LocalJournalClock::class, LocalSongFeedback::class, PortableSyncCursor::class, PortableRemoteEvent::class, PortableProfileRegister::class, PortableSyncOwner::class, LocalLyricsCache::class], version = 11, exportSchema = true)
+/** Checkpoint 8A: local-only play context per actual start, and journal indices for stats. */
+val LIBRARY_MIGRATION_11_12 = object : Migration(11, 12) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS local_play_context (attemptId TEXT NOT NULL, localId TEXT NOT NULL, sourceKind TEXT NOT NULL, sourceId TEXT, stationOrigin TEXT, `trigger` TEXT NOT NULL, startedAt INTEGER NOT NULL, PRIMARY KEY(attemptId))")
+        db.execSQL("CREATE INDEX IF NOT EXISTS index_local_play_context_startedAt ON local_play_context (startedAt)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS index_local_listening_events_kind_occurredAt ON local_listening_events (kind, occurredAt)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS index_local_listening_events_localId_kind ON local_listening_events (localId, kind)")
+    }
+}
+@Database(entities = [LibraryRoot::class, LocalSong::class, LocalFolder::class, LocalPlaybackStart::class, LocalPlaybackSnapshot::class, LocalPlaylist::class, LocalPlaylistSong::class, LocalLoudness::class, PortableCatalogRevision::class, PortableCatalogSong::class, PortableCatalogVector::class, PortableCatalogActive::class, LocalContentHash::class, PortableMatchDecision::class, LocalListeningEvent::class, LocalEventOutbox::class, LocalJournalClock::class, LocalSongFeedback::class, PortableSyncCursor::class, PortableRemoteEvent::class, PortableProfileRegister::class, PortableSyncOwner::class, LocalLyricsCache::class, LocalPlayContext::class], version = 12, exportSchema = true)
 abstract class LibraryDatabase : RoomDatabase() { abstract fun library(): LibraryDao; abstract fun playlists(): PlaylistDao; abstract fun loudness(): LoudnessDao; abstract fun catalogs(): PortableCatalogDao; abstract fun matching(): MatchingDao; abstract fun journal(): ListeningJournalDao; abstract fun lyrics(): LyricsCacheDao }

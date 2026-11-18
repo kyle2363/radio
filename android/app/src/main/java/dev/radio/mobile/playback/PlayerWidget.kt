@@ -6,6 +6,7 @@ import android.appwidget.AppWidgetProvider
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
@@ -38,7 +39,8 @@ class PlayerWidget : AppWidgetProvider() {
         val timeout = Runnable { pending.finish() }
         main.postDelayed(timeout, 9_000)
         fun connect(attempt: Int) {
-            val future = MediaController.Builder(app, SessionToken(app, ComponentName(app, RadioPlaybackService::class.java))).buildAsync()
+            val future = MediaController.Builder(app, SessionToken(app, ComponentName(app, RadioPlaybackService::class.java)))
+                .setConnectionHints(Bundle().apply { putBoolean(HINT_WIDGET, true) }).buildAsync()
             future.addListener({
                 val controller = try { future.get() } catch (error: Exception) { null }
                 if (controller == null) {
@@ -61,6 +63,7 @@ class PlayerWidget : AppWidgetProvider() {
     companion object {
         private const val TAG = "PlayerWidget"
         private const val PREFS = "player_widget"
+        const val HINT_WIDGET = "dev.radio.mobile.widget.CONTROLLER"
         const val ACTION_TOGGLE = "dev.radio.mobile.widget.TOGGLE"
         const val ACTION_NEXT = "dev.radio.mobile.widget.NEXT"
         const val ACTION_PREVIOUS = "dev.radio.mobile.widget.PREVIOUS"

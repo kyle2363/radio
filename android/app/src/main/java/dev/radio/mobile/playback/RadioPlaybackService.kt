@@ -65,7 +65,7 @@ class RadioPlaybackService : MediaSessionService() {
             }) { song, attempt, position ->
             attemptIdentities.keys.retainAll(setOf(attempt))
             val identity = attemptIdentities.getOrPut(attempt) { library.journal.identity(song) }
-            library.journal.started(song, attempt, position, identity)
+            library.journal.started(song, attempt, position, identity, engine.startContext)
             library.radio.actualStart(attempt)
             // Prefetch one connected option set for this song. Playback never waits on it.
             library.radio.songStarted(song, engine.state.value)
@@ -224,6 +224,12 @@ class RadioPlaybackService : MediaSessionService() {
                         .setAvailableSessionCommands(MediaSession.ConnectionResult.DEFAULT_SESSION_COMMANDS
                             .buildUpon().add(shuffleCommand).add(repeatCommand).add(likeCommand).build())
                         .setAvailablePlayerCommands(commands).build()
+                }
+
+                override fun onPlayerCommandRequest(session: MediaSession, controller: MediaSession.ControllerInfo, playerCommand: Int): Int {
+                    // Tells the journal whether the next transport command came from the home-screen widget or another system control.
+                    engine.commandOrigin = if (controller.connectionHints.getBoolean(PlayerWidget.HINT_WIDGET)) PlayTrigger.WIDGET else PlayTrigger.MEDIA_BUTTON
+                    return super.onPlayerCommandRequest(session, controller, playerCommand)
                 }
 
                 override fun onCustomCommand(session: MediaSession, controller: MediaSession.ControllerInfo,

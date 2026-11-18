@@ -1,5 +1,7 @@
 package dev.radio.mobile.ui
 
+import dev.radio.mobile.playback.PlaySource
+
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
@@ -43,12 +45,12 @@ fun LibraryStatus(state: LibraryState, choose: () -> Unit, rescan: () -> Unit, c
 fun LibraryContent(
     state: LibraryState, folderId: String?, category: String, onCategory: (String) -> Unit,
     sort: LibrarySort, onSort: (LibrarySort) -> Unit, listState: LazyListState,
-    onFolder: (String) -> Unit, onSong: (LocalSong, List<LocalSong>, String) -> Unit,
+    onFolder: (String) -> Unit, onSong: (LocalSong, List<LocalSong>, PlaySource) -> Unit,
     choose: () -> Unit, rescan: () -> Unit, cancel: () -> Unit, modifier: Modifier = Modifier,
     onSongAction: (SongAction, LocalSong) -> Unit = { _, _ -> }, playlistContent: @Composable () -> Unit = {},
     /** The library already sorted by [sort], when the caller has it, so it is not sorted twice. */
     sortedSongs: List<LocalSong>? = null, currentId: String? = null,
-    onPlayAll: (List<LocalSong>, String, Boolean) -> Unit = { _, _, _ -> },
+    onPlayAll: (List<LocalSong>, PlaySource, Boolean) -> Unit = { _, _, _ -> },
     /** The artist open in the Artists tab, if any. */
     artist: String? = null, onArtist: (String) -> Unit = {}
 ) {
@@ -96,9 +98,9 @@ fun LibraryContent(
                     LibraryRow(entry.name, "$count song${if (count == 1) "" else "s"}", Symbol.Person) { onArtist(entry.name) }
                 } else if (open != null) {
                     val playable = open.songs.count { it.available }
-                    if (playable > 1) item(key = "play-all") { PlayAllRow(playable, { onPlayAll(open.songs, open.name, false) }, { onPlayAll(open.songs, open.name, true) }) }
+                    if (playable > 1) item(key = "play-all") { PlayAllRow(playable, { onPlayAll(open.songs, PlaySource(open.name, PlaySource.ARTIST, open.name), false) }, { onPlayAll(open.songs, PlaySource(open.name, PlaySource.ARTIST, open.name), true) }) }
                     items(open.songs, key = { it.id }) { song -> LibraryRow(song.title, songSubtitle(song, showArtist = false), Symbol.Music, playing = song.id == currentId,
-                        trailing = { SongActions(song, onSongAction) }) { onSong(song, open.songs, open.name) } }
+                        trailing = { SongActions(song, onSongAction) }) { onSong(song, open.songs, PlaySource(open.name, PlaySource.ARTIST, open.name)) } }
                 }
                 if (artists.isEmpty()) item { Text("No MP3s yet. Artists come from file names like “Artist - Title.mp3”.", Modifier.padding(20.dp)) }
                 else if (artist == null && artists.size == 1 && artists[0].name == Artists.UNKNOWN) item {
@@ -117,7 +119,7 @@ fun LibraryContent(
                         val detail = if (count > 0) "$count song${if (count == 1) "" else "s"}" else if (item.path != item.name) item.path else "Folder"
                         LibraryRow(item.name, if (!item.available) "Folder unavailable · saved listing" else detail, Symbol.Folder) { onFolder(item.id) }
                     }
-                    val source = if (!browsingFolders) "All songs" else state.folders.firstOrNull { it.id == parent }?.name ?: "Music"
+                    val source = if (!browsingFolders) PlaySource.AllSongs else PlaySource(state.folders.firstOrNull { it.id == parent }?.name ?: "Music", PlaySource.FOLDER, parent)
                     if (playable > 1) item(key = "play-all") { PlayAllRow(playable, { onPlayAll(visible, source, false) }, { onPlayAll(visible, source, true) }, trailing = if (showSort) ({ SortButton(sort, onSort) }) else null) }
                     // Inside a folder every row shares the folder, so rows show artist and length only.
                     items(visible, key = { it.id }) { song -> LibraryRow(song.title, songSubtitle(song, showFolder = !browsingFolders), Symbol.Music, playing = song.id == currentId,

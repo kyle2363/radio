@@ -4,10 +4,15 @@ import androidx.room.*
 import kotlinx.coroutines.flow.Flow
 
 /** Immutable observations. Extra diagnostic fields deliberately stay outside the wire payload. */
-@Entity(tableName = "local_listening_events", indices = [Index(value = ["attemptId", "kind"], unique = true)])
+@Entity(tableName = "local_listening_events", indices = [Index(value = ["attemptId", "kind"], unique = true), Index(value = ["kind", "occurredAt"]), Index(value = ["localId", "kind"])])
 data class LocalListeningEvent(@PrimaryKey val eventId: String, val localId: String, val attemptId: String?,
     val kind: String, val occurredAt: Long, val logicalClock: Long, val payload: String,
     val listenedMs: Long, val completion: Double?, val terminationReason: String?, val provenance: String)
+
+/** Where an actual start came from (checkpoint 8A). Local only: never synced, never in the wire payload. */
+@Entity(tableName = "local_play_context", indices = [Index(value = ["startedAt"])])
+data class LocalPlayContext(@PrimaryKey val attemptId: String, val localId: String, val sourceKind: String, val sourceId: String?,
+    val stationOrigin: String?, val trigger: String, val startedAt: Long)
 
 @Entity(tableName = "local_event_outbox")
 data class LocalEventOutbox(@PrimaryKey val eventId: String, val serverId: String?, val deviceId: String, val payload: String,
@@ -69,6 +74,9 @@ data class LocalSongFeedback(@PrimaryKey val localId: String, val favorite: Bool
     @Query("SELECT * FROM portable_sync_owner WHERE ownerKey=:ownerKey") suspend fun syncOwner(ownerKey:String):PortableSyncOwner?
     @Query("SELECT * FROM portable_sync_owner ORDER BY ownerKey") suspend fun syncOwners():List<PortableSyncOwner>
     @Insert suspend fun insert(event: LocalListeningEvent)
+    @Insert(onConflict = OnConflictStrategy.IGNORE) suspend fun playContext(value: LocalPlayContext)
+    @Query("SELECT * FROM local_play_context WHERE attemptId=:attempt") suspend fun playContext(attempt: String): LocalPlayContext?
+    @Query("SELECT * FROM local_play_context ORDER BY startedAt") suspend fun playContexts(): List<LocalPlayContext>
     @Insert suspend fun enqueue(event: LocalEventOutbox)
     @Upsert suspend fun clock(value: LocalJournalClock)
     @Upsert suspend fun feedback(value: LocalSongFeedback)

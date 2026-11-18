@@ -78,7 +78,7 @@ class LocalPlaybackController(
     private var cachedTimeline: Timeline? = null
     private var cachedShuffle = false
     private var cachedOrder = emptyList<String>()
-    private var source = ""
+    private var source = PlaySource("", PlaySource.QUEUE_EDIT)
     private var radioActive = false
     private var radioStarting = false
     /** The service sets this while it builds the first Radio batch, so the UI can show that Radio is tuning in. */
@@ -98,7 +98,7 @@ class LocalPlaybackController(
     override fun newMix() { if (radioActive) onNewMix() }
     override fun stopRadio() { radioActive=false;radioStarting=false;clearStation();queueRevision++;publish(checkpoint=true) }
     override fun endRadio(stopNow: Boolean) {
-        if (stopNow) { queueRevision++; player.pause(); if (queue.isNotEmpty()) source = "Custom queue" }
+        if (stopNow) { queueRevision++; player.pause(); if (queue.isNotEmpty()) source = PlaySource.CustomQueue }
         stopRadio()
     }
     /** The running station, for the bookmark beside the playback snapshot; null outside Radio. */
@@ -112,7 +112,7 @@ class LocalPlaybackController(
         val value = state.value
         if (record == null || !record.matches(value.playOrder, value.currentId)) return
         radioActive = true; origins = record.pruned(value.playOrder).origins
-        seedLocalId = record.seedLocalId; seedTitle = record.seedTitle; source = "Radio"
+        seedLocalId = record.seedLocalId; seedTitle = record.seedTitle; source = PlaySource.Radio
         publish()
     }
     private var error: String? = null
@@ -122,6 +122,12 @@ class LocalPlaybackController(
     private var started = false
     private var listeningAttempt: ListeningAttempt? = null
     private var attemptDurationMs: Long? = null
+    private var attemptTrigger: String? = null
+    private var attemptExternal: String? = null
+    private var attemptSource = PlaySource("", PlaySource.QUEUE_EDIT)
+    /** Where the attempt now starting came from; read inside [onAudibleStart] (checkpoint 8A, local only). */
+    internal var startContext: PlayContext? = null
+        private set
     private var ticker: Job? = null
     private var closed = false
     private var lastCheckpointAt = 0L
@@ -129,19 +135,27 @@ class LocalPlaybackController(
     private var sleepEndOfTrack = false
     private var sleepJob: Job? = null
 
+    /** Set by the media session for the command it is about to dispatch: [PlayTrigger.WIDGET] or [PlayTrigger.MEDIA_BUTTON]. */
+    internal var commandOrigin: String? = null
+    private var externalTrigger: String? = null
+    private var latestCommand: String? = null
+    private inline fun external(action: () -> Unit) {
+        externalTrigger = commandOrigin ?: PlayTrigger.MEDIA_BUTTON
+        try { action() } finally { externalTrigger = null; commandOrigin = null }
+    }
     // Every system transport command uses the same guards, shuffle and journal as the app.
     internal val sessionPlayer: Player = object : ForwardingPlayer(player) {
-        override fun play() = resume()
+        override fun play() = external { resume() }
         override fun pause() = this@LocalPlaybackController.pause()
-        override fun setPlayWhenReady(playWhenReady: Boolean) { if (playWhenReady) resume() else pause() }
+        override fun setPlayWhenReady(playWhenReady: Boolean) { if (playWhenReady) external { resume() } else pause() }
         override fun seekTo(positionMs: Long) = seek(positionMs)
-        override fun seekTo(mediaItemIndex: Int, positionMs: Long) = seekToItem(mediaItemIndex, positionMs)
+        override fun seekTo(mediaItemIndex: Int, positionMs: Long) = external { seekToItem(mediaItemIndex, positionMs) }
         override fun seekToDefaultPosition() = seek(0)
-        override fun seekToDefaultPosition(mediaItemIndex: Int) = seekToItem(mediaItemIndex, 0)
-        override fun seekToNext() = next()
-        override fun seekToNextMediaItem() = next()
-        override fun seekToPrevious() = previous()
-        override fun seekToPreviousMediaItem() = previous()
+        override fun seekToDefaultPosition(mediaItemIndex: Int) = external { seekToItem(mediaItemIndex, 0) }
+        override fun seekToNext() = external { next() }
+        override fun seekToNextMediaItem() = external { next() }
+        override fun seekToPrevious() = external { previous() }
+        override fun seekToPreviousMediaItem() = external { previous() }
         override fun setShuffleModeEnabled(shuffleModeEnabled: Boolean) = shuffle(shuffleModeEnabled)
         override fun setRepeatMode(repeatMode: Int) = setRepeat(repeatMode.toRepeatMode())
         override fun stop() { cancelCrossfade();queueRevision++;finishAttempt("attempt_stopped", "system_stop"); player.pause(); player.stop(); publish(checkpoint = true) }
@@ -152,7 +166,7 @@ class LocalPlaybackController(
             override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
                 if (reason == Player.DISCONTINUITY_REASON_AUTO_TRANSITION) {
                     finishAttempt("song_completed", "natural_end")
-                    newPosition.mediaItem?.mediaId?.let { beginAttempt(it) }
+                    newPosition.mediaItem?.mediaId?.let { beginAttempt(it, PlayTrigger.AUTO_ADVANCE) }
                 }
             }
             override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
@@ -171,6 +185,9 @@ class LocalPlaybackController(
                     queueById[id]?.let { song ->
                         started = true
                         attemptDurationMs = player.duration.takeIf { it != C.TIME_UNSET && it > 0 } ?: song.durationMs
+                        startContext = PlayContext(attemptSource.kind, attemptSource.id,
+                            if (attemptSource.kind == PlaySource.RADIO) origins[song.id]?.name else null,
+                            PlayTrigger.resolve(attemptTrigger, attemptExternal, latestCommand))
                         onAudibleStart(song, attemptId, player.currentPosition.coerceAtLeast(0))
                     }
                 }
@@ -198,10 +215,11 @@ class LocalPlaybackController(
         val late = kind == "song_skipped" && isLateNavigation(duration, player.currentPosition)
         onAttemptFinished(attempt.songId, attempt.id, if (late) "attempt_stopped" else kind, listened, duration, if (late) "late_navigation" else reason)
     }
-    private fun beginAttempt(id: String) {
+    private fun beginAttempt(id: String, trigger: String? = null) {
         val active = player.playWhenReady && started
         finishAttempt(if (active) "song_skipped" else "attempt_stopped", if (active) "explicit_navigation" else "paused_navigation")
         attemptSong = id; attemptId = UUID.randomUUID().toString(); started = false
+        attemptTrigger = trigger; attemptExternal = externalTrigger; attemptSource = source
         attemptDurationMs = null
         listeningAttempt = ListeningAttempt(attemptId, id)
     }
@@ -211,7 +229,7 @@ class LocalPlaybackController(
         val song = queueById[player.currentMediaItem?.mediaId] ?: return
         if (!canReadCurrent()) return
         finishAttempt("attempt_stopped", "explicit_replay")
-        beginAttempt(song.id)
+        beginAttempt(song.id, PlayTrigger.TAP)
         onExplicitReplay(song, attemptId)
         player.seekTo(0)
         if (player.playbackState == Player.STATE_IDLE) player.prepare()
@@ -238,7 +256,7 @@ class LocalPlaybackController(
         val next = if (id != null) adjacent(true) else C.INDEX_UNSET
         val duration = player.duration.takeIf { it != C.TIME_UNSET && it > 0 } ?: current?.durationMs
         mutable.value = PlaybackState(
-            queue = queue, playOrder = cachedOrder, source = source, currentId = id, radioActive = radioActive, queueRevision = queueRevision,
+            queue = queue, playOrder = cachedOrder, source = source.label, currentId = id, radioActive = radioActive, queueRevision = queueRevision,
             origins = if (radioActive) origins else emptyMap(), stationSeedTitle = if (radioActive) seedTitle else null, radioStarting = radioStarting && !radioActive, notice = notice,
             positionMs = player.currentPosition.coerceAtLeast(0),
             durationMs = duration,
@@ -260,7 +278,7 @@ class LocalPlaybackController(
         val restored = resolvePlaybackSnapshot(saved, catalog, accessLost)
         if (restored == null) { restorationFailed("The saved queue is no longer in this library. Choose a song to start a new queue."); return }
         this.accessLost = accessLost
-        queue = restored.songs; queueById = queue.associateBy { it.id }; source = restored.source
+        queue = restored.songs; queueById = queue.associateBy { it.id }; source = PlaySource(restored.source, PlaySource.RESTORE)
         error = restored.error
         beginAttempt(restored.currentId)
         player.pause()
@@ -335,7 +353,7 @@ class LocalPlaybackController(
                 // Hand over: the outgoing song finished as far as the journal is concerned, and the next one begins.
                 finishAttempt("song_completed", "natural_end")
                 fadeGain = 0f; applyVolume()
-                beginAttempt(player.getMediaItemAt(nextIndex).mediaId)
+                beginAttempt(player.getMediaItemAt(nextIndex).mediaId, PlayTrigger.CROSSFADE)
                 player.seekTo(nextIndex, 0)
                 publish(checkpoint = true)
                 val overlapMs = ((duration - handover) / player.playbackParameters.speed).toLong().coerceAtLeast(1)
@@ -370,14 +388,14 @@ class LocalPlaybackController(
         fadeGain = 1f; applyVolume()
     }
 
-    override fun playFrom(items: List<LocalSong>, selectedId: String, source: String) {
+    override fun playFrom(items: List<LocalSong>, selectedId: String, source: PlaySource) {
         cancelCrossfade()
         radioActive=false;radioStarting=false;clearStation();queueRevision++
         val snapshot = playbackQueue(items, selectedId).filter(::validUri)
         val index = snapshot.indexOfFirst { it.id == selectedId }
         if (accessLost || index < 0) { player.pause(); error = "This file is unavailable. Check folder access and rescan."; publish(); return }
         finishAttempt(if (player.playWhenReady && started) "song_skipped" else "attempt_stopped", "queue_replacement")
-        queue = snapshot; queueById = snapshot.associateBy { it.id }; this.source = source; error = null; beginAttempt(selectedId)
+        queue = snapshot; queueById = snapshot.associateBy { it.id }; this.source = source; error = null; beginAttempt(selectedId, PlayTrigger.TAP)
         player.setMediaItems(snapshot.map { song ->
             MediaItem.Builder().setMediaId(song.id).setUri(song.uri)
                 .setMediaMetadata(metadata(song)).build()
@@ -393,6 +411,7 @@ class LocalPlaybackController(
     }
     private fun resume() {
         queueRevision++
+        latestCommand = externalTrigger ?: PlayTrigger.TAP
         if (!canReadCurrent()) { error = "This file is unavailable. Check folder access and rescan."; publish(); return }
         if (listeningAttempt?.isFinished == true && player.playbackState != Player.STATE_ENDED) beginAttempt(player.currentMediaItem!!.mediaId)
         if (player.playbackState == Player.STATE_ENDED) { beginAttempt(player.currentMediaItem!!.mediaId); player.seekTo(0) }
@@ -401,7 +420,7 @@ class LocalPlaybackController(
         player.play(); publish(checkpoint = true)
     }
     private fun metadata(song: LocalSong) = MediaMetadata.Builder().setTitle(song.title).setArtist(song.artist.ifBlank { null })
-        .setAlbumTitle(song.folderPath.ifEmpty { source }).build()
+        .setAlbumTitle(song.folderPath.ifEmpty { source.label }).build()
     override fun pause() { if (!closed) { queueRevision++;player.pause(); publish(checkpoint = true) } }
     override fun seek(positionMs: Long) {
         if (!state.value.seekable) return
@@ -423,19 +442,19 @@ class LocalPlaybackController(
         }
         return C.INDEX_UNSET
     }
-    private fun move(index: Int) {
+    private fun move(index: Int, trigger: String) {
         if (accessLost || index == C.INDEX_UNSET) return
         cancelCrossfade()
         queueRevision++
         val continuePlaying = player.playWhenReady || error != null
         error = null
-        beginAttempt(player.getMediaItemAt(index).mediaId)
+        beginAttempt(player.getMediaItemAt(index).mediaId, trigger)
         player.seekTo(index, 0)
         if (player.playbackState == Player.STATE_IDLE) player.prepare()
         player.playWhenReady = continuePlaying
         publish(checkpoint = true)
     }
-    override fun next() { if (queue.isNotEmpty()) move(adjacent(true)) }
+    override fun next() { if (queue.isNotEmpty()) move(adjacent(true), PlayTrigger.NEXT) }
     override fun next(reason: String) {
         if (accessLost || adjacent(true) == C.INDEX_UNSET) return
         if (started && player.playWhenReady) finishAttempt("song_skipped", reason.takeIf {
@@ -446,14 +465,14 @@ class LocalPlaybackController(
     override fun previous() {
         if (!canReadCurrent()) return
         val previous = adjacent(false)
-        if (player.currentPosition > 3000 || previous == C.INDEX_UNSET) seek(0) else move(previous)
+        if (player.currentPosition > 3000 || previous == C.INDEX_UNSET) seek(0) else move(previous, PlayTrigger.PREVIOUS)
     }
     override fun jumpTo(songId: String) {
         val index = (0 until player.mediaItemCount).firstOrNull { player.getMediaItemAt(it).mediaId == songId } ?: return
         if (accessLost || queue.none { it.id == songId && it.available }) return
         cancelCrossfade()
         queueRevision++
-        error = null; beginAttempt(songId); player.seekTo(index, 0)
+        error = null; beginAttempt(songId, PlayTrigger.TAP); player.seekTo(index, 0)
         if (player.playbackState == Player.STATE_IDLE) player.prepare()
         player.play(); publish(checkpoint = true)
     }
@@ -463,7 +482,7 @@ class LocalPlaybackController(
         if (queueById[id]?.available != true) return
         cancelCrossfade()
         queueRevision++
-        if (id != player.currentMediaItem?.mediaId) beginAttempt(id)
+        if (id != player.currentMediaItem?.mediaId) beginAttempt(id, PlayTrigger.TAP)
         error = null
         player.seekTo(index, positionMs.coerceAtLeast(0))
         if (player.playbackState == Player.STATE_IDLE) player.prepare()
@@ -512,7 +531,7 @@ class LocalPlaybackController(
         // Radio recommendations are already ranked. Clear any manual queue shuffle
         // before playFrom installs them so their recommendation order is preserved.
         player.shuffleModeEnabled = false
-        playFrom(items.take(5),first.id,"Radio")
+        playFrom(items.take(5),first.id,PlaySource.Radio)
         radioActive=true
         this.origins=origins.filterKeys{it in queueById};this.seedLocalId=seedLocalId;this.seedTitle=seedTitle
         publish(checkpoint=true)
@@ -585,7 +604,7 @@ class LocalPlaybackController(
         queue = queue.map { incomingById[it.id] ?: it } + additions.filter { it.id !in queueById }
         queueById = queue.associateBy { it.id }
         if (additions.isNotEmpty()) player.addMediaItems(additions.map(::mediaItem))
-        source = if(radioActive)"Radio" else "Custom queue"; error = null
+        source = if(radioActive) PlaySource.Radio else PlaySource.CustomQueue; error = null
         if (radioActive) origins = origins + incoming.map { it.id }.filter { it != player.currentMediaItem?.mediaId }.associateWith { StationOrigin.User }
         val combined = (before + additions.map { it.id }).distinct()
         if (playNext && !wasEmpty) {
@@ -616,7 +635,7 @@ class LocalPlaybackController(
             player.moveMediaItem(nativeIndex(songId) ?: return, target)
             queue = order.mapNotNull(queueById::get); queueById = queue.associateBy { it.id }
         }
-        source = if(radioActive)"Radio" else "Custom queue"
+        source = if(radioActive) PlaySource.Radio else PlaySource.CustomQueue
         publish(checkpoint = true)
     }
     override fun removeFromQueue(songId: String) {
@@ -632,16 +651,16 @@ class LocalPlaybackController(
         queue = queue.filterNot { it.id == songId }; queueById = queue.associateBy { it.id }
         player.removeMediaItem(index)
         if (current && successor != null) {
-            beginAttempt(successor)
+            beginAttempt(successor, PlayTrigger.NEXT)
             player.seekTo(nativeIndex(successor) ?: 0, 0)
             player.playWhenReady = continuePlaying
         }
         if (queue.isEmpty() || player.mediaItemCount == 0) {
             radioActive=false;clearStation()
             queue = emptyList(); queueById = emptyMap()
-            player.pause(); player.clearMediaItems(); cancelSleepTimer(); source = ""; error = null
+            player.pause(); player.clearMediaItems(); cancelSleepTimer(); source = PlaySource("", PlaySource.QUEUE_EDIT); error = null
             onQueueCleared()
-        } else { source = if(radioActive)"Radio" else "Custom queue"; error = null }
+        } else { source = if(radioActive) PlaySource.Radio else PlaySource.CustomQueue; error = null }
         publish(checkpoint = true)
     }
     override fun clearUpcoming() {
@@ -659,7 +678,7 @@ class LocalPlaybackController(
                 player.removeMediaItems(index + 1, end)
             } else index--
         }
-        source = "Custom queue"
+        source = PlaySource.CustomQueue
         publish(checkpoint = true)
     }
     override fun setSleepTimer(durationMs: Long, fade: Boolean) {

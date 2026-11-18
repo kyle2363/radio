@@ -1,5 +1,7 @@
 package dev.radio.mobile.ui
 
+import dev.radio.mobile.playback.PlaySource
+
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -19,9 +21,9 @@ import kotlinx.coroutines.withContext
 
 @Composable
 fun PlaylistBrowser(state: PlaylistsState, repository: PlaylistRepository, catalog: List<LocalSong>, accessAllowed: Boolean,
-    selectedId: String?, onSelect: (String?) -> Unit, onPlay: (LocalSong, List<LocalSong>, String) -> Unit,
+    selectedId: String?, onSelect: (String?) -> Unit, onPlay: (LocalSong, List<LocalSong>, PlaySource) -> Unit,
     onSongAction: (SongAction, LocalSong) -> Unit, modifier: Modifier = Modifier,
-    currentId: String? = null, onPlayAll: (List<LocalSong>, String, Boolean) -> Unit = { list, source, _ -> list.firstOrNull { it.available }?.let { onPlay(it, list, source) } },
+    currentId: String? = null, onPlayAll: (List<LocalSong>, PlaySource, Boolean) -> Unit = { list, source, _ -> list.firstOrNull { it.available }?.let { onPlay(it, list, source) } },
     /** Listening history for the automatic playlists; without it they are not shown. */
     smartRows: Flow<List<SmartListRow>>? = null, favorites: Set<String> = emptySet()) {
     val scope = rememberCoroutineScope()
@@ -50,16 +52,16 @@ fun PlaylistBrowser(state: PlaylistsState, repository: PlaylistRepository, catal
         Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
             if (smart != null) {
                 Text(if (smartLists == null) "Loading…" else "${smartSongs.size} songs", Modifier.weight(1f), style = MaterialTheme.typography.labelMedium)
-                TextButton(onClick = { onPlayAll(smartSongs, smart.title, false) }, enabled = accessAllowed && smartSongs.isNotEmpty(), modifier = Modifier.testTag("smart-play")) { Text("Play") }
-                TextButton(onClick = { onPlayAll(smartSongs, smart.title, true) }, enabled = accessAllowed && smartSongs.size > 1, modifier = Modifier.testTag("smart-shuffle")) { Text("Shuffle") }
+                TextButton(onClick = { onPlayAll(smartSongs, PlaySource(smart.title, PlaySource.SMART_LIST, smart.id), false) }, enabled = accessAllowed && smartSongs.isNotEmpty(), modifier = Modifier.testTag("smart-play")) { Text("Play") }
+                TextButton(onClick = { onPlayAll(smartSongs, PlaySource(smart.title, PlaySource.SMART_LIST, smart.id), true) }, enabled = accessAllowed && smartSongs.size > 1, modifier = Modifier.testTag("smart-shuffle")) { Text("Shuffle") }
             } else if (selected == null) {
                 Text("${state.playlists.size} playlists", Modifier.weight(1f), style = MaterialTheme.typography.labelLarge)
                 TextButton(onClick = { nameDialog = true }) { Text("New playlist") }
             } else {
                 Text("${ids.size} songs", Modifier.weight(1f), style = MaterialTheme.typography.labelMedium)
                 TextButton(onClick = { adding = true }, enabled = accessAllowed) { Text("Add songs") }
-                TextButton(onClick = { onPlayAll(songs, selected.name, false) }, enabled = accessAllowed && songs.any { it.available }) { Text("Play") }
-                TextButton(onClick = { onPlayAll(songs, selected.name, true) }, enabled = accessAllowed && songs.count { it.available } > 1, modifier = Modifier.testTag("playlist-shuffle")) { Text("Shuffle") }
+                TextButton(onClick = { onPlayAll(songs, PlaySource(selected.name, PlaySource.PLAYLIST, selected.id), false) }, enabled = accessAllowed && songs.any { it.available }) { Text("Play") }
+                TextButton(onClick = { onPlayAll(songs, PlaySource(selected.name, PlaySource.PLAYLIST, selected.id), true) }, enabled = accessAllowed && songs.count { it.available } > 1, modifier = Modifier.testTag("playlist-shuffle")) { Text("Shuffle") }
                 var menu by remember { mutableStateOf(false) }
                 Box {
                     IconButton(onClick = { menu = true }) { RadioIcon(Symbol.More, "Playlist options") }
@@ -86,7 +88,7 @@ fun PlaylistBrowser(state: PlaylistsState, repository: PlaylistRepository, catal
                 itemsIndexed(smartSongs, key = { _, it -> it.id }) { index, song ->
                     // The Top 100 shows each song's place.
                     LibraryRow(if (smart == SmartList.Top) "${index + 1}. ${song.title}" else song.title, songSubtitle(song), Symbol.Music, playing = song.id == currentId,
-                        trailing = { SongActions(song, onSongAction) }) { if (accessAllowed) onPlay(song, smartSongs, smart.title) }
+                        trailing = { SongActions(song, onSongAction) }) { if (accessAllowed) onPlay(song, smartSongs, PlaySource(smart.title, PlaySource.SMART_LIST, smart.id)) }
                 }
                 if (smartLists != null && smartSongs.isEmpty()) item {
                     Text(when (smart) {
@@ -150,7 +152,7 @@ fun PlaylistBrowser(state: PlaylistsState, repository: PlaylistRepository, catal
                                 DropdownMenuItem(text = { Text("Remove from playlist") }, onClick = { open = false; scope.launch { report(repository.remove(selected.id, id)) } })
                             }
                         }
-                    }) { if (accessAllowed && song?.available == true) onPlay(song, songs, selected.name) }
+                    }) { if (accessAllowed && song?.available == true) onPlay(song, songs, PlaySource(selected.name, PlaySource.PLAYLIST, selected.id)) }
                     }
                 }
                 if (ids.isEmpty()) item { Text("This playlist is empty. Add songs to get started.", Modifier.padding(20.dp)) }

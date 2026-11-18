@@ -55,7 +55,8 @@ fun playbackQueue(items: List<LocalSong>, selectedId: String): List<LocalSong> {
 
 interface PlaybackController {
     val state: StateFlow<PlaybackState>
-    fun playFrom(items: List<LocalSong>, selectedId: String, source: String)
+    fun playFrom(items: List<LocalSong>, selectedId: String, source: PlaySource)
+    fun playFrom(items: List<LocalSong>, selectedId: String, source: String) = playFrom(items, selectedId, PlaySource.of(source))
     fun toggle()
     fun pause()
     fun next()
