@@ -1,0 +1,269 @@
+{
+ "score_feel": [
+  {
+   "name": "buckets",
+   "now": 1800000000.0,
+   "ratings": [
+    {
+     "song": "1",
+     "value": 0.875,
+     "at": 1800000000.0,
+     "weight": 1.0
+    },
+    {
+     "song": "2",
+     "value": 0.625,
+     "at": 1800000000.0,
+     "weight": 1.0
+    },
+    {
+     "song": "3",
+     "value": 0.375,
+     "at": 1800000000.0,
+     "weight": 1.0
+    },
+    {
+     "song": "4",
+     "value": 0.125,
+     "at": 1800000000.0,
+     "weight": 1.0
+    }
+   ],
+   "comparisons": [],
+   "expected": {
+    "1": {
+     "score": 0.7598269173895341,
+     "confidence": 0.3333333333333333,
+     "member": true
+    },
+    "2": {
+     "score": 0.5890118202545236,
+     "confidence": 0.3333333333333333,
+     "member": true
+    },
+    "3": {
+     "score": 0.41098817974547647,
+     "confidence": 0.3333333333333333,
+     "member": false
+    },
+    "4": {
+     "score": 0.24017308261046588,
+     "confidence": 0.3333333333333333,
+     "member": false
+    }
+   }
+  },
+  {
+   "name": "chain",
+   "now": 1800000000.0,
+   "ratings": [],
+   "comparisons": [
+    {
+     "winner": "a",
+     "loser": "b",
+     "tie": false,
+     "at": 1800000000.0
+    },
+    {
+     "winner": "b",
+     "loser": "c",
+     "tie": false,
+     "at": 1800000000.0
+    },
+    {
+     "winner": "c",
+     "loser": "d",
+     "tie": false,
+     "at": 1797408000.0
+    }
+   ],
+   "expected": {
+    "a": {
+     "score": 0.8752123290931499,
+     "confidence": 0.3333333333333333,
+     "member": true
+    },
+    "b": {
+     "score": 0.6291662648053837,
+     "confidence": 0.5,
+     "member": true
+    },
+    "c": {
+     "score": 0.35834689294427885,
+     "confidence": 0.4861662737784288,
+     "member": false
+    },
+    "d": {
+     "score": 0.1307949453864329,
+     "confidence": 0.30851111980195806,
+     "member": false
+    }
+   }
+  },
+  {
+   "name": "aged_conflict",
+   "now": 1800000000.0,
+   "ratings": [],
+   "comparisons": [
+    {
+     "winner": "a",
+     "loser": "b",
+     "tie": false,
+     "at": 1765440000.0
+    },
+    {
+     "winner": "b",
+     "loser": "a",
+     "tie": false,
+     "at": 1799913600.0
+    }
+   ],
+   "expected": {
+    "a": {
+     "score": 0.35331851569093964,
+     "confidence": 0.37793347516225884,
+     "member": false
+    },
+    "b": {
+     "score": 0.6466814843090604,
+     "confidence": 0.37793347516225884,
+     "member": true
+    }
+   }
+  },
+  {
+   "name": "tie",
+   "now": 1800000000.0,
+   "ratings": [],
+   "comparisons": [
+    {
+     "winner": "x",
+     "loser": "y",
+     "tie": true,
+     "at": 1800000000.0
+    }
+   ],
+   "expected": {
+    "x": {
+     "score": 0.5,
+     "confidence": 0.3333333333333333,
+     "member": false
+    },
+    "y": {
+     "score": 0.5,
+     "confidence": 0.3333333333333333,
+     "member": false
+    }
+   }
+  },
+  {
+   "name": "mixed_weighted",
+   "now": 1800000000.0,
+   "ratings": [
+    {
+     "song": "a",
+     "value": 1.0,
+     "at": 1799136000.0,
+     "weight": 3.0
+    },
+    {
+     "song": "b",
+     "value": 0.0,
+     "at": 1782720000.0,
+     "weight": 1.0
+    },
+    {
+     "song": "c",
+     "value": 0.5,
+     "at": 1800000000.0,
+     "weight": 1.0
+    }
+   ],
+   "comparisons": [
+    {
+     "winner": "b",
+     "loser": "a",
+     "tie": false,
+     "at": 1799568000.0
+    },
+    {
+     "winner": "c",
+     "loser": "a",
+     "tie": false,
+     "at": 1800000000.0
+    },
+    {
+     "winner": "c",
+     "loser": "b",
+     "tie": true,
+     "at": 1792224000.0
+    }
+   ],
+   "expected": {
+    "a": {
+     "score": 0.6855621039025258,
+     "confidence": 0.7088530581324914,
+     "member": true
+    },
+    "b": {
+     "score": 0.7390306898588804,
+     "confidence": 0.5191738957902112,
+     "member": true
+    },
+    "c": {
+     "score": 0.7632869154484361,
+     "confidence": 0.5754140816102745,
+     "member": true
+    }
+   }
+  },
+  {
+   "name": "cycle",
+   "now": 1800000000.0,
+   "ratings": [],
+   "comparisons": [
+    {
+     "winner": "p",
+     "loser": "q",
+     "tie": false,
+     "at": 1800000000.0
+    },
+    {
+     "winner": "q",
+     "loser": "r",
+     "tie": false,
+     "at": 1800000000.0
+    },
+    {
+     "winner": "r",
+     "loser": "p",
+     "tie": false,
+     "at": 1800000000.0
+    },
+    {
+     "winner": "p",
+     "loser": "q",
+     "tie": false,
+     "at": 1794816000.0
+    }
+   ],
+   "expected": {
+    "p": {
+     "score": 0.5811848379553803,
+     "confidence": 0.5830046551673951,
+     "member": true
+    },
+    "q": {
+     "score": 0.41881516204461966,
+     "confidence": 0.5830046551673951,
+     "member": false
+    },
+    "r": {
+     "score": 0.5,
+     "confidence": 0.5,
+     "member": false
+    }
+   }
+  }
+ ]
+}
