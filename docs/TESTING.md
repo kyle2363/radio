@@ -135,3 +135,17 @@ under `.test-runtime/cluster-metadata-backups/`, updates only cluster metadata,
 and verifies agreement. It does not run tagging, embedding, clustering, or lyrics
 alignment. This repairs cached IDs; it does not preserve cluster identities
 between different clustering runs.
+
+## Android performance (checkpoint 12.1–12.2)
+
+Needs the phone connected over USB with the Music folder chosen and one song in the mini-player. From `android/`:
+
+- Journeys benchmark (cold start, Library scroll, Now Playing; each without and with the profile):
+  `.\gradlew.bat :benchmark:connectedBenchmarkAndroidTest -P android.testInstrumentationRunnerArguments.class=dev.radio.mobile.benchmark.JourneyBenchmarks`
+  Results: `benchmark/build/outputs/connected_android_test_additional_output/`.
+- Generate the baseline profile:
+  `.\gradlew.bat :benchmark:connectedBenchmarkAndroidTest -P android.testInstrumentationRunnerArguments.class=dev.radio.mobile.benchmark.BaselineProfileGenerator`
+  then copy the generated `*-baseline-prof.txt` to `app/src/main/baseline-prof.txt` and commit it. `profileinstaller` installs it on sideloaded builds.
+- Stats speed: `StatsSpeedTest` (JVM, summary only) and `StatsSpeedDeviceTest` (instrumented, 50 000 events, query + summary under 1 s).
+
+The app's `benchmark` build type is release code signed with the debug key and `profileable`; it is a separate install from debug (same package), so reinstall the debug build afterwards for daily use.
