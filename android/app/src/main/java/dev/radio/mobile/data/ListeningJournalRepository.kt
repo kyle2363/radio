@@ -17,7 +17,7 @@ data class ListeningJournalState(val history: List<LocalListeningEvent> = emptyL
 
 /** One ordered IO writer. A failed head stays queued; Retry never invents new event IDs. */
 class ListeningJournalRepository(context: Context, private val db: LibraryDatabase, private val scope: CoroutineScope,
-    private val beforeCommit: suspend () -> Unit = {}) {
+    private val untracked: () -> Boolean = { false }, private val beforeCommit: suspend () -> Unit = {}) {
     private val mutable = MutableStateFlow(ListeningJournalState())
     val state: StateFlow<ListeningJournalState> = mutable.asStateFlow()
     private val fallbackDevice = UUID.randomUUID().toString()
@@ -85,6 +85,7 @@ class ListeningJournalRepository(context: Context, private val db: LibraryDataba
     }
     fun started(song: LocalSong, attempt: String, positionMs: Long, identity: JournalIdentity = identity(song),
         context: dev.radio.mobile.playback.PlayContext? = null) {
+        if (untracked()) return
         val eventId = UUID.randomUUID().toString(); val at = System.currentTimeMillis()
         submit { db.withTransaction {
             if (db.journal().start(attempt) == null && db.library().playbackStart(attempt) == null) {
@@ -97,6 +98,7 @@ class ListeningJournalRepository(context: Context, private val db: LibraryDataba
         } }
     }
     fun finished(identity: JournalIdentity, attempt: String, kind: String, listenedMs: Long, durationMs: Long?, reason: String?) {
+        if (untracked()) return
         val eventId = UUID.randomUUID().toString(); val at = System.currentTimeMillis()
         val completion = durationMs?.takeIf { it > 0 }?.let { (listenedMs.toDouble() / it).coerceIn(0.0, 1.0) }
         submit { db.withTransaction {
@@ -106,6 +108,7 @@ class ListeningJournalRepository(context: Context, private val db: LibraryDataba
         } }
     }
     fun replay(song: LocalSong, attempt: String, identity: JournalIdentity = identity(song)) {
+        if (untracked()) return
         val id = UUID.randomUUID().toString(); val at = System.currentTimeMillis()
         submit { db.withTransaction {
             if (db.journal().event(attempt, "song_replayed") == null) { beforeCommit(); append(identity, id, attempt, "song_replayed", at) }

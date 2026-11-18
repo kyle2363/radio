@@ -260,6 +260,13 @@ class RadioPlaybackService : MediaSessionService() {
         scope.launch {
             clientController.state.map { it.repeat }.distinctUntilChanged().collect { prefs.repeat = it }
         }
+        // Untracked listening stays alive while music plays and ends itself after idling or its time limit.
+        scope.launch {
+            clientController.state.map { it.playWhenReady && !it.ended }.distinctUntilChanged().collect { library.untracked.touch(it) }
+        }
+        scope.launch {
+            while (true) { kotlinx.coroutines.delay(60_000); library.untracked.touch(clientController.state.value.let { it.playWhenReady && !it.ended }) }
+        }
         // The home-screen widget follows the song and play state; it starts after restoration so it never flashes empty.
         scope.launch {
             clientController.state.map { state ->

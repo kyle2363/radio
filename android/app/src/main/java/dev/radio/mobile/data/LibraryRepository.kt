@@ -32,7 +32,9 @@ class LibraryRepository(context: Context, internal val db: LibraryDatabase, conn
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     internal val playbackSnapshots = PlaybackSnapshotStore(db.library(), scope)
     val playlists = PlaylistRepository(db, scope)
-    val journal = ListeningJournalRepository(context, db, scope)
+    /** Untracked listening session (plays and skips not journaled). */
+    val untracked = UntrackedListening(context.applicationContext.getSharedPreferences("radio_untracked", Context.MODE_PRIVATE))
+    val journal = ListeningJournalRepository(context, db, scope, untracked = untracked::active)
     val feels = FeelRepository(db, scope, identityOf = { journal.identity(it) }, emitEnergy = { song, value -> journal.setEnergy(song, value) })
     private val mutex = Mutex()
     private val mutable = MutableStateFlow(LibraryState())
