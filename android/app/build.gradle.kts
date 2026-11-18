@@ -65,6 +65,8 @@ dependencies {
     implementation(libs.androidx.lifecycle.runtime.ktx)
     // Installs the bundled baseline profile (src/main/baseline-prof.txt) on sideloaded builds too.
     implementation(libs.androidx.profileinstaller)
+    // Benchmark builds only: names each composable in Perfetto traces (checkpoint 12.3).
+    "benchmarkImplementation"("androidx.compose.runtime:runtime-tracing")
     testImplementation(libs.junit)
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
