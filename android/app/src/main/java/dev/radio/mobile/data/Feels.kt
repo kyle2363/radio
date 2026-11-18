@@ -61,23 +61,23 @@ object FeelCatalog {
     const val ENERGY_FEEL_ID = "00000000-0000-4000-8000-0000000000e1"
     /** Energy buckets shared with the desktop calibration panel. */
     val ENERGY_BUCKETS = listOf("Hot" to 0.875, "Warm" to 0.625, "Mellow" to 0.375, "Cold" to 0.125)
-    val energy = StarterFeel("energy", "Energy", "#FDBA74", "How much a song lifts you")
+    val energy = StarterFeel("energy", "Energy", "#FDBA74", "How much a song lifts you, from Cold to Hot")
     /** Colours are light tints drawn from the checkpoint 6 mood palette family, readable on the station surface. */
     val starters = listOf(
-        StarterFeel("hype", "Hype", "#FB923C", "Pump-up, turn it up", setOf("euphoric", "explosive", "energetic"), 0.7..1.0),
-        StarterFeel("wind-down", "Wind down", "#5EEAD4", "Calm, end of the day", setOf("dreamy", "intimate"), 0.0..0.35),
-        StarterFeel("sad-good", "Sad-good", "#C4B5FD", "Hurts in a good way", setOf("melancholic", "bittersweet", "cathartic")),
-        StarterFeel("nostalgic", "Nostalgic", "#CBD5E1", "Tied to a time or memory", setOf("nostalgic")),
-        StarterFeel("focus", "Focus", "#A5B4FC", "Work without distraction", setOf("ambient", "chillstep", "lo-fi")),
-        StarterFeel("drive", "Drive", "#FCD34D", "Road and commute", setOf("driving"), 0.5..0.9),
-        StarterFeel("main-character", "Main character", "#F9A8D4", "Walking like you're in a film", setOf("cinematic", "empowering", "confident")),
-        StarterFeel("late-night", "Late night", "#93C5FD", "After midnight", setOf("atmospheric", "ethereal", "introspective")),
-        StarterFeel("butterflies", "Butterflies", "#FDA4AF", "Crush, new love, being in love", setOf("romantic", "passionate", "devotional")),
-        StarterFeel("heartache", "Heartache", "#D8B4FE", "Breakups, missing someone", setOf("heartbreak", "longing", "yearning", "regretful")),
-        StarterFeel("euphoria", "Euphoria", "#FDE047", "The build and the drop", setOf("euphoric", "anthemic", "soaring")),
-        StarterFeel("floating", "Floating", "#BAE6FD", "Dreamy and weightless", setOf("ethereal", "dreamy")),
-        StarterFeel("epic", "Epic", "#FCA5A5", "Boss-fight, cinematic, huge", setOf("epic", "dramatic", "intense")),
-        StarterFeel("second-wind", "Second wind", "#86EFAC", "Pick-me-up when you're low", setOf("hopeful", "uplifting", "resilient", "determined")),
+        StarterFeel("hype", "Hype", "#FB923C", "Pump-up songs you turn all the way up", setOf("euphoric", "explosive", "energetic"), 0.7..1.0),
+        StarterFeel("wind-down", "Wind down", "#5EEAD4", "Calm songs for the end of the day", setOf("dreamy", "intimate"), 0.0..0.35),
+        StarterFeel("sad-good", "Sad-good", "#C4B5FD", "Sad songs that hurt in a good way", setOf("melancholic", "bittersweet", "cathartic")),
+        StarterFeel("nostalgic", "Nostalgic", "#CBD5E1", "Songs that take you back to a time or memory", setOf("nostalgic")),
+        StarterFeel("focus", "Focus", "#A5B4FC", "Background songs to work or study to", setOf("ambient", "chillstep", "lo-fi")),
+        StarterFeel("drive", "Drive", "#FCD34D", "Steady songs for the road or commute", setOf("driving"), 0.5..0.9),
+        StarterFeel("main-character", "Main character", "#F9A8D4", "Makes you feel like you're in a film", setOf("cinematic", "empowering", "confident")),
+        StarterFeel("late-night", "Late night", "#93C5FD", "Moody, quiet songs for after midnight", setOf("atmospheric", "ethereal", "introspective")),
+        StarterFeel("butterflies", "Butterflies", "#FDA4AF", "Crushes, new love and being in love", setOf("romantic", "passionate", "devotional")),
+        StarterFeel("heartache", "Heartache", "#D8B4FE", "Breakups and missing someone", setOf("heartbreak", "longing", "yearning", "regretful")),
+        StarterFeel("euphoria", "Euphoria", "#FDE047", "Big builds and drops that make you feel huge", setOf("euphoric", "anthemic", "soaring")),
+        StarterFeel("floating", "Floating", "#BAE6FD", "Dreamy, weightless songs to drift to", setOf("ethereal", "dreamy")),
+        StarterFeel("epic", "Epic", "#FCA5A5", "Huge, dramatic, boss-fight songs", setOf("epic", "dramatic", "intense")),
+        StarterFeel("second-wind", "Second wind", "#86EFAC", "Lifts you back up when you're feeling low", setOf("hopeful", "uplifting", "resilient", "determined")),
     )
     private val color = Regex("^#[0-9A-Fa-f]{6}$")
     fun validName(value: String) = value.length in 1..40 && value.trim() == value && value.none { it.code < 32 }

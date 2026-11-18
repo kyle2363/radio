@@ -150,6 +150,9 @@ private fun FeelList(state: FeelsState, onOpen: (String) -> Unit, onCreate: (Str
     if (adding) FeelEditDialog(null, onDismiss = { adding = false }) { name, color, _ -> adding = false; onCreate(name, color) }
 }
 
+/** The built-in explanation for Energy and the starter feels; your own feels have none. */
+internal fun feelMeaning(feelId: String): String? = (listOf(FeelCatalog.energy) + FeelCatalog.starters).firstOrNull { it.feelId == feelId }?.meaning
+
 private fun summaryLine(summary: FeelSummary): String =
     if (isEnergy(summary.feel.feelId)) "Built in · ${summary.rated} rated · ${summary.settled.toInt()}% settled"
     else "${summary.members} songs · ${summary.settled.toInt()}% settled"
@@ -161,6 +164,7 @@ private fun FeelRow(summary: FeelSummary, onClick: () -> Unit) {
         Box(Modifier.size(40.dp).background(feelColor(summary.feel.color), RadioShapes.Thumb))
         Column(Modifier.weight(1f).padding(start = 14.dp)) {
             Text(summary.feel.name, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            feelMeaning(summary.feel.feelId)?.let { Text(it, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis) }
             Text(summaryLine(summary), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         RadioIcon(Symbol.Forward, modifier = Modifier.size(18.dp))
@@ -209,6 +213,7 @@ private fun FeelDetail(summary: FeelSummary, state: FeelsState, songs: List<Loca
                 Box(Modifier.size(48.dp).background(feelColor(feel.color), RadioShapes.Leaf))
                 Column(Modifier.weight(1f).padding(start = 14.dp)) {
                     Text(feel.name, style = MaterialTheme.typography.titleLarge, modifier = Modifier.semantics { heading() })
+                    feelMeaning(feel.feelId)?.let { Text(it, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.testTag("feel-meaning")) }
                     Text(summaryLine(summary), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 TextButton(onClick = { editing = true }, modifier = Modifier.testTag("edit-feel")) { Text("Edit") }
