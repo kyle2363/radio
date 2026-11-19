@@ -42,7 +42,9 @@ import kotlin.math.sin
 /** Checkpoint 8B: everything is computed on the phone from the local journal; nothing is sent anywhere. */
 @Composable
 fun StatsScreen(journal: ListeningJournalRepository, songs: List<LocalSong>, onSong: (LocalSong) -> Unit, modifier: Modifier = Modifier,
-    playlistName: (String) -> String? = { null }) {
+    playlistName: (String) -> String? = { null }, radio: dev.radio.mobile.recommendation.RadioRepository? = null, feels: FeelsState = FeelsState(),
+    onPlay: (LocalSong) -> Unit = {}, onRadio: (LocalSong) -> Unit = {}) {
+    var showWrapped by rememberSaveable { mutableStateOf(false) }
     var period by rememberSaveable { mutableStateOf(StatsPeriod.Month) }
     val byId = remember(songs) { songs.associateBy { it.id } }
     val zone = remember { ZoneId.systemDefault() }
@@ -52,6 +54,17 @@ fun StatsScreen(journal: ListeningJournalRepository, songs: List<LocalSong>, onS
     val summary by produceState<StatsSummary?>(null, attempts, period, byId) {
         val rows = attempts ?: return@produceState
         value = withContext(Dispatchers.Default) { StatsCalculator.summarize(rows, byId, period, System.currentTimeMillis(), zone) { Artists.primary(it.artist) } }
+    }
+    // Checkpoint 8C: extra measures for the chosen period, and milestones over all time.
+    val measures by produceState<Measures?>(null, attempts, period, byId) {
+        val rows = attempts ?: return@produceState
+        value = withContext(Dispatchers.Default) {
+            FunStats.measures(rows, period, System.currentTimeMillis(), zone, byId.values.filter { it.available }.mapTo(HashSet()) { it.id }) { id -> byId[id]?.let { Artists.primary(it.artist) } }
+        }
+    }
+    val milestones by produceState<List<MilestoneProgress>?>(null, attempts, songs) {
+        val rows = attempts ?: return@produceState
+        value = withContext(Dispatchers.Default) { FunStats.milestones(rows, songs, System.currentTimeMillis(), zone) }
     }
     Column(modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp).testTag("stats-scroll"), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -65,7 +78,9 @@ fun StatsScreen(journal: ListeningJournalRepository, songs: List<LocalSong>, onS
             StatsCard { Text("No listening yet", style = MaterialTheme.typography.titleMedium); Text("Play some music and your stats appear here. Everything stays on this phone.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
             return@Column
         }
+        WrappedBanner { showWrapped = true }
         OverviewCard(s)
+        measures?.let { ListeningStyleCard(it, byId, onSong) }
         StatsCard {
             CardTitle("Listening calendar", "Past year · minutes per day")
             CalendarHeatmap(s.calendar, attempts.orEmpty(), byId, zone, onSong)
@@ -85,19 +100,22 @@ fun StatsScreen(journal: ListeningJournalRepository, songs: List<LocalSong>, onS
         }
         SourcesCard(s)
         if (s.radio.isNotEmpty()) RadioReportCard(s)
+        milestones?.let { MilestonesCard(it) }
+        TasteMapCard(radio, songs, attempts.orEmpty(), feels, onPlay, onRadio)
         Spacer(Modifier.height(24.dp))
     }
+    if (showWrapped) attempts?.let { WrappedDialog(it, songs, feels) { showWrapped = false } }
 }
 
-@Composable private fun StatsCard(content: @Composable ColumnScope.() -> Unit) =
+@Composable internal fun StatsCard(content: @Composable ColumnScope.() -> Unit) =
     Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surfaceContainer) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp), content = content)
     }
-@Composable private fun CardTitle(title: String, subtitle: String) {
+@Composable internal fun CardTitle(title: String, subtitle: String) {
     Column { Text(title, style = MaterialTheme.typography.titleMedium)
         if (subtitle.isNotBlank()) Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
 }
-@Composable private fun BigNumber(value: String, label: String, modifier: Modifier = Modifier, change: String? = null) = Column(modifier) {
+@Composable internal fun BigNumber(value: String, label: String, modifier: Modifier = Modifier, change: String? = null) = Column(modifier) {
     Text(value, style = MaterialTheme.typography.headlineSmall, color = MaterialTheme.colorScheme.primary, maxLines = 1)
     Text(label, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     if (change != null) Text(change, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)

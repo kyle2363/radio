@@ -14,6 +14,13 @@ import androidx.compose.ui.unit.dp
 enum class Symbol(val path: String, val filled: Boolean = false) {
     More("M13.5 5 A1.5 1.5 0 1 1 10.5 5 A1.5 1.5 0 1 1 13.5 5 Z M13.5 12 A1.5 1.5 0 1 1 10.5 12 A1.5 1.5 0 1 1 13.5 12 Z M13.5 19 A1.5 1.5 0 1 1 10.5 19 A1.5 1.5 0 1 1 13.5 19 Z", true),
     Clock("M21 12 A9 9 0 1 1 3 12 A9 9 0 1 1 21 12 M12 7 V12 L15 14"),
+    /** A clock with a rewind arrow: "what was that song?" */
+    History("M3.5 12 A8.5 8.5 0 1 0 6 6 M3 3 V8 H8 M12 8 V12 L15 14"),
+    Moon("M20 14.5 A8.5 8.5 0 1 1 9.5 4 A7 7 0 0 0 20 14.5 Z"),
+    Repeat("M4 11 V9 A3 3 0 0 1 7 6 H19 M16 3 L19 6 L16 9 M20 13 V15 A3 3 0 0 1 17 18 H5 M8 21 L5 18 L8 15"),
+    RepeatOne("M4 11 V9 A3 3 0 0 1 7 6 H19 M16 3 L19 6 L16 9 M20 13 V15 A3 3 0 0 1 17 18 H5 M8 21 L5 18 L8 15 M11 10 L12.5 9 V15"),
+    Lyrics("M4 5 H20 M4 10 H20 M4 15 H12 M4 20 H9 M17 13 V20 M17 13 L21 12"),
+    Sparkle("M12 3 L13.8 10.2 L21 12 L13.8 13.8 L12 21 L10.2 13.8 L3 12 L10.2 10.2 Z"),
     Add("M12 4 V20 M4 12 H20"),
     Sort("M7 4 V20 M3 16 L7 20 L11 16 M17 20 V4 M13 8 L17 4 L21 8"),
     Up("M5 14 L12 7 L19 14"),

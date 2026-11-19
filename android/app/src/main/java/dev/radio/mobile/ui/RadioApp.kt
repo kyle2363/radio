@@ -240,6 +240,18 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
         AutoRescan.done = true
         if (System.currentTimeMillis() - root.scannedAt > AutoRescan.MIN_AGE_MS) repository.rescan()
     }
+    // Checkpoint 8C: milestone notices appear once, ever, as a short in-app message (never a system notification).
+    val milestoneHead = journal.history.firstOrNull()?.eventId
+    LaunchedEffect(milestoneHead, library.loading) {
+        if (library.loading || milestoneHead == null) return@LaunchedEffect
+        kotlinx.coroutines.delay(1500)
+        val songsNow = library.songs
+        val reached = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+            val rows = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { repository.journal.statsAttempts() }
+            unannouncedMilestones(appContext, FunStats.milestones(rows, songsNow, System.currentTimeMillis(), java.time.ZoneId.systemDefault()))
+        }
+        reached.forEach { message("Milestone reached · ${it.title}. ${it.detail}") }
+    }
     LaunchedEffect(openPlayerRequest) { if (openPlayerRequest > 0) navigate("Now playing") }
     // Checkpoint 11: launcher shortcuts. Shuffle all waits for the library to load.
     LaunchedEffect(shortcut?.serial, library.loading) {
@@ -515,6 +527,9 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
                     sessions = { dev.radio.mobile.recommendation.FeelSprint.sessions(journal.history.filter { it.kind == "song_started" }.map { it.localId to it.occurredAt }) },
                     onMessage = ::message, modifier = Modifier.padding(insets).consumeWindowInsets(insets))
                 "Stats" -> StatsScreen(repository.journal, library.songs, onSong = { statsSong = it }, modifier = Modifier.padding(insets).consumeWindowInsets(insets),
+                    radio = repository.radio, feels = feelsState,
+                    onPlay = { item -> if (playSong(item, listOf(item), PlaySource("Taste map", PlaySource.ALL_SONGS))) navigate("Now playing") },
+                    onRadio = { item -> playback.startRadio(item.id); navigate("Now playing") },
                     playlistName = { id -> playlists.playlists.firstOrNull { it.id == id }?.name })
                 "Equaliser" -> Column(Modifier.padding(insets).consumeWindowInsets(insets).fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).testTag("equalizer-scroll")) {
                     EqualizerScreen(audioSettings)

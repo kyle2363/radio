@@ -290,6 +290,19 @@ class RadioRepository internal constructor(context:Context,private val db:Librar
         val legacyOn=latest!=null && legacySnapshot==latest.manifestSha256
         catalogCache?.takeIf{it.legacyOn==legacyOn && it.record?.manifestSha256==latest?.manifestSha256 && it.record?.serverId==latest?.serverId && it.record?.importedAt==latest?.importedAt && it.filesUnchanged()} ?: loadCatalog(latest,legacyOn).also{catalogCache=it}
     }
+    /**
+     * Checkpoint 8C taste map input: one embedding per available, matched local song (text space when present), with a
+     * key naming the catalog revision and space so the projection can be cached per revision.
+     */
+    suspend fun mapVectors():Pair<String,Map<String,FloatArray>>? {
+        val loaded=catalog(legacyVectorSnapshot)
+        val manifest=loaded.record?.manifestSha256 ?: return null
+        val accepted=accepted(library.value.songs.filter{it.available},JournalIdentityProvider.mappings.value,loaded)
+        val bySpace=loaded.vectors.groupBy{it.space}
+        val space=if(bySpace["text"].isNullOrEmpty()) bySpace.keys.sorted().firstOrNull() ?: return null else "text"
+        val vectors=bySpace.getValue(space).associateBy{it.songId}
+        return "$manifest:$space" to accepted.mapNotNull{(local,songId)->vectors[songId]?.let{local to it.values}}.toMap()
+    }
     /** Local id to catalog song id, for songs matched to exactly this catalog revision. */
     private fun accepted(available:List<LocalSong>,mapping:JournalIdentityProvider.MappingSnapshot,loaded:LoadedCatalog):Map<String,String> { val record=loaded.record;val catalog=loaded.catalog
         return available.mapNotNull { song->mapping.entries[song.id]?.takeIf { it.song==song && it.serverId==record?.serverId && it.catalogId==record?.catalogId && it.revision==record?.revision && it.provenance.contains(record!!.manifestSha256) && catalog?.songs?.containsKey(it.songId)==true }?.let{song.id to it.songId} }.toMap()
