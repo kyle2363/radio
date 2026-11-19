@@ -51,7 +51,7 @@ class ServerSettingsKeyboardTest {
             ActivityScenario.launch(MainActivity::class.java).use { scenario ->
                 scenario.onActivity { activity -> activity.setContent { RadioApp(library, playback, pairingRepository = pairing) } }
                 compose.onNodeWithTag("nav-Settings").performClick()
-                compose.onNodeWithTag("open-server").performScrollTo().performClick()
+                compose.onNodeWithTag("open-server").performClick()
                 compose.waitUntil(5000) { pairing.state.value.loaded }
                 compose.onNodeWithTag("pairing-bundle").performScrollTo().performClick().performTextInput("synthetic bundle")
                 var keyboardTop = Int.MAX_VALUE

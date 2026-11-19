@@ -88,6 +88,7 @@ class LocalPlaybackController(
     /** A one-off message for the UI, such as a Radio start that could not be completed. */
     internal fun notify(message: String) { notice = PlaybackNotice((notice?.id ?: 0) + 1, message); publish() }
     internal var onRadioStart: (String?) -> Unit = {}
+    internal var onStationStart: (dev.radio.mobile.recommendation.SeedSpec) -> Unit = {}
     internal var onNewMix: () -> Unit = {}
     // Station context (checkpoint 4.2): why each queued song is there and where the station started.
     private var origins = emptyMap<String, StationOrigin>()
@@ -95,6 +96,7 @@ class LocalPlaybackController(
     private var seedTitle: String? = null
     private fun clearStation() { origins = emptyMap(); seedLocalId = null; seedTitle = null }
     override fun startRadio(seedLocalId: String?) = onRadioStart(seedLocalId)
+    override fun startStation(station: dev.radio.mobile.recommendation.SeedSpec) = onStationStart(station)
     override fun newMix() { if (radioActive) onNewMix() }
     override fun stopRadio() { radioActive=false;radioStarting=false;clearStation();queueRevision++;publish(checkpoint=true) }
     override fun endRadio(stopNow: Boolean) {

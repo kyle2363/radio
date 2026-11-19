@@ -29,7 +29,9 @@ data class RadioState(val loaded:Boolean=false,val busy:Boolean=false,val sugges
     val diagnostics:RadioDiagnostics=RadioDiagnostics(),val bootstrapLocalIds:Set<String> = emptySet(),val bootstrapCandidates:Set<String> = emptySet(),val bootstrapDismissed:Boolean=false,
     val suggestionAnchorTitle:String?=null,val catalogSnapshot:String?=null,val legacyVectorTracks:Int=0,val legacyVectorsEnabled:Boolean=false,
     /** Feel station (checkpoint 9C): the selected feel id, or null for a mood station. */
-    val feel:String?=null)
+    val feel:String?=null,
+    /** "Start radio from this": the song or playlist steering the running station, or null. Ignored off air. */
+    val seed:SeedSpec?=null)
 
 private const val PLAYED_WINDOW_MS = 3 * 86_400_000L
 
@@ -39,7 +41,7 @@ class RadioRepository internal constructor(context:Context,private val db:Librar
     connectedLink:(()->ConnectedServerLink)?=null) {
     private val prefs=context.getSharedPreferences("radio_recommendations",Context.MODE_PRIVATE)
     private val mutex=Mutex()
-    private val mutable=MutableStateFlow(RadioState(mood=prefs.getString("mood","neutral") ?: "neutral",exploration=prefs.getFloat("exploration",.3f).toDouble(),vibeLocalId=prefs.getString("vibe",null),vibeUntil=prefs.getLong("vibeUntil",0),vibeSongsLeft=prefs.getInt("vibeLeft",0),feel=prefs.getString("feel",null)))
+    private val mutable=MutableStateFlow(RadioState(mood=prefs.getString("mood","neutral") ?: "neutral",exploration=prefs.getFloat("exploration",.3f).toDouble(),vibeLocalId=prefs.getString("vibe",null),vibeUntil=prefs.getLong("vibeUntil",0),vibeSongsLeft=prefs.getInt("vibeLeft",0),feel=prefs.getString("feel",null),seed=SeedSpec.decode(prefs.getString("seed_station",null))))
     val state=mutable.asStateFlow()
     // Connected Radio (checkpoint 4). Off until the listener turns it on; never required for local play.
     private val tuningState=MutableStateFlow(ConnectedTuning.decode(prefs.getString("connected_tuning",null)))
@@ -178,8 +180,8 @@ class RadioRepository internal constructor(context:Context,private val db:Librar
     /** Selects a feel station, or null to return to the mood station. The mood stays as the fallback. */
     fun setFeel(id:String?) {
         if(id==mutable.value.feel)return
-        prefs.edit{if(id==null)remove("feel") else putString("feel",id)}
-        mutable.update{it.copy(feel=id)};refresh()
+        prefs.edit{if(id==null)remove("feel") else putString("feel",id);if(id!=null)remove("seed_station")}
+        mutable.update{it.copy(feel=id,seed=if(id!=null)null else it.seed)};refresh()
     }
     fun setExploration(value:Double) {if(!value.isFinite())return; synchronized(explorationLock){explorationEdited=true;val bounded=value.coerceIn(0.0,1.0);prefs.edit().putFloat("exploration",bounded.toFloat()).apply();mutable.update{it.copy(exploration=bounded)};journal.setSharedExploration(bounded)};refresh()}
     private fun saveVibe(){val value=mutable.value;prefs.edit().putString("vibe",value.vibeLocalId).putLong("vibeUntil",value.vibeUntil).putInt("vibeLeft",value.vibeSongsLeft).apply()}
@@ -204,8 +206,13 @@ class RadioRepository internal constructor(context:Context,private val db:Librar
      * Desktop first (checkpoint 4.2): with Desktop picks on and not refused by the desktop, Radio starts with one song
      * and fills the queue from the desktop's answers; local picks only cover a failed, missing or empty answer.
      */
-    val desktopFirst:Boolean get()=connected.enabled && connected.status.value.permitted!=false && mutable.value.feel==null
-    suspend fun startRecommendations(seedLocalId:String?):RadioBatch? {
+    val desktopFirst:Boolean get()=connected.enabled && connected.status.value.permitted!=false && mutable.value.feel==null && mutable.value.seed==null
+    /**
+     * Starts a station. A seed song (or [station]) makes a song or playlist station that keeps steering refills; a plain
+     * start clears it. Choosing a song or playlist station leaves any feel station.
+     */
+    suspend fun startRecommendations(seedLocalId:String?,station:SeedSpec?=null):RadioBatch? {
+        setSeed(station ?: seedLocalId?.let{id->SeedSpec(SeedSpec.Kind.Song,library.value.songs.firstOrNull{it.id==id}?.title ?: "",listOf(id))})
         val batch=startBatch(seedLocalId) ?: return null
         return if(desktopFirst)batch.copy(suggestions=batch.suggestions.take(1)) else batch
     }
@@ -217,6 +224,12 @@ class RadioRepository internal constructor(context:Context,private val db:Librar
         if(isDisliked(seedLocalId))return null
         if(batch.token.library.songs.none{it==seed} || !valid(batch.token))return null
         return batch.copy(suggestions=listOf(RadioSuggestion(seed,RadioPick("local:$seedLocalId",seedLocalId,0.0,0.5,null,slot="exploit",reason="Chosen starting song")))+batch.suggestions)
+    }
+    private fun setSeed(spec:SeedSpec?) {
+        val clearFeel=spec!=null && mutable.value.feel!=null
+        if(spec==mutable.value.seed && !clearFeel)return
+        prefs.edit{if(spec==null)remove("seed_station") else putString("seed_station",spec.encode());if(clearFeel)remove("feel")}
+        mutable.update{it.copy(seed=spec,feel=if(clearFeel)null else it.feel)}
     }
     val connectedEnabled:Boolean get()=connected.enabled
     fun setConnectedEnabled(value:Boolean) {
@@ -395,7 +408,11 @@ class RadioRepository internal constructor(context:Context,private val db:Librar
                 val states=db.feels().states(id).filter{it.songId in byLocal}.associate{it.songId to FeelRules.FeelState(it.score,it.confidence,it.member)}
                 FeelStation.scores(states,feelFeaturesFlow.value.vectors).mapNotNull{(local,score)->byLocal[local]?.songId?.let{it to score}}.toMap()
             }.orEmpty()
-            val settings=RadioSettings(mood=effectiveMood,exploration=mutable.value.exploration,vibeLock=vibe,feel=feelScores)
+            // A song or playlist station steers only while on air (or while starting); off air it is a leftover.
+            val seedScores=mutable.value.seed?.takeIf{!publishPreview || playback.radioActive}?.let{spec->
+                SeedStation.scores(spec.localIds.mapNotNull(accepted::get).toSet(),vectors,RadioSettings().audioBlend,includeSeeds=spec.kind==SeedSpec.Kind.Playlist)
+            }.orEmpty()
+            val settings=RadioSettings(mood=effectiveMood,exploration=mutable.value.exploration,vibeLock=vibe,feel=feelScores,seed=seedScores)
             val excluded=tracks.filter{it.localId in exclude || (publishPreview && it.localId in previewExclusions)}.map{it.songId}.toSet()
             val engine=OfflineRecommender(tracks,vectors,sessionSeed)
             val now=System.currentTimeMillis()/1000.0

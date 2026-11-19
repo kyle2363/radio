@@ -98,6 +98,7 @@ class ServicePlaybackController(context: Context) : PlaybackController {
     override fun sleepAtQueueEnd() = command { it.sleepAtQueueEnd() }
     override fun cancelSleepTimer() = command { it.cancelSleepTimer() }
     override fun startRadio(seedLocalId: String?) = command { it.startRadio(seedLocalId) }
+    override fun startStation(station: dev.radio.mobile.recommendation.SeedSpec) = command { it.startStation(station) }
     override fun stopRadio() = command { it.stopRadio() }
     override fun endRadio(stopNow: Boolean) = command { it.endRadio(stopNow) }
     override fun newMix() = command { it.newMix() }

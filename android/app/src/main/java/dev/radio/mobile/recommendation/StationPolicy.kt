@@ -40,6 +40,7 @@ enum class StationOrigin(val label: String) {
     Context("Fits now"),
     Vibe("Vibe match"),
     Feel("Your feel"),
+    Seed("Like the start"),
     Desktop("Desktop"),
     User("Added by you");
 
@@ -52,6 +53,7 @@ enum class StationOrigin(val label: String) {
                 reason == "Chosen starting song" -> Start
                 reason == "Matches locked vibe" -> Vibe
                 reason == OfflineRecommender.FEEL_MEMBER || reason == OfflineRecommender.FEEL_NEIGHBOUR -> Feel
+                reason == OfflineRecommender.SEED_MATCH -> Seed
                 pick.slot == "explore" -> Explore
                 pick.slot == "wildcard" -> Wildcard
                 pick.slot == "context" -> Context

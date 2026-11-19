@@ -28,6 +28,7 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.ui.unit.Dp
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -178,13 +179,6 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     fun message(text: String) { scope.launch { snackbar.showSnackbar(text) } }
-    fun songAction(action: SongAction, item: LocalSong) {
-        if (action == SongAction.AddToPlaylist) { playlistSongIds = listOf(item.id); return }
-        if (action == SongAction.Stats) { statsSong = item; return }
-        if (library.accessLost || !item.available) { message("Check Music folder access before adding songs."); return }
-        playback.addToQueue(listOf(item), action == SongAction.PlayNext)
-        message(if (action == SongAction.PlayNext) "Will play next" else "Added to queue")
-    }
     /** Plays now, or asks first while Radio is on air. Returns true when playback was replaced. */
     fun playSong(item: LocalSong, context: List<LocalSong>, source: PlaySource): Boolean {
         if (library.accessLost || !item.available) { message("This file is unavailable. Check folder access and rescan."); return false }
@@ -205,7 +199,25 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
         if (target == "Search") searchReturnPage = page
         if (target == "Now playing") playerReturnPage = page
         page = target
-        if (target != "Search") prefs.edit().putString("last_screen", if (target in listOf("Server", "Matching", "Equaliser", "Stats", "Feels")) "Settings" else target).apply()
+        if (target != "Search") prefs.edit().putString("last_screen", if (target in SETTINGS_PAGES) "Settings" else target).apply()
+    }
+    /** "Start radio from this" (song or playlist): replaces the queue with a station that keeps sounding like it. */
+    fun startStation(spec: dev.radio.mobile.recommendation.SeedSpec) {
+        if (library.accessLost) { message("Check Music folder access before starting Radio."); return }
+        playback.startStation(spec); navigate("Now playing")
+    }
+    /** A feel station started from Feels: the same as choosing the feel on the Radio tab, then starting. */
+    fun startFeelStation(feel: LocalFeel) {
+        if (library.accessLost) { message("Check Music folder access before starting Radio."); return }
+        repository.radio.setFeel(feel.feelId); playback.startRadio(null); navigate("Now playing")
+    }
+    fun songAction(action: SongAction, item: LocalSong) {
+        if (action == SongAction.AddToPlaylist) { playlistSongIds = listOf(item.id); return }
+        if (action == SongAction.Stats) { statsSong = item; return }
+        if (action == SongAction.Radio) { startStation(dev.radio.mobile.recommendation.SeedSpec(dev.radio.mobile.recommendation.SeedSpec.Kind.Song, item.title, listOf(item.id))); return }
+        if (library.accessLost || !item.available) { message("Check Music folder access before adding songs."); return }
+        playback.addToQueue(listOf(item), action == SongAction.PlayNext)
+        message(if (action == SongAction.PlayNext) "Will play next" else "Added to queue")
     }
     fun back() {
         if (page == "Now playing" && showQueue) { showQueue = false; return }
@@ -213,7 +225,8 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
         when (page) {
             "Search" -> page = searchReturnPage
             "Now playing" -> page = playerReturnPage
-            "Server", "Equaliser", "Stats" -> page = "Settings"
+            "Equaliser" -> page = "Sound"
+            "Server", "Stats", "Music library", "Sound", "Appearance", "Desktop similarity" -> page = "Settings"
             "Feels" -> if (feelsNav.sprint) feelsNav = feelsNav.copy(sprint = false) else if (feelsNav.feelId != null) feelsNav = FeelsNav() else page = "Settings"
             "Matching" -> page = "Server"
             "Library" -> if (category == "Playlists" && playlistId != null) playlistId = null else if (category == "Artists" && artist != null) artist = null else folder = library.folders.firstOrNull { it.id == folder }?.parentId?.takeUnless { it == library.root?.folderId }
@@ -306,7 +319,7 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
         lifecycle.lifecycle.addObserver(observer)
         onDispose { lifecycle.lifecycle.removeObserver(observer) }
     }
-    val showBack = page == "Server" || page == "Matching" || page == "Equaliser" || page == "Stats" || page == "Feels" || page == "Search" || page == "Now playing" || (page == "Library" && (folder != null || category == "Playlists" && playlistId != null || category == "Artists" && artist != null))
+    val showBack = page in SETTINGS_PAGES || page == "Search" || page == "Now playing" || (page == "Library" && (folder != null || category == "Playlists" && playlistId != null || category == "Artists" && artist != null))
     // Checkpoint 10: predictive back. The screen shrinks and leans toward the swipe edge while the gesture is held, then
     // the normal back() runs on release; a cancelled gesture springs back. Reduced motion skips the preview.
     var backProgress by remember { mutableFloatStateOf(0f) }
@@ -347,7 +360,7 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
                             radio.loaded -> "%,d songs ready on this phone".format(radio.diagnostics.eligibleTracks)
                             else -> radio.status
                         }, style = MaterialTheme.typography.labelSmall, color = if (library.accessLost) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.testTag("radio-status"))
-                        else Text(if (page == "Now playing") tag + audio.source.ifBlank{"Local music"} else if (page == "Equaliser") "Sound for this app" else if (page == "Stats") "Only on this phone" else if (page == "Feels") (if (feelsNav.sprint) "Feel sprint" else if (feelsNav.pairs) "This or that" else "How songs feel to you") else if (page == "Library" && category == "Playlists" && playlistId != null) SmartList.of(playlistId)?.let { "Automatic · ${it.description}" } ?: "${playlists.songIds(playlistId!!).size} songs · Playlist" else if (page == "Library" && category == "Artists" && artist != null) "Artist" else if (library.scanning) "Scanning…" else if (library.root == null) "Connect your music" else "${library.songs.count { it.available }} MP3s", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        else Text(if (page == "Now playing") tag + audio.source.ifBlank{"Local music"} else if (page == "Equaliser") "Sound for this app" else if (page == "Sound") "Playback and volume" else if (page == "Appearance") "Colours and screens" else if (page == "Desktop similarity") "Radio" else if (page == "Stats") "Only on this phone" else if (page == "Feels") (if (feelsNav.sprint) "Feel sprint" else if (feelsNav.pairs) "This or that" else "How songs feel to you") else if (page == "Library" && category == "Playlists" && playlistId != null) SmartList.of(playlistId)?.let { "Automatic · ${it.description}" } ?: "${playlists.songIds(playlistId!!).size} songs · Playlist" else if (page == "Library" && category == "Artists" && artist != null) "Artist" else if (library.scanning) "Scanning…" else if (library.root == null) "Connect your music" else "${library.songs.count { it.available }} MP3s", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     if (page == "Radio" && audio.radioActive) IconButton(onClick = { openTune = true }, modifier = Modifier.testTag("tune-radio")) { RadioIcon(Symbol.Settings, "Tune station") }
                     if (page == "Library") {
@@ -411,7 +424,7 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
                   }
                     NavigationBar(containerColor = MaterialTheme.colorScheme.surfaceContainer, windowInsets = WindowInsets(0), modifier = Modifier.navigationBarsPadding().height(68.dp)) {
                         destinations.forEach { (label, symbol) ->
-                            val selected = page == label || label == "Settings" && page in listOf("Server", "Matching", "Equaliser", "Stats", "Feels")
+                            val selected = page == label || label == "Settings" && page in SETTINGS_PAGES
                             NavigationBarItem(selected = selected, onClick = { navigate(label) }, modifier = Modifier.testTag("nav-$label"), icon = { RadioIcon(symbol) },
                                 label = { Text(label, fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium) })
                         }
@@ -426,7 +439,8 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
                     choose = { chooseFolder() }, rescan = { repository.rescan() }, cancel = { repository.cancelScan() }, modifier = Modifier.padding(insets), onSongAction = ::songAction,
                     playlistContent = { PlaylistBrowser(playlists, repository.playlists, library.songs, !library.accessLost, playlistId, { playlistId = it },
                         onPlay = { item, context, source -> if (playSong(item, context, source)) navigate("Now playing") }, onSongAction = ::songAction,
-                        currentId = audio.currentId, onPlayAll = ::playAll, smartRows = repository.journal.smartListRows, favorites = favorites) },
+                        currentId = audio.currentId, onPlayAll = ::playAll, smartRows = repository.journal.smartListRows, favorites = favorites,
+                        onRadio = { name, ids -> startStation(dev.radio.mobile.recommendation.SeedSpec(dev.radio.mobile.recommendation.SeedSpec.Kind.Playlist, name, ids)) }) },
                     sortedSongs = songs, currentId = audio.currentId, onPlayAll = ::playAll, artist = artist, onArtist = { artist = it })
                 "Radio" -> RadioContent(radio,repository.radio,audio,playback,library,onLibrary={navigate("Library")},onPlayer={navigate("Now playing")},connected=connected,modifier=Modifier.padding(insets),
                     paired=paired,onChooseFolder={chooseFolder()},onRescan={repository.rescan()},onFullQueue={showQueue=true;navigate("Now playing")},onEnd={endSheet=true},openTune=openTune,onTuneOpened={openTune=false},onServer={navigate("Server")},positionMs=positionMs)
@@ -446,7 +460,8 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
                     }
                     LazyColumn { items(results, key = { it.id }) { item ->
                         SwipeSongRow(item, ::songAction) {
-                            LibraryRow(item.title, songSubtitle(item), Symbol.Music, playing = item.id == audio.currentId, trailing = { SongActions(item, ::songAction) }) { focus.clearFocus(); keyboard?.hide(); rememberQuery(); if (playSong(item, results, PlaySource.Search)) navigate("Now playing") }
+                            val songMenu = remember { mutableStateOf(false) }
+                            LibraryRow(item.title, songSubtitle(item), Symbol.Music, playing = item.id == audio.currentId, onLongClick = { songMenu.value = true }, trailing = { SongActions(item, ::songAction, songMenu) }) { focus.clearFocus(); keyboard?.hide(); rememberQuery(); if (playSong(item, results, PlaySource.Search)) navigate("Now playing") }
                         }
                     } }
                     if (query.isNotBlank() && results.isEmpty()) Text("No matching songs", Modifier.padding(20.dp))
@@ -523,7 +538,7 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
                 }
                 "Feels" -> FeelsScreen(repository.feels, feelsState, library.songs, feelsNav, { feelsNav = it }, preview,
                     sessions = { dev.radio.mobile.recommendation.FeelSprint.sessions(journal.history.filter { it.kind == "song_started" }.map { it.localId to it.occurredAt }) },
-                    onMessage = ::message, modifier = Modifier.padding(insets).consumeWindowInsets(insets))
+                    onMessage = ::message, onRadio = ::startFeelStation, modifier = Modifier.padding(insets).consumeWindowInsets(insets))
                 "Stats" -> StatsScreen(repository.journal, library.songs, onSong = { statsSong = it }, modifier = Modifier.padding(insets).consumeWindowInsets(insets),
                     radio = repository.radio, feels = feelsState,
                     onPlay = { item -> if (playSong(item, listOf(item), PlaySource("Taste map", PlaySource.ALL_SONGS))) navigate("Now playing") },
@@ -535,9 +550,33 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
                 "Matching" -> Column(Modifier.padding(insets).consumeWindowInsets(insets).imePadding().fillMaxSize().padding(horizontal = 16.dp)) {
                     ServerSettings(pairing, matchingScreen = true, discoveryRepository = discovery)
                 }
-                "Settings" -> Column(Modifier.padding(insets).consumeWindowInsets(insets).imePadding().fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp).testTag("settings-scroll"), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                "Settings" -> Column(Modifier.padding(insets).consumeWindowInsets(insets).fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp).testTag("settings-scroll"), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    SettingsCard(rows = true) {
+                        SettingsRow(Symbol.Desktop, "Desktop server", if (paired) "Paired · catalog, lyrics, picks and sync" else "Not paired · optional, playback never needs it", "open-server") { navigate("Server") }
+                    }
+                    SettingsCard(rows = true) {
+                        SettingsRow(Symbol.Folder, "Music library", when {
+                            library.accessLost -> "Folder access lost · choose it again"
+                            library.scanning -> "Scanning…"
+                            library.root == null -> "No folder selected"
+                            else -> "${library.root?.name} · ${library.songs.count { it.available }} MP3s"
+                        }, "settings-library", summaryColor = if (library.accessLost) MaterialTheme.colorScheme.error else androidx.compose.ui.graphics.Color.Unspecified) { navigate("Music library") }
+                        SoundSettingsRow(audioSettings, repository.loudness) { navigate("Sound") }
+                        SettingsRow(Symbol.Palette, "Appearance", listOfNotNull(
+                            RadioPalette.entries.firstOrNull { it.name == palette }?.label,
+                            Appearance.entries.firstOrNull { it.name == appearance }?.label?.let { if (it == "Phone") "Follows phone" else it },
+                            if (minimal) "Minimal player" else null,
+                        ).joinToString(" · "), "settings-appearance") { navigate("Appearance") }
+                        if (radio.legacyVectorTracks > 0) SettingsRow(Symbol.Radio, "Desktop similarity", if (radio.legacyVectorsEnabled) "Radio uses legacy desktop vectors" else "Off · legacy desktop vectors available", "settings-similarity") { navigate("Desktop similarity") }
+                    }
+                    SettingsCard(rows = true) {
+                        SettingsRow(Symbol.Chart, "Listening stats", "Calendar, top songs, streaks and Wrapped", "open-stats") { navigate("Stats") }
+                        SettingsRow(Symbol.Heart, "Your feels", if (feelsState.needsSetup) "Set up · tag how songs feel to you" else "Tags, energy ratings and sprints", "open-feels") { feelsNav = FeelsNav(); navigate("Feels") }
+                    }
+                    Spacer(Modifier.height(4.dp))
+                }
+                "Music library" -> Column(Modifier.padding(insets).consumeWindowInsets(insets).fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp).testTag("library-settings-scroll"), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     SettingsCard {
-                    SectionLabel("Music library")
                     Text(library.root?.name ?: "No folder selected", style = MaterialTheme.typography.titleSmall)
                     Text("${library.songs.count { it.available }} MP3s · ${library.songs.count { !it.available }} missing", style = MaterialTheme.typography.bodySmall)
                     LibraryStatus(library, { chooseFolder() }, { repository.rescan() }, { repository.cancelScan() })
@@ -550,10 +589,22 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
                         Switch(rescanOnOpen, onCheckedChange = { rescanOnOpen = it; prefs.edit().putBoolean("rescan_on_open", it).apply() }, modifier = Modifier.testTag("rescan-on-open"))
                     }
                     }
+                }
+                "Desktop similarity" -> Column(Modifier.padding(insets).consumeWindowInsets(insets).fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
+                    RadioSimilaritySettings(radio, repository.radio)
+                }
+                "Sound" -> Column(Modifier.padding(insets).consumeWindowInsets(insets).fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp).testTag("sound-settings-scroll"), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     SettingsCard {
-                    SectionLabel("Radio")
-                    RadioSimilaritySettings(radio,repository.radio)
+                    SectionLabel("Playback")
+                    SoundSettings(audioSettings) { navigate("Equaliser") }
                     }
+                    SettingsCard {
+                    NormalizationSettings(repository.loudness, library, audio.currentId)
+                    Text("Music keeps playing in the background. After a restart, your last queue returns paused. Sleep timers clear on restart.", Modifier.padding(vertical = 12.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    Spacer(Modifier.height(4.dp))
+                }
+                "Appearance" -> Column(Modifier.padding(insets).consumeWindowInsets(insets).fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp).testTag("appearance-settings-scroll"), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     SettingsCard {
                     SectionLabel("Color scheme")
                     RadioPalette.entries.forEach { option ->
@@ -583,31 +634,6 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
                     Row(Modifier.fillMaxWidth().padding(vertical = 12.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                         Text("Minimal player"); Switch(minimal, onCheckedChange = { minimal = it; prefs.edit().putBoolean("minimal", minimal).apply() })
                     }
-                    }
-                    SettingsCard {
-                    SectionLabel("Playback")
-                    Text("Music keeps playing in the background. After a restart, your last queue returns paused. Sleep timers clear on restart.", Modifier.padding(vertical = 8.dp), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    NormalizationSettings(repository.loudness, library, audio.currentId)
-                    }
-                    SettingsCard {
-                    SectionLabel("Listening stats")
-                    Text("Your listening calendar, top songs, streaks and where your music comes from. Worked out on this phone.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    TextButton(onClick = { navigate("Stats") }, modifier = Modifier.testTag("open-stats")) { Text("Open stats") }
-                    }
-                    SettingsCard {
-                    SectionLabel("Your feels")
-                    Text("Tag songs by how they feel to you, rate their energy, and run quick sprints to sort many songs.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    TextButton(onClick = { feelsNav = FeelsNav(); navigate("Feels") }, modifier = Modifier.testTag("open-feels")) { Text(if (feelsState.needsSetup) "Set up feels" else "Open feels") }
-                    }
-                    SettingsCard {
-                    SectionLabel("Sound")
-                    SoundSettings(audioSettings) { navigate("Equaliser") }
-                    }
-                    SettingsCard {
-                    SectionLabel("Desktop")
-                    Text(if (paired) "Paired with your desktop. Pairing, catalog, matching and sync live on the Server screen." else "Pair with your desktop for catalog matching, lyrics, desktop picks and sync. Playback never needs it.",
-                        Modifier.padding(bottom = 8.dp), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    FilledTonalButton(onClick = { navigate("Server") }, modifier = Modifier.padding(bottom = 8.dp).testTag("open-server")) { Text("Server") }
                     }
                     Spacer(Modifier.height(4.dp))
                 }
@@ -721,9 +747,13 @@ private fun Artwork(size: Dp) {
 }
 
 @Composable
-internal fun LibraryRow(title: String, subtitle: String, symbol: Symbol, subtitleMaxLines: Int = 1, playing: Boolean = false, trailing: @Composable () -> Unit = {}, onClick: () -> Unit) {
+internal fun LibraryRow(title: String, subtitle: String, symbol: Symbol, subtitleMaxLines: Int = 1, playing: Boolean = false, onLongClick: (() -> Unit)? = null,
+    trailing: @Composable () -> Unit = {}, onClick: () -> Unit) {
+    val haptic = androidx.compose.ui.platform.LocalHapticFeedback.current
     // The song that is playing now gets a filled tile and an accent title, so it is easy to spot in a long list.
-    Row(Modifier.fillMaxWidth().clickable(onClick = onClick).heightIn(min = 56.dp).padding(horizontal = 20.dp, vertical = 6.dp)
+    // A long-press opens the row's options menu, where there is one.
+    Row(Modifier.fillMaxWidth().combinedClickable(onClick = onClick, onLongClickLabel = if (onLongClick != null) "More options" else null,
+        onLongClick = onLongClick?.let { open -> { haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress); open() } }).heightIn(min = 56.dp).padding(horizontal = 20.dp, vertical = 6.dp)
         .semantics { if (playing) stateDescription = "Playing now" }, verticalAlignment = Alignment.CenterVertically) {
         Box(Modifier.size(40.dp).background(if (playing) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondaryContainer, RadioShapes.Thumb), contentAlignment = Alignment.Center) {
             CompositionLocalProvider(LocalContentColor provides if (playing) MaterialTheme.colorScheme.onPrimary else LocalContentColor.current) { RadioIcon(if (playing) Symbol.Play else symbol, modifier = Modifier.size(20.dp)) }
@@ -742,9 +772,10 @@ private fun SectionLabel(label: String) { Text(label, Modifier.padding(top = 12.
 
 /** One rounded group on the Settings page. */
 @Composable
-private fun SettingsCard(content: @Composable ColumnScope.() -> Unit) {
+private fun SettingsCard(rows: Boolean = false, content: @Composable ColumnScope.() -> Unit) {
     Surface(Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.surfaceContainerLow) {
-        Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), content = content)
+        // Menu rows pad themselves so their ripple fills the card edge to edge.
+        Column(if (rows) Modifier.padding(vertical = 4.dp) else Modifier.padding(horizontal = 16.dp, vertical = 8.dp), content = content)
     }
 }
 /** The playback state without its per-tick fields, so equal snapshots between ticks compare equal. */

@@ -77,7 +77,7 @@ class RadioPlaybackService : MediaSessionService() {
         }
         var radioRequest: Job? = null
         var radioStartToken = 0L
-        engine.onRadioStart = { seedLocalId ->
+        fun beginStation(seedLocalId: String?, station: dev.radio.mobile.recommendation.SeedSpec?) {
             radioRequest?.cancel()
             val token = ++radioStartToken
             val expected=engine.state.value
@@ -92,7 +92,7 @@ class RadioPlaybackService : MediaSessionService() {
                     // fresh state. A batch that was chosen but then fenced (Stop, a sleep expiry, a new queue, a profile
                     // sync) is never retried: the listener or the system changed course.
                     for(attempt in 0 until START_ATTEMPTS) {
-                        val batch=withContext(Dispatchers.IO){library.radio.startRecommendations(seedLocalId)}
+                        val batch=withContext(Dispatchers.IO){library.radio.startRecommendations(seedLocalId,station)}
                         if(batch!=null) {
                             beforeRadioStartCommit()
                             library.radio.accept(batch) {
@@ -118,6 +118,11 @@ class RadioPlaybackService : MediaSessionService() {
                     if (token == radioStartToken) engine.setRadioStarting(false)
                 }
             }
+        }
+        engine.onRadioStart = { seedLocalId -> beginStation(seedLocalId, null) }
+        // A song station plays its song first; a playlist station opens on the songs closest to the whole playlist.
+        engine.onStationStart = { station ->
+            beginStation(if (station.kind == dev.radio.mobile.recommendation.SeedSpec.Kind.Song) station.localIds.first() else null, station)
         }
         scope.launch {
             combine(combine(

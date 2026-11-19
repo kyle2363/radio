@@ -137,6 +137,7 @@ class RadioShellTest {
 
     @Test fun themeAndAppearanceSurviveActivityRecreation() {
         compose.onNodeWithText("Settings").performClick()
+        compose.onNodeWithTag("settings-appearance").performClick()
         compose.onNodeWithText("Deep Teal").performClick()
         compose.onNodeWithText("Dark").performClick()
         compose.waitForIdle()
@@ -150,15 +151,18 @@ class RadioShellTest {
         compose.onNodeWithTag("nav-Library").performClick()
         screenshot("teal-dark-library")
         compose.onNodeWithText("Settings").performClick()
+        compose.onNodeWithTag("settings-appearance").performClick()
         compose.onNodeWithText("Light").performClick()
         compose.onNodeWithTag("nav-Library").performClick()
         screenshot("teal-light-library")
         compose.onNodeWithText("Settings").performClick()
+        compose.onNodeWithTag("settings-appearance").performClick()
         compose.onNodeWithText("Ocean Blue").performClick()
         compose.onNodeWithText("Dark").performClick()
         compose.onNodeWithTag("nav-Library").performClick()
         screenshot("ocean-dark-library")
         compose.onNodeWithText("Settings").performClick()
+        compose.onNodeWithTag("settings-appearance").performClick()
         compose.onNodeWithText("Light").performClick()
         compose.onNodeWithTag("nav-Library").performClick()
         compose.onNodeWithText("March 2026").assertIsDisplayed()
@@ -195,6 +199,7 @@ class RadioShellTest {
         assertTrue(!playback.state.value.isPlaying)
         compose.onNodeWithContentDescription("Back").performClick()
         compose.onNodeWithTag("nav-Settings").performClick()
+        compose.onNodeWithTag("settings-appearance").performClick()
         compose.onNodeWithText("Deep Teal").performClick()
         compose.onNodeWithText("Dark").performClick()
         compose.onNodeWithTag("nav-Library").performClick()
@@ -241,9 +246,10 @@ class RadioShellTest {
 
     @Test fun backgroundModesPersistAndMotionStopsOnPauseAndBackground() {
         compose.onNodeWithTag("nav-Settings").performClick()
-        compose.onNodeWithText("Animated").performClick()
+        compose.onNodeWithTag("settings-appearance").performClick()
+        compose.onNodeWithText("Moving").performClick()
         recreate()
-        compose.onNodeWithText("Animated").assertIsSelected()
+        compose.onNodeWithText("Moving").assertIsSelected()
         compose.onNodeWithTag("nav-Library").performClick()
         compose.onNodeWithText("After Hours").performClick()
         val background = compose.onNodeWithTag("player-background")
@@ -271,6 +277,7 @@ class RadioShellTest {
         compose.mainClock.autoAdvance = true
         compose.onNodeWithContentDescription("Back").performClick()
         compose.onNodeWithTag("nav-Settings").performClick()
+        compose.onNodeWithTag("settings-appearance").performClick()
         compose.onNodeWithText("Off").performClick()
         compose.onNodeWithTag("nav-Library").performClick()
         compose.onNodeWithText("After Hours").performClick()
@@ -365,6 +372,7 @@ class RadioShellTest {
             runBlocking { db.loudness().save(LocalLoudness(sample.id, sample.uri, sample.modifiedAt, sample.byteSize, 1,
                 dev.radio.mobile.music.LOUDNESS_ALGORITHM, -12.0, .8, "measured", 1)) }
             compose.onNodeWithTag("nav-Settings").performClick()
+            compose.onNodeWithTag("settings-sound").performClick()
             compose.onNodeWithTag("normalization-settings").performScrollTo()
             compose.waitUntil { repository.loudness.state.value.measured == 1 }
             scenario.onActivity { repository.loudness.setEnabled(false) }

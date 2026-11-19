@@ -3,6 +3,7 @@ package dev.radio.mobile.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -71,7 +72,9 @@ private fun Swatch(hex: String, size: Int = 18, selected: Boolean = false, onCli
  */
 @Composable
 fun FeelsScreen(feels: FeelRepository, state: FeelsState, songs: List<LocalSong>, nav: FeelsNav, onNav: (FeelsNav) -> Unit,
-    preview: PreviewController?, sessions: () -> List<List<String>>, onMessage: (String) -> Unit, modifier: Modifier = Modifier) {
+    preview: PreviewController?, sessions: () -> List<List<String>>, onMessage: (String) -> Unit, modifier: Modifier = Modifier,
+    /** "Start radio from this" for a feel with songs in it; Energy is not a station. */
+    onRadio: ((LocalFeel) -> Unit)? = null) {
     val scope = rememberCoroutineScope()
     fun write(block: suspend () -> Result<*>) { scope.launch { block().exceptionOrNull()?.let { onMessage(it.message ?: "Couldn't save that.") } } }
     val open = nav.feelId?.let { id -> state.feels.firstOrNull { it.feel.feelId == id } }
@@ -84,9 +87,10 @@ fun FeelsScreen(feels: FeelRepository, state: FeelsState, songs: List<LocalSong>
         open != null -> FeelDetail(open, state, songs, onSprint = { onNav(FeelsNav(open.feel.feelId, sprint = true)) },
             onPairs = { onNav(FeelsNav(open.feel.feelId, sprint = true, pairs = true)) },
             onEdit = { name, color, archived -> write { feels.edit(open.feel.feelId, name, color, archived) } },
-            onRemove = { song -> write { feels.tag(open.feel.feelId, song, false) } }, modifier = modifier)
+            onRemove = { song -> write { feels.tag(open.feel.feelId, song, false) } }, modifier = modifier,
+            onRadio = onRadio?.takeIf { canStartRadio(open) }?.let { start -> { start(open.feel) } })
         else -> FeelList(state, onOpen = { onNav(FeelsNav(it)) }, onCreate = { name, color -> write { feels.create(name, color) } },
-            onRestore = { write { feels.edit(it, archived = false) } }, modifier = modifier)
+            onRestore = { write { feels.edit(it, archived = false) } }, modifier = modifier, onRadio = onRadio)
     }
 }
 
@@ -120,7 +124,8 @@ private fun FeelSetup(modifier: Modifier, onDone: (Set<String>) -> Unit) {
 }
 
 @Composable
-private fun FeelList(state: FeelsState, onOpen: (String) -> Unit, onCreate: (String, String) -> Unit, onRestore: (String) -> Unit, modifier: Modifier) {
+private fun FeelList(state: FeelsState, onOpen: (String) -> Unit, onCreate: (String, String) -> Unit, onRestore: (String) -> Unit, modifier: Modifier,
+    onRadio: ((LocalFeel) -> Unit)? = null) {
     var adding by remember { mutableStateOf(false) }
     val archived = state.feels.filter { it.feel.archived }
     // Energy first: it is built in and sits above your tags.
@@ -130,7 +135,9 @@ private fun FeelList(state: FeelsState, onOpen: (String) -> Unit, onCreate: (Str
             Text("Tag songs by how they feel to you. Radio uses these alongside its moods.", Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
                 style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
-        items(active, key = { it.feel.feelId }) { FeelRow(it) { onOpen(it.feel.feelId) } }
+        items(active, key = { it.feel.feelId }) { summary ->
+            FeelRow(summary, onRadio = onRadio?.takeIf { canStartRadio(summary) }?.let { start -> { start(summary.feel) } }) { onOpen(summary.feel.feelId) }
+        }
         item {
             TextButton(onClick = { adding = true }, Modifier.padding(horizontal = 12.dp).testTag("add-feel")) {
                 RadioIcon(Symbol.Add, modifier = Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text("Add a feel")
@@ -157,9 +164,18 @@ private fun summaryLine(summary: FeelSummary): String =
     if (isEnergy(summary.feel.feelId)) "Built in · ${summary.rated} rated · ${summary.settled.toInt()}% settled"
     else "${summary.members} songs · ${summary.settled.toInt()}% settled"
 
+/** A feel station needs at least one song in the feel; Energy is a scale, not a station. */
+private fun canStartRadio(summary: FeelSummary) = !isEnergy(summary.feel.feelId) && summary.members > 0
+
 @Composable
-private fun FeelRow(summary: FeelSummary, onClick: () -> Unit) {
-    Row(Modifier.fillMaxWidth().clickable(onClick = onClick).heightIn(min = 60.dp).padding(horizontal = 20.dp, vertical = 6.dp).testTag("feel-${summary.feel.name}"),
+private fun FeelRow(summary: FeelSummary, onRadio: (() -> Unit)? = null, onClick: () -> Unit) {
+    var menu by remember { mutableStateOf(false) }
+    // Long-press offers "Start radio from this" for feels that can be a station.
+    Box { DropdownMenu(menu, { menu = false }) {
+        DropdownMenuItem(text = { Text("Start radio from this") }, leadingIcon = { RadioIcon(Symbol.Radio) }, onClick = { menu = false; onRadio?.invoke() },
+            modifier = Modifier.testTag("feel-radio-${summary.feel.name}"))
+    } }
+    Row(Modifier.fillMaxWidth().combinedClickable(onClick = onClick, onLongClickLabel = if (onRadio != null) "Radio options" else null, onLongClick = onRadio?.let { { menu = true } }).heightIn(min = 60.dp).padding(horizontal = 20.dp, vertical = 6.dp).testTag("feel-${summary.feel.name}"),
         verticalAlignment = Alignment.CenterVertically) {
         Box(Modifier.size(40.dp).background(feelColor(summary.feel.color), RadioShapes.Thumb))
         Column(Modifier.weight(1f).padding(start = 14.dp)) {
@@ -198,7 +214,7 @@ private fun FeelEditDialog(feel: LocalFeel?, onDismiss: () -> Unit, onSave: (nam
 
 @Composable
 private fun FeelDetail(summary: FeelSummary, state: FeelsState, songs: List<LocalSong>, onSprint: () -> Unit, onPairs: () -> Unit,
-    onEdit: (String?, String?, Boolean?) -> Unit, onRemove: (LocalSong) -> Unit, modifier: Modifier) {
+    onEdit: (String?, String?, Boolean?) -> Unit, onRemove: (LocalSong) -> Unit, modifier: Modifier, onRadio: (() -> Unit)? = null) {
     val feel = summary.feel
     var editing by remember { mutableStateOf(false) }
     val energy = isEnergy(feel.feelId)
@@ -216,6 +232,7 @@ private fun FeelDetail(summary: FeelSummary, state: FeelsState, songs: List<Loca
                     feelMeaning(feel.feelId)?.let { Text(it, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.testTag("feel-meaning")) }
                     Text(summaryLine(summary), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
+                if (onRadio != null) IconButton(onClick = onRadio, modifier = Modifier.testTag("feel-radio")) { RadioIcon(Symbol.Radio, "Start radio from ${feel.name}") }
                 TextButton(onClick = { editing = true }, modifier = Modifier.testTag("edit-feel")) { Text("Edit") }
             }
             Button(onClick = onSprint, Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp).heightIn(min = 52.dp).testTag("start-sprint"), shape = RadioShapes.Squircle) {

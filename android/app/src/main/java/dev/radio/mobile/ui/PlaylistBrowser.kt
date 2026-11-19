@@ -25,7 +25,9 @@ fun PlaylistBrowser(state: PlaylistsState, repository: PlaylistRepository, catal
     onSongAction: (SongAction, LocalSong) -> Unit, modifier: Modifier = Modifier,
     currentId: String? = null, onPlayAll: (List<LocalSong>, PlaySource, Boolean) -> Unit = { list, source, _ -> list.firstOrNull { it.available }?.let { onPlay(it, list, source) } },
     /** Listening history for the automatic playlists; without it they are not shown. */
-    smartRows: Flow<List<SmartListRow>>? = null, favorites: Set<String> = emptySet()) {
+    smartRows: Flow<List<SmartListRow>>? = null, favorites: Set<String> = emptySet(),
+    /** "Start radio from this": the list's name and its available songs, in order. */
+    onRadio: (String, List<String>) -> Unit = { _, _ -> }) {
     val scope = rememberCoroutineScope()
     var nameDialog by remember { mutableStateOf(false) }
     var deleting by remember { mutableStateOf<LocalPlaylist?>(null) }
@@ -47,6 +49,7 @@ fun PlaylistBrowser(state: PlaylistsState, repository: PlaylistRepository, catal
     val smartSongs = remember(smartLists, smart, byId) { smart?.let { smartLists?.get(it) }.orEmpty().distinct().mapNotNull(byId::get) }
     val ids = remember(state.entries, selectedId) { selectedId?.let(state::songIds).orEmpty() }
     val songs = remember(ids, catalog) { ids.mapNotNull(byId::get) }
+    fun radioFrom(name: String, list: List<String>) { val ids = list.filter { it in available }.distinct(); if (ids.isNotEmpty()) onRadio(name, ids) }
     fun report(result: Result<Unit>) { result.exceptionOrNull()?.let { message = it.message ?: "Couldn't update playlist." } }
     val listState = rememberLazyListState()
     // Inside a playlist: long-press a song to drag it, swipe it sideways to remove it.
@@ -58,6 +61,9 @@ fun PlaylistBrowser(state: PlaylistsState, repository: PlaylistRepository, catal
                 Text(if (smartLists == null) "Loading…" else "${smartSongs.size} songs", Modifier.weight(1f), style = MaterialTheme.typography.labelMedium)
                 TextButton(onClick = { onPlayAll(smartSongs, PlaySource(smart.title, PlaySource.SMART_LIST, smart.id), false) }, enabled = accessAllowed && smartSongs.isNotEmpty(), modifier = Modifier.testTag("smart-play")) { Text("Play") }
                 TextButton(onClick = { onPlayAll(smartSongs, PlaySource(smart.title, PlaySource.SMART_LIST, smart.id), true) }, enabled = accessAllowed && smartSongs.size > 1, modifier = Modifier.testTag("smart-shuffle")) { Text("Shuffle") }
+                IconButton(onClick = { radioFrom(smart.title, smartSongs.map { it.id }) }, enabled = accessAllowed && smartSongs.any { it.available }, modifier = Modifier.testTag("smart-radio")) {
+                    RadioIcon(Symbol.Radio, "Start radio from ${smart.title}")
+                }
             } else if (selected == null) {
                 Text("${state.playlists.size} playlists", Modifier.weight(1f), style = MaterialTheme.typography.labelLarge)
                 TextButton(onClick = { nameDialog = true }) { Text("New playlist") }
@@ -70,6 +76,8 @@ fun PlaylistBrowser(state: PlaylistsState, repository: PlaylistRepository, catal
                 Box {
                     IconButton(onClick = { menu = true }) { RadioIcon(Symbol.More, "Playlist options") }
                     DropdownMenu(menu, { menu = false }) {
+                        DropdownMenuItem(text = { Text("Start radio from this") }, enabled = accessAllowed && songs.any { it.available }, leadingIcon = { RadioIcon(Symbol.Radio) },
+                            onClick = { menu = false; radioFrom(selected.name, ids) }, modifier = Modifier.testTag("playlist-radio"))
                         SyncMenuItem(selected, state.paired) { menu = false; scope.launch { report(if (selected.synced) repository.stopSharing(selected.id) else repository.share(selected.id)) } }
                         DropdownMenuItem(text = { Text("Rename playlist") }, onClick = { menu = false; renaming = selected })
                         DropdownMenuItem(text = { Text("Delete playlist") }, onClick = { menu = false; deleting = selected })
@@ -91,12 +99,12 @@ fun PlaylistBrowser(state: PlaylistsState, repository: PlaylistRepository, catal
             if (smart != null) {
                 if (smart == SmartList.Heard) itemsIndexed(heard, key = { index, _ -> "heard:$index" }) { _, (song, at) ->
                     // Repeats are kept; one tap plays that song again (alone), the time says when it was heard.
-                    SwipeSongRow(song, onSongAction) { LibraryRow(song.title, heardTime(at) + " · " + songSubtitle(song), Symbol.History, playing = song.id == currentId,
-                        trailing = { SongActions(song, onSongAction) }) { if (accessAllowed) onPlay(song, listOf(song), PlaySource(smart.title, PlaySource.SMART_LIST, smart.id)) } }
+                    SwipeSongRow(song, onSongAction) { val songMenu = remember { mutableStateOf(false) }; LibraryRow(song.title, heardTime(at) + " · " + songSubtitle(song), Symbol.History, playing = song.id == currentId,
+                        onLongClick = { songMenu.value = true }, trailing = { SongActions(song, onSongAction, songMenu) }) { if (accessAllowed) onPlay(song, listOf(song), PlaySource(smart.title, PlaySource.SMART_LIST, smart.id)) } }
                 } else itemsIndexed(smartSongs, key = { _, it -> it.id }) { index, song ->
                     // The Top 100 shows each song's place.
-                    SwipeSongRow(song, onSongAction) { LibraryRow(if (smart == SmartList.Top) "${index + 1}. ${song.title}" else song.title, songSubtitle(song), Symbol.Music, playing = song.id == currentId,
-                        trailing = { SongActions(song, onSongAction) }) { if (accessAllowed) onPlay(song, smartSongs, PlaySource(smart.title, PlaySource.SMART_LIST, smart.id)) } }
+                    SwipeSongRow(song, onSongAction) { val songMenu = remember { mutableStateOf(false) }; LibraryRow(if (smart == SmartList.Top) "${index + 1}. ${song.title}" else song.title, songSubtitle(song), Symbol.Music, playing = song.id == currentId,
+                        onLongClick = { songMenu.value = true }, trailing = { SongActions(song, onSongAction, songMenu) }) { if (accessAllowed) onPlay(song, smartSongs, PlaySource(smart.title, PlaySource.SMART_LIST, smart.id)) } }
                 }
                 if (smartLists != null && smartSongs.isEmpty()) item {
                     Text(when (smart) {
@@ -119,15 +127,19 @@ fun PlaylistBrowser(state: PlaylistsState, repository: PlaylistRepository, catal
                     item { Text("Your playlists", Modifier.padding(start = 20.dp, top = 16.dp, bottom = 4.dp), style = MaterialTheme.typography.labelLarge) }
                 }
                 itemsIndexed(state.playlists, key = { _, it -> it.id }) { _, playlist ->
+                    val rowMenu = remember { mutableStateOf(false) }
                     LibraryRow(playlist.name, "${state.songIds(playlist.id).size} songs" + when {
                         playlist.remoteDeleted -> " · Deleted on desktop"
                         playlist.synced -> " · Synced"
                         else -> ""
-                    }, Symbol.Queue, trailing = {
-                        var open by remember { mutableStateOf(false) }
+                    }, Symbol.Queue, onLongClick = { rowMenu.value = true }, trailing = {
+                        var open by rowMenu
                         Box {
                             IconButton(onClick = { open = true }) { RadioIcon(Symbol.More, "Options for playlist ${playlist.name}") }
                             DropdownMenu(open, { open = false }) {
+                                val playlistIds = state.songIds(playlist.id)
+                                DropdownMenuItem(text = { Text("Start radio from this") }, enabled = accessAllowed && playlistIds.any { it in available }, leadingIcon = { RadioIcon(Symbol.Radio) },
+                                    onClick = { open = false; radioFrom(playlist.name, playlistIds) }, modifier = Modifier.testTag("playlist-radio-${playlist.id}"))
                                 SyncMenuItem(playlist, state.paired) { open = false; scope.launch { report(if (playlist.synced) repository.stopSharing(playlist.id) else repository.share(playlist.id)) } }
                                 DropdownMenuItem(text = { Text("Rename playlist") }, onClick = { open = false; renaming = playlist })
                                 DropdownMenuItem(text = { Text("Delete playlist") }, onClick = { open = false; deleting = playlist })

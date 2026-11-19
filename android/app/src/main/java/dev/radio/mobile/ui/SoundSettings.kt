@@ -105,6 +105,6 @@ fun EqualizerScreen(store: AudioSettingsStore) {
         Modifier.padding(vertical = 8.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
 }
 
-private fun speedLabel(speed: Float) = (if (speed == speed.toInt().toFloat()) speed.toInt().toString() else speed.toString().trimEnd('0')) + "×"
+internal fun speedLabel(speed: Float) = (if (speed == speed.toInt().toFloat()) speed.toInt().toString() else speed.toString().trimEnd('0')) + "×"
 private fun frequencyLabel(hz: Int) = if (hz >= 1000) "${if (hz % 1000 == 0) (hz / 1000).toString() else "%.1f".format(hz / 1000f)} kHz" else "$hz Hz"
 private fun dbLabel(db: Float) = db.roundToInt().let { (if (it > 0) "+" else "") + "$it dB" }

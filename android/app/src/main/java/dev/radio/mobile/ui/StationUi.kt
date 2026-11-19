@@ -159,9 +159,10 @@ fun OnAirStationCard(audio: PlaybackState, radio: RadioState, onOpenPlayer: () -
         Row(verticalAlignment = Alignment.CenterVertically) {
             OnAirPill("On air")
             Spacer(Modifier.weight(1f))
-            // A feel station names the feel (checkpoint 9C); otherwise the mood.
+            // A feel station names the feel (checkpoint 9C), a song or playlist station its start; otherwise the mood.
             Box(Modifier.padding(end = 6.dp).size(8.dp).background(feel?.let { feelColor(it.color) } ?: Color(MoodColors.of(radio.mood).accent), CircleShape))
-            Text("${feel?.name ?: moodLabel(radio.mood)} · ${ExplorationPreset.nearest(radio.exploration).label}", color = muted, fontSize = 12.sp, modifier = Modifier.testTag("station-tuning-label"))
+            Text("${stationName(radio, feel)} · ${ExplorationPreset.nearest(radio.exploration).label}", color = muted, fontSize = 12.sp, maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false).testTag("station-tuning-label"))
         }
         if (song != null) Row(Modifier.fillMaxWidth().clickable(role = Role.Button, onClickLabel = "Open player", onClick = onOpenPlayer).testTag("station-now-playing"),
             verticalAlignment = Alignment.CenterVertically) {
@@ -468,6 +469,10 @@ fun WhyThisSongSheet(song: LocalSong?, origin: StationOrigin?, radio: RadioState
     }
 }
 
+/** What the on-air card calls the station: the feel, "<song or playlist> radio", or the mood. */
+internal fun stationName(radio: RadioState, feel: dev.radio.mobile.data.LocalFeel?): String =
+    feel?.name ?: radio.seed?.let { "${it.label.ifBlank { "Song" }} radio" } ?: moodLabel(radio.mood)
+
 internal fun originExplanation(origin: StationOrigin?) = when (origin) {
     StationOrigin.Start -> "You started the station from this song."
     StationOrigin.Similar -> "Similar sound to the song before it."
@@ -478,6 +483,7 @@ internal fun originExplanation(origin: StationOrigin?) = when (origin) {
     StationOrigin.Context -> "Fits right now, close in energy to the last song."
     StationOrigin.Vibe -> "Matches the locked vibe."
     StationOrigin.Feel -> "In your feel, or close to songs that are."
+    StationOrigin.Seed -> "Sounds like the song or playlist you started this station from."
     StationOrigin.Desktop -> "Picked by your desktop."
     StationOrigin.User -> "You added this song."
     null -> "Radio picked this song on this phone."

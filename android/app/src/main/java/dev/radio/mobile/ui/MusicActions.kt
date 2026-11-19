@@ -17,17 +17,20 @@ import androidx.compose.ui.unit.dp
 import dev.radio.mobile.data.*
 import kotlinx.coroutines.launch
 
-enum class SongAction { PlayNext, AddToQueue, AddToPlaylist, Stats }
+enum class SongAction { PlayNext, AddToQueue, AddToPlaylist, Stats, Radio }
 
 @Composable
-fun SongActions(song: LocalSong, onAction: (SongAction, LocalSong) -> Unit) {
-    var open by remember { mutableStateOf(false) }
+fun SongActions(song: LocalSong, onAction: (SongAction, LocalSong) -> Unit, menu: MutableState<Boolean> = remember { mutableStateOf(false) }) {
+    // Hoisted so a long-press on the row opens the same menu.
+    var open by menu
     Box {
         IconButton(onClick = { open = true }, modifier = Modifier.testTag("song-menu-${song.id}")) { RadioIcon(Symbol.More, "Options for ${song.title}") }
         DropdownMenu(open, onDismissRequest = { open = false }) {
             DropdownMenuItem(text = { Text("Play next") }, enabled = song.available, onClick = { open = false; onAction(SongAction.PlayNext, song) })
             DropdownMenuItem(text = { Text("Add to queue") }, enabled = song.available, onClick = { open = false; onAction(SongAction.AddToQueue, song) })
             DropdownMenuItem(text = { Text("Add to playlist") }, onClick = { open = false; onAction(SongAction.AddToPlaylist, song) })
+            DropdownMenuItem(text = { Text("Start radio from this") }, enabled = song.available, onClick = { open = false; onAction(SongAction.Radio, song) },
+                leadingIcon = { RadioIcon(Symbol.Radio) }, modifier = Modifier.testTag("song-radio-${song.id}"))
             DropdownMenuItem(text = { Text("Song stats") }, onClick = { open = false; onAction(SongAction.Stats, song) }, modifier = Modifier.testTag("song-stats-${song.id}"))
         }
     }

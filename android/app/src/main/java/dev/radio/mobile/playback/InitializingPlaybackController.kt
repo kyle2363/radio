@@ -36,6 +36,7 @@ internal class InitializingPlaybackController(private val engine: PlaybackContro
     override fun sleepAtQueueEnd() = command { engine.sleepAtQueueEnd() }
     override fun cancelSleepTimer() = command { engine.cancelSleepTimer() }
     override fun startRadio(seedLocalId: String?) = command { engine.startRadio(seedLocalId) }
+    override fun startStation(station: dev.radio.mobile.recommendation.SeedSpec) = command { engine.startStation(station) }
     override fun stopRadio() = command { engine.stopRadio() }
     override fun endRadio(stopNow: Boolean) = command { engine.endRadio(stopNow) }
     override fun newMix() = command { engine.newMix() }

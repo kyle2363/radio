@@ -54,7 +54,9 @@ enum class Symbol(val path: String, val filled: Boolean = false) {
     Chart("M5 20 V13 M12 20 V5 M19 20 V9 M3 20 H21"),
     Person("M16 8 A4 4 0 1 1 8 8 A4 4 0 1 1 16 8 M4 21 C4 16 8 14 12 14 C16 14 20 16 20 21"),
     Sliders("M6 4 V20 M12 4 V20 M18 4 V20 M3 9 H9 M9 15 H15 M15 7 H21"),
-    Forward("M9 5 L16 12 L9 19")
+    Forward("M9 5 L16 12 L9 19"),
+    Desktop("M3 4 H21 V16 H3 Z M8 20 H16 M12 16 V20"),
+    Palette("M12 3 A9 9 0 1 0 12 21 C14 21 14 19 13 18 C12 17 13 15 15 15 H17 A4 4 0 0 0 21 11 C21 6.5 17 3 12 3 Z M7.5 11 V11.5 M10 7 V7.5 M15 7 V7.5")
 }
 
 private val vectors = Symbol.entries.associateWith { symbol ->

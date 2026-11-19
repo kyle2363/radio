@@ -114,6 +114,7 @@ class RadioUiTest {
                 compose.onNodeWithContentDescription("Back").performClick()
 
                 compose.onNodeWithTag("nav-Settings").performClick()
+                compose.onNodeWithTag("settings-appearance").performClick()
                 compose.onNodeWithText("Dark").performClick()
                 compose.onNodeWithTag("nav-Radio").performClick()
                 capture("radio-dark.png")

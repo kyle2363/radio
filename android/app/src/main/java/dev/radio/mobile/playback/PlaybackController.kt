@@ -80,6 +80,8 @@ interface PlaybackController {
     fun sleepAtQueueEnd() = sleepAtTrackEnd()
     fun cancelSleepTimer()
     fun startRadio(seedLocalId: String? = null) = Unit
+    /** "Start radio from this" for a song or playlist: the station keeps sounding like [station] as it refills. */
+    fun startStation(station: dev.radio.mobile.recommendation.SeedSpec) = Unit
     fun stopRadio() = Unit
     /** End the station: finish what's queued (radio stops adding), or stop now (pause and keep a normal queue). */
     fun endRadio(stopNow: Boolean) { if (stopNow) pause(); stopRadio() }
