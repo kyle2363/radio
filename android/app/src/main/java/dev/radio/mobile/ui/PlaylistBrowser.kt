@@ -91,7 +91,7 @@ fun PlaylistBrowser(state: PlaylistsState, repository: PlaylistRepository, catal
             if (smart != null) {
                 if (smart == SmartList.Heard) itemsIndexed(heard, key = { index, _ -> "heard:$index" }) { _, (song, at) ->
                     // Repeats are kept; one tap plays that song again (alone), the time says when it was heard.
-                    SwipeSongRow(song, onSongAction) { LibraryRow(song.title, heardTime(at) + " · " + songSubtitle(song), Symbol.Clock, playing = song.id == currentId,
+                    SwipeSongRow(song, onSongAction) { LibraryRow(song.title, heardTime(at) + " · " + songSubtitle(song), Symbol.History, playing = song.id == currentId,
                         trailing = { SongActions(song, onSongAction) }) { if (accessAllowed) onPlay(song, listOf(song), PlaySource(smart.title, PlaySource.SMART_LIST, smart.id)) } }
                 } else itemsIndexed(smartSongs, key = { _, it -> it.id }) { index, song ->
                     // The Top 100 shows each song's place.
@@ -112,8 +112,9 @@ fun PlaylistBrowser(state: PlaylistsState, repository: PlaylistRepository, catal
                     item { Text("Made from your listening", Modifier.padding(start = 20.dp, top = 8.dp, bottom = 4.dp), style = MaterialTheme.typography.labelLarge) }
                     itemsIndexed(SmartList.entries, key = { _, it -> it.id }) { _, list ->
                         val count = smartLists?.get(list)?.size
-                        LibraryRow(list.title, if (count == null) list.description else "$count songs · ${list.description}",
-                            when (list) { SmartList.Top -> Symbol.Chart; SmartList.Recent -> Symbol.Clock; SmartList.Liked -> Symbol.HeartFilled; SmartList.Gems -> Symbol.Gem; SmartList.Heard -> Symbol.Clock }) { onSelect(list.id) }
+                        // Recently heard keeps repeats, so its count is plays, not songs.
+                        LibraryRow(list.title, if (count == null) list.description else "$count ${if (list == SmartList.Heard) (if (count == 1) "play" else "plays") else (if (count == 1) "song" else "songs")} · ${list.description}",
+                            when (list) { SmartList.Top -> Symbol.Chart; SmartList.Recent -> Symbol.Clock; SmartList.Liked -> Symbol.HeartFilled; SmartList.Gems -> Symbol.Gem; SmartList.Heard -> Symbol.History }) { onSelect(list.id) }
                     }
                     item { Text("Your playlists", Modifier.padding(start = 20.dp, top = 16.dp, bottom = 4.dp), style = MaterialTheme.typography.labelLarge) }
                 }

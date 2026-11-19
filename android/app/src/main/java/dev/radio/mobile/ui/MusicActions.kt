@@ -1,6 +1,8 @@
 package dev.radio.mobile.ui
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.selection.toggleable
@@ -81,7 +83,8 @@ fun PlaylistDestinationDialog(songIds: List<String>, playlists: PlaylistsState, 
 }
 
 /**
- * Checkpoint 11: swipe a song row right to play it next, left to add it to the queue. The row springs back;
+ * Checkpoint 11: swipe a song row right to play it next, left to add it to the queue. A tinted block with an icon shows
+ * which action is coming and deepens as the swipe nears the threshold; the row then slides back into place.
  * [onAction] shows the usual short confirmation. Unavailable songs don't swipe.
  */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -90,21 +93,33 @@ fun SwipeSongRow(song: LocalSong, onAction: (SongAction, LocalSong) -> Unit, con
     if (!song.available) { content(); return }
     val state = rememberSwipeToDismissBoxState()
     val scope = rememberCoroutineScope()
+    val act by rememberUpdatedState(onAction)
     SwipeToDismissBox(state, modifier = Modifier.testTag("swipe-${song.id}"),
         onDismiss = { value ->
             when (value) {
-                SwipeToDismissBoxValue.StartToEnd -> onAction(SongAction.PlayNext, song)
-                SwipeToDismissBoxValue.EndToStart -> onAction(SongAction.AddToQueue, song)
+                SwipeToDismissBoxValue.StartToEnd -> act(SongAction.PlayNext, song)
+                SwipeToDismissBoxValue.EndToStart -> act(SongAction.AddToQueue, song)
                 SwipeToDismissBoxValue.Settled -> Unit
             }
-            scope.launch { state.snapTo(SwipeToDismissBoxValue.Settled) }
+            // Slide back rather than snapping: the song stays in the list.
+            scope.launch { state.reset() }
         },
         backgroundContent = {
             val direction = state.dismissDirection
-            val label = when (direction) { SwipeToDismissBoxValue.StartToEnd -> "Play next"; SwipeToDismissBoxValue.EndToStart -> "Add to queue"; else -> "" }
-            Box(Modifier.fillMaxSize().padding(horizontal = 24.dp),
-                contentAlignment = if (direction == SwipeToDismissBoxValue.EndToStart) Alignment.CenterEnd else Alignment.CenterStart) {
-                if (label.isNotEmpty()) Text(label, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+            if (direction == SwipeToDismissBoxValue.Settled) return@SwipeToDismissBox
+            val next = direction == SwipeToDismissBoxValue.StartToEnd
+            val colors = MaterialTheme.colorScheme
+            val container = if (next) colors.primaryContainer else colors.tertiaryContainer
+            val onContainer = if (next) colors.onPrimaryContainer else colors.onTertiaryContainer
+            // Fades in over the first part of the swipe so a small nudge stays quiet.
+            val strength = (state.progress * 2.5f).coerceIn(0f, 1f)
+            Row(Modifier.fillMaxSize().padding(horizontal = 8.dp, vertical = 2.dp)
+                .background(container.copy(alpha = .35f + .65f * strength), RoundedCornerShape(20.dp)).padding(horizontal = 20.dp),
+                horizontalArrangement = if (next) Arrangement.Start else Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
+                CompositionLocalProvider(LocalContentColor provides onContainer) {
+                    if (next) { RadioIcon(Symbol.Next); Spacer(Modifier.width(12.dp)); Text("Play next", style = MaterialTheme.typography.labelLarge) }
+                    else { Text("Add to queue", style = MaterialTheme.typography.labelLarge); Spacer(Modifier.width(12.dp)); RadioIcon(Symbol.Queue) }
+                }
             }
         }) {
         Surface(color = MaterialTheme.colorScheme.surface) { content() }

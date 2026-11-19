@@ -58,6 +58,8 @@ interface PlaybackController {
     fun playFrom(items: List<LocalSong>, selectedId: String, source: PlaySource)
     fun playFrom(items: List<LocalSong>, selectedId: String, source: String) = playFrom(items, selectedId, PlaySource.of(source))
     fun toggle()
+    /** Starts or resumes; never pauses. With nothing queued it resumes the bookmark or starts Radio, like Play. */
+    fun play() { if (!state.value.playWhenReady) toggle() }
     fun pause()
     fun next()
     fun next(reason: String) = next()

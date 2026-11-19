@@ -412,6 +412,7 @@ class LocalPlaybackController(
         if (player.playWhenReady && player.playbackState != Player.STATE_ENDED) { pause(); return }
         resume()
     }
+    override fun play() { if (closed || (player.playWhenReady && player.playbackState != Player.STATE_ENDED)) return; resume() }
     /** Checkpoint 11: what Play does with nothing queued (the service resumes the bookmark or starts Radio). */
     internal var onEmptyPlay: () -> Unit = {}
     private fun resume() {

@@ -17,6 +17,7 @@ internal class InitializingPlaybackController(private val engine: PlaybackContro
         command { engine.playFrom(snapshot, selectedId, source) }
     }
     override fun toggle() = command { engine.toggle() }
+    override fun play() = command { engine.play() }
     override fun pause() = command { engine.pause() }
     override fun seek(positionMs: Long) = command { engine.seek(positionMs) }
     override fun next() = command { engine.next() }

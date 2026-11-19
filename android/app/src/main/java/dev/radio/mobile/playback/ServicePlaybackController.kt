@@ -78,6 +78,8 @@ class ServicePlaybackController(context: Context) : PlaybackController {
         command { it.playFrom(snapshot, selectedId, source) }
     }
     override fun toggle() = command { it.toggle() }
+    // Decided by the service once bound: before binding this controller can't know whether music is already playing.
+    override fun play() = command { it.play() }
     override fun pause() = command { it.pause() }
     override fun next() = command { it.next() }
     override fun next(reason: String) = command { it.next(reason) }

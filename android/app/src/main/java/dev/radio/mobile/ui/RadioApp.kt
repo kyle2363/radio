@@ -261,7 +261,9 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
             ShortcutRequest.RADIO -> navigate("Radio")
             ShortcutRequest.LIKED -> { category = "Playlists"; playlistId = dev.radio.mobile.data.SmartList.Liked.id; navigate("Library") }
             ShortcutRequest.SHUFFLE -> { if (library.loading) return@LaunchedEffect; playAll(library.songs, PlaySource.AllSongs, true); if (!stationMode) navigate("Now playing") }
-            ShortcutRequest.RESUME -> { if (!audio.playWhenReady) playback.toggle(); navigate("Now playing") }
+            // play(), not toggle(): the UI's state is still empty before the service binds, and toggle would pause music
+            // that is already playing.
+            ShortcutRequest.RESUME -> { playback.play(); navigate("Now playing") }
         }
         handledShortcut = request.serial
     }
@@ -449,11 +451,8 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
                     } }
                     if (query.isNotBlank() && results.isEmpty()) Text("No matching songs", Modifier.padding(20.dp))
                 }
-                "Now playing" -> if (song == null && !tuningIn) Column(Modifier.padding(insets).padding(20.dp)) {
-                    audio.error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(bottom = 12.dp)) }
-                    Text("Choose a song from your library.")
-                    TextButton(onClick = { navigate("Library") }) { Text("Browse music") }
-                } else BoxWithConstraints(Modifier.consumeWindowInsets(insets).fillMaxSize()) {
+                "Now playing" -> if (song == null && !tuningIn) NothingPlaying(repository, library, audio.error, onResume = { playback.play() },
+                    onRadio = { playback.startRadio(null) }, onBrowse = { navigate("Library") }, modifier = Modifier.padding(insets)) else BoxWithConstraints(Modifier.consumeWindowInsets(insets).fillMaxSize()) {
                     // The backdrop fills the whole screen (behind the transparent top bar); only the content is inset.
                     val compact = maxHeight - insets.calculateTopPadding() - insets.calculateBottomPadding() < 520.dp
                     // On air the glow takes the station's mood colour; normal playback keeps the palette colour.
@@ -509,14 +508,13 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
                             }
                         }
                         if (audio.error != null && shown != "radio") Text(audio.error!!, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp).testTag("playback-error"))
-                        if (audio.sleepTimer.active && !audio.radioActive) TextButton(onClick = { showSleep = true }, modifier = Modifier.align(Alignment.CenterHorizontally).testTag("sleep-countdown")) { Text("Sleep · ${sleepLabel(liveSleep.value)}") }
                         if (shown != "radio") PlayerTransport(audio, playback, positionMs, onScrub = { scrubMs = (it * 1000).toLong() },
                             onScrubFinished = { scrubMs?.let { playback.seek(it) }; scrubMs = null },
                             canRead = !library.accessLost && song.available, queueVisible = shown == "queue",
                             onQueueToggle = { showQueue = !showQueue }, modifier = Modifier.padding(horizontal = 24.dp), compact = compact)
-                        if(!audio.radioActive)Row(Modifier.fillMaxWidth().padding(horizontal=24.dp),horizontalArrangement=Arrangement.SpaceEvenly,verticalAlignment=Alignment.CenterVertically){
-                            run {TextButton(onClick={playback.setRepeat(when(audio.repeat){RepeatMode.OFF->RepeatMode.ALL;RepeatMode.ALL->RepeatMode.ONE;RepeatMode.ONE->RepeatMode.OFF})},modifier=Modifier.testTag("player-repeat")){Text("Repeat · ${audio.repeat.name.lowercase()}")};TextButton(onClick={showSleep=true},modifier=Modifier.semantics{contentDescription="Sleep timer"}){Text("Sleep")};if(shown != "queue")FilledTonalButton(onClick={showLyricsSheet=true},modifier=Modifier.testTag("open-lyrics-button")){Text("Lyrics")}}
-                        }
+                        if (!audio.radioActive) PlayerExtras(audio.repeat, liveSleep, showLyrics = shown != "queue",
+                            onRepeat = { playback.setRepeat(when (audio.repeat) { RepeatMode.OFF -> RepeatMode.ALL; RepeatMode.ALL -> RepeatMode.ONE; RepeatMode.ONE -> RepeatMode.OFF }) },
+                            onSleep = { showSleep = true }, onLyrics = { showLyricsSheet = true }, modifier = Modifier.padding(horizontal = 24.dp))
                     }
                     }
                 }
@@ -781,5 +779,58 @@ data class ShortcutRequest(val action: String, val serial: Int) {
         const val SHUFFLE = "dev.radio.mobile.SHORTCUT_SHUFFLE"
         const val RESUME = "dev.radio.mobile.SHORTCUT_RESUME"
         val ACTIONS = setOf(RADIO, LIKED, SHUFFLE, RESUME)
+    }
+}
+
+
+/**
+ * Repeat, sleep and lyrics under the transport, as icons like the rest of the player. While a timer runs the sleep
+ * control itself shows the countdown, so there is one sleep control, not two.
+ */
+@Composable
+private fun PlayerExtras(repeat: RepeatMode, sleep: State<SleepTimerState>, showLyrics: Boolean, onRepeat: () -> Unit, onSleep: () -> Unit, onLyrics: () -> Unit, modifier: Modifier = Modifier) {
+    Row(modifier.fillMaxWidth().padding(bottom = 8.dp), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
+        val repeatLabel = when (repeat) { RepeatMode.OFF -> "Repeat off"; RepeatMode.ALL -> "Repeat all"; RepeatMode.ONE -> "Repeat one" }
+        IconToggleButton(repeat != RepeatMode.OFF, onCheckedChange = { onRepeat() }, modifier = Modifier.testTag("player-repeat").semantics { stateDescription = repeatLabel }) {
+            RadioIcon(if (repeat == RepeatMode.ONE) Symbol.RepeatOne else Symbol.Repeat, "Repeat")
+        }
+        val timer = sleep.value
+        if (timer.active) FilledTonalButton(onClick = onSleep, contentPadding = PaddingValues(horizontal = 14.dp),
+            modifier = Modifier.testTag("sleep-countdown").semantics { contentDescription = "Sleep timer, ${sleepLabel(timer)}" }) {
+            RadioIcon(Symbol.Moon, modifier = Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text(sleepLabel(timer))
+        } else IconButton(onClick = onSleep, modifier = Modifier.testTag("player-sleep")) { RadioIcon(Symbol.Moon, "Sleep timer") }
+        if (showLyrics) IconButton(onClick = onLyrics, modifier = Modifier.testTag("open-lyrics-button")) { RadioIcon(Symbol.Lyrics, "Lyrics") }
+    }
+}
+
+/** Now Playing with nothing queued: resume the saved session if there is one, or let Radio pick. */
+@Composable
+private fun NothingPlaying(repository: LibraryRepository, library: LibraryState, error: String?, onResume: () -> Unit, onRadio: () -> Unit, onBrowse: () -> Unit, modifier: Modifier = Modifier) {
+    // A bookmark only survives here when restoration hasn't consumed it; Play then resumes it (see onEmptyPlay).
+    val saved by produceState<String?>(null, library.loading) {
+        value = runCatching { repository.playbackSnapshots.load() }.getOrNull()?.currentId?.let { id -> library.songs.firstOrNull { it.id == id && it.available }?.title }
+    }
+    val canPlay = !library.loading && !library.accessLost && library.songs.any { it.available }
+    Column(modifier.fillMaxSize().padding(24.dp).testTag("nothing-playing"), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+        Box(Modifier.size(120.dp).background(MaterialTheme.colorScheme.secondaryContainer, RadioShapes.Squircle), contentAlignment = Alignment.Center) {
+            CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.onSecondaryContainer) { RadioIcon(Symbol.Music, modifier = Modifier.size(48.dp)) }
+        }
+        Spacer(Modifier.height(24.dp))
+        Text("Nothing playing", style = MaterialTheme.typography.titleLarge)
+        Text(if (saved != null) "Pick up where you left off, or let Radio choose." else if (canPlay) "Let Radio pick from your library, or choose a song." else "Choose a music folder to start listening.",
+            Modifier.padding(top = 8.dp), color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+        error?.let { Text(it, Modifier.padding(top = 12.dp), color = MaterialTheme.colorScheme.error, textAlign = androidx.compose.ui.text.style.TextAlign.Center) }
+        Spacer(Modifier.height(24.dp))
+        saved?.let { title ->
+            Button(onClick = onResume, enabled = canPlay, modifier = Modifier.fillMaxWidth().testTag("nothing-resume")) {
+                RadioIcon(Symbol.Play, modifier = Modifier.size(18.dp)); Spacer(Modifier.width(8.dp))
+                Text("Resume · $title", maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            Spacer(Modifier.height(8.dp))
+        }
+        val radio: @Composable RowScope.() -> Unit = { RadioIcon(Symbol.Radio, modifier = Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text("Start Radio") }
+        if (saved == null) Button(onClick = onRadio, enabled = canPlay, modifier = Modifier.fillMaxWidth().testTag("nothing-radio"), content = radio)
+        else FilledTonalButton(onClick = onRadio, enabled = canPlay, modifier = Modifier.fillMaxWidth().testTag("nothing-radio"), content = radio)
+        TextButton(onClick = onBrowse, modifier = Modifier.padding(top = 4.dp)) { Text("Browse music") }
     }
 }
