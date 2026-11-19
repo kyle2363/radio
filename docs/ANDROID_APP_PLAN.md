@@ -6,8 +6,8 @@ Integration: `android-app`, based on `stability-server-architecture`, reviewed f
 ## Visual redesign checkpoint 6 — November 16, 2026
 
 Phone-accepted November 17, 2026 on `android-6-visual-redesign`; not yet merged into `main`.
-Design canvas: [Radio mobile redesign directions](https://claude.ai/artifact/BVVjtfJeH6ktGmFAyMn2Fy)
-(the "Hybrid" rows). Presentation only: no schema, wire or playback-service change.
+Design canvas: "Radio mobile redesign directions" (the "Hybrid" rows).
+Presentation only: no schema, wire or playback-service change.
 
 - **Foundations.** Heavier headings (`ui/theme/Type.kt`), rounder Material shapes
   and a small shape vocabulary (`ui/theme/Shape.kt`), and one colour set per Radio
