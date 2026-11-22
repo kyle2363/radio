@@ -101,6 +101,33 @@ class LocalMatchingTest {
    assertEquals("one",restored.entries.getValue(local.id).songId)
   } finally {library.close();db.close()}
  }
+ @Test fun leavingTheMatchingScreenMidLoadStillRepublishesMatches()=runBlocking {
+  // Opening Server settings reloads matches, clearing the published ones first. Leaving the screen cancelled the
+  // reload and left every song local-only until the app restarted.
+  fixture("reset");fixture("grant")
+  val db=Room.inMemoryDatabaseBuilder(context,LibraryDatabase::class.java).build()
+  val library=LibraryRepository(context,db)
+  try {
+   withTimeout(5000){library.state.first{!it.loading}}
+   library.chooseFolder(FixtureDocumentsProvider.tree()).join()
+   val local=library.state.value.songs.first()
+   val bytes=context.contentResolver.openInputStream(Uri.parse(local.uri))!!.use{it.readBytes()}
+   val digest=MessageDigest.getInstance("SHA-256").digest(bytes).joinToString(""){"%02x".format(it)}
+   db.catalogs().saveRevision(PortableCatalogRevision("leave","server","catalog",1,"{}",1,0,1))
+   db.catalogs().saveSongs(listOf(PortableCatalogSong("leave","one","{\"artist\":\"Artist\",\"content_sha256\":\"$digest\",\"title\":\"Original\"}")))
+   db.catalogs().activate(PortableCatalogActive("server","catalog",1,"leave"))
+   MatchingRepository(context,db).apply{matchLocalSongs();confirm(local.id,"one")}
+   withTimeout(5000){JournalIdentityProvider.mappings.first{it.loaded && it.entries.containsKey(local.id)}}
+   val entered=CompletableDeferred<Unit>();val release=CompletableDeferred<Unit>()
+   val screen=MatchingRepository(context,db,beforeCheck={entered.complete(Unit);release.await()})
+   val job=launch(Dispatchers.IO){screen.load()}
+   withTimeout(5000){entered.await()}
+   assertFalse(JournalIdentityProvider.mappings.value.loaded)
+   job.cancel();release.complete(Unit)
+   val restored=withTimeout(5000){JournalIdentityProvider.mappings.first{it.loaded && it.entries.containsKey(local.id)}}
+   assertEquals("one",restored.entries.getValue(local.id).songId)
+  } finally {library.close();db.close()}
+ }
  @Test fun cancelledMatchDoesNotPublishResults()=runBlocking {
   val db=Room.inMemoryDatabaseBuilder(context,LibraryDatabase::class.java).build()
   try {

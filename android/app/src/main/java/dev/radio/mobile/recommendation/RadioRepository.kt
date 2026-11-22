@@ -38,7 +38,9 @@ private const val PLAYED_WINDOW_MS = 3 * 86_400_000L
 /** Local-only recommendation snapshots. Publishing a preview never calls playback. */
 class RadioRepository internal constructor(context:Context,private val db:LibraryDatabase,private val library:StateFlow<LibraryState>,private val journal:ListeningJournalRepository,private val scope:CoroutineScope,
     private val directory:File=File(context.applicationContext.noBackupFilesDir,"portable_catalog_blobs"),
-    connectedLink:(()->ConnectedServerLink)?=null) {
+    connectedLink:(()->ConnectedServerLink)?=null,
+    /** Rebuilds the published matches; [JournalIdentityProvider] has none after a cleared reload that never finished. */
+    private val reloadMatches:suspend ()->Unit={}) {
     private val prefs=context.getSharedPreferences("radio_recommendations",Context.MODE_PRIVATE)
     private val mutex=Mutex()
     private val mutable=MutableStateFlow(RadioState(mood=prefs.getString("mood","neutral") ?: "neutral",exploration=prefs.getFloat("exploration",.3f).toDouble(),vibeLocalId=prefs.getString("vibe",null),vibeUntil=prefs.getLong("vibeUntil",0),vibeSongsLeft=prefs.getInt("vibeLeft",0),feel=prefs.getString("feel",null),seed=SeedSpec.decode(prefs.getString("seed_station",null))))
@@ -359,12 +361,16 @@ class RadioRepository internal constructor(context:Context,private val db:Librar
     fun refresh() { connected.revalidate(connectedFence());refreshJob?.cancel();refreshJob=scope.launch {delay(75);compute()} }
     /**
      * A rescan or app start clears the published matches while they reload. Picking in that gap treats every song as
-     * local-only, so the station ignores similarity. Wait briefly for the reload when a catalog is imported.
+     * local-only, so the station ignores similarity. Wait briefly for the reload when a catalog is imported. If none
+     * arrives and no scan will publish one, start it: a reload that never finished left Radio local-only until restart.
      */
     private suspend fun awaitMatches() {
-        if(!JournalIdentityProvider.mappings.value.loaded && db.catalogs().latest()!=null)
-            withTimeoutOrNull(MATCH_RELOAD_WAIT_MS){JournalIdentityProvider.mappings.first{it.loaded}}
+        if(JournalIdentityProvider.mappings.value.loaded || db.catalogs().latest()==null)return
+        if(withTimeoutOrNull(MATCH_RELOAD_WAIT_MS){JournalIdentityProvider.mappings.first{it.loaded}}!=null || library.value.scanning)return
+        synchronized(this){if(matchReload?.isActive!=true)matchReload=scope.launch{runCatching{reloadMatches()}}}
+        withTimeoutOrNull(MATCH_RELOAD_WAIT_MS){JournalIdentityProvider.mappings.first{it.loaded}}
     }
+    @Volatile private var matchReload:Job?=null
     suspend fun recommendations(exclude:Set<String> = emptySet(),count:Int=5,anchorLocalId:String?=playback.currentId):RadioBatch? { awaitMatches();val input=token();val rows=compute(exclude,count,anchorLocalId,publishPreview=false) ?: return null;return if(valid(input))RadioBatch(rows,input) else null }
     private suspend fun compute(exclude:Set<String> = emptySet(),count:Int=5,anchorLocalId:String?=if(playback.radioActive)playback.playOrder.lastOrNull() ?: playback.currentId else playback.currentId,publishPreview:Boolean=true):List<RadioSuggestion>? = mutex.withLock {
         defaultsReady.await()
