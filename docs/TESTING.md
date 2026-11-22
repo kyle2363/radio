@@ -48,6 +48,8 @@ backend\venv\Scripts\python -B scripts/run_tests.py -q
 
 Use the existing backend virtual environment. The runner disables third-party pytest auto-loading and redirects temporary files and common model caches to `.test-runtime/` inside the checkout. Tests configure disposable storage before importing application modules, then use a fresh SQLite database per case. Synthetic song rows replace dependencies on the personal library. Production audio, metadata, embeddings, history and taste are not test fixtures. Python audit guards block writes to production directories or outside the checkout, SQLite writes outside `.test-runtime/`, subprocesses, and socket use except Windows asyncio's internal socketpair.
 
+A full run splits the collected tests round-robin across up to 8 guarded worker processes (about 80 s instead of about 4 minutes); each worker keeps its own `--basetemp` and log in `.test-runtime/shards/`, and failing shards print their full log. Pass `-j N` to choose the count or `-j 1` for one process. Named files, `-k` expressions and run-wide options (`--lf`, `--pdb`, `-x`, `--junitxml`, `-s`) run serially unless `-j` is given.
+
 Default pytest discovery is restricted to `backend/tests`. The legacy `test_*.py` files in `scripts/maintenance/` are maintenance scripts that write to the production database when run, not automated tests. Do not run them or explicitly pass them to pytest. Do not start the production application as a test: startup updates the database and removes cached/generated media.
 
 The historical baseline committed as `f5c9899` was 38 passed, 3 skipped. Passing unit tests do not establish audible VLC, GPU/TTS, Electron or browser audio parity.
