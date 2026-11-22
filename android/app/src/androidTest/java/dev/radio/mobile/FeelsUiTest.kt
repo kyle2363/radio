@@ -105,13 +105,20 @@ class FeelsUiTest {
         assertTrue(preview.log.any { it.startsWith("play:") })
         compose.onNodeWithTag("pick-left").performClick()
         compose.onNodeWithTag("pick-tie").performClick()
+        fun title(side: String) = compose.onNodeWithTag("pair-title-$side", useUnmergedTree = true).fetchSemanticsNode().config[androidx.compose.ui.semantics.SemanticsProperties.Text].joinToString("")
+        val misfit = title("right")
         compose.onNodeWithTag("pair-misfit-right").performClick()
         compose.waitUntil(5000) { runBlocking { db.feels().evidence(hype).size >= tracks.size + 3 } }
-        // Play through the rest of the round to the summary.
-        while (compose.onAllNodesWithTag("pick-right").fetchSemanticsNodes().isNotEmpty()) compose.onNodeWithTag("pick-right").performClick()
+        // "Doesn't fit" is saved as a 0.0 rating. Whether that drops membership is the shared scoring rules' call
+        // (a song that already won a pair this round can stay in), so this screen is held to the rating itself.
+        assertTrue(runBlocking { db.feels().evidence(hype).any { it.kind == "rated" && it.value == 0.0 } })
+        // Play through the rest of the round to the summary; the misfit is never offered again this round.
+        while (compose.onAllNodesWithTag("pick-right").fetchSemanticsNodes().isNotEmpty()) {
+            assertTrue("A song marked Doesn't fit came back this round", misfit != title("left") && misfit != title("right"))
+            compose.onNodeWithTag("pick-right").performClick()
+        }
         compose.onNodeWithTag("pairs-settled").assertExists()
         compose.onNodeWithTag("pairs-again").assertExists()
-        assertTrue(runBlocking { db.feels().states(hype).count { !it.member } } >= 1)
         nav.value = nav.value.copy(sprint = false) // the app's Back
         compose.waitUntil(5000) { compose.onAllNodesWithTag("feel-detail").fetchSemanticsNodes().isNotEmpty() }
         assertEquals("exit", preview.log.last())

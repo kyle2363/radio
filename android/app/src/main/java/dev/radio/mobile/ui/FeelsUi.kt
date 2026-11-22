@@ -381,17 +381,25 @@ private fun ThisOrThatScreen(feels: FeelRepository, state: FeelsState, feel: Loc
         ThisOrThat.round(states, sessions().flatten().toSet(), states.keys, Random(System.nanoTime()), scale = isEnergy(feel.feelId))
             .mapNotNull { (a, b) -> byId[a]?.let { x -> byId[b]?.let { y -> x to y } } }
     }
-    val pair = pairs.getOrNull(index)
+    // "Doesn't fit" takes a song out of the rest of the round, so it can't win its way back in a later pair.
+    // Positions in [pairs] dropped this round; only later pairs are ever dropped, so [index] stays valid.
+    var dropped by remember(round) { mutableStateOf(emptySet<Int>()) }
+    val shown = remember(pairs, dropped) { pairs.indices.filter { it !in dropped } }
+    val pair = shown.getOrNull(index)?.let(pairs::get)
     fun next() { preview?.stopPreview(); index++ }
     fun pick(winner: LocalSong, loser: LocalSong, tie: Boolean = false) { next(); write { feels.compare(feel.feelId, winner, loser, tie) } }
-    fun misfit(song: LocalSong) { next(); write { feels.tag(feel.feelId, song, false) } }
+    fun misfit(song: LocalSong) {
+        val at = shown.getOrNull(index) ?: return
+        dropped = dropped + pairs.indices.filter { it > at && (pairs[it].first.id == song.id || pairs[it].second.id == song.id) }
+        next(); write { feels.tag(feel.feelId, song, false) }
+    }
     val clip = preview?.previewState?.collectAsState()?.value
     Column(modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 12.dp).testTag("this-or-that"),
         verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Swatch(feel.color, 14)
             Text("Which is more ${feel.name}?", Modifier.weight(1f).padding(start = 10.dp), style = MaterialTheme.typography.titleMedium)
-            if (pair != null) Text("${index + 1} of ${pairs.size}", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.testTag("pairs-progress"))
+            if (pair != null) Text("${index + 1} of ${shown.size}", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.testTag("pairs-progress"))
         }
         if (pair == null) {
             Text(if (pairs.isEmpty()) "Not enough songs to compare in ${feel.name}." else "Done", style = MaterialTheme.typography.titleLarge, modifier = Modifier.testTag("pairs-done"))
