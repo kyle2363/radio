@@ -241,10 +241,13 @@ class MobileHosting:
             return self.status()
 
     def forget_device(self, device_id):
-        """Drop in-memory connected-recommendation state for a device."""
+        """Drop in-memory connected-recommendation and talk state for a device."""
         recommendations = getattr(getattr(self.gateway, "state", None), "recommendations", None)
         if recommendations is not None:
             recommendations.forget_device(device_id)
+        talk = getattr(getattr(self.gateway, "state", None), "talk", None)
+        if talk is not None:
+            talk.forget_device(device_id)
 
     def _cancel_unused(self):
         with self._tickets_lock:

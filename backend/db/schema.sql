@@ -169,6 +169,8 @@ INSERT OR IGNORE INTO settings (key, value) VALUES
     ('talk_segment_cooldown', '2'),
     ('talk_caller_heartbroken_enabled', 'false'),
     ('talk_caller_melancholy_enabled', 'false'),
+    ('talk_favourite_play_count', '10'),
+    ('talk_long_absence_days', '60'),
     ('talk_volume', '100'),
     ('radio_intro_frequency', '3'),
     ('right_rail_width', '255'),

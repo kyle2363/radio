@@ -1,5 +1,6 @@
 """Deliberately separate ASGI surface; never mounts desktop routes."""
 import asyncio
+import hashlib
 from collections import OrderedDict
 import ipaddress
 import json
@@ -14,6 +15,7 @@ from starlette.responses import JSONResponse, Response
 
 from portable_sync import SyncConflict
 from mobile_recommendations import CONTEXT_ID, MobileRecommendations, Rejected
+from mobile_talk import MAX_RESOURCE_BYTES as MAX_TALK_RESOURCE, TOKEN as TALK_TOKEN, MobileTalk
 from portable.catalog import canonical_json
 from mobile_catalog import (MAX_REVISION, MOBILE_BATCH_COUNT, MOBILE_BATCH_BYTES,
                             MOBILE_LYRICS_MAX_RESPONSE_BYTES)
@@ -29,7 +31,10 @@ MAX_AVAILABILITY_BODY = 256 * 1024
 MAX_CONTEXT_BODY = 8 * 1024
 MAX_RECOMMENDATION_BODY = 16 * 1024
 MAX_RECOMMENDATION_RESPONSE = 64 * 1024
-CONTEXT_PATH = re.compile(re.escape(PREFIX) + r"/contexts/(" + CONTEXT_ID + r")(/recommendations)?")
+CONTEXT_PATH = re.compile(re.escape(PREFIX) + r"/contexts/(" + CONTEXT_ID + r")(/recommendations|/talk)?")
+TALK_JOB_PATH = re.compile(re.escape(PREFIX) + r"/talk/jobs/(" + TALK_TOKEN + r")(/outcome)?")
+TALK_RESOURCE_PATH = re.compile(re.escape(PREFIX) + r"/talk/resources/(" + TALK_TOKEN + r")")
+MAX_TALK_TURN_BODY = 16 * 1024
 
 
 class EventsRequest(BaseModel):
@@ -153,10 +158,11 @@ class Admission:
 
 
 class GatewayBoundary:
-    def __init__(self, app, *, store, admission, catalog=None, recommendations=None):
+    def __init__(self, app, *, store, admission, catalog=None, recommendations=None, talk=None):
         self.app, self.store, self.admission = app, store, admission
         self.catalog = catalog
         self.recommendations = recommendations
+        self.talk = talk
         self._lock, self._buckets = threading.Lock(), OrderedDict()
         self._global = (0, 0)
         self._device_buckets = OrderedDict()
@@ -238,9 +244,15 @@ class GatewayBoundary:
         is_availability = path == PREFIX + "/availability" and scope["method"] == "POST"
         is_context_create = path == PREFIX + "/contexts" and scope["method"] == "POST"
         is_context_update = bool(context_match) and not context_match[2]
-        is_recommendation = bool(context_match) and bool(context_match[2])
+        is_recommendation = bool(context_match) and context_match[2] == "/recommendations"
+        is_talk_turn = bool(context_match) and context_match[2] == "/talk"
+        job_match = TALK_JOB_PATH.fullmatch(path)
+        is_talk_job = bool(job_match) and not job_match[2] and scope["method"] == "GET"
+        is_talk_outcome = bool(job_match) and bool(job_match[2]) and scope["method"] == "POST"
+        is_talk_resource = bool(TALK_RESOURCE_PATH.fullmatch(path)) and scope["method"] in ("GET", "HEAD")
+        is_talk = self.talk is not None and (is_talk_turn or is_talk_job or is_talk_outcome or is_talk_resource)
         is_connected = self.recommendations is not None and (
-            is_availability or is_context_create or is_context_update or is_recommendation)
+            is_availability or is_context_create or is_context_update or is_recommendation or is_talk)
         # The factory supplies this flag explicitly; middleware's inner app is
         # an exception wrapper rather than the FastAPI instance.
         catalog_enabled = self.catalog is not None
@@ -373,7 +385,8 @@ class GatewayBoundary:
                 return await reject(400, "Invalid content length")
             body_limit = (MAX_SYNC_BODY if is_sync_events and scope["method"] == "POST" else
                           MAX_AVAILABILITY_BODY if is_availability else
-                          MAX_RECOMMENDATION_BODY if is_recommendation else 8192)
+                          MAX_RECOMMENDATION_BODY if is_recommendation else
+                          MAX_TALK_TURN_BODY if is_talk_turn else 8192)
             if is_context_create or is_context_update:
                 body_limit = MAX_CONTEXT_BODY
             if int(length) > body_limit:
@@ -414,6 +427,7 @@ class GatewayBoundary:
 
         response_limit = (16 * 1024 * 1024 if is_catalog else MOBILE_LYRICS_MAX_RESPONSE_BYTES if is_lyrics else 8_000_000 if is_batch else
                           MAX_SYNC_BODY if is_sync_events else 262_144 if is_vector else
+                          MAX_TALK_RESOURCE + 1024 if is_talk_resource else
                           MAX_RECOMMENDATION_RESPONSE if is_connected else 8192)
         messages, response_size = [], 0
         async def capture(message):
@@ -434,10 +448,12 @@ class GatewayBoundary:
             await send(message)
 
 
-def create_mobile_gateway(store, identity, pairing, *, catalog=None, monotonic=time.monotonic, recommendations=None):
+def create_mobile_gateway(store, identity, pairing, *, catalog=None, monotonic=time.monotonic, recommendations=None,
+                          talk=None):
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, redirect_slashes=False)
     admission = app.state.admission = Admission(monotonic=monotonic)
     recommendations = app.state.recommendations = recommendations or MobileRecommendations(store)
+    talk = app.state.talk = talk or MobileTalk(recommendations)
 
     @app.get(PREFIX + "/identity")
     def descriptor(request: Request):
@@ -464,6 +480,7 @@ def create_mobile_gateway(store, identity, pairing, *, catalog=None, monotonic=t
                 **({"plain_lyrics": True, "plain_lyrics_version": 1,
                     "plain_lyrics_max_text_bytes": 65536} if catalog is not None else {}),
                 "profile_sync": True, "remote_hosting": True, "connected_recommendations": True, "connected_tuning": True,
+                "connected_talk": talk.capability(),
                 "offline_recommendations": False, "native_speech_generation": False,
                 "local_music_required": True}
 
@@ -529,6 +546,31 @@ def create_mobile_gateway(store, identity, pairing, *, catalog=None, monotonic=t
     async def recommend(context_id: str, request: Request):
         return await connected(request, recommendations.recommend, context_id)
 
+    @app.post(PREFIX + "/contexts/{context_id}/talk")
+    async def talk_turn(context_id: str, request: Request):
+        return await connected(request, talk.start_turn, context_id)
+
+    @app.get(PREFIX + "/talk/jobs/{job_id}")
+    def talk_job(job_id: str, request: Request):
+        try:
+            return talk.job(request.scope["portable_identity"]["device_id"], job_id)
+        except Rejected as exc:
+            raise HTTPException(exc.status, exc.detail) from None
+
+    @app.post(PREFIX + "/talk/jobs/{job_id}/outcome")
+    async def talk_outcome(job_id: str, request: Request):
+        return await connected(request, talk.outcome, job_id)
+
+    @app.api_route(PREFIX + "/talk/resources/{rid}", methods=["GET", "HEAD"])
+    def talk_resource(rid: str, request: Request):
+        try:
+            data = talk.resource(request.scope["portable_identity"]["device_id"], rid)
+        except Rejected as exc:
+            raise HTTPException(exc.status, exc.detail) from None
+        return Response(data if request.method == "GET" else b"", media_type="audio/mp4",
+                        headers={"Content-Length": str(len(data)),
+                                 "ETag": '"' + hashlib.sha256(data).hexdigest() + '"'})
+
     if catalog is not None:
         @app.get(PREFIX + "/catalog")
         def prepared_manifest(request: Request):
@@ -587,5 +629,5 @@ def create_mobile_gateway(store, identity, pairing, *, catalog=None, monotonic=t
                 raise HTTPException(503, "Prepared vector unavailable") from None
 
     app.add_middleware(GatewayBoundary, store=store, admission=admission, catalog=catalog,
-                       recommendations=recommendations)
+                       recommendations=recommendations, talk=talk)
     return app
