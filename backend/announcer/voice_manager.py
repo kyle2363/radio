@@ -143,16 +143,43 @@ def _fade_in_first_second(path: str) -> str | None:
         return None
 
 
-def _concatenate_wavs(wav_paths):
-    """Concatenate multiple WAV files into a single WAV.
+def talk_pauses(count, rng=random):
+    """Extra silence (ms) between ``count`` speech lines, on top of each line's own trailing pad.
 
+    Speakers don't answer instantly: ordinary replies get 250-750 ms, sometimes a longer
+    beat as if thinking. The first and last boundaries are handoffs (the DJ putting a
+    caller on air, then taking the mic back) and get a longer 600-1200 ms.
+    """
+    pauses = []
+    boundaries = max(count - 1, 0)
+    for index in range(boundaries):
+        if index == 0 or index == boundaries - 1:
+            pause = rng.uniform(600, 1200)
+        else:
+            pause = rng.uniform(250, 750)
+            if rng.random() < 0.15:
+                pause += rng.uniform(400, 800)
+        pauses.append(int(pause))
+    return pauses
+
+
+def _concatenate_wavs(wav_paths, pauses_ms=None, lead_ms=0):
+    """Concatenate multiple WAV files into a single WAV with natural pauses between lines.
+
+    ``pauses_ms`` gives the silence inserted between consecutive files (randomized by
+    ``talk_pauses`` when omitted); ``lead_ms`` adds silence before the first line.
     All WAVs must share the same sample rate and channel count.
     Returns the path to the concatenated (and cached) file.
     """
-    if len(wav_paths) <= 1:
-        return wav_paths[0] if wav_paths else None
+    if not wav_paths:
+        return None
+    if len(wav_paths) == 1 and not lead_ms:
+        return wav_paths[0]
+    if pauses_ms is None:
+        pauses_ms = talk_pauses(len(wav_paths))
 
-    key = hashlib.md5("|".join(sorted(wav_paths)).encode()).hexdigest()
+    key_text = "|".join(wav_paths) + "#" + ",".join(str(int(p)) for p in pauses_ms) + f"#{int(lead_ms)}"
+    key = hashlib.md5(key_text.encode()).hexdigest()
     out_path = os.path.join(TTS_CACHE_DIR, f"concat_{key}.wav")
     if os.path.exists(out_path):
         return out_path
@@ -176,7 +203,17 @@ def _concatenate_wavs(wav_paths):
             target_channels = channels
         segments.append(data)
 
-    combined = np.concatenate(segments, axis=0) if len(segments) > 1 else segments[0]
+    def silence(ms):
+        frames = int(target_sr * max(ms, 0) / 1000)
+        shape = (frames,) if segments[0].ndim == 1 else (frames, segments[0].shape[1])
+        return np.zeros(shape, dtype=segments[0].dtype)
+
+    spaced = [silence(lead_ms)] if lead_ms else []
+    for index, data in enumerate(segments):
+        if index > 0:
+            spaced.append(silence(pauses_ms[index - 1] if index - 1 < len(pauses_ms) else 0))
+        spaced.append(data)
+    combined = np.concatenate(spaced, axis=0)
     sf.write(out_path, combined, target_sr)
     logger.info("_concatenate_wavs: %d WAVs -> %s (%.1fs, %dHz, %dch)",
                 len(wav_paths), out_path, len(combined) / target_sr, target_sr, target_channels)

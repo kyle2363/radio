@@ -324,3 +324,43 @@ class ConnectedTalkSource(private val link: ConnectedServerLink, private val cac
     catch (_: Exception) { false }
 }
 
+/** The station Radio is playing: a mood, optionally narrowed to a feel. */
+data class StationPick(val mood: String, val feel: String?)
+
+/** What to put back when a guest set ends, and what the guest chose (a listener change since then wins). */
+data class GuestRestore(val before: StationPick, val applied: StationPick) {
+    fun encode() = listOf(before.mood, before.feel.orEmpty(), applied.mood, applied.feel.orEmpty()).joinToString("|")
+    companion object {
+        fun decode(text: String?): GuestRestore? {
+            val p = text?.split("|")?.takeIf { it.size == 4 && it[0].isNotEmpty() && it[2].isNotEmpty() } ?: return null
+            return GuestRestore(StationPick(p[0], p[1].ifEmpty { null }), StationPick(p[2], p[3].ifEmpty { null }))
+        }
+    }
+}
+
+/**
+ * Show effects (plan section 3.4): a clip's shift applies when it starts playing and replaces the upcoming Radio picks.
+ * A guest's shift reverts when the outro starts or the set ends without one; caller shifts stay.
+ */
+object TalkShiftPolicy {
+    data class Result(val apply: StationPick?, val pending: GuestRestore?)
+
+    fun onStart(info: TalkClipInfo, current: StationPick, pending: GuestRestore?, moods: Set<String>, feels: Set<String>): Result {
+        if (info.guestSet?.ends == true) return Result(restore(current, pending), null)
+        val shift = info.shift ?: return Result(null, pending)
+        val mood = shift.mood?.takeIf { it in moods }
+        val feel = shift.feel?.takeIf { it in feels }
+        if (mood == null && feel == null) return Result(null, pending)
+        val target = StationPick(mood ?: current.mood, feel)
+        if (target == current) return Result(null, pending)
+        val next = if (shift.restoreAtEnd) GuestRestore(pending?.before ?: current, target) else pending
+        return Result(target, next)
+    }
+
+    /** A clip that never started: only a guest outro matters, since the set ends anyway. */
+    fun onUnplayed(info: TalkClipInfo, current: StationPick, pending: GuestRestore?): StationPick? =
+        if (info.guestSet?.ends == true) restore(current, pending) else null
+
+    fun restore(current: StationPick, pending: GuestRestore?): StationPick? =
+        pending?.takeIf { it.applied == current && it.before != current }?.before
+}

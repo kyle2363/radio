@@ -484,3 +484,64 @@ def test_gateway_talk_routes_end_to_end(tmp_path, engines, monkeypatch):
                       {"Authorization": "Bearer " + other["token"]}, None)
     assert foreign.status_code == 404
 
+
+# -- realism: pauses and guest shifts -----------------------------------------
+
+def test_talk_pauses_give_handoffs_longer_beats():
+    import random as _random
+    from announcer.voice_manager import talk_pauses
+    rng = _random.Random(7)
+    for count in range(2, 8):
+        pauses = talk_pauses(count, rng)
+        assert len(pauses) == count - 1
+        assert 600 <= pauses[0] <= 1200 and 600 <= pauses[-1] <= 1200
+        assert all(250 <= p <= 1550 for p in pauses[1:-1])
+    assert talk_pauses(1) == [] and talk_pauses(0) == []
+    assert len({tuple(talk_pauses(4, rng)) for _ in range(5)}) > 1
+
+
+def test_concatenate_inserts_pauses_and_lead(tmp_path, monkeypatch):
+    import soundfile as sf
+    from announcer import voice_manager
+    monkeypatch.setattr(voice_manager, "TTS_CACHE_DIR", str(tmp_path))
+    a, b = write_wav(tmp_path / "a.wav", 1.0), write_wav(tmp_path / "b.wav", 1.0)
+    joined = voice_manager._concatenate_wavs([a, b], pauses_ms=[500], lead_ms=250)
+    data, rate = sf.read(joined)
+    assert abs(len(data) / rate - 2.75) < 0.01
+    assert not data[:int(rate * 0.25)].any()
+    assert not data[int(rate * 1.25) + 5:int(rate * 1.75) - 5].any()
+    single = voice_manager._concatenate_wavs([a], lead_ms=400)
+    assert abs(sf.info(single).duration - 1.4) < 0.01
+
+
+def test_guest_mood_follows_persona_bias():
+    from mobile_talk import guest_mood
+    assert guest_mood({"energy_range": (0.65, 1.0), "wildcard_boost": 0.2}) == "energetic"
+    assert guest_mood({"energy_range": (0.0, 0.45), "valence_range": (0.3, 0.7)}) == "chill"
+    assert guest_mood({"wildcard_boost": 0.4, "explore_boost": 0.3}) == "discovery"
+    assert guest_mood(None) is None
+
+
+def guest_intro(talk, shift):
+    turn(talk, 1, talk={**guests_only(), "guest_shift": shift})
+    return talk.job(DEVICE, turn(talk, 2, talk={**guests_only(), "guest_shift": shift})["job_id"])
+
+
+def test_guest_intro_shift_reverts_at_end(talk, monkeypatch):
+    import mobile_talk
+    monkeypatch.setattr(mobile_talk._rng, "random", lambda: 0.0)
+    intro = guest_intro(talk, "often")
+    assert intro["segment_type"] == "guest_takeover_intro"
+    from announcer.personas import get_persona
+    from mobile_talk import guest_mood
+    expected = guest_mood(get_persona(intro["guest_set"]["persona"]).slot_bias)
+    if expected is None:
+        assert intro["shift"] is None
+    else:
+        assert intro["shift"] == {"mood": expected, "feel": None, "restore_at_end": True}
+
+
+def test_guest_intro_without_shift_when_none(talk, monkeypatch):
+    import mobile_talk
+    monkeypatch.setattr(mobile_talk._rng, "random", lambda: 0.0)
+    assert guest_intro(talk, "none")["shift"] is None

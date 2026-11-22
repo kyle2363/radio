@@ -172,18 +172,20 @@ class RadioPlaybackService : MediaSessionService() {
         engine.onNewMix = {
             mixRequest?.cancel()
             val expected=engine.state.value
-            val current=expected.playOrder.indexOf(expected.currentId)
+            // While a talk clip plays, the song it introduces stays and only what follows is replaced.
+            val anchor=engine.radioAnchorId()
+            val current=expected.playOrder.indexOf(anchor)
             if(expected.radioActive && current>=0) mixRequest=scope.launch {
                 val upcoming=expected.playOrder.drop(current+1)
                 val kept=upcoming.count{expected.origins[it]==StationOrigin.User}
                 val room=(dev.radio.mobile.recommendation.ConnectedPolicy.REFILL_BOUND-kept).coerceAtLeast(0)
                 if(room==0)return@launch
                 library.radio.updatePlayback(expected)
-                val batch=withContext(Dispatchers.IO){library.radio.refill(upcoming.toSet()+setOfNotNull(expected.currentId),room,expected.currentId)} ?: return@launch
+                val batch=withContext(Dispatchers.IO){library.radio.refill(upcoming.toSet()+setOfNotNull(expected.currentId,anchor),room,anchor)} ?: return@launch
                 library.radio.accept(batch) {
                     if(engine.replaceRadioUpcoming(expected,batch.suggestions.map{it.song},origins(batch))) {
                         val actual=engine.state.value
-                        library.radio.committed(batch,actual.playOrder.drop(actual.playOrder.indexOf(actual.currentId)+1).filter{it !in upcoming}.toSet())
+                        library.radio.committed(batch,actual.playOrder.drop(actual.playOrder.indexOf(engine.radioAnchorId())+1).filter{it !in upcoming}.toSet())
                     }
                 }
             }

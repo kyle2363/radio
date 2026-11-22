@@ -188,6 +188,8 @@ class RadioRepository internal constructor(context:Context,private val db:Librar
         return true
     }
     fun setMood(value:String) {if(value !in OfflineRecommender.MOODS)return;prefs.edit().putString("mood",value).putLong("moodAt",System.currentTimeMillis()).remove("feel").apply();mutable.update{it.copy(mood=value,feel=null)};refresh()}
+    /** A show shift: switch to [pick]'s mood, and its feel when it names one. */
+    fun applyStation(pick:StationPick){ if(pick.mood!=mutable.value.mood || pick.feel==null) setMood(pick.mood); if(pick.feel!=null) setFeel(pick.feel) }
     private val feelChoiceState=MutableStateFlow<List<LocalFeel>>(emptyList())
     /** Active tag feels for the "Your feels" row (Energy is a scale, not a station). */
     val feelChoices:StateFlow<List<LocalFeel>> = feelChoiceState.asStateFlow()

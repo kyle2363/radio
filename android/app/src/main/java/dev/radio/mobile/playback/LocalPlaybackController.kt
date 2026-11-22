@@ -62,6 +62,11 @@ class LocalPlaybackController(
     private var songProfile = NormalizationProfile()
     private fun isTalkId(id: String?) = TalkPolicy.isTalk(id)
     private fun talkCurrent() = talk != null && player.currentMediaItem?.mediaId == talk?.mediaId
+    /**
+     * The song Radio's upcoming picks follow: the current song, or while a clip plays, the song it introduces (the DJ
+     * already announced it, so a show shift keeps it and replaces only what comes after).
+     */
+    internal fun radioAnchorId(): String? = if (talkCurrent()) talkNext ?: state.value.currentId else state.value.currentId
     internal val normalizationProcessor = NormalizationAudioProcessor(meter = true)
     private val renderers = object : DefaultRenderersFactory(context.applicationContext) {
         override fun buildAudioSink(context: Context, enableFloatOutput: Boolean, enableAudioOutputPlaybackParams: Boolean): AudioSink =
@@ -627,14 +632,15 @@ class LocalPlaybackController(
     internal fun replaceRadioUpcoming(expected:PlaybackState,items:List<LocalSong>,newOrigins:Map<String,StationOrigin>):Boolean {
         val actual=state.value
         if(!radioActive || accessLost || actual.queueRevision!=expected.queueRevision || actual.currentId!=expected.currentId || actual.playOrder!=expected.playOrder)return false
-        val current=actual.playOrder.indexOf(actual.currentId)
+        val anchor=radioAnchorId()
+        val current=actual.playOrder.indexOf(anchor)
         if(current<0)return false
         val upcoming=actual.playOrder.drop(current+1)
         val kept=upcoming.filter{origins[it]==StationOrigin.User}
-        val incoming=items.filter{it.available && validUri(it) && it.id!=actual.currentId && it.id !in kept}.distinctBy{it.id}.take((5-kept.size).coerceAtLeast(0))
+        val incoming=items.filter{it.available && validUri(it) && it.id!=anchor && it.id !in kept}.distinctBy{it.id}.take((5-kept.size).coerceAtLeast(0))
         if(incoming.isEmpty())return false
         // Drop Radio's upcoming songs, plus any earlier copy of an incoming song so Media3 identities stay unique.
-        val removed=(upcoming.filterNot{it in kept}+incoming.map{it.id}).toSet()-setOfNotNull(actual.currentId)
+        val removed=(upcoming.filterNot{it in kept}+incoming.map{it.id}).toSet()-setOfNotNull(anchor)
         for(index in player.mediaItemCount-1 downTo 0)if(player.getMediaItemAt(index).mediaId in removed)player.removeMediaItem(index)
         queue=queue.filterNot{it.id in removed}+incoming;queueById=queue.associateBy{it.id}
         player.addMediaItems(incoming.map(::mediaItem))

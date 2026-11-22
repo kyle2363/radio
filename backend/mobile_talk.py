@@ -21,6 +21,7 @@ import json
 import logging
 import os
 import queue
+import random
 import secrets
 import shutil
 import subprocess
@@ -52,6 +53,26 @@ MAX_SHOWS = 128
 TOKEN = r"[A-Za-z0-9_-]{16,64}"
 TURN_ID = r"^[A-Za-z0-9_.-]{1,64}$"
 GUEST_SHIFT = ("none", "rarely", "normal", "often")
+GUEST_SHIFT_CHANCE = {"none": 0.0, "rarely": 0.2, "normal": 0.5, "often": 0.85}
+LEAD_IN_MS = (300, 900)  # Silence before a clip, so the DJ doesn't jump in on the song's last note.
+_rng = random.Random()
+
+
+def guest_mood(slot_bias):
+    """The mood a guest DJ leans toward, from their persona's slot bias (None when they have no lean)."""
+    if not slot_bias:
+        return None
+    energy, valence = slot_bias.get("energy_range"), slot_bias.get("valence_range")
+    if not energy and not valence:
+        boosts = slot_bias.get("wildcard_boost", 0) + slot_bias.get("explore_boost", 0)
+        return "discovery" if boosts > 0 else None
+    from engine.mood import MOOD_STATES
+    e = sum(energy) / 2 if energy else 0.5
+    v = sum(valence) / 2 if valence else 0.5
+    def distance(name):
+        state = MOOD_STATES[name]
+        return (sum(state["energy_range"]) / 2 - e) ** 2 + (sum(state["valence_range"]) / 2 - v) ** 2
+    return min((m for m in MOODS if m not in ("neutral", "discovery") and m in MOOD_STATES), key=distance)
 OUTCOMES = ("played", "skipped", "missed", "discarded")
 
 # Talk-segment module state the show owns. Everything else in the namespace
@@ -196,6 +217,8 @@ def resolve_settings(overrides=None, read=None):
         "talk_caller_heartbroken_enabled": _flag(read("talk_caller_heartbroken_enabled"), "false"),
         "talk_caller_melancholy_enabled": _flag(read("talk_caller_melancholy_enabled"), "false"),
         "talk_caller_mode": read("talk_caller_mode") or "influences_queue",
+        "talk_guest_shift": o.get("guest_shift") or (
+            read("talk_guest_shift") if read("talk_guest_shift") in GUEST_SHIFT else "normal"),
     }
 
 
@@ -236,10 +259,8 @@ def _join_wavs(paths):
     faded = _fade_in_first_second(paths[0])
     if faded and os.path.isfile(faded):
         paths[0] = faded
-    if len(paths) > 1:
-        joined = _concatenate_wavs(paths)
-        return joined if joined and os.path.isfile(joined) else None
-    return paths[0]
+    joined = _concatenate_wavs(paths, lead_ms=_rng.randint(*LEAD_IN_MS))
+    return joined if joined and os.path.isfile(joined) else None
 
 
 # -- prompt context --------------------------------------------------------
@@ -715,6 +736,12 @@ class MobileTalk:
         if segment.mood_shift in MOODS and settings.get("talk_caller_mode") != "narrative_only":
             shift = {"mood": segment.mood_shift, "feel": None, "restore_at_end": False}
         guest_set = None
+        if kind == "guest_takeover_intro" and settings.get("talk_caller_mode") != "narrative_only":
+            # A guest may bring their own sound; the phone reverts it when the set ends.
+            chance = GUEST_SHIFT_CHANCE.get(settings.get("talk_guest_shift", "normal"), 0.5)
+            mood = guest_mood(other.slot_bias if other else None)
+            if mood and _rng.random() < chance:
+                shift = {"mood": mood, "feel": None, "restore_at_end": True}
         if kind == "guest_takeover_intro":
             guest_set = {"persona": other_id, "name": other_name, "songs": settings["talk_guest_songs_per_set"]}
         elif kind == "guest_takeover_outro":

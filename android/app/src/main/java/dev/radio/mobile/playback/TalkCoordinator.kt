@@ -7,7 +7,12 @@ import dev.radio.mobile.data.JournalIdentityProvider
 import dev.radio.mobile.data.ListeningJournalRepository
 import dev.radio.mobile.data.LocalSong
 import dev.radio.mobile.recommendation.RadioRepository
+import dev.radio.mobile.recommendation.GuestRestore
+import dev.radio.mobile.recommendation.OfflineRecommender
+import dev.radio.mobile.recommendation.StationPick
 import dev.radio.mobile.recommendation.TalkClip
+import dev.radio.mobile.recommendation.TalkClipInfo
+import dev.radio.mobile.recommendation.TalkShiftPolicy
 import dev.radio.mobile.recommendation.TalkPolicy
 import dev.radio.mobile.recommendation.TalkTurnResult
 import dev.radio.mobile.recommendation.TalkWire
@@ -73,6 +78,8 @@ internal class TalkCoordinator(
     private fun stop(message: String?) {
         turn?.cancel(); turn = null
         engine.removeTalk()
+        // The show is over: a guest set without its outro still ends, so put the listener's station back.
+        guestRestore()?.let { pending -> saveRestore(null); TalkShiftPolicy.restore(station(), pending)?.let(::changeStation) }
         if (message != null) radio.setTalkStatus(message)
     }
 
@@ -145,16 +152,40 @@ internal class TalkCoordinator(
 
     private fun onTalkEvent(event: LocalPlaybackController.TalkEvent) {
         when (event) {
-            is LocalPlaybackController.TalkEvent.Started -> radio.setTalkStatus("On air: ${event.clip.info.title}")
+            is LocalPlaybackController.TalkEvent.Started -> {
+                radio.setTalkStatus("On air: ${event.clip.info.title}")
+                applyShift(event.clip.info)
+            }
             is LocalPlaybackController.TalkEvent.Finished -> {
                 val clip = event.clip
                 inserted -= clip.info.jobId
                 radio.talkCache.delete(clip)
                 val outcome = event.outcome
+                if (outcome != "played" && outcome != "skipped") {
+                    guestRestore()?.let { pending -> TalkShiftPolicy.onUnplayed(clip.info, station(), pending)?.let { saveRestore(null); changeStation(it) } }
+                    if (clip.info.guestSet?.ends == true) saveRestore(null)
+                }
                 radio.setTalkStatus(when (outcome) { "played" -> "Last talk played"; "skipped" -> "Last talk skipped"; else -> "Talk removed" })
                 scope.launch { report(clip.info.jobId, outcome, if (outcome == "skipped") event.heardMs / 1000.0 else null) }
             }
         }
+    }
+
+    private fun station() = radio.state.value.let { StationPick(it.mood, it.feel) }
+    private fun guestRestore() = GuestRestore.decode(prefs.getString(GUEST_RESTORE, null))
+    private fun saveRestore(value: GuestRestore?) = prefs.edit { if (value == null) remove(GUEST_RESTORE) else putString(GUEST_RESTORE, value.encode()) }
+
+    /** A clip just started: its mood/feel shift (or a guest set's revert) replaces the upcoming Radio picks. */
+    private fun applyShift(info: TalkClipInfo) {
+        val feels = radio.feelChoices.value.filter { !it.archived }.map { it.feelId }.toSet()
+        val result = TalkShiftPolicy.onStart(info, station(), guestRestore(), OfflineRecommender.MOODS.keys, feels)
+        saveRestore(result.pending)
+        result.apply?.let(::changeStation)
+    }
+
+    private fun changeStation(pick: StationPick) {
+        radio.applyStation(pick)
+        engine.newMix()
     }
 
     private suspend fun report(jobId: String, outcome: String, heardS: Double?) {
@@ -194,6 +225,7 @@ internal class TalkCoordinator(
 
     companion object {
         private const val OPEN_JOB = "talk_open_job"
+        private const val GUEST_RESTORE = "talk_guest_restore"
         private const val CONTEXT_WAIT_MS = 20_000L
         private const val NEXT_WAIT_MS = 30_000L
     }

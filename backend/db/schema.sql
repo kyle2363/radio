@@ -166,6 +166,7 @@ INSERT OR IGNORE INTO settings (key, value) VALUES
     ('talk_guest_takeover_enabled', 'true'),
     ('talk_frequency', '4'),
     ('talk_guest_songs_per_set', '4'),
+    ('talk_guest_shift', 'normal'),
     ('talk_segment_cooldown', '2'),
     ('talk_caller_heartbroken_enabled', 'false'),
     ('talk_caller_melancholy_enabled', 'false'),
