@@ -63,6 +63,7 @@ public class FixtureDocumentsProvider extends DocumentsProvider {
                     add("long1", "root", "First.mp3", "audio/mpeg", 8000);
                     add("long2", "root", "Second.mp3", "audio/mpeg", 7000);
                     add("short1", "root", "Short.mp3", "audio/mpeg", 6000);
+                    add("short2", "root", "Short two.mp3", "audio/mpeg", 5500);
                     add("broken", "root", "Broken.mp3", "audio/mpeg", 5000);
                     break;
                 case "background":

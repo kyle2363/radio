@@ -77,7 +77,13 @@ class ConnectedRadioRepositoryTest {
         radio.setConnectedEnabled(true)
         assertTrue(radio.desktopFirst)
         assertEquals(1, ids(radio.startRecommendations(null)).size)
-        assertEquals(listOf(songs[3].id), ids(radio.startRecommendations(songs[3].id)))
+        // A song station steers its own refills (like a feel station), so it starts full with the seed first.
+        val seeded = ids(radio.startRecommendations(songs[3].id))
+        assertEquals(songs[3].id, seeded.first())
+        assertTrue(seeded.size > 1)
+        assertFalse(radio.desktopFirst)
+        // A plain station clears the seed and is desktop first again.
+        assertEquals(1, ids(radio.startRecommendations(null)).size)
     }
 
     @Test fun aFailedOrEmptyDesktopAnswerFallsBackToLocalPicks() = runBlocking {

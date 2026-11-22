@@ -86,6 +86,8 @@ class BackgroundPlaybackTest {
         shell("input keyevent 224")
         shell("wm dismiss-keyguard")
         main { media?.stop(); media?.release(); media = null; playback.pause(); playback.close() }
+        // Closing a stopped activity after screen-off waits ~40 s for the system to destroy it.
+        scenario?.takeIf { it.state == Lifecycle.State.CREATED }?.moveToState(Lifecycle.State.RESUMED)
         scenario?.close(); scenario = null
         context.stopService(Intent(context, RadioPlaybackService::class.java))
         instrumentation.waitForIdleSync()

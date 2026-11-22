@@ -33,7 +33,9 @@ class RadioShellTest {
     private val context get() = InstrumentationRegistry.getInstrumentation().targetContext
 
     @Before fun launch() {
-        context.getSharedPreferences("radio_shell", Context.MODE_PRIVATE).edit().clear().commit()
+        // The seeded library is the fixture under test: keep "rescan on open" (checkpoint 11) from replacing it with
+        // the provider's files on the first launch in this process.
+        context.getSharedPreferences("radio_shell", Context.MODE_PRIVATE).edit().clear().putBoolean("rescan_on_open", false).commit()
         context.contentResolver.call(android.net.Uri.parse("content://dev.radio.mobile.test.control"), "reset", null, null)
         context.contentResolver.call(android.net.Uri.parse("content://dev.radio.mobile.test.control"), "grant", null, null)
         context.contentResolver.takePersistableUriPermission(FixtureDocumentsProvider.tree(), android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)

@@ -22,6 +22,8 @@ class FeelRepositoryTest {
         emitEnergy = { song, value -> energy += song.id to value })
 
     @Before fun open() = runBlocking {
+        // The pairing owner is process-wide; start unpaired so an earlier pairing test can't route feel edits to a server.
+        JournalIdentityProvider.publishPairing(dev.radio.mobile.connection.StoredPairing())
         db = Room.inMemoryDatabaseBuilder(context, LibraryDatabase::class.java).build()
         scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         db.library().saveSongs(tracks)

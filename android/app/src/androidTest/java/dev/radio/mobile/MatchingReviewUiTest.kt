@@ -95,7 +95,7 @@ class MatchingReviewUiTest {
             } }
             capture("matching-list.png")
             compose.onNodeWithTag("confirm-selected-matches").assertIsNotEnabled()
-            compose.onNodeWithTag("matching-list").performScrollToNode(hasTestTag("matching-row-local-1799"))
+            compose.onNodeWithTag("matching-list").performScrollToIndex(1799)
             compose.onNodeWithTag("matching-row-local-1799").assertIsDisplayed()
             compose.onNodeWithTag("matching-search").performTextInput("Recording 1799.mp3")
             compose.onNodeWithTag("select-match-local-1799").assertDoesNotExist()

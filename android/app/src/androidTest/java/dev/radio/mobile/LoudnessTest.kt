@@ -134,7 +134,9 @@ class LoudnessTest {
             repo.loudness.analyze()
             await { !repo.loudness.analysis.value.running && repo.loudness.analysis.value.completed == 4 }
             await { repo.loudness.state.value.measured == 3 && repo.loudness.state.value.failed == 1 }
-            assertTrue(repo.loudness.state.value.profile.gain("level-loud") < .3f)
+            // level-loud measures about -5.4 LUFS, so it is lowered by roughly 8.6 dB toward the -14 LUFS target.
+            val expected = Math.pow(10.0, (dev.radio.mobile.music.NORMALIZATION_TARGET_LUFS + 5.4) / 20).toFloat()
+            assertEquals(expected, repo.loudness.state.value.profile.gain("level-loud"), .05f)
             assertEquals(1f, repo.loudness.state.value.profile.gain("level-quiet"))
             assertEquals(1f, repo.loudness.state.value.profile.gain("broken"))
             assertTrue(db.library().playbackStarts().isEmpty())
