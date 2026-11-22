@@ -181,6 +181,20 @@ class ProcessManager:
         else:
             logger.info("pm: acestep not configured (ACESTEP_EXE not found)")
 
+        zonos3_exe = _exe_path(config.ZONOS3_EXE, config.ZONOS3_WORK_DIR)
+        if config.ZONOS3_EXE and os.path.isfile(zonos3_exe):
+            self.register(ManagedProcess(
+                name="zonos3",
+                display_name="ZONOS3-Mini TTS",
+                exe_path=zonos3_exe,
+                args=config.ZONOS3_ARGS,
+                work_dir=config.ZONOS3_WORK_DIR,
+                health_url=f"{config.ZONOS3_BASE_URL}/v2/health",
+                auto_start=config.ZONOS3_AUTO_START,
+            ))
+        else:
+            logger.info("pm: zonos3 not configured (ZONOS3_CMD not set)")
+
     # ── Startup ──
 
     def start_all_auto(self):

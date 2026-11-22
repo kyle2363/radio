@@ -28,6 +28,7 @@ Start with [the repository README](../README.md) for setup and the application m
 | [CHECKPOINT_7_PLAN.md](CHECKPOINT_7_PLAN.md) | Checkpoint 7: playlist sync and sync on open |
 | [CHECKPOINT_8_PLAN.md](CHECKPOINT_8_PLAN.md) | Checkpoints 8–11: listening context and stats, personal feel, polish, daily use |
 | [CONNECTED_TALK_PLAN.md](CONNECTED_TALK_PLAN.md) | Checkpoint 13 connected talk: desktop DJ announcements and talk show in the phone's connected Radio (planned) |
+| [ZONOS3_TTS_TRIAL.md](ZONOS3_TTS_TRIAL.md) | ZONOS3-Mini speech engine trial: GGUF server setup, voices, steering and comparison steps |
 
 Checkpoints through 5 are merged into `main`; checkpoint 4.2 was phone-accepted November 11, 2026, and checkpoint 5 phone acceptance is pending. Plans are not authorization to begin another checkpoint.
 

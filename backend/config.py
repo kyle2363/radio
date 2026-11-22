@@ -183,3 +183,20 @@ ACESTEP_EXE, ACESTEP_ARGS = _parse_cmd(ACESTEP_CMD_STR)
 ACESTEP_WORK_DIR = os.environ.get("ACESTEP_WORK_DIR", "")
 ACESTEP_PORT = int(os.environ.get("ACESTEP_PORT", "8085"))
 ACESTEP_AUTO_START = os.environ.get("ACESTEP_AUTO_START", "false").lower() in ("true", "1", "yes")
+
+# --- ZONOS3-Mini TTS (trial; zonos3-server from Zyphra/ZONOS3-Mini, GGUF weights) ---
+ZONOS3_CMD_STR = os.environ.get("ZONOS3_CMD", "")
+ZONOS3_EXE, ZONOS3_ARGS = _parse_cmd(ZONOS3_CMD_STR)
+ZONOS3_WORK_DIR = os.environ.get("ZONOS3_WORK_DIR", "")
+ZONOS3_BASE_URL = os.environ.get("ZONOS3_BASE_URL", "http://127.0.0.1:1919").rstrip("/")
+ZONOS3_AUTO_START = os.environ.get("ZONOS3_AUTO_START", "false").lower() in ("true", "1", "yes")
+ZONOS3_LANGUAGE = os.environ.get("ZONOS3_LANGUAGE", "en_us")
+ZONOS3_TIMEOUT = int(os.environ.get("ZONOS3_TIMEOUT", "30"))
+# Quality: "reference" clones from the clip's audio (needs zac-encoder.gguf + ssl-teacher.gguf on the
+# server) and "full_mr" is the full decoder (zac.gguf). Both fall back when the server lacks them.
+ZONOS3_SPEAKER_MODE = os.environ.get("ZONOS3_SPEAKER_MODE", "reference")
+ZONOS3_DECODER = os.environ.get("ZONOS3_DECODER", "full_mr")
+ZONOS3_SPEAKER_CFG = float(os.environ["ZONOS3_SPEAKER_CFG"]) if os.environ.get("ZONOS3_SPEAKER_CFG") else None
+# Pre-encoded reference codes per persona clip (scripts/zonos3_encode_voices.py), so the server
+# never loads its 5.6 GB encoders at runtime.
+ZONOS3_CODES_DIR = os.environ.get("ZONOS3_CODES_DIR", os.path.join(DATA_DIR, "zonos3_voices"))

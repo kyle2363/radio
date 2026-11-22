@@ -302,3 +302,12 @@ AVAILABLE_ENGINES: dict[str, type] = {
 _omnivoice_cls = _try_import_omnivoice()
 if _omnivoice_cls is not None:
     AVAILABLE_ENGINES["omnivoice"] = _omnivoice_cls
+
+# ZONOS3-Mini (trial) is a pure HTTP client for a local zonos3-server, so it
+# always registers; it reports not-ready (and falls back to Piper) when the
+# server is not running.
+try:
+    from announcer.zonos3_engine import Zonos3TTSEngine
+    AVAILABLE_ENGINES["zonos3"] = Zonos3TTSEngine
+except Exception as e:  # pragma: no cover - import only fails on a broken install
+    logger.debug(f"ZONOS3 engine not available: {e}")

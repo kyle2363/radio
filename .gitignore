@@ -52,6 +52,7 @@ docs/*
 !docs/CONNECTED_TUNING_PLAN.md
 !docs/ANDROID_LYRICS_PLAN.md
 !docs/CHECKPOINT_7_PLAN.md
+!docs/ZONOS3_TTS_TRIAL.md
 
 #audio files
 audio_files

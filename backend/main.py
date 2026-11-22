@@ -175,6 +175,16 @@ async def lifespan(app):
             except Exception as e:
                 print(f"TTS: OmniVoice check failed: {e} — using Piper")
 
+            # Check ZONOS3-Mini server (trial engine, only probed when selected)
+            if (vm.get_status().get("active_engine") == "zonos3"):
+                try:
+                    if vm.get_engine("zonos3").is_ready():
+                        print(f"TTS: ZONOS3 server ready at {config.ZONOS3_BASE_URL}")
+                    else:
+                        print(f"TTS: ZONOS3 server not reachable at {config.ZONOS3_BASE_URL} — will use Piper fallback")
+                except Exception as e:
+                    print(f"TTS: ZONOS3 check failed: {e}")
+
             # Check Piper fallback
             try:
                 from announcer.tts_engine import PiperTTSEngine
@@ -4043,6 +4053,7 @@ def talk_voice_status():
         "voice_mode": status.get("voice_mode", "user_select"),
         "gpu_available": status.get("gpu_available"),
         "omnivoice_ready": status.get("omnivoice_ready", False),
+        "zonos3_ready": status.get("zonos3_ready", False),
     }
 
 

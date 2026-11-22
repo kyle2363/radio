@@ -172,6 +172,11 @@ function TalkSettings({ addToast, masterEnabled }) {
         .filter(([k]) => k.startsWith("omnivoice:"))
         .map(([k, v]) => ({ id: k.replace("omnivoice:", ""), ready: v }))
     : [];
+  const zonos3Voices = voiceStatus?.voices
+    ? Object.entries(voiceStatus.voices)
+        .filter(([k]) => k.startsWith("zonos3:"))
+        .map(([k, v]) => ({ id: k.replace("zonos3:", ""), ready: v }))
+    : [];
   const piperVoices = voiceStatus?.voices
     ? Object.entries(voiceStatus.voices)
         .filter(([k]) => k.startsWith("piper:"))
@@ -192,6 +197,7 @@ function TalkSettings({ addToast, masterEnabled }) {
         <div className="seg">
           {[
             { id: "omnivoice", label: "OmniVoice" },
+            { id: "zonos3", label: "ZONOS3" },
             { id: "piper", label: "Piper" },
           ].map((eng) => (
             <div key={eng.id}
@@ -205,6 +211,11 @@ function TalkSettings({ addToast, masterEnabled }) {
       {gpuAvailable === false && ttsEngine === "omnivoice" && (
         <div style={{ fontSize: "10px", color: "#eab308", padding: "0 0 4px 0" }}>
           GPU not available — will fall back to Piper
+        </div>
+      )}
+      {ttsEngine === "zonos3" && voiceStatus && voiceStatus.zonos3_ready === false && (
+        <div style={{ fontSize: "10px", color: "#eab308", padding: "0 0 4px 0" }}>
+          ZONOS3 server not running — will fall back to Piper
         </div>
       )}
 
@@ -260,6 +271,15 @@ function TalkSettings({ addToast, masterEnabled }) {
                   <optgroup label="OmniVoice (cloning)">
                     {omnivoiceVoices.map((v) => (
                       <option key={v.id} value={`omnivoice:${v.id}`}>
+                        {v.id} {v.ready ? "(ready)" : ""}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
+                {zonos3Voices.length > 0 && (
+                  <optgroup label="ZONOS3 (trial)">
+                    {zonos3Voices.map((v) => (
+                      <option key={v.id} value={`zonos3:${v.id}`}>
                         {v.id} {v.ready ? "(ready)" : ""}
                       </option>
                     ))}

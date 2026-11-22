@@ -579,9 +579,13 @@ class VoiceManager:
                         return eng.synthesize(text, voice_id, output_path, speed=speed)
                     # Strip ".,." markers for Piper (would be spoken literally)
                     piper_text = text.replace(".,.", "")
+                    if engine_id == "zonos3":
+                        from announcer.zonos3_engine import TRIGGER_CONTROLS
+                        return eng.synthesize(piper_text, voice_id, output_path, speed=speed,
+                                              controls=TRIGGER_CONTROLS.get(trigger_type))
                     return eng.synthesize(piper_text, voice_id, output_path)
 
-                timeout = eng.synthesis_timeout if engine_id == "omnivoice" else 30
+                timeout = eng.synthesis_timeout if engine_id in ("omnivoice", "zonos3") else 30
                 ok, result_or_err = run_with_timeout(_do_synthesize, timeout=timeout)
                 if not ok:
                     if isinstance(result_or_err, TimeoutError):
@@ -592,6 +596,9 @@ class VoiceManager:
                         logger.info("VoiceManager: attempting Piper fallback")
                         return self._fallback_synthesize(text, voice_id, output_dir, song_id)
                     return None
+                if engine_id == "zonos3" and not result_or_err:
+                    logger.info("VoiceManager: ZONOS3 returned no audio, attempting Piper fallback")
+                    return self._fallback_synthesize(text, voice_id, output_dir, song_id)
 
                 # Prepend silence for Piper (it doesn't understand ".?." markers)
                 # and append silence for all engines to prevent truncation
@@ -643,7 +650,14 @@ class VoiceManager:
                 gpu_available = omnivoice_ready
             except Exception:
                 pass
+        zonos3_ready = False
+        if "zonos3" in AVAILABLE_ENGINES:
+            try:
+                zonos3_ready = self.get_engine("zonos3").is_ready()  # health is cached briefly
+            except Exception:
+                pass
         return {
+            "zonos3_ready": zonos3_ready,
             "active_engine": self._active_engine_id or self._resolve_default_engine(),
             "active_voice": self._active_voice or "",
             "voice_mode": self._voice_mode,
