@@ -39,7 +39,7 @@ class LibraryRepository(context: Context, internal val db: LibraryDatabase, conn
     private val mutex = Mutex()
     private val mutable = MutableStateFlow(LibraryState())
     val state: StateFlow<LibraryState> = mutable.asStateFlow()
-    val radio = dev.radio.mobile.recommendation.RadioRepository(context, db, state, journal, scope, connectedLink = connectedLink)
+    val radio = dev.radio.mobile.recommendation.RadioRepository(context, db, state, journal, scope, connectedLink = connectedLink, reloadMatches = { reloadMatches() })
     val loudness = LoudnessRepository(context, db.loudness(), scope, state)
     private var scanJob: Job? = null
     private val appContext = context.applicationContext

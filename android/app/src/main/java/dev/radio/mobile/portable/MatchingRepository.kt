@@ -15,13 +15,24 @@ import kotlinx.coroutines.sync.withLock
 data class MatchingState(val loaded:Boolean=false,val busy:Boolean=false,val progress:String="",val results:List<MatchResult> = emptyList(),val error:String?=null)
 
 /** All reads are explicit and local. Never writes source bytes, tags or playback state. */
-class MatchingRepository internal constructor(private val context:Context,private val db:LibraryDatabase,private val beforeRead:suspend () -> Unit = {}) {
+class MatchingRepository internal constructor(private val context:Context,private val db:LibraryDatabase,private val beforeRead:suspend () -> Unit = {},
+  private val beforeCheck:suspend () -> Unit = {}) {
  private val mutable=MutableStateFlow(MatchingState()); val state=mutable.asStateFlow()
  private val mutex=Mutex(); private var job:Job?=null
  private var snapshot:PortableCatalogRevision?=null
  private var anchors:Map<String,LocalContentHash> = emptyMap()
  fun cancel(){job?.cancel()}
- suspend fun load()=withContext(Dispatchers.IO){mutex.withLock{try{refresh(false)}catch(c:CancellationException){throw c}catch(_:Exception){mutable.value=MatchingState(loaded=true,error="Could not read saved matching data. Import or scan again.")}}}
+ /**
+  * Republishes saved matches. A reload clears the published ones first, so it must finish even when its caller goes
+  * away (leaving the Matching screen): a cancelled reload left every song local-only until the app restarted. A
+  * library or catalog change mid-read retries, since nothing else would republish.
+  */
+ suspend fun load()=withContext(Dispatchers.IO+NonCancellable){mutex.withLock{
+  for(attempt in 1..LOAD_ATTEMPTS) {
+   try{refresh(false)}catch(_:Exception){mutable.value=MatchingState(loaded=true,error="Could not read saved matching data. Import or scan again.");break}
+   if(mutable.value.error!=CHANGED_MID_READ) break
+  }
+ }}
  suspend fun matchLocalSongs()=withContext(Dispatchers.IO){
   if(!mutex.tryLock()) return@withContext
   job=currentCoroutineContext()[Job]
@@ -86,6 +97,7 @@ class MatchingRepository internal constructor(private val context:Context,privat
   val currentAnchors=mutableMapOf<String,LocalContentHash>(); val results=mutableListOf<MatchResult>()
   for((index,song) in local.withIndex()) {
    currentCoroutineContext().ensureActive()
+   beforeCheck()
    if(readBytes) mutable.value=mutable.value.copy(progress="Reading ${index+1} of ${local.size}: ${song.fileName}")
    val identity=try {if(readBytes) hash(song) else db.matching().hash(song.id)?.takeIf{valid(it,song,fingerprint(song))}} catch(c:CancellationException){throw c} catch(_:Exception){null}
    if(identity!=null) currentAnchors[song.id]=identity
@@ -116,7 +128,7 @@ class MatchingRepository internal constructor(private val context:Context,privat
     else -> result.copy(candidates=visible)
    })
   }
-  if(db.catalogs().latest()!=catalog || db.library().allSongs().filter{it.available}!=allLocal){mutable.value=MatchingState(loaded=true,error="Library or catalog changed. Match again.");return}
+  if(db.catalogs().latest()!=catalog || db.library().allSongs().filter{it.available}!=allLocal){mutable.value=MatchingState(loaded=true,error=CHANGED_MID_READ);return}
   snapshot=catalog
   anchors=if(partial) (anchors-localIds!!)+currentAnchors else currentAnchors
   val merged=if(partial) {val updates=results.associateBy{it.localId};previousResults.map{updates[it.localId] ?: it}} else results
@@ -190,6 +202,8 @@ class MatchingRepository internal constructor(private val context:Context,privat
  }}
  companion object {
   @Volatile private var instance:MatchingRepository?=null
+  private const val LOAD_ATTEMPTS=3
+  private const val CHANGED_MID_READ="Library or catalog changed. Match again."
   fun get(context:Context):MatchingRepository=instance ?: synchronized(this){instance ?: MatchingRepository(context.applicationContext,LibraryRepository.get(context).db).also{instance=it}}
  }
 }
