@@ -49,7 +49,7 @@ class RadioRepository internal constructor(context:Context,private val db:Librar
     val connectedTuning:StateFlow<ConnectedTuning> = tuningState.asStateFlow()
     private val serverAi=MutableStateFlow<Set<String>>(emptySet())
     private val appContext=context.applicationContext
-    val connected=ConnectedRadioSource(object:ConnectedServerLink {
+    private val connectedLinkProxy=object:ConnectedServerLink {
         private val real by lazy {
             (connectedLink ?: {
                 val policy=EndpointPolicy(dev.radio.mobile.BuildConfig.DEBUG)
@@ -58,7 +58,21 @@ class RadioRepository internal constructor(context:Context,private val db:Librar
         }
         override suspend fun access()=real.access()
         override suspend fun post(path:String,body:String)=real.post(path,body)
-    },scope)
+        override suspend fun get(path:String)=real.get(path)
+        override suspend fun download(path:String,maxBytes:Int)=real.download(path,maxBytes)
+    }
+    val connected=ConnectedRadioSource(connectedLinkProxy,scope)
+    // Connected talk (checkpoint 13B): phone settings, private clip cache and the network side.
+    private val talkSettingsState=MutableStateFlow(TalkSettings.decode(prefs.getString("connected_talk",null)))
+    /** The phone's Talk settings (Radio -> Tune). Off by default and independent of the desktop's own talk switch. */
+    val talkSettings:StateFlow<TalkSettings> = talkSettingsState.asStateFlow()
+    fun setTalkSettings(value:TalkSettings){val n=value.normalized();if(n==talkSettingsState.value)return;prefs.edit{putString("connected_talk",n.encode())};talkSettingsState.value=n}
+    val talkCache=TalkCache(java.io.File(context.applicationContext.noBackupFilesDir,"talk_clips"))
+    val talk=ConnectedTalkSource(connectedLinkProxy,talkCache)
+    private val talkStatusState=MutableStateFlow("Off")
+    /** One line for the Talk section: what talk is doing, or why it can't. Music always continues. */
+    val talkStatus:StateFlow<String> = talkStatusState.asStateFlow()
+    fun setTalkStatus(value:String){talkStatusState.value=value}
     val connectedState:StateFlow<ConnectedUi> = combine(connected.status,connected.set,serverAi){status,set,ai->ConnectedUi(status,set,ai)}
         .stateIn(scope,SharingStarted.Eagerly,ConnectedUi())
     /** Emits whenever a connected answer starts, finishes or is dropped, so refill can re-evaluate. */

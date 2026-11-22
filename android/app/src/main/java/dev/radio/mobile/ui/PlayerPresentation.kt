@@ -70,10 +70,16 @@ fun PlayerBackground(mode: PlayerBackdrop, playing: Boolean, modifier: Modifier 
         onDispose { dev.radio.mobile.playback.AudioLevel.listening = false }
     }
     LaunchedEffect(moving) {
-        if (moving) while (true) {
-            phase.animateTo(1f, tween(((1f - phase.value) * 16000).toInt().coerceAtLeast(1), easing = LinearEasing))
-            phase.snapTo(0f) // Same position at both ends of the circular path.
+        if (!moving) return@LaunchedEffect
+        val drift: suspend () -> Unit = {
+            while (true) {
+                phase.animateTo(1f, tween(((1f - phase.value) * 16000).toInt().coerceAtLeast(1), easing = LinearEasing))
+                phase.snapTo(0f) // Same position at both ends of the circular path.
+            }
         }
+        // The drift never ends, so it is declared as infinite: hosts such as Compose tests can then treat the screen as
+        // idle instead of waiting on it forever. Normal app use has no policy and simply runs it.
+        coroutineContext[androidx.compose.ui.platform.InfiniteAnimationPolicy]?.onInfiniteOperation(drift) ?: drift()
     }
     val colors = MaterialTheme.colorScheme
     Box(modifier.testTag("player-background").semantics {

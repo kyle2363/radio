@@ -144,6 +144,53 @@ class RadioRedesignUiTest {
         assertEquals(1, skipped)
     }
 
+    // Checkpoint 13B: talk plays inside the Radio surfaces, not on a screen of its own.
+    private val talkInfo = TalkClipInfo("job-aaaaaaaaaaaaaaaaaaaa", "talk", "caller", "Mike on the line", listOf(TalkSpeaker("dj", "Nova")),
+        listOf(TalkLine("dj", "Hello")), 30_000, null, null, TalkResource("resource-aaaaaaaaaaaaaaaa", "0".repeat(64), 10, 0))
+    private val talkMedia = TalkPolicy.MEDIA_PREFIX + talkInfo.jobId
+    private val onAirTalk = onAir.copy(currentId = talkMedia, durationMs = 30_000, positionMs = 4_000, canNext = true,
+        talk = dev.radio.mobile.playback.TalkNow(talkInfo, talkMedia, current = true, afterId = "cur", nextId = "a"))
+
+    @Test fun onAirCardShowsTalkOnAir() {
+        compose.setContent { OnAirStationCard(onAirTalk, RadioState(loaded = true), {}, {}, {}, {}) }
+        compose.onNodeWithTag("station-talk").assertTextContains("Mike on the line", substring = true)
+        compose.onNodeWithTag("station-talk").assertTextContains("Caller · Nova", substring = true)
+        compose.onNodeWithTag("station-talk").assertTextContains("Then: Song a", substring = true)
+        compose.onNodeWithTag("station-seed").assertIsDisplayed()
+    }
+
+    @Test fun stationMiniPlayerShowsTalk() {
+        var skipped = 0
+        compose.setContent { StationMiniPlayer("Mike on the line", "On air · Caller · Nova", playWhenReady = true, canPlay = true, canNext = true, onOpen = {}, onToggle = {},
+            onNext = { skipped++ }, symbol = Symbol.Person, nextLabel = "Skip talk") }
+        compose.onNodeWithText("Mike on the line").assertIsDisplayed()
+        compose.onNodeWithText("On air · Caller · Nova").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Skip talk").performClick()
+        assertEquals(1, skipped)
+    }
+
+    @Test fun radioNowPlayingShowsTalkWithoutSongControls() {
+        var transcript = 0
+        var skipped = 0
+        compose.setContent {
+            RadioNowPlaying(onAirTalk, null, RadioState(loaded = true, vibeAvailable = true), { 4_000 }, liked = false, feedbackReady = true, canRead = true, minimal = false, compact = false,
+                options = emptyList(), optionsSummary = null, onScrub = {}, onScrubFinished = {}, onLike = {}, onNotForMe = {}, onPrevious = {}, onToggle = {}, onNext = { skipped++ },
+                onVibe = {}, onShowQueue = {}, onSleep = {}, onPlayNext = {}, onRescan = {}, journalError = null, onRetryJournal = {}, onLyrics = {},
+                talk = onAirTalk.talk, onTranscript = { transcript++ })
+        }
+        compose.onNodeWithTag("radio-now-playing").assertExists()
+        compose.onNodeWithTag("talk-title").assertTextEquals("Mike on the line")
+        compose.onNodeWithTag("talk-speakers").assertTextEquals("Caller · Nova")
+        compose.onNodeWithTag("favorite-song").assertDoesNotExist()
+        compose.onNodeWithTag("not-for-me").assertDoesNotExist()
+        compose.onNodeWithTag("vibe-lock").assertDoesNotExist()
+        compose.onNodeWithTag("next-up").assertTextContains("Song a", substring = true)
+        compose.onNodeWithTag("open-transcript-button").performScrollTo().performClick()
+        assertEquals(1, transcript)
+        compose.onNodeWithContentDescription("Skip talk").performClick()
+        assertEquals(1, skipped)
+    }
+
     @Test fun fullQueueShowsStationReasons() {
         compose.setContent { IntegratedQueue(onAir, true, onSelect = {}) }
         compose.onNodeWithTag("queue-server-ai-b", useUnmergedTree = true).assertIsDisplayed()

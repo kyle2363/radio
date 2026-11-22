@@ -32,4 +32,14 @@ class CrossfadeTest {
         assertEquals(1f, mid * mid + Crossfade.incoming(.5f) * Crossfade.incoming(.5f), 1e-4f)
         assertEquals(0f, Crossfade.outgoing(2f), 1e-4f)
     }
+
+    @Test fun aCoarsePositionClockLinesTheTailUpInsteadOfGivingUp() {
+        // On time (or within the small tolerance): the tail stays where it was prepared.
+        assertEquals(6_000L, Crossfade.tailStart(positionMs = 5_990, handoverMs = 6_000, durationMs = 8_000))
+        assertEquals(6_000L, Crossfade.tailStart(positionMs = 6_090, handoverMs = 6_000, durationMs = 8_000))
+        // A clock that jumps in ~200 ms steps overshoots: line the tail up with where the song really is.
+        assertEquals(6_189L, Crossfade.tailStart(positionMs = 6_189, handoverMs = 6_000, durationMs = 8_000))
+        // Too close to the end to overlap: let the song finish on its own.
+        assertNull(Crossfade.tailStart(positionMs = 7_600, handoverMs = 6_000, durationMs = 8_000))
+    }
 }

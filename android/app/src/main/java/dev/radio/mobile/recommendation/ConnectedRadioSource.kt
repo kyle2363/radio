@@ -15,13 +15,16 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
 /** What the desktop currently allows this phone to do. */
-data class ConnectedAccess(val key: String, val capable: Boolean, val permitted: Boolean, val tunable: Boolean = false) {
+data class ConnectedAccess(val key: String, val capable: Boolean, val permitted: Boolean, val tunable: Boolean = false,
+    /** Connected talk (checkpoint 13); null on desktops that don't offer it. */
+    val talk: TalkCapability? = null) {
     companion object {
         /** Parses GET /capabilities. [key] identifies the paired server and device. */
         fun parse(key: String, body: String): ConnectedAccess {
             val root = runCatching { ConnectedJson.parse(body) as? Map<*, *> }.getOrNull() ?: throw ConnectionFailure("Invalid server response.")
             val scopes = (root["scopes"] as? List<*>)?.filterIsInstance<String>().orEmpty()
-            return ConnectedAccess(key, root["connected_recommendations"] == true, "recommend:read" in scopes, root["connected_tuning"] == true)
+            return ConnectedAccess(key, root["connected_recommendations"] == true, "recommend:read" in scopes, root["connected_tuning"] == true,
+                TalkCapability.parse(root["connected_talk"]))
         }
     }
 }
@@ -32,6 +35,10 @@ interface ConnectedServerLink {
     suspend fun access(): ConnectedAccess
     /** POST JSON to a path under /api/portable/v1. The recommendations path uses the long deadline. */
     suspend fun post(path: String, body: String): RadioResponse
+    /** Authenticated GET under /api/portable/v1 (talk job polling). */
+    suspend fun get(path: String): RadioResponse = throw ConnectionFailure("Unsupported mobile request.")
+    /** Authenticated binary GET (talk clips). */
+    suspend fun download(path: String, maxBytes: Int): dev.radio.mobile.connection.RadioBinaryResponse = throw ConnectionFailure("Unsupported mobile request.")
 }
 
 enum class ConnectedFailureKind(val label: String) {
@@ -78,6 +85,8 @@ data class ConnectedStatus(
     val lastAt: Long = 0, val lastOk: Boolean? = null, val lastMessage: String = "Off", val lastFailure: ConnectedFailure? = null,
     /** Whether the paired desktop accepts phone tuning; null until it has been asked. */
     val tunable: Boolean? = null,
+    /** What the desktop says about connected talk; null until asked or on older desktops. */
+    val talk: TalkCapability? = null,
 )
 
 /** Digest rule shared with the desktop (plan section 8). */
@@ -149,6 +158,9 @@ class ConnectedRadioSource(
     private var contextId: String? = null
     private var contextEpoch = 0L
     private var contextBody: String? = null
+    private val contextState = MutableStateFlow<String?>(null)
+    /** The server context this phone's connected Radio uses; connected talk turns are sent against it. */
+    val context: StateFlow<String?> = contextState.asStateFlow()
 
     fun setEnabled(value: Boolean) {
         if (enabled == value) return
@@ -195,6 +207,13 @@ class ConnectedRadioSource(
     /** Forget cached capability so the next request probes again. */
     fun forgetAccess() { access = null }
 
+    /** The context may have expired on the server (404): the next connected request makes a new one. */
+    fun contextLost(id: String) { if (contextState.value == id) contextState.value = null }
+
+    /** Cached capability probe for talk; refreshes after its TTL. Null when unreachable. */
+    suspend fun talkAccess(): ConnectedAccess? = try { lock.withLock { probe() } }
+        catch (cancelled: CancellationException) { throw cancelled } catch (_: Exception) { null }
+
     /** Explicit permission check for Settings. Never touches playback or the held set. */
     suspend fun checkAccess() {
         if (!enabled) return
@@ -229,9 +248,9 @@ class ConnectedRadioSource(
         val ttl = if (cached?.permitted == true && cached.capable) ACCESS_TTL_MS else DENIED_TTL_MS
         if (cached != null && now() - accessAt < ttl) return cached
         val fresh = link.access()
-        if (fresh.key != linkKey) { uploadedDigest = null; uploadedRevision = -1; contextId = null; contextBody = null; contextEpoch = 0; latestEpoch = 0; linkKey = fresh.key }
+        if (fresh.key != linkKey) { uploadedDigest = null; uploadedRevision = -1; contextId = null; contextState.value = null; contextBody = null; contextEpoch = 0; latestEpoch = 0; linkKey = fresh.key }
         access = fresh; accessAt = now()
-        mutable.update { it.copy(tunable = fresh.capable && fresh.tunable) }
+        mutable.update { it.copy(tunable = fresh.capable && fresh.tunable, talk = if (fresh.capable && fresh.permitted) fresh.talk else null) }
         return fresh
     }
 
@@ -272,13 +291,13 @@ class ConnectedRadioSource(
             if (contextId == null || forceContext || ctx != contextBody) {
                 val create = contextId == null
                 val response = link.post(if (create) "/contexts" else "/contexts/$contextId", ctx)
-                if (response.status == 404 && !create) { contextId = null; contextBody = null; if (!retried) { retried = true; continue }; return httpFailure(response, "Context") }
+                if (response.status == 404 && !create) { contextId = null; contextState.value = null; contextBody = null; if (!retried) { retried = true; continue }; return httpFailure(response, "Context") }
                 if (response.status != 200) return httpFailure(response, "Context")
                 val reply = obj(response.body)
                 val id = reply?.get("context_id") as? String
                 val epoch = reply?.get("epoch") as? Long
                 if (id == null || epoch == null || (!create && id != contextId)) return fail(ConnectedFailureKind.INVALID_REPLY, "context")
-                contextId = id; contextEpoch = epoch; contextBody = ctx; latestEpoch = epoch; forceContext = false
+                contextId = id; contextState.value = id; contextEpoch = epoch; contextBody = ctx; latestEpoch = epoch; forceContext = false
             }
             val id = contextId!!
             val requestId = newId()
@@ -288,7 +307,7 @@ class ConnectedRadioSource(
             val response = link.post("/contexts/$id/recommendations", body)
             when (response.status) {
                 200 -> return parseReply(request, snapshot, requestId, id, anchorServer, response.body)
-                404 -> { contextId = null; contextBody = null; if (!retried) { retried = true; continue }; return httpFailure(response, "Recommendations") }
+                404 -> { contextId = null; contextState.value = null; contextBody = null; if (!retried) { retried = true; continue }; return httpFailure(response, "Recommendations") }
                 409 -> {
                     val reason = reasonOf(response.body)
                     when (reason) {

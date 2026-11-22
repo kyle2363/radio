@@ -146,6 +146,7 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
     var showQueue by rememberSaveable { mutableStateOf(false) }
     var showSkip by rememberSaveable { mutableStateOf(false) }
     var showLyricsSheet by rememberSaveable { mutableStateOf(false) }
+    var showTranscript by remember { mutableStateOf(false) }
     var showSleep by remember { mutableStateOf(false) }
     var addQueueSongs by remember { mutableStateOf(false) }
     var playlistSongIds by remember { mutableStateOf<List<String>?>(null) }
@@ -164,6 +165,8 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
     var pendingPlay by remember { mutableStateOf<PendingPlay?>(null) }
     val songs = remember(library.songs, sort) { orderSongs(library.songs, sort) }
     val song = audio.current
+    // Connected talk (checkpoint 13B): a clip playing between two Radio songs.
+    val talkNow = audio.talk?.takeIf { it.current }
     // Radio was asked for and is still choosing its first songs: show the station, never the old queue's controls.
     val tuningIn = audio.radioStarting && !audio.radioActive
     val stationMode = audio.radioActive || tuningIn
@@ -342,7 +345,7 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
     RadioTheme(
         palette = RadioPalette.entries.firstOrNull { it.name == palette } ?: RadioPalette.Ocean,
         appearance = Appearance.entries.firstOrNull { it.name == appearance } ?: Appearance.System
-    ) { StationTheme(StationColors.of(RadioPalette.entries.firstOrNull { it.name == palette } ?: RadioPalette.Ocean), enabled = stationMode && page == "Now playing" && (song != null || tuningIn)) { androidx.compose.animation.SharedTransitionLayout { val shared = this
+    ) { StationTheme(StationColors.of(RadioPalette.entries.firstOrNull { it.name == palette } ?: RadioPalette.Ocean), enabled = (stationMode || talkNow != null) && page == "Now playing" && (song != null || tuningIn || talkNow != null)) { androidx.compose.animation.SharedTransitionLayout { val shared = this
         Scaffold(
             // Lets the benchmark and baseline-profile journeys find Compose test tags as resource ids.
             modifier = Modifier.semantics { testTagsAsResourceId = true },
@@ -369,20 +372,26 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
                     if (page == "Now playing" && !showQueue && !stationMode) IconButton(onClick = { minimal = !minimal; prefs.edit().putBoolean("minimal", minimal).apply() }) {
                         RadioIcon(if (minimal) Symbol.Expand else Symbol.Minimize, if (minimal) "Full controls" else "Minimal mode")
                     }
-                    if (page == "Now playing" && song != null && !tuningIn) Box {
+                    if (page == "Now playing" && (song != null || talkNow != null) && !tuningIn) Box {
                         IconButton(onClick = { playerMenu = true }, modifier=Modifier.testTag("player-options")) { RadioIcon(Symbol.More, "Player options") }
                         DropdownMenu(playerMenu,{playerMenu=false}) {
-                            DropdownMenuItem(text={Text("Lyrics")},onClick={playerMenu=false;showLyricsSheet=true},modifier=Modifier.testTag("open-lyrics"))
-                            DropdownMenuItem(text={Text("Song stats")},onClick={playerMenu=false;statsSong=song},modifier=Modifier.testTag("open-song-stats"))
+                            // Talk is not a song: Transcript replaces Lyrics, and song-only items are left out.
+                            if(talkNow!=null) DropdownMenuItem(text={Text("Transcript")},onClick={playerMenu=false;showTranscript=true},modifier=Modifier.testTag("open-transcript"))
+                            else {
+                                DropdownMenuItem(text={Text("Lyrics")},onClick={playerMenu=false;showLyricsSheet=true},modifier=Modifier.testTag("open-lyrics"))
+                                DropdownMenuItem(text={Text("Song stats")},onClick={playerMenu=false;statsSong=song},modifier=Modifier.testTag("open-song-stats"))
+                            }
                             HorizontalDivider()
-                            if(audio.radioActive){
+                            if(audio.radioActive || talkNow!=null){
                                 DropdownMenuItem(text={Text("Sleep timer")},onClick={playerMenu=false;showSleep=true},trailingIcon={Text(if(liveSleep.value.active)sleepLabel(liveSleep.value) else "Off",style=MaterialTheme.typography.labelSmall)})
-                                DropdownMenuItem(text={Text("Replay this song")},onClick={playerMenu=false;playback.replay()},modifier=Modifier.testTag("replay-song"))
-                                DropdownMenuItem(text={Text("Skip reason")},onClick={playerMenu=false;showSkip=true})
+                                if(talkNow==null){
+                                    DropdownMenuItem(text={Text("Replay this song")},onClick={playerMenu=false;playback.replay()},modifier=Modifier.testTag("replay-song"))
+                                    DropdownMenuItem(text={Text("Skip reason")},onClick={playerMenu=false;showSkip=true})
+                                }
                                 DropdownMenuItem(text={Text(if(showQueue)"Show artwork" else "Show queue")},onClick={playerMenu=false;showQueue=!showQueue},modifier=Modifier.testTag("show-queue"))
                                 DropdownMenuItem(text={Text("Tune station")},onClick={playerMenu=false;openTune=true;navigate("Radio")},modifier=Modifier.testTag("tune-radio-player"))
                                 DropdownMenuItem(text={Text(if(minimal)"Full view" else "Minimal view")},onClick={playerMenu=false;minimal=!minimal;prefs.edit().putBoolean("minimal",minimal).apply()})
-                                DropdownMenuItem(text={Text("Why this song?")},onClick={playerMenu=false;whySheet=true},modifier=Modifier.testTag("why-song"))
+                                if(talkNow==null) DropdownMenuItem(text={Text("Why this song?")},onClick={playerMenu=false;whySheet=true},modifier=Modifier.testTag("why-song"))
                                 HorizontalDivider()
                                 DropdownMenuItem(text={Text("End station…")},onClick={playerMenu=false;endSheet=true},modifier=Modifier.testTag("end-station"))
                             } else {
@@ -402,8 +411,13 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
             bottomBar = {
                 AnimatedVisibility(page != "Search" && page != "Now playing", enter = fadeIn(Motion.standard()), exit = fadeOut(Motion.quick())) { val barScope = this; Column(Modifier.background(MaterialTheme.colorScheme.surfaceContainer)) {
                   val miniSong = rememberLastNonNull(song)
-                  AnimatedVisibility(song != null, enter = expandVertically(Motion.standard()) + fadeIn(Motion.standard()), exit = shrinkVertically(Motion.quick()) + fadeOut(Motion.quick())) {
-                  val song = song ?: miniSong ?: return@AnimatedVisibility
+                  AnimatedVisibility(song != null || talkNow != null, enter = expandVertically(Motion.standard()) + fadeIn(Motion.standard()), exit = shrinkVertically(Motion.quick()) + fadeOut(Motion.quick())) {
+                  val song = song ?: miniSong
+                  // Talk between Radio songs keeps the same on-air pill, naming the segment and who is on.
+                  if (talkNow != null) { StationMiniPlayer(talkNow.info.title, "${tag}On air · ${talkSpeakerLine(talkNow.info)}", audio.playWhenReady, canPlay = !library.accessLost,
+                      canNext = audio.canNext, onOpen = { navigate("Now playing") }, onToggle = { playback.toggle() }, onNext = { playback.next() }, mood = radio.mood,
+                      symbol = Symbol.Person, nextLabel = "Skip talk"); return@AnimatedVisibility }
+                  if (song == null) return@AnimatedVisibility
                   AnimatedContent(stationMode, transitionSpec = { fadeIn(Motion.standard()) togetherWith fadeOut(Motion.quick()) }, label = "mini-player") { onAir ->
                     if (onAir) StationMiniPlayer(song, if (tuningIn) "Tuning in…" else "${tag}On air · ${if (radio.vibeLocalId != null) "Vibe locked" else moodLabel(radio.mood)}", audio.playWhenReady,
                         canPlay = !library.accessLost && song.available, canNext = audio.canNext && !tuningIn, onOpen = { navigate("Now playing") }, onToggle = { playback.toggle() }, onNext = { playback.next() }, mood = radio.mood)
@@ -466,35 +480,36 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
                     } }
                     if (query.isNotBlank() && results.isEmpty()) Text("No matching songs", Modifier.padding(20.dp))
                 }
-                "Now playing" -> if (song == null && !tuningIn) NothingPlaying(repository, library, audio.error, onResume = { playback.play() },
+                "Now playing" -> if (song == null && talkNow == null && !tuningIn) NothingPlaying(repository, library, audio.error, onResume = { playback.play() },
                     onRadio = { playback.startRadio(null) }, onBrowse = { navigate("Library") }, modifier = Modifier.padding(insets)) else BoxWithConstraints(Modifier.consumeWindowInsets(insets).fillMaxSize()) {
                     // The backdrop fills the whole screen (behind the transparent top bar); only the content is inset.
                     val compact = maxHeight - insets.calculateTopPadding() - insets.calculateBottomPadding() < 520.dp
                     // On air the glow takes the station's mood colour; normal playback keeps the palette colour.
                     PlayerBackground(PlayerBackdrop.entries.firstOrNull { it.name == backdrop } ?: PlayerBackdrop.Animated, audio.isPlaying, Modifier.matchParentSize(),
-                        tint = if (stationMode) Color(MoodColors.of(radio.mood).field) else null)
+                        tint = if (stationMode || talkNow != null) Color(MoodColors.of(radio.mood).field) else null)
                     // Tuning in → on air, artwork ↔ queue and standard ↔ Radio crossfade instead of snapping.
-                    val mode = when { tuningIn -> "tuning"; showQueue -> "queue"; audio.radioActive -> "radio"; else -> "standard" }
+                    val mode = when { tuningIn -> "tuning"; showQueue -> "queue"; audio.radioActive || talkNow != null -> "radio"; else -> "standard" }
                     val artSize by animateDpAsState(if (minimal || compact) 160.dp else 220.dp, Motion.standard(), label = "artwork-size")
                     AnimatedContent(mode, Modifier.fillMaxSize(), transitionSpec = { fadeIn(Motion.standard()) togetherWith fadeOut(Motion.quick()) }, label = "player-mode") { shown ->
                     val song = song
-                    if (shown == "tuning" || song == null) RadioTuningIn(radio.mood, Modifier.fillMaxSize().padding(insets).navigationBarsPadding())
+                    if (shown == "tuning" || song == null && talkNow == null) RadioTuningIn(radio.mood, Modifier.fillMaxSize().padding(insets).navigationBarsPadding())
                     else Column(Modifier.fillMaxSize().padding(insets).navigationBarsPadding()) {
                         if (shown == "radio") {
                             val options = dev.radio.mobile.recommendation.ConnectedPolicy.visibleOptions(connected, audio.currentId, audio.radioActive, audio.playOrder.toSet(), repository.radio::isDisliked) { id -> library.songs.any { it.id == id && it.available } }
-                            RadioNowPlaying(audio, song, radio, positionMs, liked, feedbackReady = journal.feedbackLoaded && journal.pendingWrites == 0, canRead = !library.accessLost && song.available,
+                            RadioNowPlaying(audio, song, radio, positionMs, liked, feedbackReady = journal.feedbackLoaded && journal.pendingWrites == 0, canRead = !library.accessLost && (talkNow != null || song?.available == true),
                                 minimal = minimal, compact = compact, options = options, optionsSummary = connected.set?.let(dev.radio.mobile.recommendation.ConnectedPolicy::summary),
                                 onScrub = { scrubMs = (it * 1000).toLong() }, onScrubFinished = { scrubMs?.let { playback.seek(it) }; scrubMs = null },
-                                onLike = { repository.journal.setFavorite(song, !liked) }, onNotForMe = ::notForMe,
+                                onLike = { song?.let { repository.journal.setFavorite(it, !liked) } }, onNotForMe = ::notForMe,
                                 onPrevious = { playback.previous() }, onToggle = { playback.toggle() }, onNext = { playback.next() },
                                 onVibe = { if (locked) repository.radio.clearVibe() else repository.radio.lockVibe() },
                                 onShowQueue = { showQueue = true }, onLyrics = { showLyricsSheet = true }, onSleep = { showSleep = true }, sleep = { liveSleep.value }, onPlayNext = { pick -> playback.addToQueue(listOf(pick.song), true) },
                                 onRescan = { repository.rescan() }, journalError = journal.error, onRetryJournal = { repository.journal.retry() }, modifier = Modifier.weight(1f),
-                                feelChip = { FeelChip(song, feelsState, onClick = { feelSheet = true }) })
+                                feelChip = { song?.let { FeelChip(it, feelsState, onClick = { feelSheet = true }) } },
+                                talk = talkNow, onTranscript = { showTranscript = true })
                         } else if (shown == "queue") {
                             IntegratedQueue(audio, !library.accessLost, onSelect = { playback.jumpTo(it) }, modifier = Modifier.fillMaxWidth().weight(1f),
                                 playback = playback, onAdd = { addQueueSongs = true }, onSave = { playlistSongIds = it }, serverAiIds = connected.serverAiIds)
-                        } else {
+                        } else if (song != null) {
                             Column(Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                                 Spacer(Modifier.height(20.dp))
                                 Box(Modifier.sharedPlayer(shared, screenScopes["Now playing"], "art")) { Artwork(artSize) }
@@ -525,7 +540,7 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
                         if (audio.error != null && shown != "radio") Text(audio.error!!, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp).testTag("playback-error"))
                         if (shown != "radio") PlayerTransport(audio, playback, positionMs, onScrub = { scrubMs = (it * 1000).toLong() },
                             onScrubFinished = { scrubMs?.let { playback.seek(it) }; scrubMs = null },
-                            canRead = !library.accessLost && song.available, queueVisible = shown == "queue",
+                            canRead = !library.accessLost && (talkNow != null || song?.available == true), queueVisible = shown == "queue",
                             onQueueToggle = { showQueue = !showQueue }, modifier = Modifier.padding(horizontal = 24.dp), compact = compact)
                         if (!audio.radioActive) PlayerExtras(audio.repeat, liveSleep, showLyrics = shown != "queue",
                             onRepeat = { playback.setRepeat(when (audio.repeat) { RepeatMode.OFF -> RepeatMode.ALL; RepeatMode.ALL -> RepeatMode.ONE; RepeatMode.ONE -> RepeatMode.OFF }) },
@@ -684,6 +699,9 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
                 } }, confirmButton = { TextButton(onClick = { showSkip = false }) { Text("Close") } }
             )
             if (showSleep) SleepTimerDialog(liveSleep.value, playback) { showSleep = false }
+            if (showTranscript && page == "Now playing" && talkNow != null) TalkTranscriptSheet(talkNow.info) { showTranscript = false }
+            // A finished clip closes its transcript, so the next clip never opens on its own.
+            LaunchedEffect(talkNow?.mediaId) { if (talkNow == null) showTranscript = false }
             if (showLyricsSheet && page == "Now playing" && song != null) {
                 val lyrics by lyricsRepository.state.collectAsState()
                 val matchesCurrentSong = lyrics.songId == song.id

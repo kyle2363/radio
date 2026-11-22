@@ -187,6 +187,9 @@ fun RadioContent(radio:RadioState,repository:RadioRepository,audio:PlaybackState
             HorizontalDivider(Modifier.padding(top=16.dp))
             val connectedTuning by repository.connectedTuning.collectAsState()
             DesktopPicksSection(connected,paired,connectedTuning,onToggle=repository::setConnectedEnabled,onChange=repository::setConnectedTuning,onPair=onServer)
+            val talkSettings by repository.talkSettings.collectAsState()
+            val talkStatus by repository.talkStatus.collectAsState()
+            TalkSection(connected,paired,talkSettings,talkStatus,onChange=repository::setTalkSettings)
             Text("Changes apply from the next song. Your current song and queue stay put. Only this phone's picks change; your desktop's own Radio is untouched.",
                 Modifier.padding(top=16.dp),style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
         }

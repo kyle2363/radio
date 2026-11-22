@@ -154,6 +154,7 @@ fun OnAirStationCard(audio: PlaybackState, radio: RadioState, onOpenPlayer: () -
     val colors = LocalStationColors.current
     val muted = Color(colors.muted)
     val song = audio.current
+    val talk = audio.talk?.takeIf { it.current }
     val locked = radio.vibeLocalId != null
     StationSurface(modifier.testTag("station-card")) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -164,7 +165,18 @@ fun OnAirStationCard(audio: PlaybackState, radio: RadioState, onOpenPlayer: () -
             Text("${stationName(radio, feel)} · ${ExplorationPreset.nearest(radio.exploration).label}", color = muted, fontSize = 12.sp, maxLines = 1,
                 overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false).testTag("station-tuning-label"))
         }
-        if (song != null) Row(Modifier.fillMaxWidth().clickable(role = Role.Button, onClickLabel = "Open player", onClick = onOpenPlayer).testTag("station-now-playing"),
+        // Checkpoint 13B: talk between songs is on air too, with the song it introduces.
+        if (talk != null) Row(Modifier.fillMaxWidth().clickable(role = Role.Button, onClickLabel = "Open player", onClick = onOpenPlayer).testTag("station-talk"),
+            verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(56.dp).background(Color(colors.tile), RoundedCornerShape(12.dp)), contentAlignment = Alignment.Center) {
+                CompositionLocalProvider(LocalContentColor provides Color(0xFFBFD0EA)) { RadioIcon(Symbol.Person, modifier = Modifier.size(26.dp)) }
+            }
+            Column(Modifier.weight(1f).padding(start = 14.dp)) {
+                Text(talk.info.title, style = MaterialTheme.typography.titleLarge, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                StationElapsed(talkSpeakerLine(talk.info), positionMs, audio.durationMs, muted)
+                audio.queue.firstOrNull { it.id == talk.nextId }?.let { Text("Then: ${it.title}", color = muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+            }
+        } else if (song != null) Row(Modifier.fillMaxWidth().clickable(role = Role.Button, onClickLabel = "Open player", onClick = onOpenPlayer).testTag("station-now-playing"),
             verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.size(56.dp).background(Color(colors.tile), RoundedCornerShape(12.dp)), contentAlignment = Alignment.Center) {
                 CompositionLocalProvider(LocalContentColor provides Color(0xFFBFD0EA)) { RadioIcon(Symbol.Music, modifier = Modifier.size(26.dp)) }
@@ -503,24 +515,30 @@ fun SongTitle(title: String, modifier: Modifier = Modifier) {
 
 /** Mini-player while on air: station surface, ON AIR dot, Pause and Skip. */
 @Composable
-fun StationMiniPlayer(song: LocalSong, status: String, playWhenReady: Boolean, canPlay: Boolean, canNext: Boolean, onOpen: () -> Unit, onToggle: () -> Unit, onNext: () -> Unit, mood: String = "neutral") {
+fun StationMiniPlayer(song: LocalSong, status: String, playWhenReady: Boolean, canPlay: Boolean, canNext: Boolean, onOpen: () -> Unit, onToggle: () -> Unit, onNext: () -> Unit, mood: String = "neutral") =
+    StationMiniPlayer(song.title, status, playWhenReady, canPlay, canNext, onOpen, onToggle, onNext, mood)
+
+/** The on-air pill for any item: a song, or a talk clip ([symbol] Person, [nextLabel] "Skip talk"). */
+@Composable
+fun StationMiniPlayer(title: String, status: String, playWhenReady: Boolean, canPlay: Boolean, canNext: Boolean, onOpen: () -> Unit, onToggle: () -> Unit, onNext: () -> Unit,
+    mood: String = "neutral", symbol: Symbol = Symbol.Music, nextLabel: String = "Next song") {
     val colors = LocalStationColors.current
     // The mood's dark tone fills the pill, so "on air" is recognisable from any tab.
     Surface(color = Color(dev.radio.mobile.ui.theme.MoodColors.of(mood).field), contentColor = Color.White, shape = RoundedCornerShape(18.dp),
         modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 4.dp).testTag("mini-player")) {
         Row(Modifier.padding(start = 16.dp, end = 4.dp).heightIn(min = 68.dp), verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.size(44.dp).background(Color(colors.tile), RoundedCornerShape(8.dp)).clickable(role = Role.Button, onClickLabel = "Open player", onClick = onOpen), contentAlignment = Alignment.Center) {
-                CompositionLocalProvider(LocalContentColor provides Color(0xFFBFD0EA)) { RadioIcon(Symbol.Music, modifier = Modifier.size(20.dp)) }
+                CompositionLocalProvider(LocalContentColor provides Color(0xFFBFD0EA)) { RadioIcon(symbol, modifier = Modifier.size(20.dp)) }
             }
             Column(Modifier.weight(1f).testTag("mini-open").clickable(role = Role.Button, onClickLabel = "Open player", onClick = onOpen).padding(horizontal = 12.dp, vertical = 8.dp)) {
-                Text(song.title, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleSmall)
+                Text(title, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleSmall)
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Box(Modifier.size(6.dp).background(OnAirDot, CircleShape)); Spacer(Modifier.width(6.dp))
                     Text(status, color = OnAirText, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             }
             IconButton(onToggle, enabled = canPlay) { RadioIcon(if (playWhenReady) Symbol.Pause else Symbol.Play, if (playWhenReady) "Pause" else "Play") }
-            IconButton(onNext, enabled = canNext, modifier = Modifier.testTag("mini-next")) { RadioIcon(Symbol.Next, "Next song") }
+            IconButton(onNext, enabled = canNext, modifier = Modifier.testTag("mini-next")) { RadioIcon(Symbol.Next, nextLabel) }
         }
     }
 }
@@ -550,7 +568,7 @@ private fun StationElapsed(folder: String, positionMs: () -> Long, durationMs: L
 /** Radio Now Playing body below the top bar (station theme is provided by the caller). */
 @Composable
 fun RadioNowPlaying(
-    audio: PlaybackState, song: LocalSong, radio: RadioState, positionMs: () -> Long, liked: Boolean, feedbackReady: Boolean, canRead: Boolean, minimal: Boolean, compact: Boolean,
+    audio: PlaybackState, song: LocalSong?, radio: RadioState, positionMs: () -> Long, liked: Boolean, feedbackReady: Boolean, canRead: Boolean, minimal: Boolean, compact: Boolean,
     options: List<ConnectedPick>, optionsSummary: String?,
     onScrub: (Float) -> Unit, onScrubFinished: () -> Unit, onLike: () -> Unit, onNotForMe: () -> Unit,
     onPrevious: () -> Unit, onToggle: () -> Unit, onNext: () -> Unit, onVibe: () -> Unit,
@@ -560,8 +578,12 @@ fun RadioNowPlaying(
     sleep: () -> dev.radio.mobile.playback.SleepTimerState = { audio.sleepTimer },
     /** Checkpoint 9B: the feel chip that opens the tag sheet. */
     feelChip: (@Composable () -> Unit)? = null,
+    /** Checkpoint 13B: a talk clip on air. Same station screen; song-only controls step aside. */
+    talk: dev.radio.mobile.playback.TalkNow? = null,
+    onTranscript: (() -> Unit)? = null,
 ) {
     val locked = radio.vibeLocalId != null
+    val talking = talk != null
     val colors = LocalStationColors.current
     Column(modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp).testTag("radio-now-playing"), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         Spacer(Modifier.height(4.dp))
@@ -569,10 +591,14 @@ fun RadioNowPlaying(
         Box(Modifier.align(Alignment.CenterHorizontally).size(artSize)
             .background(Color(colors.tile), RoundedCornerShape(20.dp)), contentAlignment = Alignment.Center) {
             CompositionLocalProvider(LocalContentColor provides if (audio.error != null) OnAirText else Color(0xFFBFD0EA)) {
-                RadioIcon(if (audio.error != null) Symbol.Warning else Symbol.Music, modifier = Modifier.size(56.dp))
+                RadioIcon(if (audio.error != null) Symbol.Warning else if (talking) Symbol.Person else Symbol.Music, talk?.info?.typeLabel, Modifier.size(56.dp))
             }
         }
-        Row(verticalAlignment = Alignment.Top) {
+        if (talk != null) Column(Modifier.fillMaxWidth()) {
+            Text(talk.info.title, Modifier.fillMaxWidth().testTag("talk-title"), style = MaterialTheme.typography.headlineSmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Text(talkSpeakerLine(talk.info), Modifier.testTag("talk-speakers"), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1, overflow = TextOverflow.Ellipsis)
+        } else if (song != null) Row(verticalAlignment = Alignment.Top) {
             Column(Modifier.weight(1f)) {
                 SongTitle(song.title, Modifier.fillMaxWidth())
                 OriginLine(song, audio.origins[song.id])
@@ -595,15 +621,16 @@ fun RadioNowPlaying(
         PlaybackProgress(positionMs, audio.durationMs, audio.seekable, onScrub, onScrubFinished, timeColor = MaterialTheme.colorScheme.onSurfaceVariant)
         Row(Modifier.fillMaxWidth().testTag("player-transport"), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             val tonal = IconButtonDefaults.filledTonalIconButtonColors(containerColor = Color(colors.panel), contentColor = Color.White)
-            FilledTonalIconButton(onNotForMe, enabled = feedbackReady && audio.canNext, modifier = Modifier.size(48.dp).testTag("not-for-me"), shape = RadioShapes.Soft, colors = tonal) { RadioIcon(Symbol.Block, "Not for me (dislike and skip)") }
+            // Talk is never rated, so Not for me and Vibe lock keep their space but are not shown.
+            if (talking) Spacer(Modifier.size(48.dp)) else FilledTonalIconButton(onNotForMe, enabled = feedbackReady && audio.canNext, modifier = Modifier.size(48.dp).testTag("not-for-me"), shape = RadioShapes.Soft, colors = tonal) { RadioIcon(Symbol.Block, "Not for me (dislike and skip)") }
             FilledTonalIconButton(onPrevious, enabled = audio.canPrevious, modifier = Modifier.size(52.dp), colors = tonal) { RadioIcon(Symbol.Previous, "Previous song") }
             FilledIconButton(onToggle, enabled = canRead, modifier = Modifier.size(width = if (compact) 76.dp else 92.dp, height = if (compact) 60.dp else 76.dp), shape = RadioShapes.Squircle,
                 colors = IconButtonDefaults.filledIconButtonColors(containerColor = Color.White, contentColor = Color(colors.base))) {
                 RadioIcon(if (audio.playWhenReady) Symbol.Pause else Symbol.Play, if (audio.playWhenReady) "Pause" else "Play", Modifier.size(32.dp))
             }
-            FilledTonalIconButton(onNext, enabled = audio.canNext, modifier = Modifier.size(52.dp).testTag("player-next"), colors = tonal) { RadioIcon(Symbol.Next, "Next song") }
+            FilledTonalIconButton(onNext, enabled = audio.canNext, modifier = Modifier.size(52.dp).testTag("player-next"), colors = tonal) { RadioIcon(Symbol.Next, if (talking) "Skip talk" else "Next song") }
             val moodColors = MoodColors.of(radio.mood)
-            FilledTonalIconToggleButton(locked, { onVibe() }, enabled = locked || radio.vibeAvailable, modifier = Modifier.size(48.dp).testTag("vibe-lock"), shape = RadioShapes.Soft,
+            if (talking) Spacer(Modifier.size(48.dp)) else FilledTonalIconToggleButton(locked, { onVibe() }, enabled = locked || radio.vibeAvailable, modifier = Modifier.size(48.dp).testTag("vibe-lock"), shape = RadioShapes.Soft,
                 colors = IconButtonDefaults.filledTonalIconToggleButtonColors(containerColor = Color(colors.panel), contentColor = Color.White,
                     checkedContainerColor = Color(moodColors.accent), checkedContentColor = Color(moodColors.onAccent))) {
                 RadioIcon(Symbol.Lock, if (locked) "Release vibe lock" else "Vibe lock")
@@ -612,12 +639,13 @@ fun RadioNowPlaying(
         AnimatedVisibility(!minimal, enter = expandVertically(Motion.standard()) + fadeIn(Motion.standard()), exit = shrinkVertically(Motion.quick()) + fadeOut(Motion.quick())) {
           Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
             FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally)) {
-                feelChip?.invoke()
+                if (!talking) feelChip?.invoke()
                 if (audio.sleepTimer.active) AssistChip(onSleep, { Text("Sleep · ${sleepLabel(sleep())}") }, Modifier.testTag("sleep-countdown"), leadingIcon = { RadioIcon(Symbol.Clock, modifier = Modifier.size(16.dp)) })
                 if (locked) SuggestionChip({}, { Text("Vibe · ${radio.vibeSongsLeft} songs · ${vibeMinutes(radio)} min") }, enabled = false, modifier = Modifier.testTag("vibe-chip"))
                 else if (!radio.vibeAvailable) Text(if (radio.legacyVectorTracks > 0 && !radio.legacyVectorsEnabled) "Vibe lock needs desktop similarity. Turn it on in Settings → Radio." else radio.vibeReason ?: "Vibe lock needs a matched song with recommendation data.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            val nextSong = audio.playOrder.indexOf(audio.currentId).takeIf { it >= 0 }?.let { audio.playOrder.getOrNull(it + 1) }?.let { id -> audio.queue.firstOrNull { it.id == id } }
+            // During talk the clip is outside the play order; next is the song it introduces.
+            val nextSong = if (talk != null) audio.queue.firstOrNull { it.id == talk.nextId } else audio.playOrder.indexOf(audio.currentId).takeIf { it >= 0 }?.let { audio.playOrder.getOrNull(it + 1) }?.let { id -> audio.queue.firstOrNull { it.id == id } }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Row(Modifier.weight(1f).background(Color(colors.panel), CircleShape).clip(CircleShape).clickable(role = Role.Button, onClickLabel = "Show queue", onClick = onShowQueue)
                     .heightIn(min = 52.dp).padding(horizontal = 18.dp).testTag("next-up"), verticalAlignment = Alignment.CenterVertically) {
@@ -627,10 +655,12 @@ fun RadioNowPlaying(
                     RadioIcon(Symbol.Forward, modifier = Modifier.size(18.dp))
                 }
                 // Lyrics is one tap away here; the overflow menu keeps its own Lyrics item.
-                if (onLyrics != null) FilledTonalButton(onLyrics, Modifier.heightIn(min = 52.dp).testTag("open-lyrics-button"), shape = RadioShapes.Soft,
+                if (talking && onTranscript != null) FilledTonalButton(onTranscript, Modifier.heightIn(min = 52.dp).testTag("open-transcript-button"), shape = RadioShapes.Soft,
+                    colors = ButtonDefaults.filledTonalButtonColors(containerColor = Color(colors.tile), contentColor = Color.White)) { Text("Transcript") }
+                else if (!talking && onLyrics != null) FilledTonalButton(onLyrics, Modifier.heightIn(min = 52.dp).testTag("open-lyrics-button"), shape = RadioShapes.Soft,
                     colors = ButtonDefaults.filledTonalButtonColors(containerColor = Color(colors.tile), contentColor = Color.White)) { Text("Lyrics") }
             }
-            if (options.isNotEmpty()) UpNextOptionsCard(options, onPlayNext, summary = optionsSummary)
+            if (!talking && options.isNotEmpty()) UpNextOptionsCard(options, onPlayNext, summary = optionsSummary)
           }
         }
         journalError?.let { failure ->

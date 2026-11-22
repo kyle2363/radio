@@ -7,8 +7,14 @@ import androidx.media3.common.audio.BaseAudioProcessor
 import java.nio.ByteBuffer
 import kotlin.math.roundToInt
 
-data class NormalizationProfile(val enabled: Boolean = false, val gains: Map<String, Float> = emptyMap()) {
-    fun gain(id: String) = if (enabled) gains[id]?.takeIf { it.isFinite() }?.coerceIn(0f, 1f) ?: 1f else 1f
+data class NormalizationProfile(val enabled: Boolean = false, val gains: Map<String, Float> = emptyMap(),
+    /** Talk clips skip song normalization and get the Talk volume gain, whether or not normalization is on. */
+    val talkGain: Float = dev.radio.mobile.recommendation.TalkVolume.NORMAL.linear) {
+    fun gain(id: String) = when {
+        dev.radio.mobile.recommendation.TalkPolicy.isTalk(id) -> talkGain.takeIf { it.isFinite() }?.coerceIn(0f, 1f) ?: 1f
+        enabled -> gains[id]?.takeIf { it.isFinite() }?.coerceIn(0f, 1f) ?: 1f
+        else -> 1f
+    }
 }
 
 /** Gain is selected from the PCM stream's timeline identity, not the UI's current track.

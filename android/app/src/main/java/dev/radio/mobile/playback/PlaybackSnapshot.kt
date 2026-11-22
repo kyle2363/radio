@@ -8,8 +8,9 @@ data class PlaybackSnapshot(
     val positionMs: Long, val source: String, val shuffled: Boolean
 )
 
-internal fun PlaybackState.snapshot(): PlaybackSnapshot? = currentId?.takeIf { id -> queue.any { it.id == id } }?.let {
-    PlaybackSnapshot(queue.map { song -> song.id }, playOrder.toList(), it, positionMs, source, shuffled)
+/** Talk is never bookmarked: during a clip the bookmark is the song it introduces, from its start. */
+internal fun PlaybackState.snapshot(): PlaybackSnapshot? = songCurrentId?.takeIf { id -> queue.any { it.id == id } }?.let {
+    PlaybackSnapshot(queue.map { song -> song.id }, playOrder.toList(), it, if (talkPlaying) 0L else positionMs, source, shuffled)
 }
 
 internal data class RestoredPlayback(

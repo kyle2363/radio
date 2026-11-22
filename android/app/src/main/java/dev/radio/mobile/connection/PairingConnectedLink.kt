@@ -24,4 +24,14 @@ internal class PairingConnectedLink(private val pairing: PairingRepository) : Co
         val active = session ?: pairing.connectedSession().also { session = it }
         return pairing.connectedRequest(active, path, body)
     }
+
+    override suspend fun get(path: String): RadioResponse {
+        val active = session ?: pairing.connectedSession().also { session = it }
+        return pairing.connectedRequest(active, path, null)
+    }
+
+    override suspend fun download(path: String, maxBytes: Int): RadioBinaryResponse {
+        val active = session ?: pairing.connectedSession().also { session = it }
+        return pairing.connectedDownload(active, path, maxBytes)
+    }
 }

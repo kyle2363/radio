@@ -22,6 +22,8 @@ import androidx.media3.exoplayer.source.ShuffleOrder.DefaultShuffleOrder
 import dev.radio.mobile.data.LocalSong
 import dev.radio.mobile.recommendation.StationOrigin
 import dev.radio.mobile.recommendation.StationRecord
+import dev.radio.mobile.recommendation.TalkClip
+import dev.radio.mobile.recommendation.TalkPolicy
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -39,6 +41,27 @@ class LocalPlaybackController(
     private val onExplicitReplay: (LocalSong, String) -> Unit = { _, _ -> },
     private val onAudibleStart: (LocalSong, String, Long) -> Unit = { _, _, _ -> }
 ) : PlaybackController {
+    /** Connected talk lifecycle (checkpoint 13B). Talk never reaches the journal callbacks above. */
+    sealed interface TalkEvent {
+        val clip: TalkClip
+        data class Started(override val clip: TalkClip) : TalkEvent
+        /** [outcome] is played, skipped or discarded; [heardMs] is how far it got. */
+        data class Finished(override val clip: TalkClip, val outcome: String, val heardMs: Long) : TalkEvent
+    }
+    internal var onTalk: (TalkEvent) -> Unit = {}
+    /** Only files this returns true for may become speech items (the service allows its private talk cache). */
+    internal var talkFileAllowed: (java.io.File) -> Boolean = { false }
+    private var talk: TalkClip? = null
+    private var talkAfter: String? = null
+    private var talkNext: String? = null
+    private var talkStarted = false
+    private var talkCompleted = false
+    private var talkHeardMs = 0L
+    private var talkWasCurrent = false
+    private var talkGain = dev.radio.mobile.recommendation.TalkVolume.NORMAL.linear
+    private var songProfile = NormalizationProfile()
+    private fun isTalkId(id: String?) = TalkPolicy.isTalk(id)
+    private fun talkCurrent() = talk != null && player.currentMediaItem?.mediaId == talk?.mediaId
     internal val normalizationProcessor = NormalizationAudioProcessor(meter = true)
     private val renderers = object : DefaultRenderersFactory(context.applicationContext) {
         override fun buildAudioSink(context: Context, enableFloatOutput: Boolean, enableAudioOutputPlaybackParams: Boolean): AudioSink =
@@ -98,7 +121,7 @@ class LocalPlaybackController(
     override fun startRadio(seedLocalId: String?) = onRadioStart(seedLocalId)
     override fun startStation(station: dev.radio.mobile.recommendation.SeedSpec) = onStationStart(station)
     override fun newMix() { if (radioActive) onNewMix() }
-    override fun stopRadio() { radioActive=false;radioStarting=false;clearStation();queueRevision++;publish(checkpoint=true) }
+    override fun stopRadio() { if(talk!=null && !talkCurrent())dropTalk(skipToNext=false);radioActive=false;radioStarting=false;clearStation();queueRevision++;publish(checkpoint=true) }
     override fun endRadio(stopNow: Boolean) {
         if (stopNow) { queueRevision++; player.pause(); if (queue.isNotEmpty()) source = PlaySource.CustomQueue }
         stopRadio()
@@ -106,8 +129,9 @@ class LocalPlaybackController(
     /** The running station, for the bookmark beside the playback snapshot; null outside Radio. */
     internal fun station(): StationRecord? {
         val value = state.value
-        if (!radioActive || value.currentId == null) return null
-        return StationRecord(seedLocalId, seedTitle, origins, value.playOrder, value.currentId)
+        val current = value.songCurrentId
+        if (!radioActive || current == null) return null
+        return StationRecord(seedLocalId, seedTitle, origins, value.playOrder, current)
     }
     /** Called right after [restorePaused]: resumes the station only when it describes exactly this queue. Never plays. */
     internal fun restoreStation(record: StationRecord?) {
@@ -169,15 +193,23 @@ class LocalPlaybackController(
         player.addListener(object : Player.Listener {
             override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
                 if (reason == Player.DISCONTINUITY_REASON_AUTO_TRANSITION) {
+                    if (talk != null && oldPosition.mediaItem?.mediaId == talk?.mediaId) talkCompleted = true
                     finishAttempt("song_completed", "natural_end")
                     newPosition.mediaItem?.mediaId?.let { beginAttempt(it, PlayTrigger.AUTO_ADVANCE) }
                 }
             }
             override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
-                if (!playWhenReady && reason == Player.PLAY_WHEN_READY_CHANGE_REASON_END_OF_MEDIA_ITEM) { finishAttempt("song_completed", "natural_end"); if (sleepEndOfTrack || sleepEndOfQueue) cancelSleepTimer() }
+                if (!playWhenReady && reason == Player.PLAY_WHEN_READY_CHANGE_REASON_END_OF_MEDIA_ITEM) {
+                    // Stop at end of song with a trailing clip: the clip ended, so it was heard. Drop it and rest on the next song.
+                    if (talkCurrent()) { talkCompleted = true; talkHeardMs = maxOf(talkHeardMs, player.duration.coerceAtLeast(0)); scope.launch { dropTalk(skipToNext = true) } }
+                    finishAttempt("song_completed", "natural_end"); if (sleepEndOfTrack || sleepEndOfQueue) cancelSleepTimer()
+                }
             }
             override fun onEvents(player: Player, events: Player.Events) {
                 if (sleepEndOfQueue) this@LocalPlaybackController.player.pauseAtEndOfMediaItems = atQueueEnd()
+                // Stop at end of song: a song followed by a clip doesn't pause; the clip pauses at its own end.
+                if (sleepEndOfTrack) this@LocalPlaybackController.player.pauseAtEndOfMediaItems = !(talk != null && !talkCurrent() && nextWindowIsTalk())
+                trackTalk()
                 val id = player.currentMediaItem?.mediaId
                 if (id != null && id != attemptSong) beginAttempt(id)
                 if (id != null && player.isPlaying && listeningAttempt?.isFinished == true) beginAttempt(id)
@@ -200,7 +232,7 @@ class LocalPlaybackController(
                     Player.EVENT_PLAY_WHEN_READY_CHANGED, Player.EVENT_PLAYBACK_STATE_CHANGED, Player.EVENT_SHUFFLE_MODE_ENABLED_CHANGED,
                     Player.EVENT_REPEAT_MODE_CHANGED, Player.EVENT_TIMELINE_CHANGED, Player.EVENT_PLAYER_ERROR))
                 if (player.isPlaying && ticker?.isActive != true) ticker = scope.launch {
-                    while (isActive && player.isPlaying) { publish(); maybeCrossfade(); delay(250) }
+                    while (isActive && player.isPlaying) { trackTalk(); publish(); maybeCrossfade(); delay(250) }
                 } else if (!player.isPlaying) { ticker?.cancel(); ticker = null }
             }
             override fun onPlayerError(exception: PlaybackException) {
@@ -226,7 +258,8 @@ class LocalPlaybackController(
         attemptSong = id; attemptId = UUID.randomUUID().toString(); started = false
         attemptTrigger = trigger; attemptExternal = externalTrigger; attemptSource = source
         attemptDurationMs = null
-        listeningAttempt = ListeningAttempt(attemptId, id)
+        // Talk is never a song start, completion or skip.
+        listeningAttempt = if (isTalkId(id)) null else ListeningAttempt(attemptId, id)
     }
     override fun replay() {
         cancelCrossfade()
@@ -240,7 +273,7 @@ class LocalPlaybackController(
         if (player.playbackState == Player.STATE_IDLE) player.prepare()
         player.play(); publish(checkpoint = true)
     }
-    private fun canReadCurrent() = !accessLost && queueById[player.currentMediaItem?.mediaId]?.available == true
+    private fun canReadCurrent() = !accessLost && (talkCurrent() || queueById[player.currentMediaItem?.mediaId]?.available == true)
     private fun validUri(song: LocalSong) = Uri.parse(song.uri).scheme == "content"
     private fun publish(checkpoint: Boolean = false) {
         if (closed) return
@@ -251,16 +284,22 @@ class LocalPlaybackController(
         if (timeline !== cachedTimeline || cachedShuffle != player.shuffleModeEnabled) {
             val order = mutableListOf<String>()
             var index = timeline.getFirstWindowIndex(player.shuffleModeEnabled)
-            while (index != C.INDEX_UNSET && order.size < queue.size) {
-                order += player.getMediaItemAt(index).mediaId
+            var walked = 0
+            // Talk clips are timeline items but not queue songs, so they stay out of the play order.
+            while (index != C.INDEX_UNSET && walked < player.mediaItemCount && order.size < queue.size) {
+                val mediaId = player.getMediaItemAt(index).mediaId
+                if (!isTalkId(mediaId)) order += mediaId
+                walked++
                 index = timeline.getNextWindowIndex(index, Player.REPEAT_MODE_OFF, player.shuffleModeEnabled)
             }
             cachedTimeline = timeline; cachedShuffle = player.shuffleModeEnabled; cachedOrder = order
         }
         if (origins.isNotEmpty() && origins.keys.any { it !in queueById }) origins = origins.filterKeys { it in queueById }
         val next = if (id != null) adjacent(true) else C.INDEX_UNSET
-        val duration = player.duration.takeIf { it != C.TIME_UNSET && it > 0 } ?: current?.durationMs
-        mutable.value = PlaybackState(
+        val playingTalk = talkCurrent()
+        val duration = player.duration.takeIf { it != C.TIME_UNSET && it > 0 } ?: current?.durationMs ?: talk?.takeIf { playingTalk }?.info?.durationMs?.takeIf { it > 0 }
+        val talkNow = talk?.let { TalkNow(it.info, it.mediaId, playingTalk, talkAfter, talkNext) }
+        mutable.value = PlaybackState(talk = talkNow,
             queue = queue, playOrder = cachedOrder, source = source.label, currentId = id, radioActive = radioActive, queueRevision = queueRevision,
             origins = if (radioActive) origins else emptyMap(), stationSeedTitle = if (radioActive) seedTitle else null, radioStarting = radioStarting && !radioActive, notice = notice,
             positionMs = player.currentPosition.coerceAtLeast(0),
@@ -297,7 +336,13 @@ class LocalPlaybackController(
         publish()
     }
     internal fun restorationFailed(message: String) { error = message; publish() }
-    internal fun updateNormalization(profile: NormalizationProfile) { normalizationProcessor.profile = profile; tailNormalization.profile = profile; publish() }
+    internal fun updateNormalization(profile: NormalizationProfile) {
+        songProfile = profile
+        val combined = profile.copy(talkGain = talkGain)
+        normalizationProcessor.profile = combined; tailNormalization.profile = combined; publish()
+    }
+    /** Talk volume (Quieter / Normal / Louder) as a linear gain applied to speech items only. */
+    internal fun setTalkGain(gain: Float) { if (gain != talkGain) { talkGain = gain; updateNormalization(songProfile) } }
 
     /** Speed, skip silence, crossfade length and the equaliser. Takes effect immediately, mid-song. */
     internal fun applyAudio(settings: AudioSettings) {
@@ -323,6 +368,7 @@ class LocalPlaybackController(
 
     private fun maybeCrossfade() {
         if (crossfadeMs <= 0 || fadeJob != null || accessLost || error != null || !player.isPlaying) return
+        if (talkCurrent() || nextWindowIsTalk()) return
         val duration = player.duration.takeIf { it != C.TIME_UNSET && it > 0 } ?: return
         val next = adjacent(true)
         val hasNext = next != C.INDEX_UNSET && next != player.currentMediaItemIndex
@@ -350,7 +396,9 @@ class LocalPlaybackController(
                 }
                 // Starting audio takes a moment; ask for it slightly early so the two copies line up at the handover.
                 while (player.currentPosition < handover - TAIL_START_LATENCY_MS) { if (!stillOn(outgoing)) return@launch; delay(5) }
-                if (player.currentPosition > handover + 100) return@launch // Too late to line up: let the song end normally.
+                // A coarse position clock can step past the handover: line the tail up with the song, or let it end.
+                val start = Crossfade.tailStart(player.currentPosition, handover, duration) ?: return@launch
+                if (start != handover) tail.seekTo(start)
                 tail.volume = sleepGain
                 tail.play()
                 while (player.currentPosition < handover) { if (!stillOn(outgoing)) return@launch; delay(2) }
@@ -361,7 +409,7 @@ class LocalPlaybackController(
                 beginAttempt(player.getMediaItemAt(nextIndex).mediaId, PlayTrigger.CROSSFADE)
                 player.seekTo(nextIndex, 0)
                 publish(checkpoint = true)
-                val overlapMs = ((duration - handover) / player.playbackParameters.speed).toLong().coerceAtLeast(1)
+                val overlapMs = ((duration - start) / player.playbackParameters.speed).toLong().coerceAtLeast(1)
                 val begun = android.os.SystemClock.elapsedRealtime()
                 while (true) {
                     val progress = (android.os.SystemClock.elapsedRealtime() - begun).toFloat() / overlapMs
@@ -428,6 +476,8 @@ class LocalPlaybackController(
         if (player.playbackState == Player.STATE_IDLE) player.prepare()
         player.play(); publish(checkpoint = true)
     }
+    private fun talkItem(clip: TalkClip) = MediaItem.Builder().setMediaId(clip.mediaId).setUri(Uri.fromFile(clip.file))
+        .setMediaMetadata(MediaMetadata.Builder().setTitle(clip.info.title).setArtist(clip.info.artist).setAlbumTitle("Talk").build()).build()
     private fun metadata(song: LocalSong) = MediaMetadata.Builder().setTitle(song.title).setArtist(song.artist.ifBlank { null })
         .setAlbumTitle(song.folderPath.ifEmpty { source.label }).build()
     override fun pause() { if (!closed) { queueRevision++;player.pause(); publish(checkpoint = true) } }
@@ -472,6 +522,7 @@ class LocalPlaybackController(
         next()
     }
     override fun previous() {
+        if (talkCurrent()) { move(adjacent(false), PlayTrigger.PREVIOUS); return }
         if (!canReadCurrent()) return
         val previous = adjacent(false)
         if (player.currentPosition > 3000 || previous == C.INDEX_UNSET) seek(0) else move(previous, PlayTrigger.PREVIOUS)
@@ -601,6 +652,7 @@ class LocalPlaybackController(
     }
     override fun addToQueue(items: List<LocalSong>, playNext: Boolean) {
         if (accessLost) return
+        if (playNext && talk != null && !talkCurrent()) dropTalk(skipToNext = false)
         val incoming = items.filter { it.available && validUri(it) }.distinctBy { it.id }
         if (incoming.isEmpty()) return
         queueRevision++
@@ -634,6 +686,7 @@ class LocalPlaybackController(
         publish(checkpoint = true)
     }
     override fun moveInQueue(songId: String, target: Int) {
+        if (talk != null && !talkCurrent()) dropTalk(skipToNext = false)
         val order = state.value.playOrder.toMutableList()
         val from = order.indexOf(songId)
         if (from < 0 || target !in order.indices || from == target) return
@@ -648,6 +701,7 @@ class LocalPlaybackController(
         publish(checkpoint = true)
     }
     override fun removeFromQueue(songId: String) {
+        if (isTalkId(songId)) { removeTalk(); return }
         val index = nativeIndex(songId) ?: return
         queueRevision++
         val current = player.currentMediaItem?.mediaId == songId
@@ -757,11 +811,87 @@ class LocalPlaybackController(
         } else {
             // One pass with a lookup: a 2,000-song queue must not cost millions of timeline reads on the main thread.
             for (index in player.mediaItemCount - 1 downTo 0) {
-                if (queueById[player.getMediaItemAt(index).mediaId]?.available != true) player.removeMediaItem(index)
+                val mediaId = player.getMediaItemAt(index).mediaId
+                if (!isTalkId(mediaId) && queueById[mediaId]?.available != true) player.removeMediaItem(index)
             }
         }
         publish(checkpoint = true)
     }
+    private fun nextWindowIsTalk(): Boolean {
+        val index = player.currentTimeline.takeIf { !it.isEmpty }?.getNextWindowIndex(player.currentMediaItemIndex, Player.REPEAT_MODE_OFF, player.shuffleModeEnabled) ?: return false
+        return index != C.INDEX_UNSET && isTalkId(player.getMediaItemAt(index).mediaId)
+    }
+
+    /**
+     * Inserts a verified clip right after [afterId] (the current Radio song) and before [nextId]. Refused unless the
+     * current song is [afterId] with at least the insertion margin left, [nextId] plays next, shuffle and repeat-one are
+     * off and no other clip is queued. Never seeks, prepares or starts anything.
+     */
+    internal fun insertTalk(clip: TalkClip, afterId: String, nextId: String, marginMs: Long = TalkPolicy.INSERTION_MARGIN_MS): Boolean {
+        if (closed || talk != null || !radioActive || accessLost || error != null || fadeJob != null) return false
+        if (!talkFileAllowed(clip.file) || !clip.file.isFile) return false
+        if (player.shuffleModeEnabled || player.repeatMode == Player.REPEAT_MODE_ONE) return false
+        if (player.currentMediaItem?.mediaId != afterId || queueById[afterId] == null) return false
+        val next = adjacent(true)
+        if (next == C.INDEX_UNSET || player.getMediaItemAt(next).mediaId != nextId || next != player.currentMediaItemIndex + 1) return false
+        val duration = player.duration.takeIf { it != C.TIME_UNSET && it > 0 } ?: queueById[afterId]?.durationMs
+        if (!TalkPolicy.canInsert(player.currentPosition, duration, marginMs)) return false
+        player.addMediaItem(player.currentMediaItemIndex + 1, talkItem(clip))
+        talk = clip; talkAfter = afterId; talkNext = nextId
+        talkStarted = false; talkCompleted = false; talkHeardMs = 0; talkWasCurrent = false
+        publish()
+        return true
+    }
+
+    /** Removes the queued or playing clip (queue row removal, talk turned off, the next song changed). */
+    internal fun removeTalk() { if (talk != null) dropTalk(skipToNext = talkCurrent()) }
+
+    /** Watches the clip: its first audible moment, how far it got, and when it left the timeline. */
+    private fun trackTalk() {
+        val clip = talk ?: return
+        val index = nativeIndex(clip.mediaId)
+        if (index == null) { finishTalk(); return }  // A queue replacement or edit removed it.
+        val current = talkCurrent()
+        if (current) {
+            talkWasCurrent = true
+            talkHeardMs = maxOf(talkHeardMs, player.currentPosition.coerceAtLeast(0))
+            if (!talkStarted && player.isPlaying && player.playbackState == Player.STATE_READY) {
+                talkStarted = true
+                onTalk(TalkEvent.Started(clip))
+            }
+            if (sleepEndOfTrack) { sleepGain = TalkPolicy.stopFadeGain(player.currentPosition, player.duration.takeIf { it != C.TIME_UNSET }); applyVolume() }
+        } else {
+            val id = player.currentMediaItem?.mediaId
+            // Moved past it (played, skipped or skipped over), or the song before it is no longer playing.
+            if (talkWasCurrent || id != talkAfter) dropTalk(skipToNext = false)
+        }
+    }
+
+    private fun dropTalk(skipToNext: Boolean) {
+        val clip = talk ?: return
+        if (skipToNext && talkCurrent()) {
+            val next = adjacent(true)
+            val continuePlaying = player.playWhenReady
+            if (next != C.INDEX_UNSET) {
+                beginAttempt(player.getMediaItemAt(next).mediaId, PlayTrigger.NEXT)
+                player.seekTo(next, 0)
+                player.playWhenReady = continuePlaying
+            }
+        }
+        nativeIndex(clip.mediaId)?.let { if (player.currentMediaItem?.mediaId != clip.mediaId) player.removeMediaItem(it) }
+        finishTalk()
+    }
+
+    private fun finishTalk() {
+        val clip = talk ?: return
+        if (talkCurrent()) return
+        talk = null; talkAfter = null; talkNext = null
+        nativeIndex(clip.mediaId)?.let { player.removeMediaItem(it) }
+        if (sleepGain != 1f && sleepDeadline == null) { sleepGain = 1f; applyVolume() }
+        onTalk(TalkEvent.Finished(clip, TalkPolicy.outcome(talkStarted, talkCompleted), talkHeardMs))
+        publish()
+    }
+
     fun close() {
         if (closed) return
         publish(checkpoint = true)

@@ -18,6 +18,20 @@ object Crossfade {
         return remaining in MIN_HANDOVER_MS..fadeMs
     }
 
+    /** How far past the handover the player may report before the tail is moved to match it. */
+    private const val ON_TIME_MS = 100L
+
+    /**
+     * Where the outgoing tail should start playing once the real player reaches the handover. Some devices report
+     * position in coarse steps (~200 ms), so the player can be seen past the handover; then the tail is lined up with
+     * where the song really is instead of the crossfade being abandoned. Null when too little song is left to overlap.
+     */
+    fun tailStart(positionMs: Long, handoverMs: Long, durationMs: Long): Long? = when {
+        positionMs <= handoverMs + ON_TIME_MS -> handoverMs
+        durationMs - positionMs >= MIN_HANDOVER_MS -> positionMs
+        else -> null
+    }
+
     /** Equal-power curves keep the overall loudness steady through the overlap. */
     fun outgoing(progress: Float): Float = cos(progress.coerceIn(0f, 1f) * PI / 2).toFloat().coerceIn(0f, 1f)
     fun incoming(progress: Float): Float = sin(progress.coerceIn(0f, 1f) * PI / 2).toFloat().coerceIn(0f, 1f)

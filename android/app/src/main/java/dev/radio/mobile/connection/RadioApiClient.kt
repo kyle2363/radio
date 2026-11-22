@@ -35,8 +35,13 @@ class RadioApiClient(private val policy: EndpointPolicy, private val deadlineMs:
     companion object {
         /** Connected-recommendation routes (plan section 8). All are POST with a JSON body. */
         internal enum class ConnectedRoute(val maxRequestBytes: Int, val maxResponseBytes: Int) {
-            AVAILABILITY(256 * 1024, 32768), CONTEXT(8 * 1024, 32768), RECOMMEND(16 * 1024, 128 * 1024)
+            AVAILABILITY(256 * 1024, 32768), CONTEXT(8 * 1024, 32768), RECOMMEND(16 * 1024, 128 * 1024),
+            /** Connected talk (checkpoint 13): start a turn, report an outcome, poll a job (GET, no body). */
+            TALK_TURN(16 * 1024, 32768), TALK_OUTCOME(1024, 32768), TALK_JOB(0, 128 * 1024)
         }
+        internal const val TALK_CLIP_MAX_BYTES = 2 * 1024 * 1024
+        private val talkToken = "[A-Za-z0-9_-]{16,64}"
+        internal fun isTalkResource(path: String) = path.matches(Regex("/talk/resources/$talkToken"))
         internal const val LYRICS_MAX_RESPONSE_BYTES = 512 * 1024
         private val lyricsPath = Regex("/lyrics\\?revision=[1-9][0-9]{0,18}&manifest_sha256=[0-9a-f]{64}&song_id=[A-Za-z0-9_-]{1,128}")
         private val contextId = "[A-Za-z0-9_-]{16,64}"
@@ -44,6 +49,9 @@ class RadioApiClient(private val policy: EndpointPolicy, private val deadlineMs:
             path == "/availability" -> ConnectedRoute.AVAILABILITY
             path == "/contexts" || path.matches(Regex("/contexts/$contextId")) -> ConnectedRoute.CONTEXT
             path.matches(Regex("/contexts/$contextId/recommendations")) -> ConnectedRoute.RECOMMEND
+            path.matches(Regex("/contexts/$contextId/talk")) -> ConnectedRoute.TALK_TURN
+            path.matches(Regex("/talk/jobs/$talkToken/outcome")) -> ConnectedRoute.TALK_OUTCOME
+            path.matches(Regex("/talk/jobs/$talkToken")) -> ConnectedRoute.TALK_JOB
             else -> null
         }
         internal fun isLyricsPath(path: String): Boolean = path.length <= 1024 && lyricsPath.matches(path)
@@ -102,14 +110,16 @@ class RadioApiClient(private val policy: EndpointPolicy, private val deadlineMs:
         ensureActive()
         policy.validate(endpoint)
         val batchPath = path.length <= 4514 && path.matches(Regex("/vector-batch\\?revision=[1-9][0-9]{0,18}&manifest_sha256=[0-9a-f]{64}&digests=[0-9a-f]{64}(?:,[0-9a-f]{64}){0,63}"))
-        val catalogPath = batchPath || path.matches(Regex("/catalog(?:\\?(?:revision=[1-9][0-9]{0,18})(?:&base_revision=[1-9][0-9]{0,18})?)?")) || path.matches(Regex("/vectors/[a-f0-9]{64}"))
+        val talkClip = binary && isTalkResource(path)
+        val catalogPath = talkClip || batchPath || path.matches(Regex("/catalog(?:\\?(?:revision=[1-9][0-9]{0,18})(?:&base_revision=[1-9][0-9]{0,18})?)?")) || path.matches(Regex("/vectors/[a-f0-9]{64}"))
         val eventRead = path.matches(Regex("/events\\?cursor=(?:0|[1-9][0-9]{0,18})&limit=(?:[1-9]|[1-9][0-9]|[1-4][0-9]{2}|500)"))
         val eventWrite = path == "/events"
         val profileRead = path == "/profile"
         val route = connectedRoute(path)
         val lyrics = isLyricsPath(path)
         if (if (binary) !catalogPath else path !in setOf("/identity", "/pairing/exchange", "/capabilities") && !eventRead && !eventWrite && !profileRead && route == null && !lyrics) throw ConnectionFailure("Unsupported mobile request.")
-        if (route != null && body == null) throw ConnectionFailure("Unsupported mobile request.")
+        if (route != null && (body == null) != (route == ConnectedRoute.TALK_JOB)) throw ConnectionFailure("Unsupported mobile request.")
+        if (talkClip && maxBytes > TALK_CLIP_MAX_BYTES) throw ConnectionFailure("Invalid talk clip limit.")
         if (lyrics && (body != null || bearer == null)) throw ConnectionFailure("Lyrics require an authenticated GET request.")
         val connection = openConnection(URL("$endpoint/api/portable/v1$path"))
         try {
@@ -118,7 +128,7 @@ class RadioApiClient(private val policy: EndpointPolicy, private val deadlineMs:
             connection.connectTimeout = 5000
             connection.readTimeout = if (route == ConnectedRoute.RECOMMEND) (recommendDeadlineMs + 5000).toInt() else if (lyrics) deadlineMs.toInt() else 10000
             connection.useCaches = false
-            connection.setRequestProperty("Accept", if (path.startsWith("/vectors/") || batchPath) "application/octet-stream" else "application/json")
+            connection.setRequestProperty("Accept", if (talkClip) "audio/mp4" else if (path.startsWith("/vectors/") || batchPath) "application/octet-stream" else "application/json")
             connection.setRequestProperty("Accept-Encoding", "identity")
             ensureActive()
             if (bearer != null) {

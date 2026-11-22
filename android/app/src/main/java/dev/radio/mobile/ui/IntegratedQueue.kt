@@ -62,6 +62,17 @@ fun IntegratedQueue(audio: PlaybackState, accessAllowed: Boolean, onSelect: (Str
             itemsIndexed(audio.playOrder, key = { _, id -> id }) { index, id ->
                 val song = byId[id] ?: return@itemsIndexed
                 val current = id == audio.currentId
+                // Connected talk: the queued clip shows as its own removable row just before the song it introduces.
+                audio.talk?.takeIf { !it.current && it.nextId == id }?.let { talk ->
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 6.dp).testTag("queue-talk"), verticalAlignment = Alignment.CenterVertically) {
+                        RadioIcon(Symbol.Person, null, Modifier.size(20.dp))
+                        Column(Modifier.weight(1f).padding(start = 14.dp)) {
+                            Text(talk.info.title, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
+                            Text("${talk.info.typeLabel} · Talk", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        if (playback != null) IconButton(onClick = { playback.removeFromQueue(talk.mediaId) }, modifier = Modifier.testTag("queue-talk-remove")) { RadioIcon(Symbol.Remove, "Remove talk") }
+                    }
+                }
                 val tint = if (current) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
                 SwipeToRemove(enabled = playback != null && !editing && !current && reorder.draggingKey == null, onRemove = { playback?.removeFromQueue(id) },
                     modifier = (if (reorder.settlingKey == id || reorder.draggingKey == id) Modifier else springPlacement()).reorderable(reorder, id, enabled = playback != null && !editing, onStart = haptic)) {

@@ -6,6 +6,12 @@ import kotlinx.coroutines.flow.StateFlow
 
 data class PlaybackNotice(val id: Long, val message: String)
 
+/**
+ * A connected-talk clip in the timeline (checkpoint 13B). It is never a song: it has no journal entry, no feedback
+ * and no bookmark. [current] is true while it is the item playing; [nextId] is the song it introduces.
+ */
+data class TalkNow(val info: dev.radio.mobile.recommendation.TalkClipInfo, val mediaId: String, val current: Boolean, val afterId: String?, val nextId: String?)
+
 /** Repeat off plays the queue once; all wraps at the end; one holds the current song. */
 enum class RepeatMode { OFF, ALL, ONE }
 
@@ -36,7 +42,12 @@ data class PlaybackState(
     val radioStarting: Boolean = false,
     /** The latest one-off message for the UI; a new [PlaybackNotice.id] means a new message. */
     val notice: PlaybackNotice? = null,
+    /** The talk clip queued after the current song, or playing now. */
+    val talk: TalkNow? = null,
 ) {
+    /** The song to treat as current for bookmarks and stations: during talk, the song the clip introduces. */
+    val songCurrentId: String? get() = if (talk?.current == true) talk.nextId else currentId
+    val talkPlaying: Boolean get() = talk?.current == true
     val current: LocalSong? get() = queue.firstOrNull { it.id == currentId }
     val status: String get() = when {
         error != null -> "Playback error"

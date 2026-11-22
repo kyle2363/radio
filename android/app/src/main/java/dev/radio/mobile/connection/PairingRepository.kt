@@ -167,7 +167,21 @@ class PairingRepository(
      * pairing, catalog or sync actions. A 403 is returned to the caller (it means "not permitted").
      */
     internal suspend fun connectedRequest(session: ProfileSyncSession, path: String, body: String? = null): RadioResponse {
-        val record = withContext(Dispatchers.IO) { mutex.withLock {
+        val record = connectedRecord(session)
+        val response = transport.request(record.bundle.endpoint, path, body, record.bearer)
+        if (response.status == 401) connectedUnauthorized(session)
+        return response
+    }
+    /** Binary Connected Radio download (talk clips); same pairing checks as [connectedRequest]. */
+    internal suspend fun connectedDownload(session: ProfileSyncSession, path: String, maxBytes: Int): RadioBinaryResponse {
+        val record = connectedRecord(session)
+        val binary = transport as? RadioBinaryTransport ?: throw ConnectionFailure("Download transport is unavailable.")
+        val response = binary.download(record.bundle.endpoint, path, record.bearer, maxBytes)
+        if (response.status == 401) connectedUnauthorized(session)
+        return response
+    }
+    private suspend fun connectedRecord(session: ProfileSyncSession): PairingRecord {
+        return withContext(Dispatchers.IO) { mutex.withLock {
             val initial = usable().record ?: throw ConnectionFailure("Pairing changed. Connected Radio stopped.")
             if (initial.identityAnchor != session.anchor || initial.installationMarker != session.installationMarker || initial.deviceId != session.deviceId || initial.bearer != session.bearer || initial.bundle.serverId != session.serverId || initial.bundle.endpoint != session.endpoint)
                 throw ConnectionFailure("Pairing changed. Connected Radio stopped.")
@@ -179,8 +193,9 @@ class PairingRepository(
             requireCredential(current)
             current
         } }
-        val response = transport.request(record.bundle.endpoint, path, body, record.bearer)
-        if (response.status == 401) {
+    }
+    private suspend fun connectedUnauthorized(session: ProfileSyncSession): Nothing {
+        run {
             withContext(Dispatchers.IO) { mutex.withLock {
                 // A reply from a forgotten/replaced connection has no authority over its successor.
                 val current = store.load().record
@@ -193,9 +208,8 @@ class PairingRepository(
                     publish(store.load())
                 }
             } }
-            throw ConnectionFailure("Credential expired or revoked. Pair again to use Connected Radio.")
         }
-        return response
+        throw ConnectionFailure("Credential expired or revoked. Pair again to use Connected Radio.")
     }
     /** Database receipt commits serialize with forget/re-pair, just like catalog pointer adoption. */
     internal suspend fun <T> adoptProfile(session:ProfileSyncSession, block:suspend ()->T):T = mutex.withLock {

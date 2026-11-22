@@ -30,6 +30,7 @@ import kotlinx.coroutines.flow.collectLatest
 class RadioPlaybackService : MediaSessionService() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private lateinit var engine: LocalPlaybackController
+    private lateinit var talk: TalkCoordinator
     private lateinit var clientController: InitializingPlaybackController
     private var initialized = false
     private var session: MediaSession? = null
@@ -74,7 +75,10 @@ class RadioPlaybackService : MediaSessionService() {
             library.radio.actualStart(attempt)
             // Prefetch one connected option set for this song. Playback never waits on it.
             library.radio.songStarted(song, engine.state.value)
+            // Connected talk asks for this gap's clip now, so the desktop has the whole song to make it.
+            talk.songStarted(song)
         }
+        talk = TalkCoordinator(engine, library.radio, library.journal, getSharedPreferences("radio_talk", MODE_PRIVATE), scope)
         var radioRequest: Job? = null
         var radioStartToken = 0L
         fun beginStation(seedLocalId: String?, station: dev.radio.mobile.recommendation.SeedSpec?) {
@@ -288,7 +292,9 @@ class RadioPlaybackService : MediaSessionService() {
         // The home-screen widget follows the song and play state; it starts after restoration so it never flashes empty.
         scope.launch {
             clientController.state.map { state ->
-                state.current?.let { WidgetState(it.title, it.artist.ifBlank { state.source.ifBlank { "Local music" } }, state.playWhenReady && !state.ended) } ?: WidgetState()
+                // A talk clip shows wherever a song title would (widget and QS tile included).
+                state.talk?.takeIf { it.current }?.let { WidgetState(it.info.title, it.info.artist, state.playWhenReady && !state.ended) }
+                    ?: state.current?.let { WidgetState(it.title, it.artist.ifBlank { state.source.ifBlank { "Local music" } }, state.playWhenReady && !state.ended) } ?: WidgetState()
             }.distinctUntilChanged().collect { widget = it; PlayerWidget.update(this@RadioPlaybackService, it) }
         }
         scope.launch {
