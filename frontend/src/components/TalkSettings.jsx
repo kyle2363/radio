@@ -1,6 +1,17 @@
 import React, { useState, useEffect } from "react";
 import * as api from "../api";
 
+// Engine-neutral speech direction (backend/announcer/speech_direction.py).
+const SPEECH_FEATURES = [
+  ["speech_emotion_enabled", "Emotion", "Announcements and talk lines pick a feeling"],
+  ["speech_mood_delivery_enabled", "Mood delivery", "Mood, next song and late hours shape energy and pace"],
+  ["speech_loudness_match_enabled", "Loudness matching", "Every voice at the same level"],
+  ["speech_tight_start_enabled", "Tight start", "No lead-in silence before speech"],
+  ["speech_word_marks_enabled", "Word styling", "Whispered asides, shouted words, laughs as delivery"],
+  ["speech_pauses_enabled", "Natural pauses", "Real pauses at \"...\" and dashes"],
+  ["speech_persona_traits_enabled", "Persona voices", "Accents and voice texture per persona"],
+];
+
 function TalkSettings({ addToast, masterEnabled }) {
   const [enabled, setEnabled] = useState(false);
   const [callerEnabled, setCallerEnabled] = useState(true);
@@ -20,9 +31,13 @@ function TalkSettings({ addToast, masterEnabled }) {
   const [showActiveVoice, setShowActiveVoice] = useState(false);
   const [showVoiceModels, setShowVoiceModels] = useState(false);
   const [downloading, setDownloading] = useState(false);
+  const [speechOn, setSpeechOn] = useState(true);
+  const [speechFeatures, setSpeechFeatures] = useState({});
+  const [loudnessTarget, setLoudnessTarget] = useState(-16);
+  const [showSpeech, setShowSpeech] = useState(false);
 
   // TTS engine state
-  const [ttsEngine, setTtsEngineState] = useState("omnivoice");
+  const [ttsEngine, setTtsEngineState] = useState("zonos3");
   const [ttsVoiceMode, setTtsVoiceModeState] = useState("user_select");
   const [ttsVoice, setTtsVoiceState] = useState("");
   const [gpuAvailable, setGpuAvailable] = useState(null);
@@ -48,13 +63,16 @@ function TalkSettings({ addToast, masterEnabled }) {
       setDjIntroStartHour(parseInt(config.dj_intro_start_hour) || 6);
       setDjIntroEndHour(parseInt(config.dj_intro_end_hour) || 23);
       setTalkVolume(parseInt(config.talk_volume) || 100);
+      setSpeechOn(config.speech_direction_enabled !== "false");
+      setSpeechFeatures(Object.fromEntries(SPEECH_FEATURES.map(([key]) => [key, config[key] !== "false"])));
+      setLoudnessTarget(parseFloat(config.speech_loudness_target_lufs) || -16);
     } catch (e) {
       console.error("Failed to load talk config:", e);
     }
 
     try {
       const tts = await api.fetchTtsStatus();
-      setTtsEngineState(tts.voice_engine || "omnivoice");
+      setTtsEngineState(tts.voice_engine || "zonos3");
       setTtsVoiceModeState(tts.voice_mode || "user_select");
       setTtsVoiceState(tts.active_voice || "");
       setGpuAvailable(tts.gpu_available);
@@ -330,6 +348,63 @@ function TalkSettings({ addToast, masterEnabled }) {
             ))}
           </div>
         </>
+      )}
+
+      {/* Speech direction */}
+      <div className="set-row" style={{ borderBottom: showSpeech ? "none" : undefined, cursor: "pointer" }}
+        onClick={() => setShowSpeech(!showSpeech)}>
+        <div>
+          <div className="set-label" style={{ lineHeight: "20px" }}>Speech direction</div>
+          <div style={{ fontSize: "10px", color: "var(--text-muted)", marginTop: "1px" }}>
+            How the DJ and callers deliver lines. Full support on ZONOS3; other engines use what they can.
+          </div>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+          <div className={`tog ${speechOn ? "" : "off"}`}
+            onClick={(e) => { e.stopPropagation(); const next = !speechOn; setSpeechOn(next); saveSetting("speech_direction_enabled", String(next)); }}>
+            <div className="tog-dot" />
+          </div>
+          <span style={{ fontSize: "10px", color: "var(--text-muted)" }}>{showSpeech ? "−" : "+"}</span>
+        </div>
+      </div>
+
+      {showSpeech && (
+        <div style={{ opacity: speechOn ? 1 : 0.5, pointerEvents: speechOn ? undefined : "none" }}>
+          {SPEECH_FEATURES.map(([key, label, hint]) => (
+            <div className="set-row" key={key}>
+              <div>
+                <div className="set-label">{label}</div>
+                <div style={{ fontSize: "10px", color: "var(--text-muted)", marginTop: "1px" }}>{hint}</div>
+              </div>
+              <div className={`tog ${speechFeatures[key] !== false ? "" : "off"}`}
+                onClick={() => {
+                  const next = speechFeatures[key] === false;
+                  setSpeechFeatures({ ...speechFeatures, [key]: next });
+                  saveSetting(key, String(next));
+                }}>
+                <div className="tog-dot" />
+              </div>
+            </div>
+          ))}
+          {speechFeatures.speech_loudness_match_enabled !== false && (
+            <div className="set-row">
+              <div>
+                <div className="set-label">Speech loudness</div>
+                <div style={{ fontSize: "10px", color: "var(--text-muted)", marginTop: "1px" }}>Target for every voice</div>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <input type="range" min="-24" max="-10" step="1" value={loudnessTarget}
+                  onChange={(e) => {
+                    const val = parseInt(e.target.value);
+                    setLoudnessTarget(val);
+                    saveSetting("speech_loudness_target_lufs", String(val));
+                  }}
+                  style={{ width: "80px", accentColor: "var(--accent)" }} />
+                <span className="set-val">{loudnessTarget} LUFS</span>
+              </div>
+            </div>
+          )}
+        </div>
       )}
 
       {masterEnabled && (

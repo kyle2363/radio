@@ -167,15 +167,6 @@ def test_only_controls_the_server_lists_are_sent(tmp_path, clips):
     assert 0 < body["controls"]["delivery.tempo"] <= 2
 
 
-def test_trigger_styles_use_real_control_ids_within_studio_safe_ranges():
-    safe = {"expressive.expressive": 8, "mood.arousal": 4, "mood.valence": 4, "emotions.happy": 4,
-            "emotions.serene": 6, "delivery.conversational": 4, "delivery.tempo": 2}
-    for trigger, doses in zonos3_engine.TRIGGER_CONTROLS.items():
-        for cid, dose in doses.items():
-            assert cid in safe, (trigger, cid)
-            assert abs(dose) <= safe[cid], (trigger, cid, dose)
-
-
 def test_flat_control_ids_are_understood(tmp_path, clips):
     http = FakeHttp(controls={"controls": [{"id": "delivery.tempo"}]})
     eng = make_engine(http)
@@ -216,40 +207,6 @@ def test_running_server_is_ready_and_lists_server_voices(clips):
     eng = make_engine(FakeHttp(speakers=[{"id": "default_1", "path": "en/AmericanMale.mp3"}, {"id": "default_2"}]))
     assert eng.is_ready() is True
     assert eng.get_available_voices() == ["The Trusted Morning Host", "AmericanMale", "default_2"]
-
-
-def test_voice_manager_passes_speed_and_trigger_style_and_strips_tags(monkeypatch, tmp_path):
-    calls = []
-
-    class Engine:
-        synthesis_timeout = 45
-
-        def is_ready(self):
-            return True
-
-        def synthesize(self, text, voice, path, speed=None, controls=None):
-            calls.append((text, voice, speed, controls))
-            Path(path).write_bytes(b"wav")
-            return path
-
-    timeouts = []
-    def run(fn, timeout):
-        timeouts.append(timeout)
-        return True, fn()
-
-    manager = voice_manager.VoiceManager()
-    monkeypatch.setattr(manager, "get_active_engine", lambda: ("zonos3", Engine()))
-    monkeypatch.setattr(voice_manager, "run_with_timeout", run)
-    monkeypatch.setattr(voice_manager, "_append_silence", lambda path: None)
-    monkeypatch.setattr(voice_manager, "_prepend_silence", lambda path: pytest.fail("no Piper padding"))
-    monkeypatch.setattr(zonos3_engine, "TRIGGER_CONTROLS", {"vibe_lock": {"delivery.lively": 3}})
-
-    path = manager.synthesize("Locked in [laughs] now.", "Host", str(tmp_path), trigger_type="vibe_lock", speed=1.0)
-    assert path and Path(path).name.startswith("zonos3_Host_1.00_")
-    [(text, voice, speed, controls)] = calls
-    assert "[laughs]" not in text and not text.startswith("...")
-    assert (voice, speed, controls) == ("Host", 1.0, {"delivery.lively": 3})
-    assert timeouts == [45]
 
 
 def test_voice_manager_falls_back_to_piper_when_zonos_server_is_down(monkeypatch, tmp_path):
@@ -392,3 +349,74 @@ def test_rejected_codes_fall_back_to_embedding_once(tmp_path, stored_codes):
     first, second = http.generate_bodies()
     assert "speaker_reference_codes" in first
     assert second["speaker_mode"] == "embedding" and second["speaker_embedding_id"] == "spk_1"
+
+
+# ---- speech direction request fields ----
+
+LIVE_CAPS = {
+    **FULL_CAPS,
+    "condition_tokens": {"enabled": True, "names": ["loudness", "fmax", "speaking_rate"]},
+    "silence_prefill": {"available": True, "default_frames": 3},
+}
+STEER = {"directions": {"emotions.happy": {}, "delivery.loud": {}, "delivery.tempo": {}}}
+
+
+def test_direction_request_is_sent_with_unknown_ids_removed(tmp_path, clips):
+    http = FakeHttp(capabilities=LIVE_CAPS, controls=STEER)
+    eng = make_engine(http)
+    request = {
+        "controls": {"emotions.happy": 2, "emotions.made_up": 3},
+        "control_spans": [{"start": 0, "end": 3, "controls": {"delivery.loud": 1.5}},
+                          {"start": 4, "end": 8, "controls": {"style.gone": 1}}],
+        "condition_values": {"loudness": -16.0, "brightness": 3},
+        "silence_prefill_frames": 0,
+        "speaker_hack": True,
+    }
+    assert eng.synthesize("Wow now.", "The Trusted Morning Host", str(tmp_path / "o.wav"), speed=0.9, request=request)
+    [body] = http.generate_bodies()
+    assert body["controls"]["emotions.happy"] == 2 and "emotions.made_up" not in body["controls"]
+    assert body["control_spans"] == [{"start": 0, "end": 3, "controls": {"delivery.loud": 1.5}}]
+    assert body["condition_values"] == {"loudness": -16.0}
+    assert body["silence_prefill_frames"] == 0
+    assert "speaker_hack" not in body
+
+
+def test_direction_fields_the_server_lacks_are_dropped(tmp_path, clips):
+    http = FakeHttp(capabilities=FULL_CAPS, controls=None)
+    eng = make_engine(http)
+    request = {"controls": {"emotions.happy": 2},
+               "control_spans": [{"start": 0, "end": 3, "controls": {"delivery.loud": 1.5}}],
+               "condition_values": {"loudness": -16.0}, "silence_prefill_frames": 0}
+    assert eng.synthesize("Wow now.", "The Trusted Morning Host", str(tmp_path / "o.wav"), request=request)
+    [body] = http.generate_bodies()
+    for field in ("controls", "control_spans", "condition_values", "silence_prefill_frames"):
+        assert field not in body
+
+
+RAW_STEER = {
+    "sets": {"accents_en": {"space": "raw"}, "texture": {"space": "raw"}, "emotions": {"space": "attnres_source"}},
+    "directions": {"accents_en.british": {"kind": "named"}, "texture.deep": {"kind": "named"},
+                   "emotions.happy": {"kind": "named"}},
+}
+
+
+def test_reference_mode_drops_speaker_embedding_controls(tmp_path, stored_codes):
+    # Raw (speaker-embedding) steering is refused with a reference prefix, so it is left out.
+    http = FakeHttp(capabilities=FULL_CAPS, controls=RAW_STEER)
+    eng = make_engine(http)
+    request = {"controls": {"accents_en.british": 1.2, "texture.deep": 1, "emotions.happy": 2}}
+    assert eng.synthesize("Cheers.", "The Trusted Morning Host", str(tmp_path / "o.wav"), request=request)
+    [body] = http.generate_bodies()
+    assert body["speaker_mode"] == "reference"
+    assert body["controls"] == {"emotions.happy": 2}
+
+
+def test_embedding_mode_keeps_speaker_embedding_controls(tmp_path, clips, monkeypatch):
+    monkeypatch.setattr(zonos3_engine.config, "ZONOS3_SPEAKER_MODE", "embedding")
+    http = FakeHttp(capabilities=FULL_CAPS, controls=RAW_STEER)
+    eng = make_engine(http)
+    request = {"controls": {"accents_en.british": 1.2, "emotions.happy": 2}}
+    assert eng.synthesize("Cheers.", "The Trusted Morning Host", str(tmp_path / "o.wav"), request=request)
+    [body] = http.generate_bodies()
+    assert body["speaker_mode"] == "embedding"
+    assert body["controls"] == {"accents_en.british": 1.2, "emotions.happy": 2}

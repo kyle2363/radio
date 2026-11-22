@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 TTS_CACHE_DIR = config.TTS_CACHE_DIR
 
 
-def tts_say(text: str, voice_id: str | None = None, output_dir: str | None = None, song_id: int | None = None, trigger_type: str | None = None, speed: float | None = None) -> str | None:
+def tts_say(text: str, voice_id: str | None = None, output_dir: str | None = None, song_id: int | None = None, trigger_type: str | None = None, speed: float | None = None, direction=None) -> str | None:
     """Synthesize text to WAV file using the active TTS engine.
     
     This is the main public API. It delegates to whatever engine is 
@@ -65,7 +65,7 @@ def tts_say(text: str, voice_id: str | None = None, output_dir: str | None = Non
     """
     logger.debug(f"tts_say: text_len={len(text)}, voice={voice_id}, trigger={trigger_type}, speed={speed}")
     vm = get_voice_manager()
-    result = vm.synthesize(text, voice_id=voice_id, output_dir=output_dir or TTS_CACHE_DIR, song_id=song_id, trigger_type=trigger_type, speed=speed)
+    result = vm.synthesize(text, voice_id=voice_id, output_dir=output_dir or TTS_CACHE_DIR, song_id=song_id, trigger_type=trigger_type, speed=speed, direction=direction)
     logger.debug(f"tts_say: returned {'path' if result else 'None'}")
     return result
 

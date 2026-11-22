@@ -1583,7 +1583,7 @@ class QueueManager:
                 }, cancel_event)
                 return
 
-            wav_path = announcements.play_announcement(text, filepath, trigger_type=trigger_type)
+            wav_path = announcements.play_announcement(text, filepath, trigger_type=trigger_type, context=context)
             if not wav_path:
                 return
 

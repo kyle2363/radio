@@ -19,10 +19,12 @@ Voices:
   reference-mode quality without the server ever loading its 5.6 GB encoders; a
   re-recorded clip changes the fingerprint, so stale codes are never used.
 
-Steering: the persona speed maps onto ``delivery.tempo`` and announcement
-triggers map onto ``TRIGGER_CONTROLS``. Only control ids that the running
-server lists in ``GET /v2/controls`` are sent, because the server rejects
-unknown fields and its control ids are not fully documented yet.
+Steering: the persona speed maps onto ``delivery.tempo``. Everything else
+(emotion, mood delivery, persona traits, word-level spans, loudness and a tight
+start) arrives as a ready ``request`` from ``announcer/zonos3_direction.py``,
+the ZONOS3 adapter of the engine-neutral speech direction. Only control ids the
+running server lists in ``GET /v2/controls``, and only fields its capabilities
+offer, are sent, because the server rejects unknown fields (422).
 """
 
 import base64
@@ -42,19 +44,8 @@ SESSION_ID = "radio-backend"  # registered clip speakers live in this server ses
 PROBE_TIMEOUT_SECS = 1.5
 TEMPO_CONTROL = "delivery.tempo"
 
-# Trigger -> steering doses. Ids come from a live zonos3-server's GET /v2/controls
-# (studio_mect60k_x10 bundle); doses stay inside the studio's "safe" slider range
-# (lively = expressive.expressive ±8, arousal/valence ±4, happy 0..4, calm =
-# emotions.serene 0..6, chatty = delivery.conversational ±4). Ids the running
-# server does not list are dropped. Tune by ear.
-TRIGGER_CONTROLS: dict[str, dict[str, float]] = {
-    "mood_change": {"expressive.expressive": 4, "mood.arousal": 2},
-    "vibe_lock": {"expressive.expressive": 5, "emotions.happy": 2},
-    "wildcard": {"expressive.expressive": 4, "mood.valence": 2},
-    "skip_streak": {"emotions.serene": 2, "delivery.conversational": 2},
-    "recovery": {"emotions.happy": 2, "mood.valence": 2},
-    "discovery": {"mood.arousal": 1, "delivery.conversational": 2},
-}
+# Request fields a direction may add, each sent only when the server offers it.
+DIRECTION_FIELDS = ("control_spans", "condition_values", "silence_prefill_frames", "fade_out_ms", "seed")
 
 
 def clip_fingerprint(clip: str) -> str:
@@ -115,6 +106,24 @@ def _control_ids(payload) -> set[str]:
     return ids
 
 
+def _raw_control_ids(payload) -> set[str]:
+    """Control ids that steer the speaker embedding (``space: raw``: accents, texture, identity...).
+
+    The server refuses these alongside a reference prefix, so they only apply in embedding mode.
+    """
+    if not isinstance(payload, dict) or not isinstance(payload.get("directions"), dict):
+        return set()
+    sets = payload.get("sets") if isinstance(payload.get("sets"), dict) else {}
+    raw = set()
+    for cid, direction in payload["directions"].items():
+        space = direction.get("space") if isinstance(direction, dict) else None
+        if space is None:
+            space = (sets.get(cid.split(".", 1)[0]) or {}).get("space")
+        if space == "raw":
+            raw.add(cid)
+    return raw
+
+
 def _speaker_name(speaker: dict) -> str:
     for key in ("name", "label", "display_name"):
         if isinstance(speaker.get(key), str) and speaker[key]:
@@ -141,8 +150,10 @@ class Zonos3TTSEngine:
         self._health_at = 0.0
         self._speakers: dict[str, str] | None = None  # name -> speaker id
         self._controls: set[str] | None = None
+        self._raw_controls: set[str] = set()
         self._clip_ids: dict[tuple, str] = {}  # (path, size, mtime) -> registered speaker id
         self._caps: tuple[set[str], set[str]] | None = None  # (speaker modes, decoder ids)
+        self._caps_raw: dict = {}
         self._codes: dict[str, list] = {}  # codes path -> pre-encoded reference codes
         self._headers = {"X-TTS-Session-ID": SESSION_ID}
 
@@ -198,7 +209,9 @@ class Zonos3TTSEngine:
         try:
             r = self._http.get(f"{self._base}/v2/controls", timeout=PROBE_TIMEOUT_SECS * 2, headers=self._headers)
             if r.status_code == 200:
-                controls = _control_ids(r.json())
+                payload = r.json()
+                controls = _control_ids(payload)
+                self._raw_controls = _raw_control_ids(payload)
                 logger.info(f"Zonos3: steering controls available: {sorted(controls)}")
             else:
                 logger.info("Zonos3: server has no steering bundle; speaking without controls")
@@ -218,6 +231,7 @@ class Zonos3TTSEngine:
             r = self._http.get(f"{self._base}/v2/capabilities", timeout=PROBE_TIMEOUT_SECS * 2, headers=self._headers)
             if r.status_code == 200:
                 caps = r.json() or {}
+                self._caps_raw = caps if isinstance(caps, dict) else {}
                 modes = {m for m in caps.get("speaker_modes") or [] if isinstance(m, str)}
                 decoders = {d.get("id") if isinstance(d, dict) else d for d in caps.get("decoders") or []}
                 logger.info(f"Zonos3: speaker modes {sorted(modes)}, decoders {sorted(d for d in decoders if d)}")
@@ -309,8 +323,33 @@ class Zonos3TTSEngine:
         return self._http.post(f"{self._base}/v2/generate", json=body,
                                timeout=self.synthesis_timeout, headers=self._headers)
 
+    def _direction_fields(self, request: dict, available: set[str]) -> dict:
+        """The direction fields this server accepts, with unknown control ids removed."""
+        caps = self._caps_raw
+        fields: dict = {}
+        spans = []
+        for span in request.get("control_spans") or []:
+            kept = {k: v for k, v in (span.get("controls") or {}).items() if k in available}
+            if kept:
+                spans.append({"start": int(span["start"]), "end": int(span["end"]), "controls": kept})
+        if spans:
+            fields["control_spans"] = spans
+        conditions = caps.get("condition_tokens") or {}
+        if request.get("condition_values") and conditions.get("enabled"):
+            names = set(conditions.get("names") or [])
+            values = {k: v for k, v in request["condition_values"].items() if k in names}
+            if values:
+                fields["condition_values"] = values
+        if "silence_prefill_frames" in request and (caps.get("silence_prefill") or {}).get("available"):
+            fields["silence_prefill_frames"] = int(request["silence_prefill_frames"])
+        for key in ("fade_out_ms", "seed"):
+            if request.get(key) is not None:
+                fields[key] = request[key]
+        return fields
+
     def synthesize(self, text: str, voice_id: str, output_path: str,
-                   speed: float | None = None, controls: dict | None = None) -> str | None:
+                   speed: float | None = None, controls: dict | None = None,
+                   request: dict | None = None) -> str | None:
         body: dict = {
             "text": text,
             "language": config.ZONOS3_LANGUAGE,
@@ -346,15 +385,23 @@ class Zonos3TTSEngine:
                 return None
             body["speaker_embedding_id"] = speaker_id
 
-        wanted = dict(controls or {})
+        request = request or {}
+        wanted = {**(controls or {}), **(request.get("controls") or {})}
         if speed is not None:
             # Same ±0.1 variety OmniVoice applies, expressed as tempo.
             wanted[TEMPO_CONTROL] = speed_to_tempo(speed + random.uniform(-0.05, 0.05))
-        if wanted:
-            available = self._server_controls()
-            steering = {k: v for k, v in wanted.items() if k in available}
-            if steering:
-                body["controls"] = steering
+        available = self._server_controls() if (wanted or request.get("control_spans")) else set()
+        steering = {k: v for k, v in wanted.items() if k in available}
+        reference = body.get("speaker_mode") == "reference" or (
+            "speaker_mode" not in body and self._caps_raw.get("speaker_mode_default") == "reference")
+        if reference and self._raw_controls & steering.keys():
+            dropped = sorted(self._raw_controls & steering.keys())
+            logger.debug(f"Zonos3: reference voice; leaving out speaker-embedding controls {dropped}")
+            steering = {k: v for k, v in steering.items() if k not in self._raw_controls}
+        if steering:
+            body["controls"] = steering
+        if request:
+            body.update(self._direction_fields(request, available))
 
         start = time.time()
         try:
@@ -391,5 +438,5 @@ class Zonos3TTSEngine:
         with open(output_path, "wb") as f:
             f.write(r.content)
         logger.info(f"Zonos3: synthesized {len(text)} chars with '{voice_id}' in {time.time() - start:.2f}s"
-                    f" (controls={body.get('controls', {})})")
+                    f" (controls={body.get('controls', {})}, spans={len(body.get('control_spans', []))})")
         return output_path

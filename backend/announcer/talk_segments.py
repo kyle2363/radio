@@ -20,6 +20,7 @@ import config
 from llm import llm_chat
 from announcer.tts import tts_say
 from announcer.nonverbal import inject_nonverbal_tags
+from announcer import speech_direction
 from announcer.personas import PERSONAS, Persona, get_persona, get_guest_personas, get_caller_personas, get_enabled_caller_personas
 import threading
 import logging
@@ -354,7 +355,7 @@ Rules:
 - energy_direction: set to "up", "down" or null
 - If next song is provided, the dj_closer should tease it as if it's a natural response to the call
 - If no next song info, dj_closer should be generic (Example only: "Stay tuned" / "More great music ahead")
-- NO markdown, NO backticks, NO extra text — just the JSON object"""
+{emotion_rule}- NO markdown, NO backticks, NO extra text — just the JSON object"""
 
 
 def generate_caller_segment(
@@ -431,6 +432,14 @@ def generate_caller_segment(
     # Closer is always last DJ line
     json_fields.append('    "dj_closer": "DJ closing line",')
     voice_lines.append(("dj_closer", dj.voice_id if dj else "amy"))
+    # Speech direction: one delivery word per line, when emotions are on.
+    direction_flags = speech_direction.current_flags()
+    emotion_rule = ""
+    if direction_flags.emotion:
+        keys = ", ".join(f'"{key}": "one word"' for key, _ in voice_lines)
+        json_fields.append('    "emotions": {' + keys + '},')
+        words = ", ".join(speech_direction.EMOTIONS)
+        emotion_rule = f"- emotions: for each line key, one word for how that line is spoken, from: {words}\n"
 
     # Duration descriptions matching the round count
     duration_map = {2: "30-45 seconds", 3: "45-70 seconds", 4: "70-90 seconds"}
@@ -459,6 +468,7 @@ def generate_caller_segment(
         length_desc=length_map[num_rounds],
         duration_desc=duration_map[num_rounds],
         json_fields="\n".join(json_fields) + "\n",
+        emotion_rule=emotion_rule,
     )
 
     logger.info(f"generate_caller_segment: calling LLM (mood={mood_state})")
@@ -485,18 +495,27 @@ def generate_caller_segment(
 
         wav_paths = []
         total_duration = 0.0
+        line_emotions = data.get("emotions") if isinstance(data.get("emotions"), dict) else {}
+        line_context = {"hour": hour}
         for key, voice_id in voice_lines:
             text = data.get(key, "").strip()
             if not text:
                 _talk_debug(f"generate_caller: skipping empty line '{key}'")
                 continue
-            # Inject non-verbal tags into caller lines only (not DJ lines)
-            if key.startswith("caller"):
+            is_caller = key.startswith("caller")
+            # Word marks and pauses (as the speech settings allow), then non-verbal
+            # tags into caller lines only (not DJ lines)
+            text = speech_direction.prepare_line(text, direction_flags, rng=random,
+                                                 mark_probability=0.35 if is_caller else 0.15)
+            if is_caller:
                 text = inject_nonverbal_tags(text)
             # Pass speed baseline based on whether this is a caller line or DJ line
-            line_speed = caller.speed_base if key.startswith("caller") else dj.speed_base
-            _talk_debug(f"generate_caller: TTS line '{key}' voice={voice_id} speed={line_speed:.2f} text={text[:100]}{'...' if len(text) > 100 else ''}")
-            wav = tts_say(text, voice_id=voice_id, speed=line_speed)
+            line_speed = caller.speed_base if is_caller else dj.speed_base
+            direction = speech_direction.direction_for_line(
+                line_emotions.get(key), mood_state=mood_state, context=line_context, flags=direction_flags,
+                persona_id=caller.id if is_caller else (dj.id if dj else None))
+            _talk_debug(f"generate_caller: TTS line '{key}' voice={voice_id} speed={line_speed:.2f} emotion={direction.emotion} text={text[:100]}{'...' if len(text) > 100 else ''}")
+            wav = tts_say(text, voice_id=voice_id, speed=line_speed, direction=direction)
             if wav:
                 wav_paths.append(wav)
                 total_duration += max(1.0, len(text) * 0.08)
@@ -753,12 +772,17 @@ def generate_dj_monologue(
         with _talk_lock:
             _last_segment_mood = mood_state
 
-        # Apply restrained nonverbal tags
-        text = inject_nonverbal_tags_monologue(text)
+        # Restrained word marks and pauses, then restrained nonverbal tags
+        direction_flags = speech_direction.current_flags()
+        spoken = speech_direction.prepare_line(text, direction_flags, rng=random, mark_probability=0.15)
+        spoken = inject_nonverbal_tags_monologue(spoken)
+        direction = speech_direction.direction_for_line(
+            speech_direction.MONOLOGUE_EMOTIONS.get(mono_key), mood_state=mood_state,
+            persona_id=dj.id if dj else None, context={"hour": datetime.now().hour}, flags=direction_flags)
 
         voice_id = dj.voice_id if dj else "amy"
-        _talk_debug(f"generate_monologue: TTS voice={voice_id} speed={dj.speed_base:.2f} text_len={len(text)}")
-        wav = tts_say(text, voice_id=voice_id, speed=dj.speed_base)
+        _talk_debug(f"generate_monologue: TTS voice={voice_id} speed={dj.speed_base:.2f} emotion={direction.emotion} text_len={len(spoken)}")
+        wav = tts_say(spoken, voice_id=voice_id, speed=dj.speed_base, direction=direction)
         if not wav:
             _talk_debug(f"generate_monologue: TTS FAILED")
             return None
@@ -921,7 +945,10 @@ def generate_guest_takeover_intro(
             _recent_guest_openings.append(" ".join(text.split()[:8]))
 
         _talk_debug(f"generate_guest_intro: TTS voice={guest.voice_id} speed={guest.speed_base:.2f}")
-        wav = tts_say(text, voice_id=guest.voice_id, speed=guest.speed_base)
+        spoken = speech_direction.prepare_line(text, rng=random, mark_probability=0.2)
+        direction = speech_direction.direction_for_line(
+            None, mood_state=mood_state, persona_id=guest.id, context={"hour": datetime.now().hour})
+        wav = tts_say(spoken, voice_id=guest.voice_id, speed=guest.speed_base, direction=direction)
         if not wav:
             _talk_debug(f"generate_guest_intro: TTS FAILED")
             return None
@@ -989,7 +1016,10 @@ def generate_guest_takeover_outro(
         _talk_debug(f"generate_guest_outro: LLM response ({len(text)} chars):\n{text[:300]}{'...' if len(text) > 300 else ''}")
 
         _talk_debug(f"generate_guest_outro: TTS voice={guest.voice_id} speed={guest.speed_base:.2f}")
-        wav = tts_say(text, voice_id=guest.voice_id, speed=guest.speed_base)
+        spoken = speech_direction.prepare_line(text, rng=random, mark_probability=0.2)
+        direction = speech_direction.direction_for_line(
+            "warm", mood_state=set_mood, persona_id=guest.id, context={"hour": datetime.now().hour})
+        wav = tts_say(spoken, voice_id=guest.voice_id, speed=guest.speed_base, direction=direction)
         if not wav:
             _talk_debug(f"generate_guest_outro: TTS FAILED")
             return None

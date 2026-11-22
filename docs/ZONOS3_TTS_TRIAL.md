@@ -18,11 +18,57 @@ stays the default; Piper stays the fallback. Branch: `zonos3-tts-trial`.
     registration fails, the clip is sent inline.
   - The server's 27 bundled voices, listed by label (for example
     `Thaddeus en announcervoice M 1`, `Savannah en American F 1`).
-- Steering: persona speed maps to `delivery.tempo`; announcement triggers map to
-  `TRIGGER_CONTROLS` in `zonos3_engine.py`, using real control ids from the
-  server and doses inside the studio's "safe" slider ranges. Ids the server does
-  not list are dropped, so a stale id can never break synthesis.
+- Steering: persona speed maps to `delivery.tempo`; everything else comes from
+  the engine-neutral speech direction below. Ids and fields the server does not
+  offer are dropped, so a stale id can never break synthesis.
 - When the server is down or returns no audio, speech falls back to Piper.
+
+## Speech direction (engine-neutral, November 21, 2026)
+
+The radio describes *how* a line should sound, and each engine's adapter turns
+that into its own request. Changing or upgrading the model means writing one
+adapter; nothing in the talk show or announcements changes.
+
+| File | Role |
+|---|---|
+| `backend/announcer/speech_direction.py` | Settings, emotion vocabulary, mood/next-song/hour delivery, persona traits, inline marks, builders, `ADAPTERS` registry, plain and OmniVoice adapters |
+| `backend/announcer/zonos3_direction.py` | ZONOS3 adapter: steering ids, doses, studio safe ranges |
+| `backend/announcer/voice_manager.py` | Engine-neutral parts: pause splitting, loudness matching, cache key |
+
+Settings (one row each, all on by default; Desktop → Settings → Talk → Speech direction):
+
+| Setting | ZONOS3 | OmniVoice | Piper / unknown engine |
+|---|---|---|---|
+| `speech_direction_enabled` (master) | — | — | — |
+| `speech_emotion_enabled`: trigger emotions, an emotion word per caller line from the LLM, monologue type | steering | ignored | ignored |
+| `speech_mood_delivery_enabled`: mood, next song energy/valence, late hours | steering + pace | pace | pace (where the engine takes a speed) |
+| `speech_loudness_match_enabled` + `speech_loudness_target_lufs` (-16) | condition hint + normalisation | normalisation | normalisation |
+| `speech_tight_start_enabled` | no lead-in silence | ignored | ignored |
+| `speech_word_marks_enabled`: whispered asides, shouted words, emphasis; `[laughter]`/`[sigh]` become a delivery | word-level spans | marks stripped, tags kept | stripped |
+| `speech_pauses_enabled`: real pauses at `...` and spaced dashes (two per line at most) | line split, silence inserted | `.,.` | stripped |
+| `speech_persona_traits_enabled`: accent and texture per persona | embedding-mode voices only | ignored | ignored |
+
+Notes from the live server (released checkpoint, `steer.gguf`):
+
+- Accents, texture, identity, pitch and room are speaker-embedding ("raw")
+  controls. The server refuses them next to a reference prefix, so with the
+  recommended reference-mode persona voices they are left out; the cloned clip
+  already carries the persona's accent. They apply to bundled voices and
+  `ZONOS3_SPEAKER_MODE=embedding`.
+- The checkpoint has no pause tokens, no start token and no steer-then-hold, so
+  pauses are done by splitting the line, and the emotion dose is constant.
+- Word spans use the rate schedule (`X-Control-Span-Follow: rate`); there are
+  no alignment heads loaded for the reading schedule.
+- Sample renders (plain, energetic, late-night chill, caller with marks and a
+  pause, laughter tag, persona line) are in
+  `.test-runtime/speech-direction-samples/` of the `zonos3-trial` worktree; all
+  directed lines measured -16.0 to -16.2 LUFS against -21.6 for the plain one.
+
+To support a new model: add `announcer/<model>_direction.py` with a
+`DirectionAdapter` subclass (`render(text, direction)` returns plain text and
+request fields; set `native_pauses` if the model has its own pause syntax), add
+one line to `ADAPTERS`, and accept `request=` in the engine's `synthesize`.
+Tables of doses live in the adapter, so tuning by ear never touches the radio.
 
 ## Measured on the RTX 5080 Laptop GPU (November 21, 2026)
 
@@ -169,7 +215,7 @@ ZONOS3_AUTO_START=true
    likeness; compare `Zonos3: synthesized ... in N.NNs` log lines with
    OmniVoice's `synthesis done in N.Ns`.
 3. Watch `nvidia-smi` with llama.cpp loaded too.
-4. Tune `TRIGGER_CONTROLS` by ear (the studio UI at `http://127.0.0.1:1919`
+4. Tune the tables in `zonos3_direction.py` by ear (the studio UI at `http://127.0.0.1:1919`
    shows each control's safe range).
 
 Sample clips from the trial run are in `.test-runtime/zonos3-samples/`.
@@ -177,8 +223,6 @@ Sample clips from the trial run are in `.test-runtime/zonos3-samples/`.
 ## Not done in this trial
 
 - Streaming playback (the engine asks for a buffered WAV).
-- Mood-based steering (only the announcement trigger reaches the speech layer).
-- Loudness matching between voices.
-- Speech editing, accents and the 42 other languages (`ZONOS3_LANGUAGE`
+- Speech editing, voice blending and the 42 other languages (`ZONOS3_LANGUAGE`
   defaults to `en_us`).
 - On-phone speech.

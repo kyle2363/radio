@@ -3993,6 +3993,9 @@ def tts_status():
 # Radio Talk Show Endpoints
 # ============================================================
 
+from announcer.speech_direction import SETTING_DEFAULTS as SPEECH_SETTING_DEFAULTS
+
+
 @app.get("/api/talk/config")
 def get_talk_config():
     """Get all talk show settings."""
@@ -4009,6 +4012,7 @@ def get_talk_config():
         "talk_caller_heartbroken_enabled": settings.get_setting("talk_caller_heartbroken_enabled") or "false",
         "talk_caller_melancholy_enabled": settings.get_setting("talk_caller_melancholy_enabled") or "false",
         "talk_volume": settings.get_setting("talk_volume") or "100",
+        **{key: settings.get_setting(key) or default for key, default in SPEECH_SETTING_DEFAULTS.items()},
     }
 
 
@@ -4021,7 +4025,7 @@ def update_talk_config(body: dict):
         "talk_monologue_enabled", "talk_guest_takeover_enabled",
         "talk_frequency", "talk_guest_songs_per_set", "talk_segment_cooldown",
         "talk_caller_heartbroken_enabled", "talk_caller_melancholy_enabled",
-        "talk_volume",
+        "talk_volume", *SPEECH_SETTING_DEFAULTS,
     }
     for key, value in body.items():
         if key in allowed:

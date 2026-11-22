@@ -208,6 +208,9 @@ def add_missing_columns():
             'dj_intro_start_hour': '6',
             'dj_intro_end_hour': '23',
         }
+        # Speech direction (announcer/speech_direction.py): one row per feature.
+        from announcer.speech_direction import SETTING_DEFAULTS as _speech_defaults
+        new_settings.update(_speech_defaults)
         for key, val in new_settings.items():
             conn.execute(
                 "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",

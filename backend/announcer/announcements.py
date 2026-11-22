@@ -422,7 +422,8 @@ def should_announce(context: dict, *, advance: bool = True) -> bool:
     return False
 
 
-def play_announcement(text: str, next_song_filepath: str, trigger_type: str | None = None):
+def play_announcement(text: str, next_song_filepath: str, trigger_type: str | None = None,
+                      context: dict | None = None):
     """Render TTS for announcement text and return the WAV path.
 
     Args:
@@ -430,6 +431,8 @@ def play_announcement(text: str, next_song_filepath: str, trigger_type: str | No
         next_song_filepath: Path to the next song's audio file
         trigger_type: Optional trigger type for context-based voice selection
                      (e.g. "mood_change", "skip_streak", "recovery")
+        context: Optional ``mood_state``, ``next_song`` and ``hour``; with the
+                 trigger they set the speech direction (emotion and delivery)
 
     Returns:
         Path to WAV file, or None on failure
@@ -449,7 +452,9 @@ def play_announcement(text: str, next_song_filepath: str, trigger_type: str | No
     except (ValueError, TypeError):
         speed_mult = 1.0
     speed = max(0.5, min(1.5, base_speed * speed_mult))  # clamp to safe range
-    result = tts_say(text, song_id=None, trigger_type=trigger_type, speed=speed)
+    from announcer import speech_direction
+    direction = speech_direction.direction_for_announcement(trigger_type, context or {}, persona_id="dj")
+    result = tts_say(text, song_id=None, trigger_type=trigger_type, speed=speed, direction=direction)
     logger.debug(f"play_announcement: tts_say returned {'path' if result else 'None'}")
     return result
 

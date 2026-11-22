@@ -5,6 +5,7 @@ Manages which TTS engine is active and allows runtime engine swaps
 """
 
 import hashlib
+import json
 import logging
 import os
 import random
@@ -16,6 +17,7 @@ import numpy as np
 import soundfile as sf
 
 import config
+from announcer import speech_direction as sd
 from announcer.tts_engine import TTSEngine, AVAILABLE_ENGINES, PiperTTSEngine, run_with_timeout
 
 logger = logging.getLogger(__name__)
@@ -163,6 +165,57 @@ def talk_pauses(count, rng=random):
     return pauses
 
 
+LOUDNESS_MAX_GAIN_DB = 24.0
+LOUDNESS_PEAK_LIMIT = 0.89  # about -1 dBFS
+
+
+def _match_loudness(path: str, target_lufs: float) -> bool:
+    """Scale a WAV to ``target_lufs`` integrated loudness (engine-neutral).
+
+    Gain is limited to +/-24 dB and the peak to about -1 dBFS. Clips too short
+    to measure are left alone.
+    """
+    try:
+        import pyloudnorm
+        data, rate = sf.read(path)
+        if len(data) < rate * 0.5:
+            return False
+        measured = pyloudnorm.Meter(rate).integrated_loudness(data)
+        if not np.isfinite(measured):
+            return False
+        gain_db = max(-LOUDNESS_MAX_GAIN_DB, min(LOUDNESS_MAX_GAIN_DB, target_lufs - measured))
+        data = data * (10 ** (gain_db / 20))
+        peak = float(np.max(np.abs(data))) if data.size else 0.0
+        if peak > LOUDNESS_PEAK_LIMIT:
+            data = data * (LOUDNESS_PEAK_LIMIT / peak)
+        subtype = sf.info(path).subtype
+        sf.write(path, data, rate, subtype=subtype)
+        logger.info(f"TTS loudness: {measured:.1f} LUFS -> {target_lufs:.1f} ({gain_db:+.1f} dB)")
+        return True
+    except Exception as e:
+        logger.warning(f"TTS loudness matching skipped for {path}: {e}")
+        return False
+
+
+def _join_chunks(paths, pauses_ms, out_path):
+    """Join chunk WAVs into ``out_path`` with the given silence after each chunk."""
+    pieces, rate = [], None
+    subtype = sf.info(paths[0]).subtype
+    for path, pause in zip(paths, pauses_ms):
+        data, sr = sf.read(path)
+        if rate is None:
+            rate = sr
+        elif sr != rate:
+            import librosa
+            data = librosa.resample(data, orig_sr=sr, target_sr=rate)
+        pieces.append(data)
+        if pause:
+            shape = (int(rate * pause / 1000),) + data.shape[1:]
+            pieces.append(np.zeros(shape, dtype=data.dtype))
+    sf.write(out_path, np.concatenate(pieces, axis=0), rate, subtype=subtype)
+    return out_path
+
+
 def _concatenate_wavs(wav_paths, pauses_ms=None, lead_ms=0):
     """Concatenate multiple WAV files into a single WAV with natural pauses between lines.
 
@@ -273,7 +326,13 @@ class VoiceManager:
             pass
 
     def _resolve_default_engine(self) -> str:
-        """Determine the best default engine based on available hardware."""
+        """Determine the best default engine: ZONOS3, then OmniVoice, then Piper."""
+        if "zonos3" in AVAILABLE_ENGINES:
+            try:
+                if self.get_engine("zonos3").is_ready():
+                    return "zonos3"
+            except Exception:
+                pass
         if "omnivoice" in AVAILABLE_ENGINES:
             try:
                 from announcer.omnivoice_engine import OmniVoiceTTSEngine
@@ -490,7 +549,7 @@ class VoiceManager:
 
     # ---- Synthesis ----
 
-    def synthesize(self, text: str, voice_id: str | None = None, output_dir: str | None = None, song_id: int | None = None, trigger_type: str | None = None, speed: float | None = None) -> str | None:
+    def synthesize(self, text: str, voice_id: str | None = None, output_dir: str | None = None, song_id: int | None = None, trigger_type: str | None = None, speed: float | None = None, direction: "sd.SpeechDirection | None" = None) -> str | None:
         """Synthesize text to WAV file.
         
         Args:
@@ -500,6 +559,9 @@ class VoiceManager:
             output_dir: Output directory (defaults to cache)
             song_id: Optional song ID to include in the WAV filename for cache tracking
             trigger_type: Announcement trigger type for context voice mode
+            direction: Engine-neutral delivery (``announcer.speech_direction``). The
+                   engine's adapter renders it; without one, a trigger still gets a
+                   trigger direction. Ignored when speech direction is switched off.
             speed: Speech speed baseline (0.75-1.05). Only used by OmniVoice engine.
                    Randomized ±0.1 at synth time for natural variety.
             
@@ -544,22 +606,47 @@ class VoiceManager:
         if speed is None:
             speed = 0.90
 
-        # Prepend pause marker at start of text for natural-sounding TTS
-        # OmniVoice understands ".,." as a prosody pause; Piper doesn't,
-        # so we only add it for OmniVoice. Piper gets silence prepended to
-        # the WAV instead (via _prepend_silence after synthesis).
-        if engine_id == "omnivoice":
-            text = "... " + text
+        # Engine-neutral direction, rendered by this engine's adapter.
+        flags = sd.current_flags()
+        if not flags.enabled:
+            direction = sd.SpeechDirection.off()
+        elif direction is None:
+            direction = (sd.direction_for_announcement(trigger_type, flags=flags) if trigger_type
+                         else sd.SpeechDirection(word_marks=flags.word_marks, pauses=flags.pauses))
+        adapter = sd.get_adapter(engine_id)
+        if direction.pace:
+            speed = max(0.5, min(1.5, speed * (1 + 0.08 * direction.pace)))
+        if not direction.pauses:
+            text = sd.remove_pauses(text)
+        if direction.pauses and not adapter.native_pauses:
+            chunks = sd.split_pauses(text)
         else:
-            from announcer.nonverbal import strip_nonverbal_tags
-            text = strip_nonverbal_tags(text)
+            chunks = [(text, 0)]
+        rendered = [adapter.render(chunk, direction) for chunk, _ in chunks]
+        if not any(piece.text.strip() for piece in rendered):
+            return None
 
-        # Cache key includes engine + voice + speed + text hash + optional song id
-        text_hash = hashlib.md5(text.encode()).hexdigest()[:12]
+        # OmniVoice understands ".,." as a prosody pause and gets "... " up front;
+        # Piper gets silence prepended to the WAV instead (after synthesis).
+        if engine_id == "omnivoice":
+            rendered[0].text = "... " + rendered[0].text
+
+        # Cache key: engine + voice + speed + hash of what is sent + optional song id.
+        # A neutral line without request fields keeps the plain text hash.
+        if len(rendered) == 1:
+            key_text = rendered[0].text
+        else:
+            key_text = "|".join(f"{piece.text}~{ms}" for piece, (_, ms) in zip(rendered, chunks))
+        if not direction.is_neutral:
+            key_text += "#" + direction.key()
+        if any(piece.request for piece in rendered):
+            key_text += "#" + json.dumps([piece.request for piece in rendered], sort_keys=True)
+        text_hash = hashlib.md5(key_text.encode()).hexdigest()[:12]
         if song_id is not None:
             output_path = os.path.join(output_dir, f"{engine_id}_{voice_id}_{speed:.2f}_{text_hash}_song{song_id}.wav")
         else:
             output_path = os.path.join(output_dir, f"{engine_id}_{voice_id}_{speed:.2f}_{text_hash}.wav")
+        plain_text = " ".join(piece.text for piece in rendered)
 
         # Per-path lock to prevent duplicate concurrent synthesis (same text,
         # same voice, same speed → multiple threads racing before any finishes).
@@ -572,37 +659,55 @@ class VoiceManager:
                     logger.info(f"TTS cache hit: {os.path.basename(output_path)}")
                     return output_path
 
-                logger.info(f"TTS synthesize: engine={engine_id}, voice={voice_id}, text_len={len(text)}, path={output_path}")
+                logger.info(f"TTS synthesize: engine={engine_id}, voice={voice_id}, text_len={len(plain_text)}, "
+                            f"chunks={len(rendered)}, emotion={direction.emotion or '-'}, path={output_path}")
+
+                def _say(piece, path):
+                    if engine_id == "omnivoice":
+                        return eng.synthesize(piece.text, voice_id, path, speed=speed)
+                    if engine_id == "zonos3" or piece.request:
+                        return eng.synthesize(piece.text, voice_id, path, speed=speed, request=piece.request or None)
+                    return eng.synthesize(piece.text, voice_id, path)
 
                 def _do_synthesize():
-                    if engine_id == "omnivoice":
-                        return eng.synthesize(text, voice_id, output_path, speed=speed)
-                    # Strip ".,." markers for Piper (would be spoken literally)
-                    piper_text = text.replace(".,.", "")
-                    if engine_id == "zonos3":
-                        from announcer.zonos3_engine import TRIGGER_CONTROLS
-                        return eng.synthesize(piper_text, voice_id, output_path, speed=speed,
-                                              controls=TRIGGER_CONTROLS.get(trigger_type))
-                    return eng.synthesize(piper_text, voice_id, output_path)
+                    if len(rendered) == 1:
+                        return _say(rendered[0], output_path)
+                    parts = []
+                    try:
+                        for index, piece in enumerate(rendered):
+                            part = f"{output_path}.part{index}.wav"
+                            if not _say(piece, part):
+                                return None
+                            parts.append(part)
+                        return _join_chunks(parts, [ms for _, ms in chunks], output_path)
+                    finally:
+                        for part in parts:
+                            try:
+                                os.remove(part)
+                            except OSError:
+                                pass
 
                 timeout = eng.synthesis_timeout if engine_id in ("omnivoice", "zonos3") else 30
-                ok, result_or_err = run_with_timeout(_do_synthesize, timeout=timeout)
+                ok, result_or_err = run_with_timeout(_do_synthesize, timeout=timeout * len(rendered))
                 if not ok:
                     if isinstance(result_or_err, TimeoutError):
-                        logger.warning("VoiceManager: synthesize timed out after %ss", timeout)
+                        logger.error(f"TTS synthesis timeout ({timeout}s) for engine={engine_id}")
                     else:
-                        logger.error(f"VoiceManager: synthesize failed: {result_or_err}")
+                        logger.error(f"TTS synthesis error for engine={engine_id}: {result_or_err}")
                     if engine_id != "piper":
                         logger.info("VoiceManager: attempting Piper fallback")
-                        return self._fallback_synthesize(text, voice_id, output_dir, song_id)
+                        return self._fallback_synthesize(plain_text, voice_id, output_dir, song_id)
                     return None
                 if engine_id == "zonos3" and not result_or_err:
                     logger.info("VoiceManager: ZONOS3 returned no audio, attempting Piper fallback")
-                    return self._fallback_synthesize(text, voice_id, output_dir, song_id)
+                    return self._fallback_synthesize(plain_text, voice_id, output_dir, song_id)
 
-                # Prepend silence for Piper (it doesn't understand ".?." markers)
-                # and append silence for all engines to prevent truncation
+                # Match loudness (any engine), prepend silence for Piper (it doesn't
+                # understand ".,." markers) and append silence for all engines to
+                # prevent truncation.
                 if result_or_err and os.path.exists(result_or_err):
+                    if direction.loudness_lufs is not None:
+                        _match_loudness(result_or_err, direction.loudness_lufs)
                     if engine_id == "piper":
                         _prepend_silence(result_or_err)
                     _append_silence(result_or_err)
@@ -618,7 +723,7 @@ class VoiceManager:
             from announcer.nonverbal import strip_nonverbal_tags
             piper_eng = self.get_engine("piper")
             fallback_voice = "amy"  # Piper default voice
-            text = strip_nonverbal_tags(text)
+            text = sd.strip_marks(strip_nonverbal_tags(text))
             text = text.replace(".,.", "")
             text_hash = hashlib.md5(text.encode()).hexdigest()[:12]
             if song_id is not None:

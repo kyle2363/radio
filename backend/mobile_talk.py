@@ -592,7 +592,8 @@ class MobileTalk:
         if segment is not None:
             wavs, metadata = segment.wav_paths, self._talk_metadata(segment, settings)
         else:
-            wav = announce.play_announcement(text, "", trigger_type=trigger.value)
+            wav = announce.play_announcement(text, "", trigger_type=trigger.value,
+                                             context={"mood_state": mood, "next_song": nxt, "hour": when.hour})
             if not wav:
                 return None
             wavs, metadata = [wav], self._announcement_metadata(text, trigger.value)
