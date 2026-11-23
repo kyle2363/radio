@@ -41,4 +41,26 @@ class PlaylistRepositoryTest {
             assertEquals("keep bookmark", db.library().playbackSnapshot()!!.payload)
         } finally { scope.coroutineContext[Job]?.cancelAndJoin(); db.close(); context.deleteDatabase(file.absolutePath) }
     }
+
+    @Test fun importedM3uKeepsOrderAndNeverReplacesAnExistingPlaylist() = runBlocking {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val file = File(context.cacheDir, ".test-runtime/playlists/${UUID.randomUUID()}.db").also { it.parentFile!!.mkdirs() }
+        val db = Room.databaseBuilder(context, LibraryDatabase::class.java, file.absolutePath).build()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        try {
+            val tracks = listOf(LocalSong("a", "tree", "f", "content://fixture/a", "One.mp3", "Rock", 1, 1, 1, 60000),
+                LocalSong("b", "tree", "f", "content://fixture/b", "Two.mp3", "Rock", 1, 1, 1, 60000))
+            db.library().saveSongs(tracks)
+            val repo = PlaylistRepository(db, scope)
+            val existing = repo.create("Road Trip", listOf("a")).getOrThrow()
+            val parsed = M3u.parse("#EXTM3U\r\nC:\\Music\\Rock\\Two.mp3\r\nC:\\Music\\Rock\\One.mp3\r\nC:\\Music\\Gone.mp3\r\n")
+            val match = M3u.match(parsed.entries, db.library().allSongs())
+            val id = repo.import(M3u.playlistName(parsed.name, "Road Trip.m3u"), match.songIds).getOrThrow()
+            assertNotEquals(existing, id)
+            assertEquals("Road Trip (2)", db.playlists().playlist(id)!!.name)
+            assertEquals(listOf("b", "a"), db.playlists().songs(id))
+            assertEquals(listOf("a"), db.playlists().songs(existing))
+            assertEquals(1, match.missing.size)
+        } finally { scope.coroutineContext[Job]?.cancelAndJoin(); db.close(); context.deleteDatabase(file.absolutePath) }
+    }
 }

@@ -2,6 +2,10 @@ package dev.radio.mobile.ui
 
 import dev.radio.mobile.playback.PlaySource
 
+import android.net.Uri
+import android.provider.OpenableColumns
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -10,6 +14,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import dev.radio.mobile.data.*
@@ -34,6 +39,18 @@ fun PlaylistBrowser(state: PlaylistsState, repository: PlaylistRepository, catal
     var renaming by remember { mutableStateOf<LocalPlaylist?>(null) }
     var adding by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
+    var imported by remember { mutableStateOf<M3uOutcome?>(null) }
+    val context = LocalContext.current
+    // M3U import: read once through the system picker, match against the scanned library, save.
+    val importer = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) scope.launch {
+            val outcome = withContext(Dispatchers.IO) { readM3u(context, uri, catalog) }
+            if (outcome.error != null || outcome.songIds.isEmpty()) { imported = outcome; return@launch }
+            repository.import(outcome.name, outcome.songIds)
+                .onSuccess { id -> imported = outcome.copy(playlistId = id, synced = repository.state.value.paired); onSelect(id) }
+                .onFailure { imported = outcome.copy(error = it.message ?: "Couldn't save the playlist.") }
+        }
+    }
     val selected = state.playlists.firstOrNull { it.id == selectedId }
     val byId = remember(catalog) { catalog.associateBy { it.id } }
     // Top 100, Recently played and Liked songs, rebuilt off the main thread whenever the journal changes.
@@ -66,6 +83,7 @@ fun PlaylistBrowser(state: PlaylistsState, repository: PlaylistRepository, catal
                 }
             } else if (selected == null) {
                 Text("${state.playlists.size} playlists", Modifier.weight(1f), style = MaterialTheme.typography.labelLarge)
+                TextButton(onClick = { importer.launch(M3U_TYPES) }, enabled = accessAllowed, modifier = Modifier.testTag("playlist-import")) { Text("Import") }
                 TextButton(onClick = { nameDialog = true }) { Text("New playlist") }
             } else {
                 Text("${ids.size} songs", Modifier.weight(1f), style = MaterialTheme.typography.labelMedium)
@@ -199,10 +217,60 @@ fun PlaylistBrowser(state: PlaylistsState, repository: PlaylistRepository, catal
     if (adding && selected != null) SongPicker("Add songs", catalog, onDismiss = { adding = false }, onConfirm = { chosen ->
         scope.launch { report(repository.add(selected.id, chosen.map { it.id })); adding = false }
     })
+    imported?.let { outcome -> M3uResultDialog(outcome) { imported = null } }
     deleting?.let { target -> AlertDialog(onDismissRequest = { deleting = null }, title = { Text("Delete ${target.name}?") },
         text = { Text("This removes the playlist. Your music files and current playback stay unchanged.") },
         confirmButton = { TextButton(onClick = { scope.launch { repository.delete(target.id).onSuccess { if (selectedId == target.id) onSelect(null); deleting = null }.onFailure { message = it.message } } }) { Text("Delete") } },
         dismissButton = { TextButton(onClick = { deleting = null }) { Text("Cancel") } }) }
+}
+
+private val M3U_TYPES = arrayOf("audio/x-mpegurl", "audio/mpegurl", "application/x-mpegurl", "application/vnd.apple.mpegurl",
+    "application/octet-stream", "text/plain")
+private const val M3U_MAX_BYTES = 4 shl 20
+
+/** What one import found; [playlistId] is set once it was saved. */
+internal data class M3uOutcome(val name: String, val entries: Int, val songIds: List<String>, val missing: List<M3u.Entry>,
+    val error: String? = null, val playlistId: String? = null, val synced: Boolean = false)
+
+private fun readM3u(context: android.content.Context, uri: Uri, catalog: List<LocalSong>): M3uOutcome {
+    val display = runCatching { context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
+        if (it.moveToFirst()) it.getString(0) else null } }.getOrNull()
+    val bytes = try {
+        context.contentResolver.openInputStream(uri)?.use { input ->
+            val data = input.readNBytes(M3U_MAX_BYTES + 1)
+            if (data.size > M3U_MAX_BYTES) return M3uOutcome(M3u.playlistName(null, display), 0, emptyList(), emptyList(), "That file is too large to be a playlist.")
+            data
+        }
+    } catch (error: Exception) { null } ?: return M3uOutcome(M3u.playlistName(null, display), 0, emptyList(), emptyList(), "Couldn't open that file.")
+    val parsed = M3u.parse(M3u.decode(bytes))
+    val name = M3u.playlistName(parsed.name, display)
+    if (parsed.entries.isEmpty()) return M3uOutcome(name, 0, emptyList(), emptyList(), "That file doesn't list any songs. Choose an .m3u or .m3u8 playlist.")
+    val match = M3u.match(parsed.entries, catalog)
+    return M3uOutcome(name, parsed.entries.size, match.songIds, match.missing)
+}
+
+@Composable
+private fun M3uResultDialog(outcome: M3uOutcome, onDismiss: () -> Unit) {
+    val saved = outcome.playlistId != null
+    AlertDialog(onDismissRequest = onDismiss, modifier = Modifier.testTag("playlist-import-result"),
+        title = { Text(if (saved) "Imported ${outcome.name}" else "Couldn't import ${outcome.name}") },
+        text = { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            when {
+                outcome.error != null -> Text(outcome.error)
+                !saved -> Text("None of the ${outcome.entries} songs in this playlist are in your Music folder.")
+                else -> Text("${outcome.songIds.size} of ${outcome.entries} songs added." +
+                    if (outcome.synced) " It will appear on your desktop the next time you sync your profile." else "")
+            }
+            if (outcome.missing.isNotEmpty() && outcome.error == null) {
+                Text("Not found in your Music folder:", style = MaterialTheme.typography.labelLarge)
+                LazyColumn(Modifier.heightIn(max = 220.dp)) {
+                    itemsIndexed(outcome.missing) { _, entry ->
+                        Text(entry.title ?: entry.path.replace('\\', '/').substringAfterLast('/'), style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
+        } },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("OK") } })
 }
 
 /** Share or stop sharing one playlist with the paired desktop. Hidden until the phone is paired. */
