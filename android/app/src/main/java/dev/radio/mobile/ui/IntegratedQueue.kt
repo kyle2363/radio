@@ -64,8 +64,12 @@ fun IntegratedQueue(audio: PlaybackState, accessAllowed: Boolean, onSelect: (Str
                 val current = id == audio.currentId
                 // Connected talk: the queued clip shows as its own removable row just before the song it introduces.
                 audio.talk?.takeIf { !it.current && it.nextId == id }?.let { talk ->
-                    Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 6.dp).testTag("queue-talk"), verticalAlignment = Alignment.CenterVertically) {
-                        RadioIcon(Symbol.Person, null, Modifier.size(20.dp))
+                    // Same geometry as a song row (8 + 12 dp inset, 40 dp tile, 60 dp height) so the columns line up.
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp).heightIn(min = 60.dp).padding(horizontal = 12.dp, vertical = 8.dp).testTag("queue-talk"),
+                        verticalAlignment = Alignment.CenterVertically) {
+                        Box(Modifier.size(40.dp).background(MaterialTheme.colorScheme.surfaceVariant, dev.radio.mobile.ui.theme.RadioShapes.Thumb), contentAlignment = Alignment.Center) {
+                            CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.onSurfaceVariant) { RadioIcon(Symbol.Person, null, Modifier.size(20.dp)) }
+                        }
                         Column(Modifier.weight(1f).padding(start = 14.dp)) {
                             Text(talk.info.title, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
                             Text("${talk.info.typeLabel} · Talk", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
