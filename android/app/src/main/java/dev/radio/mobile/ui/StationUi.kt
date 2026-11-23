@@ -606,6 +606,29 @@ private fun StationElapsed(folder: String, positionMs: () -> Long, durationMs: L
         color = color, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
 }
 
+/**
+ * The small filled pill under the song title (Like, Feel, Vibe, Sleep). One height and shape for every chip so a row of
+ * them sits level; [onClick] null makes it plain information, [selected] non-null makes it a toggle.
+ */
+@Composable
+fun PlayerPill(text: String, modifier: Modifier = Modifier, onClick: (() -> Unit)? = null, selected: Boolean? = null, enabled: Boolean = true,
+               leading: (@Composable () -> Unit)? = null) {
+    val on = selected == true
+    val container = if (on) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceContainerHigh
+    val content = if (on) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface
+    val body: @Composable () -> Unit = {
+        Row(Modifier.height(36.dp).padding(horizontal = 14.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            leading?.invoke()
+            Text(text, style = MaterialTheme.typography.labelLarge, fontWeight = if (on) FontWeight.Bold else null, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+    }
+    when {
+        onClick != null && selected != null -> Surface(selected, onClick, modifier, enabled = enabled, shape = CircleShape, color = container, contentColor = content, content = body)
+        onClick != null -> Surface(onClick, modifier, enabled = enabled, shape = CircleShape, color = container, contentColor = content, content = body)
+        else -> Surface(modifier, shape = CircleShape, color = container, contentColor = content, content = body)
+    }
+}
+
 /** Radio Now Playing body below the top bar (station theme is provided by the caller). */
 @Composable
 fun RadioNowPlaying(
@@ -628,7 +651,12 @@ fun RadioNowPlaying(
     val locked = radio.vibeLocalId != null
     val talking = talk != null
     val colors = LocalStationColors.current
-    Column(modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp).testTag("radio-now-playing"), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+    // Artwork, title and chips sit at the top; the transport and Next row are anchored to the bottom (thumb reach), with
+    // the spare height between them. Short screens scroll instead.
+    BoxWithConstraints(modifier.fillMaxSize()) {
+    val viewport = maxHeight
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp).testTag("radio-now-playing")) {
+    Column(Modifier.fillMaxWidth().heightIn(min = viewport), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         Spacer(Modifier.height(4.dp))
         val artSize by animateDpAsState(if (minimal || compact || audio.error != null) 160.dp else heroSize ?: 220.dp, Motion.standard(), label = "station-artwork")
         Box(Modifier.align(Alignment.CenterHorizontally).size(artSize)
@@ -650,6 +678,20 @@ fun RadioNowPlaying(
                 CompositionLocalProvider(LocalContentColor provides if (liked) OnAirText else LocalContentColor.current) { HeartIcon(liked, if (liked) "Liked" else "Like") }
             }
         }
+        // Left-aligned under the title, like the standard player's Like/Feel row.
+        val showFeel = !talking && feelChip != null
+        if (showFeel || locked || audio.sleepTimer.active) FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp), itemVerticalAlignment = Alignment.CenterVertically) {
+            if (showFeel) feelChip?.invoke()
+            // Information, not a control: a plain pill rather than a disabled (greyed) chip.
+            if (locked) PlayerPill("Vibe · ${radio.vibeSongsLeft} songs · ${vibeMinutes(radio)} min", Modifier.testTag("vibe-chip"),
+                leading = { RadioIcon(Symbol.Lock, modifier = Modifier.size(14.dp)) })
+            if (audio.sleepTimer.active) PlayerPill("Sleep · ${sleepLabel(sleep())}", Modifier.testTag("sleep-countdown"), onClick = onSleep,
+                leading = { RadioIcon(Symbol.Clock, modifier = Modifier.size(14.dp)) })
+        }
+        // The "why Vibe lock is off" note gets its own line so it never wraps beside a chip.
+        if (!minimal && !locked && !talking && !radio.vibeAvailable) Text(if (radio.legacyVectorTracks > 0 && !radio.legacyVectorsEnabled) "Vibe lock needs desktop similarity. Turn it on in Settings → Radio." else radio.vibeReason ?: "Vibe lock needs a matched song with recommendation data.",
+            Modifier.fillMaxWidth(), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         audio.error?.let { message ->
             Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.errorContainer, RoundedCornerShape(18.dp))
                 .border(1.dp, Color(0xFF7F3B3B), RoundedCornerShape(18.dp)).padding(16.dp).testTag("playback-error"), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -661,6 +703,7 @@ fun RadioNowPlaying(
                 }
             }
         }
+        Spacer(Modifier.weight(1f))
         PlaybackProgress(positionMs, audio.durationMs, audio.seekable, onScrub, onScrubFinished, timeColor = MaterialTheme.colorScheme.onSurfaceVariant)
         Row(Modifier.fillMaxWidth().testTag("player-transport"), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             // Disabled controls dim into the surface; Material's default disabled fill is lighter here and read as "selected".
@@ -692,19 +735,6 @@ fun RadioNowPlaying(
         }
         AnimatedVisibility(!minimal, enter = expandVertically(Motion.standard()) + fadeIn(Motion.standard()), exit = shrinkVertically(Motion.quick()) + fadeOut(Motion.quick())) {
           Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-            // Chips only; the "why Vibe lock is off" note gets its own line below so it never wraps beside a chip.
-            FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (!talking) feelChip?.invoke()
-                if (audio.sleepTimer.active) AssistChip(onSleep, { Text("Sleep · ${sleepLabel(sleep())}") }, Modifier.testTag("sleep-countdown"), leadingIcon = { RadioIcon(Symbol.Clock, modifier = Modifier.size(16.dp)) })
-                // Information, not a control: a plain pill rather than a disabled (greyed) chip.
-                if (locked) Row(Modifier.heightIn(min = 32.dp).background(Color(colors.panel), CircleShape).padding(horizontal = 12.dp).testTag("vibe-chip"),
-                    verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    RadioIcon(Symbol.Lock, modifier = Modifier.size(14.dp))
-                    Text("Vibe · ${radio.vibeSongsLeft} songs · ${vibeMinutes(radio)} min", style = MaterialTheme.typography.labelLarge)
-                }
-            }
-            if (!locked && !talking && !radio.vibeAvailable) Text(if (radio.legacyVectorTracks > 0 && !radio.legacyVectorsEnabled) "Vibe lock needs desktop similarity. Turn it on in Settings → Radio." else radio.vibeReason ?: "Vibe lock needs a matched song with recommendation data.",
-                Modifier.fillMaxWidth(), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
             // During talk the clip is outside the play order; next is the song it introduces.
             val nextSong = if (talk != null) audio.queue.firstOrNull { it.id == talk.nextId } else audio.playOrder.indexOf(audio.currentId).takeIf { it >= 0 }?.let { audio.playOrder.getOrNull(it + 1) }?.let { id -> audio.queue.firstOrNull { it.id == id } }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -731,6 +761,8 @@ fun RadioNowPlaying(
             }
         }
         Spacer(Modifier.height(8.dp))
+    }
+    }
     }
 }
 

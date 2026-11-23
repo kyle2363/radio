@@ -534,7 +534,8 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
                     // Artwork takes the height the controls leave over (no dead band above the transport), within sensible limits.
                     val contentHeight = maxHeight - insets.calculateTopPadding() - insets.calculateBottomPadding()
                     val heroSize = (contentHeight - 480.dp).coerceIn(200.dp, minOf(maxWidth - 64.dp, 340.dp))
-                    val stationHero = (contentHeight - 520.dp).coerceIn(200.dp, minOf(maxWidth - 64.dp, 320.dp))
+                    // Station controls are anchored to the bottom, so the artwork takes the height they and the title leave.
+                    val stationHero = (contentHeight - 470.dp).coerceIn(200.dp, minOf(maxWidth - 64.dp, 340.dp))
                     val artSize by animateDpAsState(if (minimal || compact) 160.dp else heroSize, Motion.standard(), label = "artwork-size")
                     AnimatedContent(mode, Modifier.fillMaxSize(), transitionSpec = { fadeIn(Motion.standard()) togetherWith fadeOut(Motion.quick()) }, label = "player-mode") { shown ->
                     val song = song
@@ -564,11 +565,12 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
                                 SongTitle(song.title, Modifier.sharedPlayer(shared, screenScopes["Now playing"], "title").fillMaxWidth())
                                 Text(songSubtitle(song), color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.fillMaxWidth().padding(top = 4.dp))
                                 // Left-aligned like the title and artist above it.
-                                FlowRow(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    FilterChip(liked, onClick = { repository.journal.setFavorite(song, !liked) }, enabled = journal.feedbackLoaded && journal.pendingWrites == 0,
-                                        modifier = Modifier.testTag("favorite-song"), label = { Text(if (liked) "Liked" else "Like", fontWeight = if (liked) FontWeight.Bold else FontWeight.Normal) },
-                                        colors = FilterChipDefaults.filterChipColors(selectedContainerColor = MaterialTheme.colorScheme.primary, selectedLabelColor = MaterialTheme.colorScheme.onPrimary, selectedLeadingIconColor = MaterialTheme.colorScheme.onPrimary),
-                                        leadingIcon = { HeartIcon(liked, null) })
+                                // Same filled pills as the Radio player, level in one row.
+                                FlowRow(Modifier.fillMaxWidth().padding(top = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp), itemVerticalAlignment = Alignment.CenterVertically) {
+                                    PlayerPill(if (liked) "Liked" else "Like", Modifier.testTag("favorite-song"), onClick = { repository.journal.setFavorite(song, !liked) },
+                                        selected = liked, enabled = journal.feedbackLoaded && journal.pendingWrites == 0,
+                                        leading = { HeartIcon(liked, null, Modifier.size(16.dp)) })
                                     FeelChip(song, feelsState, onClick = { feelSheet = true })
                                 }
                                 AnimatedVisibility(!minimal, enter = expandVertically(Motion.standard()) + fadeIn(Motion.standard()), exit = shrinkVertically(Motion.quick()) + fadeOut(Motion.quick())) {

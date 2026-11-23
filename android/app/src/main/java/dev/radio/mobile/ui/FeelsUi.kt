@@ -446,9 +446,8 @@ private fun RoundedShapeFor(feel: LocalFeel) = if (isEnergy(feel.feelId)) RadioS
 fun FeelChip(song: LocalSong, state: FeelsState, onClick: () -> Unit, modifier: Modifier = Modifier) {
     val names = state.bySong[song.id].orEmpty().filter { it.member && !isEnergy(it.feelId) }
         .mapNotNull { s -> state.active.firstOrNull { it.feel.feelId == s.feelId }?.feel?.name }
-    AssistChip(onClick = onClick, label = { Text(when (names.size) { 0 -> "Feel"; 1 -> names[0]; else -> "${names[0]} +${names.size - 1}" }, maxLines = 1) },
-        modifier = modifier.testTag("feel-chip"), shape = RadioShapes.Leaf,
-        leadingIcon = { Swatch(names.firstOrNull()?.let { n -> state.active.first { it.feel.name == n }.feel.color } ?: FeelCatalog.energy.color, 12) })
+    PlayerPill(when (names.size) { 0 -> "Feel"; 1 -> names[0]; else -> "${names[0]} +${names.size - 1}" }, modifier.testTag("feel-chip"), onClick = onClick,
+        leading = { Swatch(names.firstOrNull()?.let { n -> state.active.first { it.feel.name == n }.feel.color } ?: FeelCatalog.energy.color, 12) })
 }
 
 /** Two taps to tag: open the sheet, tap a feel. Energy is the four buckets. */
