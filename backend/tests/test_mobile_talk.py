@@ -545,3 +545,26 @@ def test_guest_intro_without_shift_when_none(talk, monkeypatch):
     import mobile_talk
     monkeypatch.setattr(mobile_talk._rng, "random", lambda: 0.0)
     assert guest_intro(talk, "none")["shift"] is None
+
+
+def test_talk_turns_keep_a_talk_only_context_alive(tmp_path, engines):
+    """With Desktop picks off the phone sends only talk turns; each one is activity, so the show survives."""
+    from mobile_recommendations import MobileRecommendations
+    from tests.test_mobile_pairing import setup
+    store, _, _ = setup(tmp_path)
+    now = {"t": 1000.0}
+    recommendations = MobileRecommendations(store, clock=lambda: now["t"], idle_seconds=1800)
+    service = MobileTalk(recommendations, cache_dir=str(tmp_path / "cache"), run=lambda fn: fn(),
+                         render=copy_render, available=lambda: (True, None))
+    context = recommendations.create_context(DEVICE, {"protocol_version": 1, "mood": "neutral", "exploration": .3,
+                                                      "recent": []})["context_id"]
+    body = {"protocol_version": 1, "after_song": {"song_id": "1"}, "next_song": {"song_id": "2"}, "mood": "neutral",
+            "talk": callers_only(frequency=10)}
+    for seq in range(1, 4):
+        now["t"] += 1500  # 25 minutes between song starts; three of them pass the 30-minute idle limit
+        assert service.start_turn(DEVICE, context, {**body, "turn_id": f"t{seq}", "turn_seq": seq})["state"] in ("none", "pending")
+    assert service._shows[context].talk["_song_counter"] == 3
+    now["t"] += 1800
+    with pytest.raises(Rejected) as gone:
+        service.start_turn(DEVICE, context, {**body, "turn_id": "t9", "turn_seq": 9})
+    assert gone.value.status == 404

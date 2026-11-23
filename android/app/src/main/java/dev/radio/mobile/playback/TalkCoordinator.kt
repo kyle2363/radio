@@ -28,7 +28,9 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
 /**
- * Connected talk on the phone (checkpoint 13B): one turn per song gap in connected Radio.
+ * Connected talk on the phone (checkpoint 13B): one turn per song gap in Radio. With Desktop picks off (13D) the
+ * phone's own Radio and feel stations choose the songs and the desktop only writes and voices the talk, against a
+ * talk-only context.
  *
  * When a Radio song actually starts, the turn is sent at once so the desktop has the whole song to generate. A clip
  * is inserted only once it is downloaded and verified, and only while the song still has the insertion margin left
@@ -58,7 +60,8 @@ internal class TalkCoordinator(
         engine.onTalk = ::onTalkEvent
         prefs.getString(OPEN_JOB, null)?.let { stale -> scope.launch { report(stale, "missed", null) } }
         scope.launch { radio.talkSettings.collect { engine.setTalkGain(it.volume.linear); if (!it.enabled) stop("Off") } }
-        scope.launch { radio.connectedState.map { it.status.enabled }.distinctUntilChanged().collect { if (!it) stop("Turn on Desktop picks to hear talk") } }
+        // Ask the desktop what it offers as soon as talk is on, so Tune shows the controls and the server chip is current.
+        scope.launch { radio.talkSettings.map { it.enabled }.distinctUntilChanged().collect { if (it) radio.connected.talkAccess() } }
         // The planned next song changed (skip, queue edit, mood change, refill): a queued clip is discarded.
         scope.launch {
             engine.state.map { Triple(it.talk, it.playOrder, it.currentId) }.distinctUntilChanged().collect { (talk, order, current) ->
@@ -90,7 +93,7 @@ internal class TalkCoordinator(
         if (!state.radioActive) return
         sessionSongs++
         sessionRecent.addFirst(song); while (sessionRecent.size > 6) sessionRecent.removeLast()
-        if (!radio.talkSettings.value.enabled || !radio.connected.enabled) return
+        if (!radio.talkSettings.value.enabled) return
         val seq = maxOf(lastSeq + 1, System.currentTimeMillis()).also { lastSeq = it }
         turn = scope.launch { runTurn(song, seq) }
     }
@@ -103,9 +106,13 @@ internal class TalkCoordinator(
             val capability = access?.talk
             if (access == null) { radio.setTalkStatus("Can't reach the desktop; music continues"); return }
             if (capability == null) { radio.setTalkStatus("This desktop doesn't offer talk"); return }
+            if (!access.permitted) { radio.setTalkStatus("Not allowed on the desktop; music continues"); return }
             if (!capability.available) { radio.setTalkStatus(capability.message); return }
-            val contextId = radio.connected.context.value ?: withTimeoutOrNull(CONTEXT_WAIT_MS) { radio.connected.context.first { it != null } }
-                ?: run { radio.setTalkStatus("Waiting for Desktop picks"); return }
+            // Desktop picks makes its own context at song start; give it a moment, then use (or make) a talk-only one.
+            val contextId = radio.connected.context.value
+                ?: (if (radio.connected.enabled) withTimeoutOrNull(CONTEXT_WAIT_MS) { radio.connected.context.first { it != null } } else null)
+                ?: radio.state.value.let { withContext(Dispatchers.IO) { radio.connected.talkContext(it.mood, it.exploration) } }
+                ?: run { radio.setTalkStatus("Can't reach the desktop; music continues"); return }
             // The song this clip will introduce. Desktop-first Radio may still be filling the queue.
             val next = withTimeoutOrNull(NEXT_WAIT_MS) {
                 engine.state.first { s -> s.currentId != song.id || nextAfter(s, song.id) != null }
@@ -113,6 +120,7 @@ internal class TalkCoordinator(
             val nextSong = engine.state.value.queue.firstOrNull { it.id == next } ?: return
             val body = withContext(Dispatchers.Default) { turnBody(song, nextSong, seq) }
             val started = net.withLock { radio.talk.start(contextId, body) }
+            radio.connected.noteReachable(started !is TalkTurnResult.Failed || started.reason.startsWith("HTTP") || started.reason == "invalid reply")
             val pending = when (started) {
                 is TalkTurnResult.Pending -> started
                 TalkTurnResult.None -> { radio.setTalkStatus("No talk this time"); return }

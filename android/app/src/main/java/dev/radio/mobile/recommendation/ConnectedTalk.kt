@@ -364,3 +364,16 @@ object TalkShiftPolicy {
     fun restore(current: StationPick, pending: GuestRestore?): StationPick? =
         pending?.takeIf { it.applied == current && it.before != current }?.before
 }
+
+/** The subtle desktop chip on the station card: shown only while Desktop picks or Talk uses the paired desktop. */
+enum class ServerChip(val label: String) {
+    Connected("Desktop"), Offline("Desktop offline"), Checking("Desktop");
+    companion object {
+        fun of(paired: Boolean, desktopPicks: Boolean, talk: Boolean, reachable: Boolean?): ServerChip? = when {
+            !paired || !(desktopPicks || talk) -> null
+            reachable == true -> Connected
+            reachable == false -> Offline
+            else -> Checking
+        }
+    }
+}

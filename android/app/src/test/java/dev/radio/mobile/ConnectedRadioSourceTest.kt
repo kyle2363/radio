@@ -430,4 +430,70 @@ class ConnectedRadioSourceTest {
         assertEquals(ConnectedTuning(), ConnectedTuning.decode("not json"))
         assertEquals(ConnectedTuning(), ConnectedTuning.decode(null))
     }
+
+    // Talk without Desktop picks: a talk-only context for the phone's own show.
+    private val talkCaps = """{"protocol_version":1,"connected_recommendations":true,"scopes":["catalog:read","recommend:read"],"connected_talk":{"available":true,"reason":null,"segment_types":["caller"],"announcements":true,"max_clip_seconds":180}}"""
+
+    @Test fun talkContextWithDesktopPicksOffCreatesAMinimalContextWithoutUploadingAvailability() {
+        val server = FakeServer().apply { capabilities = talkCaps }
+        val source = ConnectedRadioSource(TransportLink(server), scope)
+        val id = runBlocking { source.talkContext("chill", .4) }
+        assertEquals("ctx-aaaaaaaaaaaaaaaa", id)
+        assertEquals(id, source.context.value)
+        assertEquals(0, server.count("/availability")); assertEquals(1, server.contexts)
+        val body = ConnectedJson.parse(server.calls.first { it.first == "/contexts" }.second!!) as Map<*, *>
+        assertEquals("chill", body["mood"]); assertEquals(.4, body["exploration"]); assertEquals(emptyList<Any>(), body["recent"])
+        assertFalse(source.status.value.enabled)
+        assertEquals(true, source.reachable.value)
+        assertNotNull(source.status.value.talk)
+        // Reused while it lives; no second context.
+        assertEquals(id, runBlocking { source.talkContext("energetic", .1) })
+        assertEquals(1, server.contexts)
+    }
+
+    @Test fun talkContextReusesTheDesktopPicksContextAndIsRecreatedAfterLoss() {
+        val server = FakeServer().apply { capabilities = talkCaps; picks = listOf(Triple("s2", "exploit", "")) }
+        val source = source(server)
+        run(source, request())
+        assertEquals(1, server.contexts)
+        val id = runBlocking { source.talkContext("neutral", .3) }
+        assertEquals(source.context.value, id); assertEquals(1, server.contexts)
+        source.contextLost(id!!)
+        assertNotNull(runBlocking { source.talkContext("neutral", .3) })
+        assertEquals(2, server.contexts)
+    }
+
+    @Test fun desktopPicksAfterATalkContextUpdatesItInsteadOfMakingAnother() {
+        val server = FakeServer().apply { capabilities = talkCaps; picks = listOf(Triple("s2", "exploit", "")) }
+        val source = ConnectedRadioSource(TransportLink(server), scope)
+        val id = runBlocking { source.talkContext("neutral", .3) }
+        source.setEnabled(true)
+        run(source, request())
+        assertEquals(1, server.contexts)
+        assertEquals(1, server.count("/contexts/$id"))
+        assertNotNull(source.set.value)
+    }
+
+    @Test fun talkContextNeedsPermissionAndAReachableDesktop() {
+        val denied = FakeServer().apply { capabilities = """{"protocol_version":1,"connected_recommendations":true,"scopes":["catalog:read"]}""" }
+        assertNull(runBlocking { ConnectedRadioSource(TransportLink(denied), scope).talkContext("neutral", .3) })
+        assertEquals(0, denied.contexts)
+        val down = object : ConnectedServerLink {
+            override suspend fun access(): ConnectedAccess = throw ConnectionFailure("Server is unreachable.")
+            override suspend fun post(path: String, body: String): RadioResponse = throw ConnectionFailure("Server is unreachable.")
+        }
+        val source = ConnectedRadioSource(down, scope)
+        assertNull(runBlocking { source.talkContext("neutral", .3) })
+        assertEquals(false, source.reachable.value)
+    }
+
+    @Test fun turningDesktopPicksOffKeepsWhatTheDesktopSaidAboutTalk() {
+        val server = FakeServer().apply { capabilities = talkCaps }
+        val source = source(server)
+        runBlocking { source.talkAccess() }
+        assertNotNull(source.status.value.talk)
+        source.setEnabled(false)
+        assertNotNull(source.status.value.talk)
+        assertFalse(source.status.value.enabled)
+    }
 }
