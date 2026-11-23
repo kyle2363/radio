@@ -16,8 +16,8 @@ function WaveformBars({ energy, isPlaying, isPlayingBar = false }) {
 }
 
 function SongCard({ song, selected, onSelect }) {
-  const energyColor = song.energy > 0.6 ? "text-[#4eccc4]" : song.energy > 0.4 ? "text-yellow-400" : "text-blue-400";
-  const valenceColor = song.valence > 0.6 ? "text-[#4eccc4]" : song.valence > 0.4 ? "text-yellow-400" : "text-blue-400";
+  const energyColor = song.energy > 0.6 ? "text-[var(--accent)]" : song.energy > 0.4 ? "text-[var(--warning)]" : "text-[var(--info)]";
+  const valenceColor = song.valence > 0.6 ? "text-[var(--accent)]" : song.valence > 0.4 ? "text-[var(--warning)]" : "text-[var(--info)]";
   const [previewing, setPreviewing] = useState(false);
 
   const handlePreview = async (e) => {
@@ -42,11 +42,11 @@ function SongCard({ song, selected, onSelect }) {
       )}
       <div className="flex items-start justify-between gap-2">
         <div className="flex-1 min-w-0">
-          <p className="text-sm font-medium text-white truncate">{song.title}</p>
+          <p className="text-sm font-medium text-gray-200 truncate">{song.title}</p>
           <p className="text-xs text-gray-400 truncate">{song.artist}</p>
         </div>
         <div className="flex items-center gap-1">
-          <button onClick={handlePreview} className="w-6 h-6 flex items-center justify-center rounded-full bg-gray-700 hover:bg-gray-600 text-xs transition" title="Preview">
+          <button onClick={handlePreview} className="w-6 h-6 flex items-center justify-center rounded-full bg-gray-700 hover:bg-gray-800 text-xs transition" title="Preview">
             {previewing ? "⏸" : "▶"}
           </button>
           <WaveformBars energy={song.energy} isPlaying={previewing} isPlayingBar={previewing} />
@@ -155,7 +155,7 @@ export default function Onboarding({ onComplete, onSkip, addToast }) {
     <div className="fixed inset-0 bg-gray-950/95 backdrop-blur-sm flex items-center justify-center z-50 p-4">
       <div className="max-w-2xl w-full max-h-[90vh] overflow-y-auto">
         <div className="text-center mb-8">
-          <h2 className="text-2xl font-bold text-white mb-2">Seed Your Taste</h2>
+          <h2 className="text-2xl font-bold text-gray-200 mb-2">Seed Your Taste</h2>
           <p className="text-gray-400 text-sm">Pick 3–5 songs you like to help us understand your style</p>
         </div>
         <div className="flex justify-center gap-1.5 mb-6">

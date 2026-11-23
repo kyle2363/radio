@@ -17,9 +17,14 @@ function Toggle({ checked, onChange, label }) {
   );
 }
 
-function SettingsContent({ addToast, sectionSpacing, onSectionSpacingChange, rightRailWidth, setRightRailWidth, explorationLevel, onExplorationChange }) {
+function SettingsContent({ addToast, sectionSpacing, onSectionSpacingChange, rightRailWidth, setRightRailWidth, explorationLevel, onExplorationChange, focusSection }) {
   const [settings, setSettings] = useState({});
-  const [sections, setSections] = useState({ playback: true, appearance: false, system: false, ai: false, talk: false, llm: false, library: false });
+  const [sections, setSections] = useState(() => ({ playback: !focusSection, appearance: false, system: false, ai: false, talk: false, llm: false, library: false, ...(focusSection ? { [focusSection]: true } : {}) }));
+  useEffect(() => {
+    if (!focusSection) return;
+    setSections((prev) => ({ ...prev, [focusSection]: true }));
+    requestAnimationFrame(() => document.getElementById(`settings-${focusSection}`)?.scrollIntoView({ behavior: "smooth", block: "start" }));
+  }, [focusSection]);
   const [announcementInterval, setAnnouncementInterval] = useState(30);
   const [ttsEnabled, setTtsEnabled] = useState(true);
   const [musicDir, setMusicDir] = useState("");
@@ -209,7 +214,7 @@ function SettingsContent({ addToast, sectionSpacing, onSectionSpacingChange, rig
       {/* Playback & audio */}
       <div className="set-sec">
         <div className="set-hdr" onClick={() => toggleSection("playback")}>
-          <div className="icon-chip" style={{ background: "#0d3028" }}>
+          <div className="icon-chip" style={{ background: "var(--bg-elevated)" }}>
             <Volume2 size={13} style={{ color: "var(--accent)" }} />
           </div>
           <span style={{ color: "var(--text-primary)", fontSize: "13px", fontWeight: 500 }}>Playback & audio</span>
@@ -353,7 +358,7 @@ function SettingsContent({ addToast, sectionSpacing, onSectionSpacingChange, rig
       {/* Appearance */}
       <div className="set-sec">
         <div className="set-hdr" onClick={() => toggleSection("appearance")}>
-          <div className="icon-chip" style={{ background: "#1a2030" }}>
+          <div className="icon-chip" style={{ background: "var(--bg-elevated)" }}>
             <Palette size={13} style={{ color: "#a870f0" }} />
           </div>
           <span style={{ color: "var(--text-primary)", fontSize: "13px", fontWeight: 500 }}>Appearance</span>
@@ -459,9 +464,9 @@ function SettingsContent({ addToast, sectionSpacing, onSectionSpacingChange, rig
         )}
       </div>
 
-      {window.electron?.createMobilePairingBundle && <div className="set-sec">
+      {window.electron?.createMobilePairingBundle && <div className="set-sec" id="settings-server">
         <div className="set-hdr" onClick={() => toggleSection('server')}>
-          <div className="icon-chip" style={{ background: '#1e1e1e' }}><Monitor size={13} style={{ color: '#8a9bb5' }} /></div>
+          <div className="icon-chip" style={{ background: "var(--bg-elevated)" }}><Monitor size={13} style={{ color: '#8a9bb5' }} /></div>
           <span style={{ color: 'var(--text-primary)', fontSize: 13, fontWeight: 500 }}>Server / Paired devices</span>
           <div style={{ flex: 1 }} />
           <ChevronDown size={14} style={{ color: 'var(--text-muted)', transform: sections.server ? 'rotate(0deg)' : 'rotate(-90deg)' }} />
@@ -472,7 +477,7 @@ function SettingsContent({ addToast, sectionSpacing, onSectionSpacingChange, rig
       {/* System */}
       <div className="set-sec">
         <div className="set-hdr" onClick={() => toggleSection("system")}>
-          <div className="icon-chip" style={{ background: "#1e1e1e" }}>
+          <div className="icon-chip" style={{ background: "var(--bg-elevated)" }}>
             <Monitor size={13} style={{ color: "#8a9bb5" }} />
           </div>
           <span style={{ color: "var(--text-primary)", fontSize: "13px", fontWeight: 500 }}>System</span>
@@ -617,7 +622,7 @@ function SettingsContent({ addToast, sectionSpacing, onSectionSpacingChange, rig
       {/* AI & discovery */}
       <div className="set-sec">
         <div className="set-hdr" onClick={() => toggleSection("ai")}>
-          <div className="icon-chip" style={{ background: "#0d1e40" }}>
+          <div className="icon-chip" style={{ background: "var(--bg-elevated)" }}>
             <Brain size={13} style={{ color: "#5eadf5" }} />
           </div>
           <span style={{ color: "var(--text-primary)", fontSize: "13px", fontWeight: 500 }}>AI & discovery</span>
@@ -792,7 +797,7 @@ function SettingsContent({ addToast, sectionSpacing, onSectionSpacingChange, rig
       {/* Radio Talk Show */}
       <div className="set-sec">
         <div className="set-hdr" onClick={() => toggleSection("talk")}>
-          <div className="icon-chip" style={{ background: "#1e0d2e" }}>
+          <div className="icon-chip" style={{ background: "var(--bg-elevated)" }}>
             <Radio size={13} style={{ color: "#c084fc" }} />
           </div>
           <span style={{ color: "var(--text-primary)", fontSize: "13px", fontWeight: 500 }}>Radio Talk Show</span>
@@ -816,7 +821,7 @@ function SettingsContent({ addToast, sectionSpacing, onSectionSpacingChange, rig
       {/* Taste Constellations */}
       <div className="set-sec">
         <div className="set-hdr" onClick={() => toggleSection("constellations")}>
-          <div className="icon-chip" style={{ background: "#0f2240" }}>
+          <div className="icon-chip" style={{ background: "var(--bg-elevated)" }}>
             <Sparkles size={13} style={{ color: "#4eccc4" }} />
           </div>
           <span style={{ color: "var(--text-primary)", fontSize: "13px", fontWeight: 500 }}>Taste Constellations</span>
@@ -839,7 +844,7 @@ function SettingsContent({ addToast, sectionSpacing, onSectionSpacingChange, rig
       {/* LLM providers */}
       <div className="set-sec">
         <div className="set-hdr" onClick={() => toggleSection("llm")}>
-          <div className="icon-chip" style={{ background: "#1e0d0d" }}>
+          <div className="icon-chip" style={{ background: "var(--bg-elevated)" }}>
             <Cpu size={13} style={{ color: "var(--danger)" }} />
           </div>
           <span style={{ color: "var(--text-primary)", fontSize: "13px", fontWeight: 500 }}>LLM providers</span>
@@ -907,7 +912,7 @@ function SettingsContent({ addToast, sectionSpacing, onSectionSpacingChange, rig
       {/* Library management */}
       <div className="set-sec" style={{ borderBottom: "none" }}>
         <div className="set-hdr" onClick={() => toggleSection("library")}>
-          <div className="icon-chip" style={{ background: "#0f1e10" }}>
+          <div className="icon-chip" style={{ background: "var(--bg-elevated)" }}>
             <Folder size={13} style={{ color: "#639922" }} />
           </div>
           <span style={{ color: "var(--text-primary)", fontSize: "13px", fontWeight: 500 }}>Library management</span>

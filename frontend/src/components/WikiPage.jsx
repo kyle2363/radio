@@ -7,7 +7,9 @@ import {
   Mic2,
   Network,
   Radio,
+  Smartphone,
   Sparkles,
+  Tags,
   Terminal,
   Volume2,
   Waves,
@@ -22,7 +24,9 @@ const ICONS = {
   Mic2,
   Network,
   Radio,
+  Smartphone,
   Sparkles,
+  Tags,
   Terminal,
   Volume2,
   Waves,
@@ -102,14 +106,14 @@ function LiveStatusPanel({ live }) {
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
         <span className="badge b-teal">Live</span>
         <span style={{ color: "var(--text-muted)", fontSize: 11 }}>
-          These cards use existing backend status endpoints.
+          Updates every 15 seconds.
         </span>
       </div>
       <div className="stat-cards" style={{ padding: 0, gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))" }}>
         <LiveCard
           title="Library"
           value={live.stats ? `${live.stats.total_songs_in_library || 0} songs` : "Unavailable"}
-          detail={live.stats ? `Avg completion ${formatPct(live.stats.avg_completion_rate)}` : "Static wiki still works offline"}
+          detail={live.stats ? `Avg completion ${formatPct(live.stats.avg_completion_rate)}` : "Status not reachable"}
           state={live.stats ? "ok" : "muted"}
         />
         <LiveCard
@@ -166,7 +170,7 @@ function IngestMiniStatus({ status, progress }) {
               <span style={{ fontSize: 10, color: "var(--text-muted)" }}>{count}</span>
             </div>
             <div className="prog-track">
-              <div className="prog-fill-bar" style={{ width: `${Math.min(100, pct)}%`, background: phase === "clustered" ? "var(--accent)" : "#5eadf5" }} />
+              <div className="prog-fill-bar" style={{ width: `${Math.min(100, pct)}%`, background: phase === "clustered" ? "var(--accent)" : "var(--info)" }} />
             </div>
           </div>
         );
@@ -198,13 +202,14 @@ function SectionCard({ section, open, onToggle, live }) {
   return (
     <section id={`wiki-${section.id}`} className="wiki-section">
       <div className="set-sec" style={{ border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden", background: "var(--bg-surface)", marginBottom: 10 }}>
-        <div className="set-hdr" onClick={onToggle}>
+        <div className="set-hdr" onClick={onToggle} role="button" tabIndex={0} aria-expanded={open}
+          onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onToggle(); } }}>
           <div className="icon-chip" style={{ background: "var(--accent-muted)" }}>
             <Icon size={13} style={{ color: "var(--accent)" }} />
           </div>
           <div style={{ minWidth: 0 }}>
             <div style={{ color: "var(--text-primary)", fontSize: 13, fontWeight: 600 }}>{section.title}</div>
-            <div style={{ color: "var(--text-muted)", fontSize: 10, marginTop: 2, lineHeight: 1.35 }}>{section.summary}</div>
+            <div style={{ color: "var(--text-muted)", fontSize: 11, marginTop: 2, lineHeight: 1.4 }}>{section.summary}</div>
           </div>
           <div style={{ flex: 1 }} />
           <ChevronDown size={14} style={{ color: "var(--text-muted)", transform: open ? "rotate(0deg)" : "rotate(-90deg)", transition: "transform 0.2s", flexShrink: 0 }} />
@@ -240,7 +245,7 @@ function SectionCard({ section, open, onToggle, live }) {
 
 function WikiPage() {
   const [activeId, setActiveId] = useState(WIKI_SECTIONS[0].id);
-  const [openSections, setOpenSections] = useState(() => new Set(WIKI_SECTIONS.map((s) => s.id)));
+  const [openSections, setOpenSections] = useState(() => new Set([WIKI_SECTIONS[0].id]));
   const [live, setLive] = useState({
     ingestStatus: null,
     ingestProgress: null,
@@ -295,21 +300,21 @@ function WikiPage() {
   };
 
   return (
-    <div className="wiki-page">
-      <div className="wiki-hero">
+    <div className="page">
+      <div className="page-hero">
         <div>
-          <div className="stat-desc" style={{ marginBottom: 5 }}>How Radio Works</div>
-          <h3>Feature wiki</h3>
+          <div className="page-eyebrow">How Radio works</div>
+          <h3>Wiki</h3>
           <p>
-            A compact map of the ingest pipeline, recommendation system, queue logic, mood engine, TTS, talk show, and data model.
+            How songs are prepared, how Radio picks what plays next, and how moods, feels, the DJ, and the phone app fit together.
           </p>
         </div>
         <button
+          type="button"
           onClick={() => setOpenSections((prev) => prev.size === WIKI_SECTIONS.length ? new Set(["overview"]) : new Set(WIKI_SECTIONS.map((s) => s.id)))}
-          className="btn-muted"
-          style={{ border: "1px solid var(--border)", borderRadius: 6, padding: "7px 12px", fontSize: 11, alignSelf: "flex-start" }}
+          className="ui-btn sm"
         >
-          {openCount === WIKI_SECTIONS.length ? "Collapse" : "Expand"}
+          {openCount === WIKI_SECTIONS.length ? "Collapse all" : "Expand all"}
         </button>
       </div>
 

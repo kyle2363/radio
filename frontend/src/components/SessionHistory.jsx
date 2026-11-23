@@ -1,15 +1,8 @@
 import React, { useState, useEffect, useRef } from "react";
 import { Search, ChevronRight } from "lucide-react";
 import * as api from "../api";
+import { moodColor } from "../ui/consistency.js";
 
-const MOOD_DOT_COLORS = {
-  chill: "#60a5fa",
-  neutral: "#9ca3af",
-  energetic: "#fb923c",
-  focus: "#34d399",
-  melancholy: "#c084fc",
-  discovery: "#22d3ee",
-};
 
 function SessionHistory() {
   const [sessions, setSessions] = useState([]);
@@ -52,8 +45,8 @@ function SessionHistory() {
 
   const signalColor = (signal) => {
     if (signal === "completed") return "var(--accent)";
-    if (signal === "hearted") return "#f87171";
-    if (signal === "thumbed_down") return "#fb923c";
+    if (signal === "hearted") return "var(--danger)";
+    if (signal === "thumbed_down") return "var(--warning)";
     if (signal?.includes("skip")) return "#eab308";
     if (signal === "replayed") return "#c084fc";
     return "var(--text-muted)";
@@ -151,7 +144,7 @@ function SessionHistory() {
                   <div style={{ fontSize: "12px", textAlign: "center", color: "var(--text-secondary)" }}>
                     {s.initial_mood ? (
                       <span style={{ display: "inline-flex", alignItems: "center", gap: "4px" }}>
-                        <span style={{ width: "7px", height: "7px", borderRadius: "50%", background: MOOD_DOT_COLORS[s.initial_mood] || "#9ca3af", flexShrink: 0 }} />
+                        <span style={{ width: "7px", height: "7px", borderRadius: "50%", background: moodColor(s.initial_mood), flexShrink: 0 }} />
                         {s.initial_mood}
                       </span>
                     ) : "—"}
@@ -183,7 +176,7 @@ function SessionHistory() {
                           <div className="mood-block">
                             {detail.mood_changes.map((mc, i) => (
                               <span key={i} className="mood-tag">
-                                <span className="mood-tag-dot" style={{ background: MOOD_DOT_COLORS[mc.mood] || "#9ca3af" }} />
+                                <span className="mood-tag-dot" style={{ background: moodColor(mc.mood) }} />
                                 {mc.mood} <span style={{ color: "var(--text-muted)", fontSize: "9px" }}>({mc.source})</span>
                               </span>
                             ))}

@@ -161,7 +161,7 @@ function NowPlaying({ song, isPlaying, whyReason, queue = [], audioRms, talkSegm
   }
 
   const TRAJ_ICONS = { rising: "↗", falling: "↘", stable: "→" };
-  const TRAJ_COLORS = { rising: "text-orange-400", falling: "text-blue-400", stable: "text-gray-500" };
+  const TRAJ_COLORS = { rising: "text-[var(--warning)]", falling: "text-[var(--info)]", stable: "text-gray-500" };
 
   const innerGrid = (
     <div className={compact ? "now-playing-grid" : "flex gap-4 items-start"}>

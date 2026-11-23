@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
-import { Terminal, Heart, ThumbsDown, SkipBack, Play, Pause, Volume2, RefreshCw, Moon, Zap, HelpCircle } from "lucide-react";
+import { Terminal, X } from "lucide-react";
 import * as api from "../api";
 
 const COMMAND_HINTS = ['"more energetic"', '"chill vibes"', '"vibe lock"', '"what is next"', '"play more jazz"', '"heart this"', '"pause"', '"play 5 songs from Radiohead"', '"queue chill songs for studying"', '"play something upbeat"', '"sounds like midnight driving"', '"play dreamy reverb music"', '"help"'];
@@ -15,8 +15,8 @@ function CommandBar({ onCommandSent, compact = false, onFocus, onClose,
   const [historyIdx, setHistoryIdx] = useState(-1);
   const inputRef = useRef(null);
   const submittedCmdRef = useRef(null);
-  const [placeholder] = useState(() => `Ask something... (try ${COMMAND_HINTS[Math.floor(Math.random() * COMMAND_HINTS.length)]})`);
-  const [expandedPlaceholder] = useState(() => `Say something... (try ${COMMAND_HINTS[Math.floor(Math.random() * COMMAND_HINTS.length)]})`);
+  const [placeholder] = useState(() => `Ask the DJ… try ${COMMAND_HINTS[Math.floor(Math.random() * COMMAND_HINTS.length)]}`);
+  const expanded = !compact;
 
   useEffect(() => {
     const handler = (e) => {
@@ -97,58 +97,56 @@ function CommandBar({ onCommandSent, compact = false, onFocus, onClose,
   const handleMouseEnter = () => { nlPausedRef.current = true; clearNlResponseTimer(); };
   const handleMouseLeave = () => { nlPausedRef.current = false; if (nlResponse) startNlResponseTimer(); };
 
-  const handleInputChange = (e) => { setText(e.target.value); handleActivity(); };
+  const handleInputChange = (e) => { setText(e.target.value); if (compact) onFocus?.(); handleActivity(); };
 
-  if (compact) {
-    return (
-      <div className="rounded-lg px-3 py-1.5" style={{ background: "var(--bg-surface)" }}
-        onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave}>
-        <form onSubmit={handleSubmit} className="flex items-center gap-2">
-          <Terminal size={12} style={{ color: "var(--text-muted)", flexShrink: 0 }} />
-          <input ref={inputRef} type="text" value={text} onChange={handleInputChange} onKeyDown={handleKeyDown}
-            onFocus={(e) => { onFocus?.(e); handleActivity(); }}
-            placeholder={sending ? "Thinking..." : placeholder}
-            className="flex-1 bg-transparent border-none outline-none text-[11px]"
-            style={{ color: "var(--text-primary)" }}
-            disabled={sending} />
-          {nlResponse && (
-            <span className="text-[10px] truncate max-w-[200px]" style={{ color: "var(--accent)" }}>{nlResponse.explanation}</span>
-          )}
-        </form>
-      </div>
-    );
-  }
+  const close = () => {
+    clearNlResponseTimer(); setNlResponse(null); setNlResponseVisible(false);
+    inputRef.current?.blur(); onClose?.();
+  };
 
+  // One form and one input in both states, so the first click both expands the
+  // bar and leaves the cursor in the box (the old version swapped inputs).
   return (
-    <div className="rounded-xl p-4" style={{ background: "var(--bg-surface)" }}
+    <div className="rounded-xl transition-all" style={{
+        background: "var(--bg-surface)", padding: expanded ? "10px 12px" : "4px 6px",
+        border: `1px solid ${expanded ? "color-mix(in srgb, var(--accent) 30%, transparent)" : "var(--border-subtle)"}`,
+      }}
       onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave}>
-      <form onSubmit={handleSubmit} className="flex items-center gap-1.5 rounded-lg px-4 py-2.5"
-        style={{ background: "var(--bg-surface)" }}>
-        <input ref={inputRef} type="text" value={text} onChange={handleInputChange} onKeyDown={handleKeyDown}
-          onFocus={handleActivity}
-          placeholder={sending ? "Thinking..." : expandedPlaceholder}
-          className="flex-1 bg-transparent border-none outline-none text-sm"
-          style={{ color: "var(--text-primary)" }}
-          disabled={sending} />
-        {onClose && (
-          <button type="button" onClick={() => { clearNlResponseTimer(); setNlResponse(null); setNlResponseVisible(false); onClose(); }} className="px-2 py-1 rounded text-xs transition hover:opacity-80"
-            style={{ color: "var(--text-muted)" }}>✕</button>
+      <form onSubmit={handleSubmit} className="flex items-center gap-2" style={{ padding: expanded ? "2px 2px" : "2px 6px" }}>
+        <Terminal size={13} style={{ color: expanded ? "var(--accent)" : "var(--text-muted)", flexShrink: 0 }} />
+        <input ref={inputRef} type="text" value={text} onChange={handleInputChange}
+          onKeyDown={(e) => { if (e.key === "Escape") { e.preventDefault(); close(); return; } handleKeyDown(e); }}
+          onFocus={(e) => { onFocus?.(e); handleActivity(); }}
+          onClick={(e) => { if (compact) onFocus?.(e); }}
+          placeholder={sending ? "Thinking…" : placeholder}
+          aria-label="Ask the DJ"
+          className={`flex-1 bg-transparent border-none outline-none ${expanded ? "text-sm" : "text-[12px]"}`}
+          style={{ color: "var(--text-primary)", minWidth: 0 }}
+          readOnly={sending} />
+        {!expanded && nlResponse && (
+          <span className="text-[11px] truncate max-w-[240px]" style={{ color: "var(--accent)" }}>{nlResponse.explanation}</span>
         )}
-        <button type="submit" disabled={sending || !text.trim()} className="px-5 py-2 rounded-md text-xs font-medium transition"
-          style={{ background: "var(--accent-muted)", color: "var(--accent)", border: "1px solid rgba(78,204,196,0.25)" }}>
-          {sending ? (
-            <span className="flex items-center gap-0.5">
-              <span className="w-1 h-1 rounded-full animate-bounce" style={{ background: "var(--accent)", animationDelay: "0ms" }} />
-              <span className="w-1 h-1 rounded-full animate-bounce" style={{ background: "var(--accent)", animationDelay: "150ms" }} />
-              <span className="w-1 h-1 rounded-full animate-bounce" style={{ background: "var(--accent)", animationDelay: "300ms" }} />
-            </span>
-          ) : "Send"}
-        </button>
+        {expanded && onClose && (
+          <button type="button" onClick={close} className="ui-btn sm" title="Close (Esc)" aria-label="Close">
+            <X size={12} />
+          </button>
+        )}
+        {expanded && (
+          <button type="submit" disabled={sending || !text.trim()} className="ui-btn primary sm" style={{ minWidth: 56 }}>
+            {sending ? (
+              <span className="flex items-center gap-0.5">
+                <span className="w-1 h-1 rounded-full animate-bounce" style={{ background: "var(--accent)", animationDelay: "0ms" }} />
+                <span className="w-1 h-1 rounded-full animate-bounce" style={{ background: "var(--accent)", animationDelay: "150ms" }} />
+                <span className="w-1 h-1 rounded-full animate-bounce" style={{ background: "var(--accent)", animationDelay: "300ms" }} />
+              </span>
+            ) : "Send"}
+          </button>
+        )}
       </form>
-      {nlResponse && (
-        <div className="mt-2 px-4 py-2.5 rounded-lg text-sm transition-all duration-300"
+      {expanded && nlResponse && (
+        <div className="rounded-lg text-sm transition-all duration-300"
           style={{
-            background: "var(--bg-elevated)",
+            background: "var(--bg-elevated)", marginTop: 8, padding: "10px 14px",
             opacity: nlResponseVisible ? 1 : 0,
             transform: nlResponseVisible ? "translateY(0)" : "translateY(-4px)",
           }}>
@@ -159,7 +157,7 @@ function CommandBar({ onCommandSent, compact = false, onFocus, onClose,
                 Audio matches
               </div>
               {nlResponse.songs.map((song, i) => (
-                <div key={i} className="flex items-center justify-between py-1 px-2 rounded" style={{ background: "rgba(255,255,255,0.03)" }}>
+                <div key={i} className="flex items-center justify-between py-1 px-2 rounded" style={{ background: "var(--bg-muted)" }}>
                   <span className="text-xs truncate" style={{ color: "var(--text-primary)" }}>
                     {song.artist} — {song.title}
                   </span>

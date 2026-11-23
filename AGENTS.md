@@ -169,7 +169,7 @@ radio/
 │
 ├── frontend/
 │   ├── electron/             # main, preloads, widget, backend lifecycle
-│   ├── src/components/       # 53 components
+│   ├── src/components/       # 54 components
 │   ├── src/hooks/            # 11 hooks
 │   ├── src/audio/            # BrowserAudioEngine
 │   ├── src/api/index.js      # HTTP + WebSocket client
@@ -267,13 +267,13 @@ Events are notifications, not a durable replay log; recovery uses authoritative 
 
 ### Desktop frontend
 
-53 components and 11 hooks. The desktop UI is used through the Electron window only.
+54 components and 11 hooks. Shared mood colours and status helpers live in `src/ui/consistency.js`; shared buttons, inputs, sliders, cards and panel pages are the `ui-*`, `dial*`, `card` and `page*` classes in `src/styles/global.css`. The global reset lives in `@layer base`; keep it there, or Tailwind padding/margin utilities stop working. The desktop UI is used through the Electron window only.
 
 - **Player**: `NowPlaying`, `WaveformViz`, `PlayerControls`, `VolumeControl`, `PlaybackOutputSelector`, `MiniPlayer`
 - **Queue/recs**: `QueuePreview`, `QueueContextMenu`, `ExplorationSlider`, `MoodButtons`
 - **Library**: `SongList`, `FiltersPanel`, `QuickSearch`, `CollectionsList`, `CollectionDetail`, `IngestPanel`, `LibraryVerify`, `LyricsPanel`
-- **Analytics**: `DailyReport`, `ListeningStats`, `StatsDashboard`, `SessionHistory`, `MoodTimeline`, `PriorSongs`, `ConstellationMap`
-- **Shell/status**: `ArchetypeBadge`, `VibeLockBadge`, `SkipStreakIndicator`, `AmbientGlow`, `AuthenticationGate`, `HeaderButton`, `HeaderStatusPill`, `BrandIcons`
+- **Analytics**: `StatsDashboard`, `SessionHistory`, `MoodTimeline`, `PriorSongs`, `ConstellationMap`
+- **Shell/status**: `ArchetypeBadge`, `VibeLockBadge`, `SkipStreakIndicator`, `AmbientGlow`, `AuthenticationGate`, `HeaderButton`, `HeaderStatusPill`, `RemoteHostingPill`, `BrandIcons`
 - **Mobile/server**: `MobilePairingSettings`, `MobileCatalogSettings`, `RemoteHostingSettings`
 - **Utility**: `CommandBar`, `TooltipLayer`, `Onboarding`, `BootScreen`, `Toast`, `ParticleBurst`, `Skeleton`, `ShortcutsModal`, `SettingsContent`, `SkipFeedback`, `ErrorBoundary`, `CommandPalette`, `SleepTimer`, `TalkSettings`, `CalibrationPanel`, `BucketAnchor`, `WikiPage`
 

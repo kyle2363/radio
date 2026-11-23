@@ -1,14 +1,7 @@
 import React, { useState, useEffect } from "react";
 import * as api from "../api";
+import { moodColor } from "../ui/consistency.js";
 
-const MOOD_COLORS = {
-  chill: "#60a5fa",
-  neutral: "#9ca3af",
-  energetic: "#fb923c",
-  focus: "#34d399",
-  melancholy: "#c084fc",
-  discovery: "#22d3ee",
-};
 
 function MoodTimeline() {
   const [changes, setChanges] = useState([]);
@@ -37,7 +30,7 @@ function MoodTimeline() {
           const timeStr = time.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
           return (
             <div key={i} className="mood-node">
-              <div className="mood-dot" style={{ background: MOOD_COLORS[mc.mood] || "#9ca3af" }} title={`${mc.mood} (${mc.source})`} />
+              <div className="mood-dot" style={{ background: moodColor(mc.mood) }} title={`${mc.mood} (${mc.source})`} />
               <span className="mood-time">{timeStr}</span>
               <span className="mood-label">{mc.mood}</span>
             </div>
