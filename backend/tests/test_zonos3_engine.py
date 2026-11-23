@@ -393,6 +393,30 @@ def test_direction_fields_the_server_lacks_are_dropped(tmp_path, clips):
         assert field not in body
 
 
+RELEASE = {"onset_seconds": 4.0, "ramp_seconds": 1.0, "hold": 0.35, "exempt": ["delivery.tempo"]}
+EASING = {"steer_hold": 0.25, "steer_onset_seconds": 1.5, "steer_ramp_seconds": 1.0}
+
+
+def test_steer_easing_is_sent_when_the_server_releases_steering(tmp_path, clips):
+    http = FakeHttp(capabilities={**FULL_CAPS, "steer_release": RELEASE}, controls=STEER)
+    eng = make_engine(http)
+    request = {"controls": {"emotions.happy": 2}, **EASING}
+    assert eng.synthesize("Wow now.", "The Trusted Morning Host", str(tmp_path / "o.wav"), request=request)
+    [body] = http.generate_bodies()
+    for key, value in EASING.items():
+        assert body[key] == value
+
+
+def test_steer_easing_is_left_out_without_server_release(tmp_path, clips):
+    # A hold below 1 on a server without steer_release is a 400, so it must not be sent.
+    http = FakeHttp(capabilities={**FULL_CAPS, "steer_release": None}, controls=STEER)
+    eng = make_engine(http)
+    request = {"controls": {"emotions.happy": 2}, **EASING}
+    assert eng.synthesize("Wow now.", "The Trusted Morning Host", str(tmp_path / "o.wav"), request=request)
+    [body] = http.generate_bodies()
+    assert not any(key in body for key in EASING)
+
+
 RAW_STEER = {
     "sets": {"accents_en": {"space": "raw"}, "texture": {"space": "raw"}, "emotions": {"space": "attnres_source"}},
     "directions": {"accents_en.british": {"kind": "named"}, "texture.deep": {"kind": "named"},

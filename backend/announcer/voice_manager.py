@@ -169,10 +169,21 @@ LOUDNESS_MAX_GAIN_DB = 24.0
 LOUDNESS_PEAK_LIMIT = 0.89  # about -1 dBFS
 
 
+def _limit_peaks(data, rate: int, limit: float):
+    """Peak limiter: a 5 ms look-around gain envelope, then a hard ceiling."""
+    from scipy.ndimage import maximum_filter1d, uniform_filter1d
+    level = np.abs(data) if data.ndim == 1 else np.max(np.abs(data), axis=1)
+    win = max(1, int(rate * 0.005))
+    envelope = uniform_filter1d(maximum_filter1d(level, size=2 * win + 1), size=win)
+    gain = np.minimum(1.0, limit / np.maximum(envelope, 1e-9))
+    data = data * (gain if data.ndim == 1 else gain[:, None])
+    return np.clip(data, -limit, limit)
+
+
 def _match_loudness(path: str, target_lufs: float) -> bool:
     """Scale a WAV to ``target_lufs`` integrated loudness (engine-neutral).
 
-    Gain is limited to +/-24 dB and the peak to about -1 dBFS. Clips too short
+    Gain is limited to +/-24 dB; transients over about -1 dBFS are limited. Clips too short
     to measure are left alone.
     """
     try:
@@ -184,13 +195,20 @@ def _match_loudness(path: str, target_lufs: float) -> bool:
         if not np.isfinite(measured):
             return False
         gain_db = max(-LOUDNESS_MAX_GAIN_DB, min(LOUDNESS_MAX_GAIN_DB, target_lufs - measured))
-        data = data * (10 ** (gain_db / 20))
-        peak = float(np.max(np.abs(data))) if data.size else 0.0
-        if peak > LOUDNESS_PEAK_LIMIT:
-            data = data * (LOUDNESS_PEAK_LIMIT / peak)
+        meter = pyloudnorm.Meter(rate)
+        # Gain, then limit only the transients, a few times: scaling the whole clip
+        # down to its loudest peak would leave speech well under the target.
+        for _ in range(3):
+            data = _limit_peaks(data * (10 ** (gain_db / 20)), rate, LOUDNESS_PEAK_LIMIT)
+            now = meter.integrated_loudness(data)
+            if not np.isfinite(now) or abs(target_lufs - now) < 0.3:
+                break
+            gain_db = max(0.0, min(LOUDNESS_MAX_GAIN_DB, target_lufs - now))
+            if gain_db == 0.0:
+                break
         subtype = sf.info(path).subtype
         sf.write(path, data, rate, subtype=subtype)
-        logger.info(f"TTS loudness: {measured:.1f} LUFS -> {target_lufs:.1f} ({gain_db:+.1f} dB)")
+        logger.info(f"TTS loudness: {measured:.1f} LUFS -> {now:.1f} (target {target_lufs:.1f})")
         return True
     except Exception as e:
         logger.warning(f"TTS loudness matching skipped for {path}: {e}")
@@ -708,7 +726,9 @@ class VoiceManager:
                 if result_or_err and os.path.exists(result_or_err):
                     if direction.loudness_lufs is not None:
                         _match_loudness(result_or_err, direction.loudness_lufs)
-                    if engine_id == "piper":
+                    # OmniVoice gets "... " in its text; every other engine gets
+                    # a short silence so the first word never starts abruptly.
+                    if engine_id != "omnivoice":
                         _prepend_silence(result_or_err)
                     _append_silence(result_or_err)
                 logger.info(f"TTS synthesize done: {'found' if result_or_err and os.path.exists(result_or_err) else 'FAILED'}")
