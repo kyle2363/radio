@@ -19,14 +19,15 @@ def test_every_feature_has_a_seeded_setting_and_is_on_by_default():
     flags = sd.DirectionFlags.from_settings(database.get_setting)
     assert flags.enabled and flags.emotion and flags.mood_delivery and flags.loudness_match
     assert flags.tight_start and flags.word_marks and flags.pauses and flags.persona_traits
-    assert flags.loudness_target == pytest.approx(-16.0)
+    assert flags.phone_line and flags.caller_ambience
+    assert flags.loudness_target == pytest.approx(-13.0)
 
 
 def test_master_switch_turns_every_feature_off():
     database.set_setting("speech_direction_enabled", "false")
     flags = sd.DirectionFlags.from_settings(database.get_setting)
     assert not any([flags.emotion, flags.mood_delivery, flags.loudness_match, flags.tight_start,
-                    flags.word_marks, flags.pauses, flags.persona_traits])
+                    flags.word_marks, flags.pauses, flags.persona_traits, flags.phone_line, flags.caller_ambience])
 
 
 def test_features_turn_off_one_at_a_time_and_bad_values_fall_back():
@@ -34,7 +35,7 @@ def test_features_turn_off_one_at_a_time_and_bad_values_fall_back():
     database.set_setting("speech_loudness_target_lufs", "loud please")
     flags = sd.DirectionFlags.from_settings(database.get_setting)
     assert flags.enabled and not flags.pauses and flags.word_marks
-    assert flags.loudness_target == pytest.approx(-16.0)
+    assert flags.loudness_target == pytest.approx(-13.0)
 
 
 # ---- inline marks ----
@@ -97,7 +98,7 @@ def test_announcement_trigger_sets_an_emotion_and_mood_sets_delivery():
     hype = sd.direction_for_announcement("mood_change", {"mood_state": "energetic", "hour": 14}, flags=flags)
     assert chill.emotion == "calm" and hype.emotion == "excited"
     assert chill.energy < 0 < hype.energy
-    assert chill.loudness_lufs == pytest.approx(-16.0) and chill.tight_start
+    assert chill.loudness_lufs == pytest.approx(-13.0) and chill.tight_start
 
 
 def test_next_song_energy_and_late_hours_shape_the_intro():
@@ -124,10 +125,20 @@ def test_line_emotions_are_normalized_and_unknown_words_are_ignored():
 
 def test_persona_traits_follow_their_setting():
     flags = sd.DirectionFlags.from_settings(database.get_setting)
-    assert sd.direction_for_line(None, persona_id="caller_ed", flags=flags).traits.accent == "british"
+    assert sd.direction_for_line(None, persona_id="caller_bookworm", flags=flags).traits.hesitant > 0
     database.set_setting("speech_persona_traits_enabled", "false")
     off = sd.DirectionFlags.from_settings(database.get_setting)
-    assert sd.direction_for_line(None, persona_id="caller_ed", flags=off).traits is None
+    assert sd.direction_for_line(None, persona_id="caller_bookworm", flags=off).traits is None
+
+
+def test_zonos3_sends_no_speaker_embedding_controls():
+    # The radio speaks in reference mode, where accent/texture/identity controls are refused.
+    adapter = sd.get_adapter("zonos3")
+    for persona_id in sd.PERSONA_TRAITS:
+        direction = sd.direction_for_line("excited", persona_id=persona_id,
+                                          flags=sd.DirectionFlags.from_settings(database.get_setting))
+        controls = adapter.render("Hello there.", direction).request.get("controls", {})
+        assert not [c for c in controls if c.split(".")[0] in ("accents_en", "accents_l1", "texture", "identity", "pitch", "room")]
 
 
 # ---- adapters ----
@@ -149,12 +160,11 @@ def test_zonos3_maps_direction_to_controls_spans_loudness_and_tight_start():
     adapter = sd.get_adapter("zonos3")
     assert isinstance(adapter, zonos3_direction.Zonos3Direction)
     direction = sd.SpeechDirection(emotion="excited", intensity=1.0, energy=1.0, valence=1.0, loudness_lufs=-16.0,
-                                   tight_start=True, traits=sd.VoiceTraits(accent="british", textures=(("deep", 1.0),)))
+                                   tight_start=True, traits=sd.VoiceTraits(hesitant=1.0))
     rendered = adapter.render("Wow <shout>yes</shout> [sigh] Long day.", direction)
     assert rendered.text == "Wow yes Long day."
     req = rendered.request
-    assert req["controls"]["mood.arousal"] > 0 and req["controls"]["accents_en.british"] > 0
-    assert req["controls"]["texture.deep"] > 0
+    assert req["controls"]["mood.arousal"] > 0 and req["controls"]["disfluency.disfluent"] > 0
     assert req["condition_values"] == {"loudness": -16.0}
     assert req["silence_prefill_frames"] == 0
     shout, sigh = req["control_spans"]
@@ -165,8 +175,7 @@ def test_zonos3_maps_direction_to_controls_spans_loudness_and_tight_start():
 def test_zonos3_doses_stay_inside_the_studio_safe_ranges():
     adapter = sd.get_adapter("zonos3")
     extreme = sd.SpeechDirection(emotion="angry", intensity=5.0, energy=9, valence=-9, pace=9,
-                                 traits=sd.VoiceTraits(accent="irish", accent_strength=9,
-                                                       textures=tuple((t, 9.0) for t in zonos3_direction.TEXTURES)),
+                                 traits=sd.VoiceTraits(hesitant=9),
                                  loudness_lufs=-16)
     marked = " ".join(f"<{s}>x</{s}>" for s in sd.SPAN_STYLES) + " [laughter] y. [sigh] z."
     req = adapter.render(marked, extreme).request
@@ -177,6 +186,67 @@ def test_zonos3_doses_stay_inside_the_studio_safe_ranges():
     for cid, dose in doses.items():
         low, high = zonos3_direction.SAFE[cid]
         assert low <= dose <= high, (cid, dose)
+
+
+def test_zonos3_eases_steering_early_so_short_lines_do_not_climb():
+    adapter = sd.get_adapter("zonos3")
+    req = adapter.render("Oh man, that track is incredible.", sd.SpeechDirection(emotion="excited")).request
+    assert req["steer_onset_seconds"] <= 2.0
+    assert 0 < req["steer_hold"] <= 0.3
+    assert req["steer_ramp_seconds"] > 0
+
+
+def test_zonos3_upbeat_emotions_push_arousal_and_expressiveness_gently():
+    # Arousal and expressiveness are what make a cloned voice climb in pitch over a line.
+    for emotion in ("excited", "happy", "amused"):
+        doses = zonos3_direction.EMOTION_CONTROLS[emotion]
+        assert doses.get("mood.arousal", 0) <= 1.5, emotion
+        assert doses.get("expressive.expressive", 0) <= 2.5, emotion
+        assert doses.get("emotions.happy", 0) <= 2.5, emotion
+
+
+def test_zonos3_turns_exclamations_into_calm_punctuation():
+    # ZONOS3 reads "!" as shouting; the emotion controls carry the excitement instead.
+    adapter = sd.get_adapter("zonos3")
+    rendered = adapter.render("It's the drop! It slaps <emph>so</emph> hard?! Wow!!", sd.SpeechDirection())
+    assert "!" not in rendered.text
+    assert rendered.text.startswith("It's the drop. It slaps so hard?")
+    spans = sd.get_adapter("zonos3").render("It's the drop! It slaps <emph>so</emph> hard",
+                                            sd.SpeechDirection(word_marks=True)).request["control_spans"]
+    text = adapter.render("It's the drop! It slaps <emph>so</emph> hard", sd.SpeechDirection()).text
+    assert text[spans[0]["start"]:spans[0]["end"]] == "so"
+
+
+def test_omnivoice_keeps_exclamations():
+    rendered = sd.get_adapter("omnivoice").render("It's the drop!", sd.SpeechDirection())
+    assert rendered.text.endswith("drop!")
+
+
+def test_sentence_pauses_split_a_monologue_into_spoken_chunks():
+    text = ("I was listening to that line about giving everything up. It made me wonder about you. "
+            "Have you ever stayed somewhere too long? There's something honest about that.")
+    paced = sd.pace_sentences(text, rng=random.Random(3))
+    chunks = sd.split_pauses(paced)
+    assert len(chunks) == 4
+    assert [c.split()[0] for c, _ in chunks] == ["I", "It", "Have", "There's"]
+    assert all(ms >= 250 for _, ms in chunks[:-1]) and chunks[-1][1] == 0
+    assert sd.strip_marks(sd.remove_pauses(paced)).split() == text.split()
+
+
+def test_sentence_pauses_never_cut_through_a_word_mark():
+    text = "First thought here. <whisper>Between you and me. Keep it quiet</whisper> now. Last one."
+    for chunk, _ in sd.split_pauses(sd.pace_sentences(text, rng=random.Random(1))):
+        assert chunk.count("<whisper>") == chunk.count("</whisper>")
+
+
+def test_sentence_pauses_leave_short_text_alone():
+    assert sd.pace_sentences("Just one sentence here.", rng=random.Random(1)) == "Just one sentence here."
+
+
+def test_monologue_prompt_asks_for_short_spoken_sentences():
+    from announcer import talk_segments
+    assert "short" in talk_segments.MONOLOGUE_PROMPT_TEMPLATE.lower()
+    assert "sentence" in talk_segments.MONOLOGUE_PROMPT_TEMPLATE.lower()
 
 
 def test_zonos3_neutral_direction_sends_nothing_extra():
@@ -368,7 +438,7 @@ def test_caller_lines_carry_llm_emotions_mood_and_persona(monkeypatch, said):
     closer = next(d for t, d in by_text.items() if "Stay tuned" in t)
     assert first_caller.emotion == "nervous" and first_dj.emotion == "warm" and closer.emotion is None
     assert all(c["direction"].energy < 0 for c in said)  # chill mood
-    assert all(c["direction"].loudness_lufs == pytest.approx(-16.0) for c in said)
+    assert all(c["direction"].loudness_lufs == pytest.approx(-13.0) for c in said)
 
 
 def test_caller_emotion_prompt_and_marks_follow_their_settings(monkeypatch, said):
@@ -391,13 +461,28 @@ def test_monologue_gets_a_delivery_from_its_type(monkeypatch, said):
     assert call["direction"].emotion in sd.EMOTIONS and call["direction"].energy < 0
 
 
+def test_monologue_is_spoken_with_pauses_between_sentences(monkeypatch, said):
+    monkeypatch.setattr(talk_segments, "llm_chat", FakeLLM(
+        "That line stuck with me. It felt like an open door. Maybe you felt it too. Here's the next one."))
+    talk_segments.generate_dj_monologue(mood_state="neutral")
+    [call] = said
+    assert len(sd.split_pauses(call["text"])) == 4
+
+
+def test_monologue_has_no_sentence_pauses_when_pauses_are_off(monkeypatch, said):
+    database.set_setting("speech_pauses_enabled", "false")
+    monkeypatch.setattr(talk_segments, "llm_chat", FakeLLM("One thought. Another thought. A third."))
+    talk_segments.generate_dj_monologue(mood_state="neutral")
+    assert "<pause" not in said[0]["text"]
+
+
 def test_announcement_direction_uses_trigger_mood_and_next_song(said):
     announcements.play_announcement("Here comes a banger.", "", trigger_type="mood_change",
                                     context={"mood_state": "energetic", "hour": 15,
                                              "next_song": {"energy": 0.9, "valence": 0.8}})
     [call] = said
     assert call["direction"].emotion == "excited" and call["direction"].energy > 0.3
-    assert call["direction"].loudness_lufs == pytest.approx(-16.0)
+    assert call["direction"].loudness_lufs == pytest.approx(-13.0)
 
 
 def test_marks_never_reach_the_segment_transcript(monkeypatch, said):
@@ -406,3 +491,59 @@ def test_marks_never_reach_the_segment_transcript(monkeypatch, said):
     segment = talk_segments.generate_dj_monologue(mood_state="neutral")
     assert "<" not in segment.text and "[" not in segment.text
     assert "<whisper>" in said[0]["text"]
+
+
+@pytest.mark.parametrize("engine_id, expected", [("zonos3", 1), ("piper", 1), ("omnivoice", 0)])
+def test_lead_in_silence_for_engines_without_a_text_lead_in(monkeypatch, tmp_path, manager, engine_id, expected):
+    # OmniVoice gets "... " in its text; the others get silence before the audio.
+    prepended = []
+    monkeypatch.setattr(voice_manager, "_prepend_silence", lambda path, *a, **k: prepended.append(path))
+    use_engine(monkeypatch, manager, engine_id, RecordingEngine())
+    assert manager.synthesize("Hello there.", "Host", str(tmp_path), direction=sd.SpeechDirection())
+    assert len(prepended) == expected
+
+
+def test_loudness_target_is_reached_on_peaky_speech(tmp_path):
+    # Quiet body with sharp transients: scaling the whole clip to the peak cap
+    # would leave it several dB under target; the limiter must not.
+    rate = 22050
+    t = np.linspace(0, 3.0, rate * 3, endpoint=False)
+    data = 0.02 * np.sin(2 * np.pi * 220 * t)
+    data[::2205] = 0.9
+    path = str(tmp_path / "peaky.wav")
+    sf.write(path, data.astype(np.float32), rate, subtype="FLOAT")
+    assert voice_manager._match_loudness(path, -13.0)
+    assert loudness(path) == pytest.approx(-13.0, abs=1.0)
+    assert max(abs(sf.read(path)[0])) <= voice_manager.LOUDNESS_PEAK_LIMIT + 1e-3
+
+
+def test_default_speech_loudness_sits_with_the_music():
+    assert float(sd.SETTING_DEFAULTS["speech_loudness_target_lufs"]) == pytest.approx(-13.0)
+
+
+def test_only_caller_lines_get_the_call_sound(monkeypatch, said):
+    from announcer import phone_line
+    calls, picks = [], []
+    monkeypatch.setattr(phone_line.CallScene, "pick", classmethod(
+        lambda cls, rng=None, phone=True, ambience=True: picks.append((phone, ambience)) or cls(kind="rain", phone=True)))
+    monkeypatch.setattr(phone_line, "process", lambda wav, scene, out_dir=None: calls.append(scene.kind) or wav)
+    monkeypatch.setattr(talk_segments, "llm_chat", FakeLLM(caller_json()))
+    monkeypatch.setattr(talk_segments.random, "choices", lambda seq, weights=None, k=1: [seq[0]])
+    talk_segments.generate_caller_segment(mood_state="neutral")
+    caller_lines = [c for c in said if "Caller line" in sd.strip_marks(c["text"])]
+    assert caller_lines and len(calls) == len(caller_lines) and picks == [(True, True)]
+
+
+def test_call_sound_follows_its_settings(monkeypatch, said):
+    from announcer import phone_line
+    picks = []
+    real_pick = phone_line.CallScene.pick.__func__
+    monkeypatch.setattr(phone_line.CallScene, "pick", classmethod(
+        lambda cls, rng=None, phone=True, ambience=True: picks.append((phone, ambience)) or real_pick(cls, rng, phone, ambience)))
+    monkeypatch.setattr(phone_line, "process", lambda wav, scene, out_dir=None: pytest.fail("plain call processed"))
+    monkeypatch.setattr(talk_segments.random, "choices", lambda seq, weights=None, k=1: [seq[0]])
+    database.set_setting("speech_caller_ambience_enabled", "false")
+    database.set_setting("speech_caller_phone_line_enabled", "false")
+    monkeypatch.setattr(talk_segments, "llm_chat", FakeLLM(caller_json()))
+    talk_segments.generate_caller_segment(mood_state="neutral")
+    assert picks == [(False, False)]

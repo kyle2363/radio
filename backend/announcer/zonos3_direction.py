@@ -2,18 +2,23 @@
 
 Turns a ``SpeechDirection`` and inline marks into zonos3-server request fields:
 
-- ``controls``: steering doses for emotion, energy/valence and persona traits
+- ``controls``: steering doses for emotion, energy/valence and persona hesitation
 - ``control_spans``: word-level steering for whispered, shouted, soft and
   emphasised words, and for the OmniVoice non-verbal tags (ZONOS3 has no
   laugh or sigh sounds, so ``[laughter]`` becomes an amused delivery of the
   sentence)
 - ``condition_values.loudness``: the target loudness
 - ``silence_prefill_frames: 0``: speech starts with no lead-in silence
+- ``steer_hold`` / ``steer_onset_seconds`` / ``steer_ramp_seconds``: ease the
+  controls off early in each line so delivery does not climb (``STEER_EASING``)
 
 Every id is a real control of the released steering bundle (``GET /v2/controls``,
 November 21, 2026) and every dose is clamped to the studio's "safe" slider range
 (``SAFE``). The engine drops ids and fields the running server does not offer.
-Tune the tables below by ear; a different model gets its own adapter instead.
+Speaker-embedding controls (accents, texture, age, pitch) are not used: the radio
+speaks in reference mode, where the server refuses them, so a persona's accent and
+timbre come from its reference clip. Tune the tables below by ear; a different
+model gets its own adapter instead.
 """
 
 from __future__ import annotations
@@ -42,51 +47,18 @@ SAFE: dict[str, tuple[float, float]] = {
     "emotions.surprised": (0, 3),
     "emotions.proud": (0, 3),
     "emotions.interested": (0, 3),
-    "texture.deep": (0, 4),
-    "texture.shrill": (0, 4),
-    "texture.husky": (0, 4),
-    "texture.raspy": (0, 4),
-    "texture.soft": (0, 4),
-    "texture.authoritative": (0, 4),
 }
 
-ACCENTS: dict[str, str] = {
-    "american": "accents_en.american",
-    "australian": "accents_en.australian",
-    "british": "accents_en.british",
-    "indian": "accents_en.indian",
-    "irish": "accents_en.irish",
-    "scottish": "accents_en.scottish",
-    "welsh": "accents_en.welsh",
-    "german": "accents_l1.deu",
-    "french": "accents_l1.fra",
-    "hindi": "accents_l1.hin",
-    "polish": "accents_l1.pol",
-    "portuguese": "accents_l1.por",
-    "spanish": "accents_l1.spa",
-    "vietnamese": "accents_l1.vie",
-}
-for _cid in ACCENTS.values():
-    SAFE[_cid] = (0, 1.5)
-ACCENT_DOSE = 1.2
-
-TEXTURES: dict[str, str] = {
-    "deep": "texture.deep",
-    "bright": "texture.shrill",
-    "husky": "texture.husky",
-    "raspy": "texture.raspy",
-    "soft": "texture.soft",
-    "authoritative": "texture.authoritative",
-}
-TEXTURE_DOSE = 1.5
 HESITANT_DOSE = 4.0
 
 # Full doses (intensity 1.0); the direction's intensity scales them.
 EMOTION_CONTROLS: dict[str, dict[str, float]] = {
     "neutral": {},
-    "happy": {"emotions.happy": 3},
-    "amused": {"emotions.happy": 2, "expressive.expressive": 3},
-    "excited": {"emotions.happy": 2, "mood.arousal": 2.5, "expressive.expressive": 5},
+    # Upbeat emotions keep arousal and expressiveness low: on a cloned voice they climb
+    # in pitch over a line (the model copies its own style), heard as shouting.
+    "happy": {"emotions.happy": 2.5},
+    "amused": {"emotions.happy": 1.5, "expressive.expressive": 2},
+    "excited": {"emotions.happy": 2, "mood.arousal": 1.5, "expressive.expressive": 2.5},
     "warm": {"emotions.content": 2, "mood.valence": 1.5},
     "calm": {"emotions.serene": 3},
     "sad": {"emotions.sad": 3},
@@ -99,6 +71,11 @@ EMOTION_CONTROLS: dict[str, dict[str, float]] = {
     "confused": {"emotions.confused": 2},
     "interested": {"emotions.interested": 2.5, "delivery.conversational": 1.5},
 }
+
+# Steer then hold: the request-level controls run at full dose for the onset, ramp to
+# hold x dose, then stay there. The server default (4 s onset, 0.35 hold) starts too late
+# for 5-12 s talk lines, which climb within their first seconds. Spans stay constant.
+STEER_EASING = {"steer_hold": 0.25, "steer_onset_seconds": 1.5, "steer_ramp_seconds": 1.0}
 
 # Energy/valence of -1..1 map onto these doses.
 ENERGY_CONTROLS = {"mood.arousal": 2.0, "expressive.expressive": 3.0}
@@ -137,6 +114,20 @@ def _unit(value: float) -> float:
     return max(-1.0, min(1.0, float(value or 0.0)))
 
 
+def calm_exclamations(text: str) -> str:
+    """ZONOS3 reads "!" as a cue to shout, so it becomes "." (or a space after "?" or ".").
+
+    The emotion controls carry the excitement instead. One character for one, so word
+    spans over the text keep their positions.
+    """
+    out = []
+    for ch in text:
+        if ch == "!":
+            ch = " " if out and out[-1] in ".?" else "."
+        out.append(ch)
+    return "".join(out)
+
+
 class Zonos3Direction(DirectionAdapter):
     """ZONOS3-Mini has no pause tokens in the released checkpoint, so pauses are split by the voice manager."""
 
@@ -144,6 +135,7 @@ class Zonos3Direction(DirectionAdapter):
 
     def render(self, text: str, direction: SpeechDirection) -> Rendered:
         marked = parse_marks(remove_pauses(text))
+        marked.text = calm_exclamations(marked.text)
         request: dict = {}
 
         doses: dict[str, float] = {}
@@ -153,16 +145,12 @@ class Zonos3Direction(DirectionAdapter):
         _add(doses, VALENCE_CONTROLS, _unit(direction.valence))
         traits = direction.traits
         if traits is not None:
-            if traits.accent in ACCENTS:
-                _add(doses, {ACCENTS[traits.accent]: ACCENT_DOSE}, max(0.0, min(1.0, traits.accent_strength)))
-            for name, weight in traits.textures:
-                if name in TEXTURES:
-                    _add(doses, {TEXTURES[name]: TEXTURE_DOSE}, max(0.0, min(1.0, weight)))
             if traits.hesitant:
                 _add(doses, {"disfluency.disfluent": HESITANT_DOSE}, max(0.0, min(1.0, traits.hesitant)))
         controls = _clamped(doses)
         if controls:
             request["controls"] = controls
+            request.update(STEER_EASING)
 
         if direction.word_marks:
             spans = []
