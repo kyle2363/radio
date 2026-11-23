@@ -444,3 +444,29 @@ def test_embedding_mode_keeps_speaker_embedding_controls(tmp_path, clips, monkey
     [body] = http.generate_bodies()
     assert body["speaker_mode"] == "embedding"
     assert body["controls"] == {"accents_en.british": 1.2, "emotions.happy": 2}
+
+
+PITCH_STEER = {"sets": {"delivery": {"space": "attnres_source"}},
+               "directions": {"delivery.pitch": {"set": "delivery", "space": "attnres_source", "kind": "axis"},
+                              "delivery.tempo": {"set": "delivery", "space": "attnres_source", "kind": "axis"}}}
+
+
+def test_a_voice_adjustment_is_added_to_every_line_in_that_voice(tmp_path, clips, monkeypatch):
+    monkeypatch.setattr(zonos3_engine, "VOICE_ADJUSTMENTS", {"The Trusted Morning Host": {"delivery.pitch": -0.35}})
+    http = FakeHttp(controls=PITCH_STEER)
+    eng = make_engine(http)
+    eng.synthesize("Hi.", "The Trusted Morning Host", str(tmp_path / "a.wav"), request={"controls": {"delivery.pitch": -0.1}})
+    [body] = http.generate_bodies()
+    assert body["controls"]["delivery.pitch"] == pytest.approx(-0.45)
+
+
+def test_other_voices_get_no_adjustment(tmp_path, clips, monkeypatch):
+    monkeypatch.setattr(zonos3_engine, "VOICE_ADJUSTMENTS", {"Somebody Else": {"delivery.pitch": -0.35}})
+    http = FakeHttp(controls=PITCH_STEER)
+    make_engine(http).synthesize("Hi.", "The Trusted Morning Host", str(tmp_path / "a.wav"))
+    [body] = http.generate_bodies()
+    assert "delivery.pitch" not in body.get("controls", {})
+
+
+def test_blondie_is_pitched_a_little_lower():
+    assert -0.6 < zonos3_engine.VOICE_ADJUSTMENTS["Blondie - Radio Host"]["delivery.pitch"] < 0

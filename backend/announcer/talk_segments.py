@@ -500,6 +500,7 @@ def generate_caller_segment(
         call_scene = phone_line.CallScene.pick(phone=direction_flags.phone_line, ambience=direction_flags.caller_ambience)
         line_emotions = data.get("emotions") if isinstance(data.get("emotions"), dict) else {}
         line_context = {"hour": hour}
+        emotion_arc = speech_direction.EmotionArc()
         for key, voice_id in voice_lines:
             text = data.get(key, "").strip()
             if not text:
@@ -516,7 +517,7 @@ def generate_caller_segment(
             line_speed = caller.speed_base if is_caller else dj.speed_base
             direction = speech_direction.direction_for_line(
                 line_emotions.get(key), mood_state=mood_state, context=line_context, flags=direction_flags,
-                persona_id=caller.id if is_caller else (dj.id if dj else None))
+                persona_id=caller.id if is_caller else (dj.id if dj else None), arc=emotion_arc)
             _talk_debug(f"generate_caller: TTS line '{key}' voice={voice_id} speed={line_speed:.2f} emotion={direction.emotion} text={text[:100]}{'...' if len(text) > 100 else ''}")
             wav = tts_say(text, voice_id=voice_id, speed=line_speed, direction=direction)
             if wav and is_caller and not call_scene.plain:
