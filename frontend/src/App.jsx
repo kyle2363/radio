@@ -656,7 +656,7 @@ function AppInner({ outputPlayback }) {
   return (
     <div className="min-h-screen bg-gray-950 text-gray-200 flex flex-col" data-theme={theme}>
       <AmbientGlow song={currentSong} mood={moodState} />
-      <header className="py-3 sticky top-0 z-10" style={{ borderBottom: "1px solid var(--border-subtle)", background: "color-mix(in srgb, var(--bg-page) 85%, transparent)", backdropFilter: "blur(12px)" }}>
+      <header className="py-1 sticky top-0 z-10" style={{ borderBottom: "1px solid var(--border-subtle)", background: "color-mix(in srgb, var(--bg-page) 85%, transparent)", backdropFilter: "blur(12px)" }}>
         <div className="px-3 sm:px-5 flex items-center gap-3">
           {/* LEFT: Brand */}
           <div className="flex items-center gap-2 flex-shrink-0">

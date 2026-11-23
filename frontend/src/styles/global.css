@@ -1523,15 +1523,16 @@ body {
 .ui-slider::-moz-range-thumb { width: 12px; height: 12px; border-radius: 50%; background: var(--text-primary); border: 2px solid var(--accent); }
 
 /* Labelled slider row used for volume and adventurousness */
-.dial-strip { display: flex; align-items: flex-start; gap: 20px; padding: 12px 18px; background: var(--bg-surface); }
-.dial { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
-.dial-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 11px; color: var(--text-muted); }
-.dial-name { display: inline-flex; align-items: center; gap: 6px; color: var(--text-secondary); font-weight: 500; }
+/* One line per dial: name · slider · value */
+.dial-strip { display: flex; align-items: center; gap: 18px; padding: 6px 16px; background: var(--bg-surface); }
+.dial { flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; font-size: 11px; }
+.dial-head { display: contents; }
+.dial-name { order: 0; flex-shrink: 0; display: inline-flex; align-items: center; gap: 6px; color: var(--text-secondary); font-weight: 500; }
 .dial-name button { display: flex; background: none; border: none; padding: 0; color: inherit; cursor: pointer; }
 .dial-name button:hover { color: var(--text-primary); }
-.dial-value { font-variant-numeric: tabular-nums; color: var(--text-secondary); }
-.dial-ends { display: flex; justify-content: space-between; font-size: 10px; color: var(--text-muted); }
-.dial-divider { width: 1px; align-self: stretch; background: var(--border); flex-shrink: 0; }
+.dial .ui-slider { order: 1; flex: 1; min-width: 60px; }
+.dial-value { order: 2; flex-shrink: 0; font-variant-numeric: tabular-nums; color: var(--text-muted); }
+.dial-divider { width: 1px; height: 16px; background: var(--border); flex-shrink: 0; }
 
 /* Moods | Feels switch above the mood bar */
 .station-picker { display: flex; flex-direction: column; gap: 6px; }

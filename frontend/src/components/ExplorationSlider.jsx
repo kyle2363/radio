@@ -35,8 +35,8 @@ const ExplorationSlider = React.memo(function ExplorationSlider({ level, onChang
         aria-valuetext={`${describe(value)}, ${Math.round(value * 100)} percent`}
         className="ui-slider" style={{ "--fill": `${value * 100}%` }}
         onChange={(e) => setValue(parseFloat(e.target.value))}
+        title="Left: safe favourites · Right: adventurous picks"
         onPointerUp={commit} onKeyUp={(e) => { if (COMMIT_KEYS.has(e.key)) commit(); }} />
-      <div className="dial-ends"><span>Safe</span><span>Adventurous</span></div>
     </div>
   );
 });
