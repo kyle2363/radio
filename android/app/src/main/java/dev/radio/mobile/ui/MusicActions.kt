@@ -94,8 +94,8 @@ fun PlaylistDestinationDialog(songIds: List<String>, playlists: PlaylistsState, 
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SwipeSongRow(song: LocalSong, onAction: (SongAction, LocalSong) -> Unit, content: @Composable () -> Unit) {
-    if (!song.available) { content(); return }
+fun SwipeSongRow(song: LocalSong, onAction: (SongAction, LocalSong) -> Unit, enabled: Boolean = true, content: @Composable () -> Unit) {
+    if (!song.available || !enabled) { content(); return }
     val state = rememberSwipeToDismissBoxState()
     val scope = rememberCoroutineScope()
     val act by rememberUpdatedState(onAction)

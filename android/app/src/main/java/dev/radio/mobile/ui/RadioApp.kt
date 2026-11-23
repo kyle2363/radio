@@ -56,6 +56,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.semantics.onLongClick
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -152,6 +153,8 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
     var addQueueSongs by remember { mutableStateOf(false) }
     var playlistSongIds by remember { mutableStateOf<List<String>?>(null) }
     var statsSong by remember { mutableStateOf<LocalSong?>(null) }
+    // Long-press multi-select in Library and Search; the top and bottom bars become its header and actions.
+    val selection = remember { SelectionController() }
     // Checkpoint 9B feels.
     val feelsState by repository.feels.state.collectAsState()
     var feelsNav by remember { mutableStateOf(FeelsNav()) }
@@ -275,6 +278,28 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
         if (stationMode) { pendingPlay = PendingPlay(first, context, source, all = true, shuffle = shuffle); return }
         startAll(first, context, source, shuffle)
     }
+    /** Acts on the songs selected in a list, in list order, then ends the selection. */
+    fun bulkAction(action: BulkAction) {
+        val ids = selection.chosenIds()
+        val chosen = selection.chosenSongs()
+        val playable = chosen.filter { it.available }
+        val playlist = selection.playlistId
+        selection.clear()
+        fun count(n: Int) = "$n ${if (n == 1) "song" else "songs"}"
+        when (action) {
+            BulkAction.AddToPlaylist -> playlistSongIds = ids
+            BulkAction.RemoveFromPlaylist -> if (playlist != null) scope.launch {
+                repository.playlists.removeAll(playlist, ids).onSuccess { message("Removed ${count(ids.size)} from the playlist") }.onFailure { message(it.message ?: "Couldn't update playlist.") }
+            }
+            BulkAction.PlayNow, BulkAction.Shuffle -> playAll(chosen, PlaySource.CustomQueue, action == BulkAction.Shuffle)
+            BulkAction.Radio -> if (playable.isNotEmpty()) startStation(dev.radio.mobile.recommendation.SeedSpec(dev.radio.mobile.recommendation.SeedSpec.Kind.Playlist, "Selected songs", playable.map { it.id }))
+            BulkAction.PlayNext, BulkAction.AddToQueue -> {
+                if (library.accessLost || playable.isEmpty()) { message("Check Music folder access before adding songs."); return }
+                playback.addToQueue(playable, action == BulkAction.PlayNext)
+                message(if (action == BulkAction.PlayNext) "${count(playable.size)} will play next" else "Added ${count(playable.size)} to the queue")
+            }
+        }
+    }
     // Pick up files added since the last scan, once per app process. Durations are cached, so a rescan is quick.
     LaunchedEffect(library.loading, library.root?.uri, library.accessLost) {
         val root = library.root ?: return@LaunchedEffect
@@ -369,6 +394,11 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
             throw cancelled
         }
     }
+    // Back ends a selection before it leaves the list. Registered after the screen's back handler, so it wins.
+    BackHandler(selection.active) { selection.clear() }
+    // Opening another folder, list or screen starts without a selection.
+    LaunchedEffect(page, folder, category, artist, playlistId) { selection.clear() }
+    val selecting = selection.active && (page == "Library" || page == "Search")
     RadioTheme(
         palette = RadioPalette.entries.firstOrNull { it.name == palette } ?: RadioPalette.Ocean,
         appearance = Appearance.entries.firstOrNull { it.name == appearance } ?: Appearance.System
@@ -378,6 +408,7 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
             modifier = Modifier.semantics { testTagsAsResourceId = true },
             containerColor = MaterialTheme.colorScheme.background,
             topBar = {
+                if (selecting) SelectionHeader(selection) else
                 Row(Modifier.fillMaxWidth().statusBarsPadding().heightIn(min = if (page == "Now playing") 56.dp else 64.dp).padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                     if (showBack) IconButton(onClick = { back() }) { RadioIcon(Symbol.Back, "Back") }
                     Column(Modifier.weight(1f).padding(start = if (!showBack) 12.dp else 0.dp)) {
@@ -436,7 +467,7 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
                 }
             },
             bottomBar = {
-                AnimatedVisibility(page != "Search" && page != "Now playing", enter = fadeIn(Motion.standard()), exit = fadeOut(Motion.quick())) { val barScope = this; Column(Modifier.background(MaterialTheme.colorScheme.surfaceContainer)) {
+                AnimatedVisibility(page != "Now playing" && (page != "Search" || selecting), enter = fadeIn(Motion.standard()), exit = fadeOut(Motion.quick())) { val barScope = this; Column(Modifier.background(MaterialTheme.colorScheme.surfaceContainer)) {
                   val miniSong = rememberLastNonNull(song)
                   AnimatedVisibility(song != null || talkNow != null, enter = expandVertically(Motion.standard()) + fadeIn(Motion.standard()), exit = shrinkVertically(Motion.quick()) + fadeOut(Motion.quick())) {
                   val song = song ?: miniSong
@@ -472,7 +503,8 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
                   }
                   }
                     // Compact at normal text; grows with the phone's font size so icons and labels never squash.
-                    val navHeight = (68f + 22f * (androidx.compose.ui.platform.LocalDensity.current.fontScale - 1f).coerceAtLeast(0f)).dp
+                    val navHeight = (60f + 22f * (androidx.compose.ui.platform.LocalDensity.current.fontScale - 1f).coerceAtLeast(0f)).dp
+                    if (selecting) SelectionActionBar(selection, navHeight, canPlay = !library.accessLost, onAction = ::bulkAction) else
                     NavigationBar(containerColor = MaterialTheme.colorScheme.surfaceContainer, windowInsets = WindowInsets(0), modifier = Modifier.navigationBarsPadding().height(navHeight)) {
                         destinations.forEach { (label, symbol) ->
                             val selected = page == label || label == "Settings" && page in SETTINGS_PAGES
@@ -491,8 +523,8 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
                     playlistContent = { PlaylistBrowser(playlists, repository.playlists, library.songs, !library.accessLost, playlistId, { playlistId = it },
                         onPlay = { item, context, source -> if (playSong(item, context, source)) navigate("Now playing") }, onSongAction = ::songAction,
                         currentId = audio.currentId, onPlayAll = ::playAll, smartRows = repository.journal.smartListRows, favorites = favorites,
-                        onRadio = { name, ids -> startStation(dev.radio.mobile.recommendation.SeedSpec(dev.radio.mobile.recommendation.SeedSpec.Kind.Playlist, name, ids)) }) },
-                    sortedSongs = songs, currentId = audio.currentId, onPlayAll = ::playAll, artist = artist, onArtist = { artist = it })
+                        onRadio = { name, ids -> startStation(dev.radio.mobile.recommendation.SeedSpec(dev.radio.mobile.recommendation.SeedSpec.Kind.Playlist, name, ids)) }, selection = selection) },
+                    sortedSongs = songs, currentId = audio.currentId, onPlayAll = ::playAll, artist = artist, onArtist = { artist = it }, selection = selection)
                 "Radio" -> RadioContent(radio,repository.radio,audio,playback,library,onLibrary={navigate("Library")},onPlayer={navigate("Now playing")},connected=connected,modifier=Modifier.padding(insets),
                     paired=paired,onChooseFolder={chooseFolder()},onRescan={repository.rescan()},onFullQueue={showQueue=true;navigate("Now playing")},onEnd={endSheet=true},onRemoveFromQueue=::removeFromQueue,openTune=openTune,onTuneOpened={openTune=false},onServer={navigate("Server")},positionMs=positionMs)
                 "Search" -> Column(Modifier.padding(insets).imePadding()) {
@@ -514,10 +546,12 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
                             LibraryRow(recent, "", Symbol.Search) { query = recent }
                         }
                     }
-                    LazyColumn { items(results, key = { it.id }) { item ->
-                        SwipeSongRow(item, ::songAction) {
-                            val songMenu = remember { mutableStateOf(false) }
-                            LibraryRow(item.title, songSubtitle(item), Symbol.Music, playing = item.id == audio.currentId, onLongClick = { songMenu.value = true }, trailing = { SongActions(item, ::songAction, songMenu) }) { focus.clearFocus(); keyboard?.hide(); rememberQuery(); if (playSong(item, results, PlaySource.Search)) navigate("Now playing") }
+                    val resultIds = remember(results) { results.map { it.id } }
+                    BindSelection(selection, "search", resultIds, results)
+                    val searchList = androidx.compose.foundation.lazy.rememberLazyListState()
+                    LazyColumn(Modifier.sweepSelect(searchList, selection) { key -> (key as? String)?.takeIf { it in selection.order } }, state = searchList) { items(results, key = { it.id }) { item ->
+                        SelectableSongRow(item, songSubtitle(item), selection, ::songAction, playing = item.id == audio.currentId) {
+                            focus.clearFocus(); keyboard?.hide(); rememberQuery(); if (playSong(item, results, PlaySource.Search)) navigate("Now playing")
                         }
                     } }
                     if (query.isNotBlank() && results.isEmpty()) EmptyState(Symbol.Search, "No matching songs", "Try part of the title, the artist or the file name.")
@@ -816,22 +850,35 @@ private fun Artwork(size: Dp) {
 
 @Composable
 internal fun LibraryRow(title: String, subtitle: String, symbol: Symbol, subtitleMaxLines: Int = 1, playing: Boolean = false, onLongClick: (() -> Unit)? = null,
+    /** Non-null while the list is selecting songs: whether this row is chosen. The options button hides meanwhile. */
+    selected: Boolean? = null,
+    /** Song rows in selectable lists: the accessibility long-press that starts selecting (the list handles the touch). */
+    onSelect: (() -> Unit)? = null,
     trailing: @Composable () -> Unit = {}, onClick: () -> Unit) {
     val haptic = androidx.compose.ui.platform.LocalHapticFeedback.current
     // The song that is playing now gets a filled tile and an accent title, so it is easy to spot in a long list.
     // A long-press opens the row's options menu, where there is one.
-    Row(Modifier.fillMaxWidth().combinedClickable(onClick = onClick, onLongClickLabel = if (onLongClick != null) "More options" else null,
+    val colors = MaterialTheme.colorScheme
+    Row(Modifier.fillMaxWidth().background(if (selected == true) colors.primary.copy(alpha = .14f) else Color.Transparent)
+        .combinedClickable(onClick = onClick, onLongClickLabel = if (onLongClick != null) "More options" else null,
         onLongClick = onLongClick?.let { open -> { haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress); open() } }).heightIn(min = 56.dp).padding(horizontal = 20.dp, vertical = 6.dp)
-        .semantics { if (playing) stateDescription = "Playing now" }, verticalAlignment = Alignment.CenterVertically) {
-        Box(Modifier.size(40.dp).background(if (playing) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondaryContainer, RadioShapes.Thumb), contentAlignment = Alignment.Center) {
-            CompositionLocalProvider(LocalContentColor provides if (playing) MaterialTheme.colorScheme.onPrimary else LocalContentColor.current) { RadioIcon(if (playing) Symbol.Play else symbol, modifier = Modifier.size(20.dp)) }
+        .semantics {
+            if (playing) stateDescription = "Playing now"
+            if (selected != null) stateDescription = if (selected) "Selected" else "Not selected"
+            if (onSelect != null && selected == null) this.onLongClick("Select songs") { onSelect(); true }
+        }, verticalAlignment = Alignment.CenterVertically) {
+        val tile = when { selected == true -> colors.primary; selected == false -> colors.surfaceVariant; playing -> colors.primary; else -> colors.secondaryContainer }
+        Box(Modifier.size(40.dp).background(tile, RadioShapes.Thumb), contentAlignment = Alignment.Center) {
+            CompositionLocalProvider(LocalContentColor provides if (selected == true || selected == null && playing) colors.onPrimary else LocalContentColor.current) {
+                RadioIcon(when { selected == true -> Symbol.Check; selected == null && playing -> Symbol.Play; else -> symbol }, modifier = Modifier.size(20.dp))
+            }
         }
         Column(Modifier.weight(1f).padding(start = 14.dp)) {
             Text(title, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium, fontWeight = if (playing) FontWeight.SemiBold else FontWeight.Medium,
                 color = if (playing) MaterialTheme.colorScheme.primary else Color.Unspecified)
             if (subtitle.isNotEmpty()) Text(subtitle, maxLines = subtitleMaxLines, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
-        trailing()
+        if (selected == null) trailing() else Spacer(Modifier.size(48.dp))
     }
 }
 

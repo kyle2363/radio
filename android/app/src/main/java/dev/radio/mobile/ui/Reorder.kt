@@ -1,7 +1,11 @@
 package dev.radio.mobile.ui
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.awaitLongPressOrCancellation
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -101,8 +105,12 @@ fun rememberReorderState(list: LazyListState, leading: () -> Int = { 0 }, onMove
     return remember(list) { ReorderState(list, scope, { lead() }) { key, index -> move(key, index) } }
 }
 
-/** Lifts and moves the dragged row; long-press anywhere on the row starts the drag. */
-fun Modifier.reorderable(state: ReorderState, key: Any, enabled: Boolean = true, onStart: () -> Unit = {}): Modifier {
+/**
+ * Lifts and moves the dragged row; long-press anywhere on the row starts the drag. With [onPress], a long-press that
+ * is released without moving calls it instead (playlists use it to start selecting). After the long-press the gesture
+ * is taken in the initial pass, so the release never also counts as a tap on the row.
+ */
+fun Modifier.reorderable(state: ReorderState, key: Any, enabled: Boolean = true, onStart: () -> Unit = {}, onPress: (() -> Unit)? = null): Modifier {
     val dragging = state.draggingKey == key
     val settling = state.settlingKey == key
     val lifted = this.zIndex(if (dragging || settling) 1f else 0f).graphicsLayer {
@@ -111,11 +119,29 @@ fun Modifier.reorderable(state: ReorderState, key: Any, enabled: Boolean = true,
     }
     if (!enabled) return lifted
     return lifted.pointerInput(state, key) {
-        detectDragGesturesAfterLongPress(
-            onDragStart = { onStart(); state.start(key) },
-            onDrag = { change, amount -> change.consume(); state.drag(amount.y) },
-            onDragEnd = { state.end() },
-            onDragCancel = { state.cancel() })
+        awaitEachGesture {
+            val down = awaitFirstDown(requireUnconsumed = false)
+            val press = awaitLongPressOrCancellation(down.id) ?: return@awaitEachGesture
+            onStart(); state.start(key)
+            var travelled = 0f
+            var released = false
+            try {
+                while (true) {
+                    val change = awaitPointerEvent(PointerEventPass.Initial).changes.firstOrNull { it.id == press.id } ?: break
+                    if (!change.pressed) { change.consume(); released = true; break }
+                    val delta = change.positionChange()
+                    change.consume()
+                    travelled += kotlin.math.abs(delta.y)
+                    state.drag(delta.y)
+                }
+            } finally {
+                when {
+                    !released -> state.cancel()
+                    onPress != null && travelled < viewConfiguration.touchSlop -> { state.cancel(); onPress() }
+                    else -> state.end()
+                }
+            }
+        }
     }
 }
 
