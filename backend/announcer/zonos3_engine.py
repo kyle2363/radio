@@ -45,7 +45,9 @@ PROBE_TIMEOUT_SECS = 1.5
 TEMPO_CONTROL = "delivery.tempo"
 
 # Request fields a direction may add, each sent only when the server offers it.
-DIRECTION_FIELDS = ("control_spans", "condition_values", "silence_prefill_frames", "fade_out_ms", "seed")
+DIRECTION_FIELDS = ("control_spans", "condition_values", "silence_prefill_frames", "fade_out_ms", "seed",
+                    "steer_hold", "steer_onset_seconds", "steer_ramp_seconds")
+STEER_EASING_FIELDS = ("steer_hold", "steer_onset_seconds", "steer_ramp_seconds")
 
 
 def clip_fingerprint(clip: str) -> str:
@@ -345,6 +347,11 @@ class Zonos3TTSEngine:
         for key in ("fade_out_ms", "seed"):
             if request.get(key) is not None:
                 fields[key] = request[key]
+        # Without a steer_release block in the server's bundle a hold below 1 is a 400.
+        if caps.get("steer_release"):
+            for key in STEER_EASING_FIELDS:
+                if request.get(key) is not None:
+                    fields[key] = float(request[key])
         return fields
 
     def synthesize(self, text: str, voice_id: str, output_path: str,
