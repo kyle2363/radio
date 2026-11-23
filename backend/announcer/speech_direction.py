@@ -9,7 +9,7 @@ Parts:
 
 - ``DirectionFlags``: one setting row per feature plus a master switch
   (``SETTING_DEFAULTS``). Everything here is skipped when a feature is off.
-- ``SpeechDirection``: emotion, energy/valence/pace, persona voice traits, a
+- ``SpeechDirection``: emotion, energy/valence/pace, persona delivery traits, a
   loudness target, a tight start, and whether to honour inline marks and pauses.
 - Inline marks inside the text: ``<whisper>…</whisper>``, ``<shout>…</shout>``,
   ``<soft>…</soft>``, ``<emph>…</emph>`` for a few words, ``<pause>`` /
@@ -39,11 +39,13 @@ SETTING_DEFAULTS: dict[str, str] = {
     "speech_emotion_enabled": "true",          # trigger and per-line emotions
     "speech_mood_delivery_enabled": "true",    # mood, next song and hour shape energy and pace
     "speech_loudness_match_enabled": "true",   # every voice at one loudness
-    "speech_loudness_target_lufs": "-16",
+    "speech_loudness_target_lufs": "-13",  # about the library median
     "speech_tight_start_enabled": "true",      # no lead-in silence before speech
     "speech_word_marks_enabled": "true",       # whispered asides, shouted words, emphasis
     "speech_pauses_enabled": "true",           # real pauses at "..." and spaced dashes
-    "speech_persona_traits_enabled": "true",   # accents and voice texture per persona
+    "speech_persona_traits_enabled": "true",   # delivery habits per persona (hesitation)
+    "speech_caller_phone_line_enabled": "true",  # some calls get a light phone sound (phone_line.PHONE_CHANCE)
+    "speech_caller_ambience_enabled": "true",    # some calls get a kitchen, street or rain background
 }
 LOUDNESS_RANGE = (-30.0, -8.0)
 
@@ -64,11 +66,13 @@ class DirectionFlags:
     emotion: bool = False
     mood_delivery: bool = False
     loudness_match: bool = False
-    loudness_target: float = -16.0
+    loudness_target: float = -13.0
     tight_start: bool = False
     word_marks: bool = False
     pauses: bool = False
     persona_traits: bool = False
+    phone_line: bool = False
+    caller_ambience: bool = False
 
     @classmethod
     def from_settings(cls, get_setting) -> "DirectionFlags":
@@ -90,6 +94,8 @@ class DirectionFlags:
             word_marks=_flag(get_setting, "speech_word_marks_enabled"),
             pauses=_flag(get_setting, "speech_pauses_enabled"),
             persona_traits=_flag(get_setting, "speech_persona_traits_enabled"),
+            phone_line=_flag(get_setting, "speech_caller_phone_line_enabled"),
+            caller_ambience=_flag(get_setting, "speech_caller_ambience_enabled"),
         )
 
 
@@ -126,10 +132,11 @@ EMOTIONS: dict[str, tuple[float, float]] = {
 
 @dataclass(frozen=True)
 class VoiceTraits:
-    """A persona's lasting voice character, in engine-neutral words."""
-    accent: str | None = None            # british, irish, scottish, french, ...
-    accent_strength: float = 1.0          # 0..1
-    textures: tuple[tuple[str, float], ...] = ()  # (deep|bright|husky|raspy|soft|authoritative, 0..1)
+    """A persona's lasting delivery habits, in engine-neutral words.
+
+    Accent and voice texture are not traits: they come from the persona's reference
+    clip (steering the speaker itself needs embedding mode and costs likeness).
+    """
     hesitant: float = 0.0                 # 0..1
 
 
@@ -193,19 +200,10 @@ MONOLOGUE_EMOTIONS: dict[str, str] = {
     "arc_trace": "warm",
 }
 
-# Persona voice traits (persona id -> traits). Kept small: strong steering on a
-# cloned voice lowers its likeness.
+# Persona delivery traits (persona id -> traits). Voice character (accent, texture)
+# lives in each persona's reference clip.
 PERSONA_TRAITS: dict[str, VoiceTraits] = {
-    "caller_dave": VoiceTraits(accent="british", accent_strength=0.8),
-    "caller_ed": VoiceTraits(accent="british", textures=(("authoritative", 0.5),)),
-    "caller_bookworm": VoiceTraits(textures=(("soft", 0.6),), hesitant=0.4),
-    "caller_heartbroken": VoiceTraits(textures=(("soft", 0.4),)),
-    "caller_melancholy": VoiceTraits(textures=(("soft", 0.7),)),
-    "guest_chill": VoiceTraits(textures=(("soft", 0.4),)),
-    "guest_international": VoiceTraits(accent="french", accent_strength=0.6),
-    "guest_classic": VoiceTraits(textures=(("authoritative", 0.5),)),
-    "guest_authority": VoiceTraits(textures=(("deep", 0.8), ("raspy", 0.5), ("authoritative", 0.8))),
-    "guest_late_night": VoiceTraits(textures=(("soft", 0.6),)),
+    "caller_bookworm": VoiceTraits(hesitant=0.4),
 }
 
 
@@ -440,6 +438,36 @@ def mark_pauses(text: str, limit: int = MAX_PAUSES_PER_LINE) -> str:
         return " <pause> " if m.group(1) else " <pause short> "
 
     return _PAUSE_SITES.sub(replace, text or "")
+
+
+_SENTENCE_END = re.compile(r"(?<=[.!?])[\"')\]]*\s+(?=[\"'(\[<]*[A-Z0-9])")
+_OPEN_MARK = re.compile(r"<(whisper|shout|soft|emph)>")
+_CLOSE_MARK = re.compile(r"</(whisper|shout|soft|emph)>")
+# Mostly normal and long: a 250 ms "short" pause is no longer than the gaps between
+# phrases inside a sentence, so on its own it is not heard as a breath.
+SENTENCE_PAUSE_WEIGHTS = (("short", 0.10), (None, 0.60), ("long", 0.30))
+
+
+def pace_sentences(text: str, rng=random) -> str:
+    """A pause between sentences, so long talk is spoken in breaths, not read as one block.
+
+    Mostly short beats, sometimes a normal or long one. Boundaries inside a word mark
+    (an open <whisper>...) are skipped so a mark is never split across two chunks.
+    """
+    if not text:
+        return text
+    out, pos = [], 0
+    for m in _SENTENCE_END.finditer(text):
+        before = text[:m.start()]
+        if len(_OPEN_MARK.findall(before)) > len(_CLOSE_MARK.findall(before)):
+            continue
+        styles, weights = zip(*SENTENCE_PAUSE_WEIGHTS)
+        style = rng.choices(styles, weights=weights, k=1)[0]
+        out.append(text[pos:m.start()])
+        out.append(f" <pause {style}> " if style else " <pause> ")
+        pos = m.end()
+    out.append(text[pos:])
+    return "".join(out)
 
 
 _WORD_MARK_RULES: list[tuple[re.Pattern, str]] = [

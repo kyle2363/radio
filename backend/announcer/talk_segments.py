@@ -18,6 +18,7 @@ from datetime import datetime
 
 import config
 from llm import llm_chat
+from announcer import phone_line
 from announcer.tts import tts_say
 from announcer.nonverbal import inject_nonverbal_tags
 from announcer import speech_direction
@@ -495,6 +496,8 @@ def generate_caller_segment(
 
         wav_paths = []
         total_duration = 0.0
+        # One roll per call (phone line or not, ambience or none); every caller line shares it.
+        call_scene = phone_line.CallScene.pick(phone=direction_flags.phone_line, ambience=direction_flags.caller_ambience)
         line_emotions = data.get("emotions") if isinstance(data.get("emotions"), dict) else {}
         line_context = {"hour": hour}
         for key, voice_id in voice_lines:
@@ -516,6 +519,9 @@ def generate_caller_segment(
                 persona_id=caller.id if is_caller else (dj.id if dj else None))
             _talk_debug(f"generate_caller: TTS line '{key}' voice={voice_id} speed={line_speed:.2f} emotion={direction.emotion} text={text[:100]}{'...' if len(text) > 100 else ''}")
             wav = tts_say(text, voice_id=voice_id, speed=line_speed, direction=direction)
+            if wav and is_caller and not call_scene.plain:
+                wav = phone_line.process(wav, call_scene)
+                _talk_debug(f"generate_caller: call sound (phone={call_scene.phone}, ambience={call_scene.kind}) -> {wav}")
             if wav:
                 wav_paths.append(wav)
                 total_duration += max(1.0, len(text) * 0.08)
@@ -633,6 +639,7 @@ Write a 30-75 second spoken monologue.
 Rules:
 - Write for one listener, not a crowd
 - Use natural spoken rhythm. Start with a complete, self-contained sentence.
+- Keep sentences short, as people speak them: mostly under 20 words, one idea per sentence.
 - Develop one observation with a concrete detail, then return to the music.
 - Vary the subject; warmth does not require a confession or an emotional journey.
 - DO NOT open with: "You know,", "It's [time]", "Tonight", or "Welcome back"
@@ -775,6 +782,9 @@ def generate_dj_monologue(
         # Restrained word marks and pauses, then restrained nonverbal tags
         direction_flags = speech_direction.current_flags()
         spoken = speech_direction.prepare_line(text, direction_flags, rng=random, mark_probability=0.15)
+        if direction_flags.enabled and direction_flags.pauses:
+            # A breath between sentences: a monologue is talk, not one block read aloud.
+            spoken = speech_direction.pace_sentences(spoken, rng=random)
         spoken = inject_nonverbal_tags_monologue(spoken)
         direction = speech_direction.direction_for_line(
             speech_direction.MONOLOGUE_EMOTIONS.get(mono_key), mood_state=mood_state,

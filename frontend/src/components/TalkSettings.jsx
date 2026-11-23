@@ -9,7 +9,9 @@ const SPEECH_FEATURES = [
   ["speech_tight_start_enabled", "Tight start", "No lead-in silence before speech"],
   ["speech_word_marks_enabled", "Word styling", "Whispered asides, shouted words, laughs as delivery"],
   ["speech_pauses_enabled", "Natural pauses", "Real pauses at \"...\" and dashes"],
-  ["speech_persona_traits_enabled", "Persona voices", "Accents and voice texture per persona"],
+  ["speech_persona_traits_enabled", "Persona voices", "Delivery habits per persona, such as hesitation"],
+  ["speech_caller_phone_line_enabled", "Phone line", "Some callers sound like they're on the phone"],
+  ["speech_caller_ambience_enabled", "Caller ambience", "Some calls get a quiet kitchen, street or rain background"],
 ];
 
 function TalkSettings({ addToast, masterEnabled }) {
@@ -33,7 +35,7 @@ function TalkSettings({ addToast, masterEnabled }) {
   const [downloading, setDownloading] = useState(false);
   const [speechOn, setSpeechOn] = useState(true);
   const [speechFeatures, setSpeechFeatures] = useState({});
-  const [loudnessTarget, setLoudnessTarget] = useState(-16);
+  const [loudnessTarget, setLoudnessTarget] = useState(-13);
   const [showSpeech, setShowSpeech] = useState(false);
 
   // TTS engine state
@@ -65,7 +67,7 @@ function TalkSettings({ addToast, masterEnabled }) {
       setTalkVolume(parseInt(config.talk_volume) || 100);
       setSpeechOn(config.speech_direction_enabled !== "false");
       setSpeechFeatures(Object.fromEntries(SPEECH_FEATURES.map(([key]) => [key, config[key] !== "false"])));
-      setLoudnessTarget(parseFloat(config.speech_loudness_target_lufs) || -16);
+      setLoudnessTarget(parseFloat(config.speech_loudness_target_lufs) || -13);
     } catch (e) {
       console.error("Failed to load talk config:", e);
     }
