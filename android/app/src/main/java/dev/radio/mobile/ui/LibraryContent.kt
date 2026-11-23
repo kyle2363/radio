@@ -120,18 +120,26 @@ fun LibraryContent(
                 }
             } }
             else {
-                val visibleIds = remember(visible) { visible.map { it.id } }
-                BindSelection(selection, "songs:$folderId/$category", visibleIds, visible)
+                // Folder rows come first and stand for every song under them, so they can be selected alongside songs.
+                val shownFolders = if (browsingFolders) childFolders else emptyList()
+                val folderSongs = remember(state.folders, ordered, shownFolders) { folderGroups(state.folders, ordered, shownFolders.map { it.id }) }
+                val visibleIds = remember(visible, shownFolders) { shownFolders.map { folderKey(it.id) } + visible.map { it.id } }
+                BindSelection(selection, "songs:$folderId/$category", visibleIds, visible, groups = folderSongs)
+                val selecting = selection.active
                 LazyColumn(state = listState, modifier = Modifier.fillMaxSize().sweepSelect(listState, selection) { key -> (key as? String)?.takeIf { it in selection.order } }.testTag("library-list")) {
                     // The sort control scrolls away with the list; beside Play all / Shuffle when they show, alone otherwise.
                     val playable = visible.count { it.available }
                     if (showSort && playable <= 1) item(key = "sort-control") {
                         Box(Modifier.fillMaxWidth().padding(horizontal = 8.dp), contentAlignment = Alignment.CenterEnd) { SortButton(sort, onSort) }
                     }
-                    if (browsingFolders) items(childFolders, key = { "folder:${it.id}" }) { item ->
+                    if (browsingFolders) items(childFolders, key = { folderKey(it.id) }) { item ->
                         val count = songCounts[item.id] ?: 0
                         val detail = if (count > 0) "$count song${if (count == 1) "" else "s"}" else if (item.path != item.name) item.path else "Folder"
-                        LibraryRow(item.name, if (!item.available) "Folder unavailable · saved listing" else detail, Symbol.Folder) { onFolder(item.id) }
+                        val key = folderKey(item.id)
+                        LibraryRow(item.name, if (!item.available) "Folder unavailable · saved listing" else detail, Symbol.Folder,
+                            selected = if (selecting) key in selection.selection.ids else null, onSelect = { selection.begin(key) }) {
+                            if (selecting) selection.toggle(key) else onFolder(item.id)
+                        }
                     }
                     val source = if (!browsingFolders) PlaySource.AllSongs else PlaySource(state.folders.firstOrNull { it.id == parent }?.name ?: "Music", PlaySource.FOLDER, parent)
                     if (playable > 1) item(key = "play-all") { PlayAllRow(playable, { onPlayAll(visible, source, false) }, { onPlayAll(visible, source, true) }, trailing = if (showSort) ({ SortButton(sort, onSort) }) else null) }

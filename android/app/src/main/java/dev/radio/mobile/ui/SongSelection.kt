@@ -20,6 +20,7 @@ import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import dev.radio.mobile.data.LocalFolder
 import dev.radio.mobile.data.LocalSong
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -47,7 +48,34 @@ data class SongSelection(val ids: Set<String> = emptySet(), val anchor: String? 
     fun retain(valid: Set<String>) = if (ids.all { it in valid }) this else SongSelection(ids.filterTo(LinkedHashSet()) { it in valid })
 }
 
-enum class BulkAction { PlayNow, Shuffle, PlayNext, AddToQueue, AddToPlaylist, Radio, RemoveFromPlaylist }
+enum class BulkAction { PlayNow, Shuffle, PlayNext, AddToQueue, AddToPlaylist, Radio, RemoveFromPlaylist, DeletePlaylists }
+
+/** Selection key for a folder row; the same as the folder row's list key. */
+fun folderKey(id: String) = "folder:$id"
+
+/**
+ * What each of [childIds] stands for when selected: every song in it or its subfolders, in [orderedSongs]' order.
+ * Keyed by [folderKey].
+ */
+fun folderGroups(folders: List<LocalFolder>, orderedSongs: List<LocalSong>, childIds: List<String>): Map<String, List<LocalSong>> {
+    if (childIds.isEmpty()) return emptyMap()
+    val parents = folders.associate { it.id to it.parentId }
+    val wanted = childIds.toSet()
+    val owner = HashMap<String, String?>()
+    // The selected child a folder sits under, if any; remembered so each chain is walked once.
+    fun ownerOf(id: String): String? = owner.getOrPut(id) {
+        if (id in wanted) id else parents[id]?.let(::ownerOf)
+    }
+    val groups = childIds.associateWith { mutableListOf<LocalSong>() }
+    orderedSongs.forEach { song -> ownerOf(song.folderId)?.let { groups[it]?.add(song) } }
+    return groups.mapKeys { folderKey(it.key) }
+}
+
+/** The songs a selection stands for, in selection order: songs as they are, folders and playlists as their songs, each once. */
+fun expandSelection(ordered: List<String>, songs: Map<String, LocalSong>, groups: Map<String, List<LocalSong>>): List<LocalSong> {
+    val seen = HashSet<String>()
+    return ordered.flatMap { id -> groups[id] ?: listOfNotNull(songs[id]) }.filter { seen.add(it.id) }
+}
 
 /**
  * The one selection on screen, shared by the list that owns it (which [bind]s its rows) and the app's top and bottom
@@ -60,13 +88,18 @@ class SelectionController {
     var order by mutableStateOf<List<String>>(emptyList()); private set
     var songs by mutableStateOf<List<LocalSong>>(emptyList()); private set
     var playlistId by mutableStateOf<String?>(null); private set
+    /** Rows that stand for several songs (folders, playlists), by selection key. */
+    var groups by mutableStateOf<Map<String, List<LocalSong>>>(emptyMap()); private set
+    /** Selection keys that are playlists that can be deleted. */
+    var deletable by mutableStateOf<Set<String>>(emptySet()); private set
     private var owner: String? = null
     val active: Boolean get() = selection.active
 
     /** Called by the list on screen. A list that doesn't own an active selection leaves it alone. */
-    fun bind(owner: String, order: List<String>, songs: List<LocalSong>, playlistId: String? = null) {
+    fun bind(owner: String, order: List<String>, songs: List<LocalSong>, playlistId: String? = null,
+        groups: Map<String, List<LocalSong>> = emptyMap(), deletable: Set<String> = emptySet()) {
         if (active && owner != this.owner) return
-        this.owner = owner; this.order = order; this.songs = songs; this.playlistId = playlistId
+        this.owner = owner; this.order = order; this.songs = songs; this.playlistId = playlistId; this.groups = groups; this.deletable = deletable
         if (active) selection = selection.retain(order.toSet())
     }
     fun begin(id: String) { selection = selection.begin(id) }
@@ -74,14 +107,21 @@ class SelectionController {
     fun clear() { selection = SongSelection() }
     fun selectAll() { selection = selection.selectAll(order) }
     val allSelected: Boolean get() = selection.allOf(order)
+    /** The selected rows' keys in list order (songs, folders or playlists). */
     fun chosenIds(): List<String> = selection.ordered(order)
-    fun chosenSongs(): List<LocalSong> { val byId = songs.associateBy { it.id }; return chosenIds().mapNotNull(byId::get) }
+    /** The songs the selection stands for, with folders and playlists opened up. */
+    fun chosenSongs(): List<LocalSong> = expandSelection(chosenIds(), songs.associateBy { it.id }, groups)
+    /** Song ids for playlist edits: like [chosenSongs], but keeps ids whose file is gone (only songs rows have those). */
+    fun chosenSongIds(): List<String> { val seen = HashSet<String>(); return chosenIds().flatMap { id -> groups[id]?.map { it.id } ?: listOf(id) }.filter(seen::add) }
+    val hasGroups: Boolean get() = selection.ids.any { it in groups }
+    fun chosenDeletable(): List<String> = chosenIds().filter { it in deletable }
 }
 
 /** Binds the list's rows to [controller] whenever they change. */
 @Composable
-fun BindSelection(controller: SelectionController, owner: String, order: List<String>, songs: List<LocalSong>, playlistId: String? = null) {
-    SideEffect { controller.bind(owner, order, songs, playlistId) }
+fun BindSelection(controller: SelectionController, owner: String, order: List<String>, songs: List<LocalSong>, playlistId: String? = null,
+    groups: Map<String, List<LocalSong>> = emptyMap(), deletable: Set<String> = emptySet()) {
+    SideEffect { controller.bind(owner, order, songs, playlistId, groups, deletable) }
 }
 
 /**
@@ -148,7 +188,13 @@ fun SelectionHeader(controller: SelectionController, modifier: Modifier = Modifi
     Row(modifier.fillMaxWidth().statusBarsPadding().heightIn(min = 64.dp).padding(horizontal = 8.dp).testTag("selection-header"), verticalAlignment = Alignment.CenterVertically) {
         IconButton(onClick = { controller.clear() }, modifier = Modifier.testTag("selection-close")) { RadioIcon(Symbol.Close, "Stop selecting") }
         val count = controller.selection.ids.size
-        Text("$count selected", Modifier.weight(1f).semantics { liveRegion = LiveRegionMode.Polite }, style = MaterialTheme.typography.titleLarge)
+        Column(Modifier.weight(1f).semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite }) {
+            Text("$count selected", style = MaterialTheme.typography.titleLarge)
+            // Folders and playlists stand for their songs; say how many that is.
+            if (controller.hasGroups) controller.chosenSongs().size.let { songs ->
+                Text("$songs ${if (songs == 1) "song" else "songs"}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
         if (controller.allSelected) TextButton(onClick = { controller.clear() }, modifier = Modifier.testTag("selection-none")) { Text("Select none") }
         else TextButton(onClick = { controller.selectAll() }, modifier = Modifier.testTag("selection-all")) { Text("Select all") }
     }
@@ -172,7 +218,7 @@ fun SelectionActionBar(controller: SelectionController, height: androidx.compose
         Action(Symbol.Play, "Play", "selection-play", playable) { onAction(BulkAction.PlayNow) }
         Action(Symbol.Next, "Play next", "selection-next", playable) { onAction(BulkAction.PlayNext) }
         Action(Symbol.Queue, "Queue", "selection-queue", playable) { onAction(BulkAction.AddToQueue) }
-        Action(Symbol.Add, "Playlist", "selection-playlist", controller.selection.active) { onAction(BulkAction.AddToPlaylist) }
+        Action(Symbol.Add, "Playlist", "selection-playlist", chosen.isNotEmpty() || controller.playlistId != null && controller.selection.active) { onAction(BulkAction.AddToPlaylist) }
         var more by remember { mutableStateOf(false) }
         Box {
             Action(Symbol.More, "More", "selection-more", true) { more = true }
@@ -183,6 +229,9 @@ fun SelectionActionBar(controller: SelectionController, height: androidx.compose
                     onClick = { more = false; onAction(BulkAction.Radio) }, modifier = Modifier.testTag("selection-radio"))
                 if (controller.playlistId != null) DropdownMenuItem(text = { Text("Remove from playlist") }, leadingIcon = { RadioIcon(Symbol.Remove) },
                     onClick = { more = false; onAction(BulkAction.RemoveFromPlaylist) }, modifier = Modifier.testTag("selection-remove"))
+                val deletable = controller.chosenDeletable().size
+                if (deletable > 0) DropdownMenuItem(text = { Text(if (deletable == 1) "Delete playlist…" else "Delete $deletable playlists…") }, leadingIcon = { RadioIcon(Symbol.Remove) },
+                    onClick = { more = false; onAction(BulkAction.DeletePlaylists) }, modifier = Modifier.testTag("selection-delete"))
             }
         }
     }

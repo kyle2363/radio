@@ -76,6 +76,16 @@ fun PlaylistBrowser(state: PlaylistsState, repository: PlaylistRepository, catal
         smart == SmartList.Heard -> BindSelection(selection, "smart:${smart.id}", remember(heardSongs) { heardSongs.map { it.id } }, heardSongs)
         smart != null -> BindSelection(selection, "smart:${smart.id}", remember(smartSongs) { smartSongs.map { it.id } }, smartSongs)
         selected != null -> BindSelection(selection, "playlist:${selected.id}", ids, songs, selected.id)
+        else -> {
+            // The overview: automatic and own playlists stand for their songs; only your own can be deleted.
+            val shownSmart = if (smartRows != null) SmartList.entries else emptyList()
+            val order = remember(shownSmart, state.playlists) { shownSmart.map { it.id } + state.playlists.map { it.id } }
+            val groups = remember(smartLists, state.entries, state.playlists, byId) {
+                shownSmart.associate { list -> list.id to smartLists?.get(list).orEmpty().distinct().mapNotNull(byId::get) } +
+                    state.playlists.associate { it.id to state.songIds(it.id).mapNotNull(byId::get) }
+            }
+            BindSelection(selection, "playlists", order, emptyList(), groups = groups, deletable = remember(state.playlists) { state.playlists.mapTo(HashSet()) { it.id } })
+        }
     }
     val selecting = selection.active
     // Inside a playlist: long-press a song to drag it, swipe it sideways to remove it.
@@ -122,7 +132,7 @@ fun PlaylistBrowser(state: PlaylistsState, repository: PlaylistRepository, catal
                 }
             }
         }
-        LazyColumn(Modifier.fillMaxSize().sweepSelect(listState, selection, enabled = smart != null) { key ->
+        LazyColumn(Modifier.fillMaxSize().sweepSelect(listState, selection, enabled = smart != null || selected == null) { key ->
             if (smart == SmartList.Heard) (key as? String)?.removePrefix("heard:")?.toIntOrNull()?.let { heard.getOrNull(it)?.first?.id } else (key as? String)?.takeIf { it in selection.order }
         }.testTag("playlist-list"), state = listState) {
             if (smart != null) {
@@ -151,7 +161,8 @@ fun PlaylistBrowser(state: PlaylistsState, repository: PlaylistRepository, catal
                         val count = smartLists?.get(list)?.size
                         // Recently heard keeps repeats, so its count is plays, not songs.
                         LibraryRow(list.title, if (count == null) list.description else "$count ${if (list == SmartList.Heard) (if (count == 1) "play" else "plays") else (if (count == 1) "song" else "songs")} · ${list.description}",
-                            when (list) { SmartList.Top -> Symbol.Chart; SmartList.Recent -> Symbol.Clock; SmartList.Liked -> Symbol.HeartFilled; SmartList.Gems -> Symbol.Gem; SmartList.Heard -> Symbol.History }) { onSelect(list.id) }
+                            when (list) { SmartList.Top -> Symbol.Chart; SmartList.Recent -> Symbol.Clock; SmartList.Liked -> Symbol.HeartFilled; SmartList.Gems -> Symbol.Gem; SmartList.Heard -> Symbol.History },
+                            selected = if (selecting) list.id in selection.selection.ids else null, onSelect = { selection.begin(list.id) }) { if (selecting) selection.toggle(list.id) else onSelect(list.id) }
                     }
                     item { Text("Your playlists", Modifier.padding(start = 20.dp, top = 16.dp, bottom = 4.dp), style = MaterialTheme.typography.labelLarge) }
                 }
@@ -161,7 +172,7 @@ fun PlaylistBrowser(state: PlaylistsState, repository: PlaylistRepository, catal
                         playlist.remoteDeleted -> " · Deleted on desktop"
                         playlist.synced -> " · Synced"
                         else -> ""
-                    }, Symbol.Queue, onLongClick = { rowMenu.value = true }, trailing = {
+                    }, Symbol.Queue, selected = if (selecting) playlist.id in selection.selection.ids else null, onSelect = { selection.begin(playlist.id) }, trailing = {
                         var open by rowMenu
                         Box {
                             IconButton(onClick = { open = true }) { RadioIcon(Symbol.More, "Options for playlist ${playlist.name}") }
@@ -174,7 +185,7 @@ fun PlaylistBrowser(state: PlaylistsState, repository: PlaylistRepository, catal
                                 DropdownMenuItem(text = { Text("Delete playlist") }, onClick = { open = false; deleting = playlist })
                             }
                         }
-                    }) { onSelect(playlist.id) }
+                    }) { if (selecting) selection.toggle(playlist.id) else onSelect(playlist.id) }
                 }
                 if (state.playlists.isEmpty()) item { EmptyState(Symbol.Queue, "No playlists yet", "Create a playlist, then add songs in the order you want.") }
                 if (state.remote.isNotEmpty()) {

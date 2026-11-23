@@ -155,6 +155,7 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
     var statsSong by remember { mutableStateOf<LocalSong?>(null) }
     // Long-press multi-select in Library and Search; the top and bottom bars become its header and actions.
     val selection = remember { SelectionController() }
+    var deletingPlaylists by remember { mutableStateOf<List<String>?>(null) }
     // Checkpoint 9B feels.
     val feelsState by repository.feels.state.collectAsState()
     var feelsNav by remember { mutableStateOf(FeelsNav()) }
@@ -280,14 +281,16 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
     }
     /** Acts on the songs selected in a list, in list order, then ends the selection. */
     fun bulkAction(action: BulkAction) {
-        val ids = selection.chosenIds()
+        val ids = selection.chosenSongIds()
         val chosen = selection.chosenSongs()
+        val doomed = selection.chosenDeletable()
         val playable = chosen.filter { it.available }
         val playlist = selection.playlistId
         selection.clear()
         fun count(n: Int) = "$n ${if (n == 1) "song" else "songs"}"
         when (action) {
-            BulkAction.AddToPlaylist -> playlistSongIds = ids
+            BulkAction.AddToPlaylist -> if (ids.isEmpty()) message("Those playlists have no songs yet.") else playlistSongIds = ids
+            BulkAction.DeletePlaylists -> deletingPlaylists = doomed
             BulkAction.RemoveFromPlaylist -> if (playlist != null) scope.launch {
                 repository.playlists.removeAll(playlist, ids).onSuccess { message("Removed ${count(ids.size)} from the playlist") }.onFailure { message(it.message ?: "Couldn't update playlist.") }
             }
@@ -820,6 +823,17 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
             if (feelSheet && song != null) FeelSheet(song, repository.feels, feelsState, onSetUp = { feelSheet = false; feelsNav = FeelsNav(); navigate("Feels") },
                 onMessage = ::message, onDismiss = { feelSheet = false })
             statsSong?.let { SongStatsSheet(it, repository.journal) { statsSong = null } }
+            deletingPlaylists?.let { doomed ->
+                val names = doomed.mapNotNull { id -> playlists.playlists.firstOrNull { it.id == id }?.name }
+                AlertDialog(onDismissRequest = { deletingPlaylists = null }, modifier = Modifier.testTag("delete-playlists"),
+                    title = { Text(if (names.size == 1) "Delete ${names[0]}?" else "Delete ${names.size} playlists?") },
+                    text = { Text((if (names.size > 1) names.joinToString(", ") + ". " else "") + "This removes the playlists. Your music files and current playback stay unchanged.") },
+                    confirmButton = { TextButton(onClick = { deletingPlaylists = null; scope.launch {
+                        val failed = doomed.count { repository.playlists.delete(it).isFailure }
+                        message(if (failed > 0) "Couldn't delete $failed of ${doomed.size} playlists." else if (doomed.size == 1) "Playlist deleted" else "Deleted ${doomed.size} playlists")
+                    } }, modifier = Modifier.testTag("delete-playlists-confirm")) { Text("Delete") } },
+                    dismissButton = { TextButton(onClick = { deletingPlaylists = null }) { Text("Cancel") } })
+            }
             playlistSongIds?.let { ids -> PlaylistDestinationDialog(ids, playlists, repository.playlists,
                 onDismiss = { playlistSongIds = null }, onAdded = { playlistSongIds = null; message("Playlist saved") }) }
             if (endSheet) {
