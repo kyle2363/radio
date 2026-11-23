@@ -10,6 +10,8 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
@@ -116,7 +118,7 @@ fun SwipeSongRow(song: LocalSong, onAction: (SongAction, LocalSong) -> Unit, con
             val onContainer = if (next) colors.onPrimaryContainer else colors.onTertiaryContainer
             // Fades in over the first part of the swipe so a small nudge stays quiet.
             val strength = (state.progress * 2.5f).coerceIn(0f, 1f)
-            Row(Modifier.fillMaxSize().padding(horizontal = 8.dp, vertical = 2.dp)
+            Row(Modifier.fillMaxSize().revealedBy(state).padding(horizontal = 8.dp, vertical = 2.dp)
                 .background(container.copy(alpha = .35f + .65f * strength), RoundedCornerShape(20.dp)).padding(horizontal = 20.dp),
                 horizontalArrangement = if (next) Arrangement.Start else Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
                 CompositionLocalProvider(LocalContentColor provides onContainer) {
@@ -125,6 +127,19 @@ fun SwipeSongRow(song: LocalSong, onAction: (SongAction, LocalSong) -> Unit, con
                 }
             }
         }) {
-        Surface(color = MaterialTheme.colorScheme.surface) { content() }
+        // No background of its own: the row shows whatever list or sheet it sits on, and the action block is drawn only
+        // where the swipe has uncovered it (see revealedBy).
+        Box { content() }
     }
+}
+
+/**
+ * Draws a swipe's action block only over the strip the moving row has uncovered, so rows can stay transparent and
+ * never need to repeat their container's colour.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+internal fun Modifier.revealedBy(state: SwipeToDismissBoxState): Modifier = drawWithContent {
+    val offset = runCatching { state.requireOffset() }.getOrDefault(0f)
+    if (offset > 0f) clipRect(right = offset) { this@drawWithContent.drawContent() }
+    else if (offset < 0f) clipRect(left = size.width + offset) { this@drawWithContent.drawContent() }
 }

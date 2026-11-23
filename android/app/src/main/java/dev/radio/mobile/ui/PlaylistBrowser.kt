@@ -165,7 +165,7 @@ fun PlaylistBrowser(state: PlaylistsState, repository: PlaylistRepository, catal
                         }
                     }) { onSelect(playlist.id) }
                 }
-                if (state.playlists.isEmpty()) item { Text("Create a playlist, then add songs in the order you want.", Modifier.padding(20.dp)) }
+                if (state.playlists.isEmpty()) item { EmptyState(Symbol.Queue, "No playlists yet", "Create a playlist, then add songs in the order you want.") }
                 if (state.remote.isNotEmpty()) {
                     item { Text("From your desktop", Modifier.padding(start = 20.dp, top = 16.dp, bottom = 4.dp), style = MaterialTheme.typography.labelLarge) }
                     itemsIndexed(state.remote, key = { _, it -> "remote-${it.id}" }) { _, remote ->
@@ -196,7 +196,7 @@ fun PlaylistBrowser(state: PlaylistsState, repository: PlaylistRepository, catal
                     }) { if (accessAllowed && song?.available == true) onPlay(song, songs, PlaySource(selected.name, PlaySource.PLAYLIST, selected.id)) }
                     }
                 }
-                if (ids.isEmpty()) item { Text("This playlist is empty. Add songs to get started.", Modifier.padding(20.dp)) }
+                if (ids.isEmpty()) item { EmptyState(Symbol.Music, "This playlist is empty", "Add songs from any song menu, or swipe a song and choose a playlist.") }
             }
         }
     }
