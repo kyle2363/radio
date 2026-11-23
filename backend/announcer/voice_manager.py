@@ -27,6 +27,9 @@ VOICE_MODE_USER_SELECT = "user_select"  # Use the user's chosen voice for all an
 VOICE_MODE_RANDOM = "random"            # Pick a random voice per synthesis call
 VOICE_MODE_CONTEXT = "context"          # Map trigger context to voice
 
+# Between-song announcements when no voice is chosen (tts_voice empty, user_select mode).
+DEFAULT_ANNOUNCER_VOICE = "deep radio voice"
+
 TTS_CACHE_DIR = config.TTS_CACHE_DIR
 TTS_SILENCE_PADDING_SECS = 0.25
 
@@ -492,14 +495,13 @@ class VoiceManager:
         # VOICE_MODE_USER_SELECT — use stored voice
         if self._active_voice:
             return self._active_voice
-        # Fallback: pick first available voice from active engine
+        # No voice chosen: the station announcer if this engine has it, else its first voice.
+        # Not stored, so adding a clip that sorts first (or switching engine) never changes it.
         _, eng = self.get_active_engine()
         voices = eng.get_available_voices()
-        if voices:
-            with self._lock:
-                self._active_voice = voices[0]
-            return self._active_voice
-        return None
+        if DEFAULT_ANNOUNCER_VOICE in voices:
+            return DEFAULT_ANNOUNCER_VOICE
+        return voices[0] if voices else None
 
     def _context_voice(self, trigger_type: str | None) -> str | None:
         """Map trigger context to a voice for context mode."""

@@ -49,6 +49,12 @@ DIRECTION_FIELDS = ("control_spans", "condition_values", "silence_prefill_frames
                     "steer_hold", "steer_onset_seconds", "steer_ramp_seconds")
 STEER_EASING_FIELDS = ("steer_hold", "steer_onset_seconds", "steer_ramp_seconds")
 
+# Per-voice steering added to every line in that voice (reference-mode controls only).
+# delivery.pitch is strong: -1 lowers a voice about six semitones, -0.35 about two.
+VOICE_ADJUSTMENTS: dict[str, dict[str, float]] = {
+    "Blondie - Radio Host": {"delivery.pitch": -0.35},  # her clip runs high (~350 Hz) and climbs with upbeat emotions
+}
+
 
 def clip_fingerprint(clip: str) -> str:
     """Short content hash of a reference clip; changes when the clip is re-recorded."""
@@ -394,6 +400,8 @@ class Zonos3TTSEngine:
 
         request = request or {}
         wanted = {**(controls or {}), **(request.get("controls") or {})}
+        for cid, dose in VOICE_ADJUSTMENTS.get(voice_id, {}).items():
+            wanted[cid] = round(wanted.get(cid, 0.0) + dose, 3)
         if speed is not None:
             # Same ±0.1 variety OmniVoice applies, expressed as tempo.
             wanted[TEMPO_CONTROL] = speed_to_tempo(speed + random.uniform(-0.05, 0.05))

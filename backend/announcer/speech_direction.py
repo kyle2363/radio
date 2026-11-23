@@ -234,17 +234,70 @@ def mood_delivery(mood_state: str | None, next_song: dict | None = None,
     return round(_clamp(energy), 3), round(_clamp(valence), 3), round(_clamp(pace), 3)
 
 
+# The main host is the station's steady voice: milder emotion than callers and guests,
+# a gentler pull from the mood, and never the strongest emotions.
+HOST_PERSONAS = frozenset({"dj"})
+HOST_EMOTION_SCALE = 0.5     # of the emotion dose any other voice gets
+HOST_DELIVERY_SCALE = 0.6    # of the mood's energy, valence and pace
+HOST_SOFTER: dict[str, str] = {
+    "excited": "happy",
+    "surprised": "interested",
+    "angry": "annoyed",
+    "sad": "wistful",
+    "nervous": "neutral",
+}
+
+# Within one segment: an emotion a speaker repeats fades line by line instead of
+# re-hitting the full dose (heard as building), and a jump between far-apart emotions
+# lands at reduced strength (heard as swinging back and forth).
+REPEAT_DECAY = 0.7
+SWING_DISTANCE = 0.8         # in (energy, valence) space, see EMOTIONS
+SWING_SCALE = 0.5
+
+
+class EmotionArc:
+    """One segment's emotional history per speaker, so a back-and-forth stays steady."""
+
+    def __init__(self):
+        self._last: dict[str | None, tuple[str, int]] = {}  # speaker -> (emotion, repeats)
+
+    def shape(self, speaker: str | None, emotion: str | None, intensity: float) -> float:
+        if not emotion or emotion == "neutral":
+            self._last.pop(speaker, None)
+            return intensity
+        previous = self._last.get(speaker)
+        repeats = 0
+        if previous and previous[0] == emotion:
+            repeats = previous[1] + 1
+            intensity *= REPEAT_DECAY ** repeats
+        elif previous:
+            (e1, v1), (e2, v2) = EMOTIONS[previous[0]], EMOTIONS[emotion]
+            if ((e1 - e2) ** 2 + (v1 - v2) ** 2) ** 0.5 > SWING_DISTANCE:
+                intensity *= SWING_SCALE
+        self._last[speaker] = (emotion, repeats)
+        return intensity
+
+
 def _build(emotion, *, mood_state=None, next_song=None, hour=None, persona_id=None,
-           flags: DirectionFlags | None = None, intensity: float = 0.6) -> SpeechDirection:
+           flags: DirectionFlags | None = None, intensity: float = 0.6,
+           arc: EmotionArc | None = None) -> SpeechDirection:
     flags = flags if flags is not None else current_flags()
     if not flags.enabled:
         return SpeechDirection.off()
     energy = valence = pace = 0.0
     if flags.mood_delivery:
         energy, valence, pace = mood_delivery(mood_state, next_song, hour)
+    emotion = normalize_emotion(emotion) if flags.emotion else None
+    if persona_id in HOST_PERSONAS:
+        if emotion:
+            emotion = HOST_SOFTER.get(emotion, emotion)
+            intensity *= HOST_EMOTION_SCALE
+        energy, valence, pace = (round(x * HOST_DELIVERY_SCALE, 3) for x in (energy, valence, pace))
+    if arc is not None:
+        intensity = arc.shape(persona_id, emotion, intensity)
     return SpeechDirection(
-        emotion=normalize_emotion(emotion) if flags.emotion else None,
-        intensity=intensity,
+        emotion=emotion,
+        intensity=round(intensity, 3),
         energy=energy,
         valence=valence,
         pace=pace,
@@ -268,11 +321,16 @@ def direction_for_announcement(trigger: str | None, context: dict | None = None,
 
 def direction_for_line(emotion=None, *, mood_state: str | None = None, persona_id: str | None = None,
                        context: dict | None = None, flags: DirectionFlags | None = None,
-                       intensity: float = 0.6) -> SpeechDirection:
-    """Direction for one talk-show line (caller, DJ, monologue or guest)."""
+                       intensity: float = 0.6, arc: EmotionArc | None = None) -> SpeechDirection:
+    """Direction for one talk-show line (caller, DJ, monologue or guest).
+
+    Pass one ``EmotionArc`` for every line of a segment so repeated emotions fade
+    and big swings are softened.
+    """
     context = context or {}
     return _build(emotion, mood_state=mood_state, next_song=context.get("next_song"),
-                  hour=context.get("hour"), persona_id=persona_id, flags=flags, intensity=intensity)
+                  hour=context.get("hour"), persona_id=persona_id, flags=flags, intensity=intensity,
+                  arc=arc)
 
 
 # ---- inline marks ----

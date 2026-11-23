@@ -96,7 +96,7 @@ def test_announcement_trigger_sets_an_emotion_and_mood_sets_delivery():
     flags = sd.DirectionFlags.from_settings(database.get_setting)
     chill = sd.direction_for_announcement("skip_streak", {"mood_state": "chill", "hour": 14}, flags=flags)
     hype = sd.direction_for_announcement("mood_change", {"mood_state": "energetic", "hour": 14}, flags=flags)
-    assert chill.emotion == "calm" and hype.emotion == "excited"
+    assert chill.emotion == "calm" and hype.emotion == "happy"  # the host softens "excited"
     assert chill.energy < 0 < hype.energy
     assert chill.loudness_lufs == pytest.approx(-13.0) and chill.tight_start
 
@@ -121,6 +121,51 @@ def test_line_emotions_are_normalized_and_unknown_words_are_ignored():
     flags = sd.DirectionFlags.from_settings(database.get_setting)
     assert sd.direction_for_line("Amused!", flags=flags).emotion == "amused"
     assert sd.direction_for_line("flabbergasted", flags=flags).emotion is None
+
+
+def test_main_host_speaks_with_milder_emotion_and_delivery_than_other_voices():
+    flags = sd.DirectionFlags.from_settings(database.get_setting)
+    context = {"next_song": {"energy": 0.95, "valence": 0.9}, "hour": 14}
+    host = sd.direction_for_line("happy", mood_state="energetic", persona_id="dj", context=context, flags=flags)
+    caller = sd.direction_for_line("happy", mood_state="energetic", persona_id="caller_bookworm",
+                                   context=context, flags=flags)
+    assert host.emotion == "happy"
+    assert host.intensity <= caller.intensity / 2
+    assert 0 < host.energy < caller.energy and 0 < host.valence < caller.valence
+
+
+def test_main_host_never_reaches_for_the_strongest_emotions():
+    flags = sd.DirectionFlags.from_settings(database.get_setting)
+    for strong in sd.HOST_SOFTER:
+        assert sd.direction_for_line(strong, persona_id="dj", flags=flags).emotion != strong
+    assert sd.direction_for_announcement("mood_change", {}, flags=flags).emotion == "happy"
+
+
+def test_a_repeated_emotion_fades_instead_of_building_over_an_exchange():
+    flags = sd.DirectionFlags.from_settings(database.get_setting)
+    arc = sd.EmotionArc()
+    doses = [sd.direction_for_line("amused", persona_id="caller_bookworm", flags=flags, arc=arc).intensity
+             for _ in range(4)]
+    assert doses == sorted(doses, reverse=True) and doses[-1] < doses[0] / 2
+
+
+def test_a_big_emotional_swing_is_softened_but_a_small_shift_is_not():
+    flags = sd.DirectionFlags.from_settings(database.get_setting)
+    plain = sd.direction_for_line("calm", persona_id="caller_bookworm", flags=flags).intensity
+    swing = sd.EmotionArc()
+    sd.direction_for_line("happy", persona_id="caller_bookworm", flags=flags, arc=swing)
+    assert sd.direction_for_line("sad", persona_id="caller_bookworm", flags=flags, arc=swing).intensity < plain
+    shift = sd.EmotionArc()
+    sd.direction_for_line("happy", persona_id="caller_bookworm", flags=flags, arc=shift)
+    assert sd.direction_for_line("warm", persona_id="caller_bookworm", flags=flags, arc=shift).intensity == plain
+
+
+def test_each_speaker_has_its_own_arc():
+    flags = sd.DirectionFlags.from_settings(database.get_setting)
+    arc = sd.EmotionArc()
+    first = sd.direction_for_line("warm", persona_id="dj", flags=flags, arc=arc).intensity
+    sd.direction_for_line("warm", persona_id="caller_bookworm", flags=flags, arc=arc)
+    assert sd.direction_for_line("interested", persona_id="dj", flags=flags, arc=arc).intensity == first
 
 
 def test_persona_traits_follow_their_setting():
@@ -441,6 +486,15 @@ def test_caller_lines_carry_llm_emotions_mood_and_persona(monkeypatch, said):
     assert all(c["direction"].loudness_lufs == pytest.approx(-13.0) for c in said)
 
 
+def test_a_call_keeps_the_hosts_repeated_emotion_from_building(monkeypatch, said):
+    emotions = {"dj_line_1": "warm", "dj_line_2": "warm", "dj_closer": "warm"}
+    monkeypatch.setattr(talk_segments, "llm_chat", FakeLLM(caller_json(emotions=emotions)))
+    monkeypatch.setattr(talk_segments.random, "choices", lambda seq, weights=None, k=1: [seq[0]])
+    talk_segments.generate_caller_segment(mood_state="neutral")
+    host = [c["direction"].intensity for c in said if c["voice"] == talk_segments.get_persona("dj").voice_id]
+    assert len(host) == 3 and host[0] > host[1] > host[2]
+
+
 def test_caller_emotion_prompt_and_marks_follow_their_settings(monkeypatch, said):
     database.set_setting("speech_emotion_enabled", "false")
     database.set_setting("speech_word_marks_enabled", "false")
@@ -481,7 +535,7 @@ def test_announcement_direction_uses_trigger_mood_and_next_song(said):
                                     context={"mood_state": "energetic", "hour": 15,
                                              "next_song": {"energy": 0.9, "valence": 0.8}})
     [call] = said
-    assert call["direction"].emotion == "excited" and call["direction"].energy > 0.3
+    assert call["direction"].emotion == "happy" and call["direction"].energy > 0.3
     assert call["direction"].loudness_lufs == pytest.approx(-13.0)
 
 

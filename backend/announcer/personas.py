@@ -220,7 +220,7 @@ PERSONAS: dict[str, Persona] = {
         voice_id_piper="kusal",
         personality="You are a young rock-obsessed guest DJ who brings high energy and garage band vibes. You talk about seeing bands live, the smell of a mosh pit, and how 'real music' needs guitars. You reference specific riffs and drum fills. You say things like 'dude, this riff is INSANE' and 'you can practically smell the sweat'. Your enthusiasm is infectious even when you're being a bit much.",
         slot_bias={"energy_range": (0.6, 1.0), "wildcard_boost": 0.25},
-        speed_base=0.95,
+        speed_base=0.90,
     ),
     "guest_smooth": Persona(
         id="guest_smooth",
