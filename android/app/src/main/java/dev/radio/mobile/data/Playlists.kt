@@ -84,6 +84,21 @@ class PlaylistRepository(private val db: LibraryDatabase, scope: CoroutineScope)
             id
         }
     }
+    /**
+     * Save an imported M3U as a new playlist, adding " (2)" if the name is taken. When the phone is
+     * paired it is shared at once, so the desktop gets it as a collection on the next profile sync.
+     */
+    suspend fun import(value: String, songIds: List<String>): Result<String> = attempt {
+        val id = db.withTransaction {
+            val title = uniqueName(name(value), "")
+            val now = System.currentTimeMillis(); val id = UUID.randomUUID().toString()
+            dao.save(LocalPlaylist(id, title, title.lowercase(Locale.ROOT), now, now))
+            replace(id, songIds.distinct())
+            id
+        }
+        if (shareIdentity() != null) share(id).getOrThrow()
+        id
+    }
     suspend fun rename(id: String, value: String): Result<Unit> = attempt { db.withTransaction {
         val playlist = requireNotNull(dao.playlist(id)) { "Playlist no longer exists." }
         val title = name(value); val key = title.lowercase(Locale.ROOT)
