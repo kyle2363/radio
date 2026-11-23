@@ -11,6 +11,9 @@ import kotlinx.coroutines.ensureActive
 import java.io.IOException
 import java.util.UUID
 
+/** Dot-named files and folders are hidden on Android (thumbnail caches, trashed files) and are never scanned. */
+internal fun isHiddenEntry(name: String): Boolean = name.startsWith(".")
+
 internal fun localDocumentId(authority: String, documentId: String): String =
     UUID.nameUUIDFromBytes((authority + "\u0000" + documentId).toByteArray(Charsets.UTF_8)).toString()
 
@@ -58,6 +61,8 @@ class LocalMusicScanner(private val resolver: ContentResolver) {
                 currentCoroutineContext().ensureActive()
                 if (++documents > 100_000) throw IOException("Folder exceeds the scan limit")
                 if (!visited.add(entry.document)) continue
+                // System caches (.thumbnails) and trashed files (.trashed-…) are not music to browse.
+                if (isHiddenEntry(entry.name)) continue
                 val id = localDocumentId(authority, entry.document)
                 if (entry.mime == Document.MIME_TYPE_DIR) {
                     val child = LocalFolder(id, rootUri, folder.id, entry.name, listOf(folder.path, entry.name).filter { it.isNotEmpty() }.joinToString("/"), entry.modified)

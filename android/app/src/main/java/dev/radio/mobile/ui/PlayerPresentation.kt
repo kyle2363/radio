@@ -48,19 +48,12 @@ internal fun shouldAnimateBackdrop(mode: PlayerBackdrop, playing: Boolean, foreg
 @Composable
 fun PlayerBackground(mode: PlayerBackdrop, playing: Boolean, modifier: Modifier = Modifier, tint: Color? = null) {
     val owner = LocalLifecycleOwner.current
-    val resolver = LocalContext.current.contentResolver
     var foreground by remember(owner) { mutableStateOf(owner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) }
-    var animationsEnabled by remember { mutableStateOf(Settings.Global.getFloat(resolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f) > 0f) }
-    DisposableEffect(owner, resolver) {
+    val animationsEnabled by rememberAnimationsEnabled()
+    DisposableEffect(owner) {
         val lifecycleObserver = LifecycleEventObserver { _, _ -> foreground = owner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) }
-        val motionObserver = object : ContentObserver(Handler(Looper.getMainLooper())) {
-            override fun onChange(selfChange: Boolean) {
-                animationsEnabled = Settings.Global.getFloat(resolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f) > 0f
-            }
-        }
         owner.lifecycle.addObserver(lifecycleObserver)
-        resolver.registerContentObserver(Settings.Global.getUriFor(Settings.Global.ANIMATOR_DURATION_SCALE), false, motionObserver)
-        onDispose { owner.lifecycle.removeObserver(lifecycleObserver); resolver.unregisterContentObserver(motionObserver) }
+        onDispose { owner.lifecycle.removeObserver(lifecycleObserver) }
     }
     val moving = shouldAnimateBackdrop(mode, playing, foreground, animationsEnabled)
     val phase = remember { Animatable(0f) }

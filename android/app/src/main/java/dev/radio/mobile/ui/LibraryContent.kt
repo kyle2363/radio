@@ -25,7 +25,7 @@ import dev.radio.mobile.data.*
 import dev.radio.mobile.music.*
 
 @Composable
-fun LibraryStatus(state: LibraryState, choose: () -> Unit, rescan: () -> Unit, cancel: () -> Unit) {
+fun LibraryStatus(state: LibraryState, choose: () -> Unit, rescan: () -> Unit, cancel: () -> Unit, showScanSummary: Boolean = true) {
     when {
         state.loading -> Column(Modifier.padding(20.dp)) { LinearProgressIndicator(Modifier.fillMaxWidth()); Text("Opening saved library…") }
         state.scanning -> Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp).semantics { liveRegion = LiveRegionMode.Polite }) {
@@ -37,7 +37,8 @@ fun LibraryStatus(state: LibraryState, choose: () -> Unit, rescan: () -> Unit, c
             Text(state.error ?: "Folder access was lost. Your saved library is still here.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
             Row { TextButton(onClick = choose) { Text("Choose folder") }; if (!state.accessLost && state.root != null) TextButton(onClick = rescan) { Text("Retry scan") } }
         }
-        state.message != null -> Text(state.message, Modifier.padding(horizontal = 20.dp, vertical = 4.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        // The Library header already shows the song count, so "N MP3s scanned" there would say it twice.
+        state.message != null && (showScanSummary || !state.message.endsWith("MP3s scanned")) -> Text(state.message, Modifier.padding(horizontal = 20.dp, vertical = 4.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
@@ -56,18 +57,23 @@ fun LibraryContent(
 ) {
     val ordered = sortedSongs ?: remember(state.songs, sort) { orderSongs(state.songs, sort) }
     val parent = folderId ?: state.root?.folderId
-    val childFolders = remember(state.folders, state.songs, parent, sort) { orderFolders(state.folders, state.songs, parent, sort) }
+    // Hidden folders saved by scans before they were skipped (.thumbnails) never show.
+    val childFolders = remember(state.folders, state.songs, parent, sort) { orderFolders(state.folders, state.songs, parent, sort).filterNot { dev.radio.mobile.music.isHiddenEntry(it.name) } }
     // Computed once per library/folder change, not on every recomposition of the list.
     val browsingFolders = folderId != null || category == "Folders"
     val songCounts = remember(ordered) { ordered.groupingBy { it.folderId }.eachCount() }
     val visible = remember(ordered, browsingFolders, parent) { if (browsingFolders) ordered.filter { it.folderId == parent } else ordered }
     val artists = remember(state.songs, category) { if (category == "Artists") Artists.index(state.songs) else emptyList() }
-    Column(modifier) {
-        LibraryStatus(state, choose, rescan, cancel)
+    Column(modifier.fillMaxSize()) {
+        LibraryStatus(state, choose, rescan, cancel, showScanSummary = false)
         if (state.root == null && !state.loading && !state.scanning) {
-            Column(Modifier.padding(20.dp)) {
-                Text("Your music, on this phone", style = MaterialTheme.typography.titleLarge)
-                Text("Choose Music to include its MP3s and subfolders. The app reads your files without moving or changing them.", Modifier.padding(vertical = 12.dp))
+            Column(Modifier.fillMaxSize().padding(32.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+                Surface(Modifier.size(72.dp), color = MaterialTheme.colorScheme.secondaryContainer, shape = RadioShapes.Squircle) {
+                    Box(contentAlignment = Alignment.Center) { RadioIcon(Symbol.Folder, modifier = Modifier.size(32.dp)) }
+                }
+                Text("Your music, on this phone", Modifier.padding(top = 20.dp), style = MaterialTheme.typography.titleLarge, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                Text("Choose Music to include its MP3s and subfolders. The app reads your files without moving or changing them.", Modifier.padding(top = 8.dp, bottom = 20.dp),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
                 Button(onClick = choose) { Text("Choose Music folder") }
             }
         } else if (state.root != null) {
@@ -102,7 +108,7 @@ fun LibraryContent(
                     items(open.songs, key = { it.id }) { song -> SwipeSongRow(song, onSongAction) { val songMenu = remember { mutableStateOf(false) }; LibraryRow(song.title, songSubtitle(song, showArtist = false), Symbol.Music, playing = song.id == currentId,
                         onLongClick = { songMenu.value = true }, trailing = { SongActions(song, onSongAction, songMenu) }) { onSong(song, open.songs, PlaySource(open.name, PlaySource.ARTIST, open.name)) } } }
                 }
-                if (artists.isEmpty()) item { Text("No MP3s yet. Artists come from file names like “Artist - Title.mp3”.", Modifier.padding(20.dp)) }
+                if (artists.isEmpty()) item { EmptyState(Symbol.Person, "No artists yet", "Artists come from file names like “Artist - Title.mp3”.") }
                 else if (artist == null && artists.size == 1 && artists[0].name == Artists.UNKNOWN) item {
                     Text("Artists come from file names like “Artist - Title.mp3”; none of yours follow that pattern.", Modifier.padding(20.dp), style = MaterialTheme.typography.bodySmall)
                 }
@@ -125,7 +131,7 @@ fun LibraryContent(
                     items(visible, key = { it.id }) { song -> SwipeSongRow(song, onSongAction) { val songMenu = remember { mutableStateOf(false) }; LibraryRow(song.title, songSubtitle(song, showFolder = !browsingFolders), Symbol.Music, playing = song.id == currentId,
                         onLongClick = { songMenu.value = true }, trailing = { SongActions(song, onSongAction, songMenu) }) { onSong(song, visible, source) } } }
                     if (visible.isEmpty() && (!browsingFolders || childFolders.isEmpty())) item {
-                        Text("No MP3s in this ${if (browsingFolders) "folder" else "library"}. Try another folder or rescan after adding files.", Modifier.padding(20.dp))
+                        EmptyState(Symbol.Music, "No MP3s in this ${if (browsingFolders) "folder" else "library"}", "Try another folder, or rescan after adding files.")
                     }
                 }
             }
@@ -139,11 +145,16 @@ fun LibraryContent(
 fun songSubtitle(song: LocalSong, showFolder: Boolean = true, showArtist: Boolean = true): String = listOfNotNull(
     if (!song.available) "Missing file" else null,
     if (showArtist) song.artist.ifBlank { null } else null,
-    if (showFolder || song.artist.isBlank() && song.durationMs == null) song.folderPath.ifEmpty { "Root folder" } else null,
+    if (showFolder || song.artist.isBlank() && song.durationMs == null) folderLabel(song) else null,
     song.durationMs?.let { "%d:%02d".format(it / 60000, (it / 1000) % 60) }
 ).joinToString(" · ")
 
-/** "Play all" and "Shuffle" above a list of songs. */
+/** The song's folder as people see it; songs at the top of the chosen folder say so, the same on every screen. */
+fun folderLabel(song: LocalSong): String = song.folderPath.ifEmpty { "Top folder" }
+
+/** The current song's second line in lists: who it is by (or where it lives), then the playback status. */
+fun nowPlayingLine(song: LocalSong, status: String): String = "${song.artist.ifBlank { folderLabel(song) }} · $status"
+
 @Composable
 private fun SortButton(sort: LibrarySort, onSort: (LibrarySort) -> Unit) {
     var menu by remember { mutableStateOf(false) }
@@ -162,10 +173,10 @@ private fun SortButton(sort: LibrarySort, onSort: (LibrarySort) -> Unit) {
 fun PlayAllRow(count: Int, onPlay: () -> Unit, onShuffle: () -> Unit, modifier: Modifier = Modifier, trailing: (@Composable () -> Unit)? = null) {
     Row(modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
         FilledTonalButton(onClick = onPlay, contentPadding = PaddingValues(horizontal = 10.dp), modifier = Modifier.weight(if (trailing != null) 0.8f else 1f).heightIn(min = 40.dp).testTag("play-all")) {
-            RadioIcon(Symbol.Play, modifier = Modifier.size(16.dp)); Spacer(Modifier.width(4.dp)); Text("Play all · $count", maxLines = 1, softWrap = false, style = MaterialTheme.typography.labelLarge)
+            RadioIcon(Symbol.Play, modifier = Modifier.size(16.dp)); Spacer(Modifier.width(4.dp)); Text("Play all · $count", maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis, style = MaterialTheme.typography.labelLarge)
         }
         OutlinedButton(onClick = onShuffle, contentPadding = PaddingValues(horizontal = 10.dp), modifier = Modifier.weight(if (trailing != null) 0.8f else 1f).heightIn(min = 40.dp).testTag("shuffle-all")) {
-            RadioIcon(Symbol.Shuffle, modifier = Modifier.size(16.dp)); Spacer(Modifier.width(4.dp)); Text("Shuffle", maxLines = 1, softWrap = false, style = MaterialTheme.typography.labelLarge)
+            RadioIcon(Symbol.Shuffle, modifier = Modifier.size(16.dp)); Spacer(Modifier.width(4.dp)); Text("Shuffle", maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis, style = MaterialTheme.typography.labelLarge)
         }
         trailing?.invoke()
     }

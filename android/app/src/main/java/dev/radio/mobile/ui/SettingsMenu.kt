@@ -46,5 +46,5 @@ internal fun SoundSettingsRow(store: AudioSettingsStore, loudness: LoudnessRepos
         if (settings.eqEnabled) add("Equaliser on")
         if (settings.skipSilence) add("Skip silence")
     }
-    SettingsRow(Symbol.Sliders, "Sound", if (parts.isEmpty()) "Speed, crossfade, equaliser, normalization" else parts.joinToString(" · "), "settings-sound", onClick = onClick)
+    SettingsRow(Symbol.Speaker, "Sound", if (parts.isEmpty()) "Speed, crossfade, equaliser, normalization" else parts.joinToString(" · "), "settings-sound", onClick = onClick)
 }

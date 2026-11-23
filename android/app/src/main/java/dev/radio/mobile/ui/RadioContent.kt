@@ -33,7 +33,9 @@ import dev.radio.mobile.recommendation.*
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun RadioContent(radio:RadioState,repository:RadioRepository,audio:PlaybackState,playback:PlaybackController,library:LibraryState,onLibrary:()->Unit,onPlayer:()->Unit,modifier:Modifier=Modifier,connected:ConnectedUi=ConnectedUi(),
-    paired:Boolean=false,onChooseFolder:()->Unit={},onRescan:()->Unit={},onFullQueue:()->Unit={},onEnd:()->Unit={},openTune:Boolean=false,onTuneOpened:()->Unit={},onServer:()->Unit={},positionMs:()->Long={audio.positionMs}) {
+    paired:Boolean=false,onChooseFolder:()->Unit={},onRescan:()->Unit={},onFullQueue:()->Unit={},onEnd:()->Unit={},openTune:Boolean=false,onTuneOpened:()->Unit={},onServer:()->Unit={},positionMs:()->Long={audio.positionMs},
+    /** Removes an upcoming song; the caller offers Undo. */
+    onRemoveFromQueue:(String)->Unit={playback.removeFromQueue(it)}) {
     val feels by repository.feelChoices.collectAsState()
     val talkSettingsNow by repository.talkSettings.collectAsState()
     val talkOn=talkSettingsNow.enabled
@@ -121,7 +123,7 @@ fun RadioContent(radio:RadioState,repository:RadioRepository,audio:PlaybackState
                 }
             }
         } else {
-            item(key="coming-up") { ComingUp(audio,onRemove={playback.removeFromQueue(it)},onFullQueue=onFullQueue) }
+            item(key="coming-up") { ComingUp(audio,onRemove=onRemoveFromQueue,onFullQueue=onFullQueue) }
             if(connected.status.enabled && connected.status.pendingAnchor!=null && connected.status.pendingAnchor==audio.currentId) item(key="desktop-asking") {
                 Text("Asking your desktop for picks… Radio keeps going if it doesn't answer.",Modifier.fillMaxWidth().padding(horizontal=4.dp).testTag("desktop-asking"),
                     style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
@@ -136,7 +138,7 @@ fun RadioContent(radio:RadioState,repository:RadioRepository,audio:PlaybackState
             }
         }
         item(key="details") {
-            TextButton(onClick={showDiagnostics=true},modifier=Modifier.testTag("recommendation-details")){Text("Station details")}
+            TextButton(onClick={showDiagnostics=true},contentPadding=PaddingValues(horizontal=4.dp),modifier=Modifier.testTag("recommendation-details")){Text("Station details")}
         }
     }
     val seedSongs=remember(library.songs,seedPicker){ if(seedPicker) library.songs.filter{it.available && !repository.isDisliked(it.id)}.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER){it:dev.radio.mobile.data.LocalSong->it.title}) else emptyList() }

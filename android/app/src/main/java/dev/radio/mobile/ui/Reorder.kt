@@ -83,7 +83,7 @@ class ReorderState internal constructor(private val list: LazyListState, private
             speed = 0f; scroll?.cancel(); draggingKey = null
             settlingKey = key; offset = start
             settle = scope.launch {
-                Animatable(start).animateTo(0f, spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMediumLow)) { offset = value }
+                Animatable(start).animateTo(0f, Motion.settle()) { offset = value }
                 settlingKey = null
             }
             return
@@ -131,7 +131,7 @@ fun SwipeToRemove(enabled: Boolean, onRemove: () -> Unit, modifier: Modifier = M
         val start = state.dismissDirection == SwipeToDismissBoxValue.StartToEnd
         // Draw nothing until the row is actually being swiped, so the queue stays transparent at rest.
         if (state.dismissDirection == SwipeToDismissBoxValue.Settled) return@SwipeToDismissBox
-        Box(Modifier.fillMaxSize().padding(horizontal = 8.dp).background(MaterialTheme.colorScheme.errorContainer, RoundedCornerShape(20.dp)).padding(horizontal = 20.dp),
+        Box(Modifier.fillMaxSize().revealedBy(state).padding(horizontal = 8.dp).background(MaterialTheme.colorScheme.errorContainer, RoundedCornerShape(20.dp)).padding(horizontal = 20.dp),
             contentAlignment = if (start) Alignment.CenterStart else Alignment.CenterEnd) {
             CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.onErrorContainer) { RadioIcon(Symbol.Remove, "Remove") }
         }
@@ -153,4 +153,4 @@ fun rememberDragHaptic(): () -> Unit {
 @Composable
 fun androidx.compose.foundation.lazy.LazyItemScope.springPlacement(): Modifier =
     Modifier.animateItem(fadeInSpec = null, fadeOutSpec = null,
-        placementSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessMediumLow))
+        placementSpec = Motion.settle())

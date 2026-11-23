@@ -47,7 +47,12 @@ fun RadioTheme(
         surfaceContainerHighest = if (ocean) Color(0xFF334258) else Color(0xFF244042),
         surfaceBright = if (ocean) Color(0xFF38475D) else Color(0xFF2B4749),
         surfaceDim = if (ocean) OceanNight else TealNight,
-        surfaceTint = if (ocean) Color(0xFFA8C7FF) else Color(0xFF83D5C9)
+        surfaceTint = if (ocean) Color(0xFFA8C7FF) else Color(0xFF83D5C9),
+        // Set explicitly so Material's baseline purple never leaks into swipes, snackbars or tertiary accents.
+        tertiary = Color(0xFFFDBA74), onTertiary = Color(0xFF431407),
+        tertiaryContainer = Color(0xFF5A3A1E), onTertiaryContainer = Color(0xFFFFDDB8),
+        inverseSurface = Color(0xFFE2E8EC), inverseOnSurface = Color(0xFF1A2229),
+        inversePrimary = if (ocean) OceanAccent else TealAccent,
     ) else lightColorScheme(
         primary = if (ocean) OceanAccent else TealAccent,
         onPrimary = Color.White,
@@ -72,7 +77,11 @@ fun RadioTheme(
         surfaceContainerHighest = Color(0xFFE2E8EC),
         surfaceBright = Color(0xFFFAFBFC),
         surfaceDim = Color(0xFFDBE1E5),
-        surfaceTint = if (ocean) OceanAccent else TealAccent
+        surfaceTint = if (ocean) OceanAccent else TealAccent,
+        tertiary = Color(0xFFB45309), onTertiary = Color.White,
+        tertiaryContainer = Color(0xFFFDE7C9), onTertiaryContainer = Color(0xFF5A2A00),
+        inverseSurface = Color(0xFF2A333B), inverseOnSurface = Color(0xFFEEF1F4),
+        inversePrimary = if (ocean) Color(0xFFA8C7FF) else Color(0xFF83D5C9),
     )
     val view = LocalView.current
     SideEffect {
