@@ -32,7 +32,9 @@ fun PlaylistBrowser(state: PlaylistsState, repository: PlaylistRepository, catal
     /** Listening history for the automatic playlists; without it they are not shown. */
     smartRows: Flow<List<SmartListRow>>? = null, favorites: Set<String> = emptySet(),
     /** "Start radio from this": the list's name and its available songs, in order. */
-    onRadio: (String, List<String>) -> Unit = { _, _ -> }) {
+    onRadio: (String, List<String>) -> Unit = { _, _ -> },
+    /** Long-press songs to select several (inside a playlist, long-press and drag still reorders). */
+    selection: SelectionController = remember { SelectionController() }) {
     val scope = rememberCoroutineScope()
     var nameDialog by remember { mutableStateOf(false) }
     var deleting by remember { mutableStateOf<LocalPlaylist?>(null) }
@@ -69,6 +71,13 @@ fun PlaylistBrowser(state: PlaylistsState, repository: PlaylistRepository, catal
     fun radioFrom(name: String, list: List<String>) { val ids = list.filter { it in available }.distinct(); if (ids.isNotEmpty()) onRadio(name, ids) }
     fun report(result: Result<Unit>) { result.exceptionOrNull()?.let { message = it.message ?: "Couldn't update playlist." } }
     val listState = rememberLazyListState()
+    val heardSongs = remember(heard) { heard.map { it.first }.distinctBy { it.id } }
+    when {
+        smart == SmartList.Heard -> BindSelection(selection, "smart:${smart.id}", remember(heardSongs) { heardSongs.map { it.id } }, heardSongs)
+        smart != null -> BindSelection(selection, "smart:${smart.id}", remember(smartSongs) { smartSongs.map { it.id } }, smartSongs)
+        selected != null -> BindSelection(selection, "playlist:${selected.id}", ids, songs, selected.id)
+    }
+    val selecting = selection.active
     // Inside a playlist: long-press a song to drag it, swipe it sideways to remove it.
     val reorder = rememberReorderState(listState) { key, index -> selected?.let { playlist -> scope.launch { report(repository.move(playlist.id, key as String, index)) } } }
     val haptic = rememberDragHaptic()
@@ -113,16 +122,18 @@ fun PlaylistBrowser(state: PlaylistsState, repository: PlaylistRepository, catal
                 }
             }
         }
-        LazyColumn(Modifier.fillMaxSize().testTag("playlist-list"), state = listState) {
+        LazyColumn(Modifier.fillMaxSize().sweepSelect(listState, selection, enabled = smart != null) { key ->
+            if (smart == SmartList.Heard) (key as? String)?.removePrefix("heard:")?.toIntOrNull()?.let { heard.getOrNull(it)?.first?.id } else (key as? String)?.takeIf { it in selection.order }
+        }.testTag("playlist-list"), state = listState) {
             if (smart != null) {
                 if (smart == SmartList.Heard) itemsIndexed(heard, key = { index, _ -> "heard:$index" }) { _, (song, at) ->
                     // Repeats are kept; one tap plays that song again (alone), the time says when it was heard.
-                    SwipeSongRow(song, onSongAction) { val songMenu = remember { mutableStateOf(false) }; LibraryRow(song.title, heardTime(at) + " · " + songSubtitle(song), Symbol.History, playing = song.id == currentId,
-                        onLongClick = { songMenu.value = true }, trailing = { SongActions(song, onSongAction, songMenu) }) { if (accessAllowed) onPlay(song, listOf(song), PlaySource(smart.title, PlaySource.SMART_LIST, smart.id)) } }
+                    SelectableSongRow(song, heardTime(at) + " · " + songSubtitle(song), selection, onSongAction, symbol = Symbol.History, playing = song.id == currentId) {
+                        if (accessAllowed) onPlay(song, listOf(song), PlaySource(smart.title, PlaySource.SMART_LIST, smart.id)) }
                 } else itemsIndexed(smartSongs, key = { _, it -> it.id }) { index, song ->
                     // The Top 100 shows each song's place.
-                    SwipeSongRow(song, onSongAction) { val songMenu = remember { mutableStateOf(false) }; LibraryRow(if (smart == SmartList.Top) "${index + 1}. ${song.title}" else song.title, songSubtitle(song), Symbol.Music, playing = song.id == currentId,
-                        onLongClick = { songMenu.value = true }, trailing = { SongActions(song, onSongAction, songMenu) }) { if (accessAllowed) onPlay(song, smartSongs, PlaySource(smart.title, PlaySource.SMART_LIST, smart.id)) } }
+                    SelectableSongRow(song, songSubtitle(song), selection, onSongAction, title = if (smart == SmartList.Top) "${index + 1}. ${song.title}" else song.title, playing = song.id == currentId) {
+                        if (accessAllowed) onPlay(song, smartSongs, PlaySource(smart.title, PlaySource.SMART_LIST, smart.id)) }
                 }
                 if (smartLists != null && smartSongs.isEmpty()) item {
                     Text(when (smart) {
@@ -179,9 +190,10 @@ fun PlaylistBrowser(state: PlaylistsState, repository: PlaylistRepository, catal
             } else {
                 itemsIndexed(ids, key = { _, it -> it }) { index, id ->
                     val song = byId[id]
-                    SwipeToRemove(enabled = reorder.draggingKey == null, onRemove = { scope.launch { report(repository.remove(selected.id, id)) } },
-                        modifier = (if (reorder.settlingKey == id || reorder.draggingKey == id) Modifier else springPlacement()).reorderable(reorder, id, onStart = haptic)) {
-                    LibraryRow(song?.title ?: "Unavailable song", song?.let(::songSubtitle) ?: "Not in the selected Music folder", Symbol.Music, playing = id == currentId, trailing = {
+                    SwipeToRemove(enabled = reorder.draggingKey == null && !selecting, onRemove = { scope.launch { report(repository.remove(selected.id, id)) } },
+                        modifier = (if (reorder.settlingKey == id || reorder.draggingKey == id) Modifier else springPlacement()).reorderable(reorder, id, onStart = haptic, onPress = { selection.begin(id) })) {
+                    LibraryRow(song?.title ?: "Unavailable song", song?.let(::songSubtitle) ?: "Not in the selected Music folder", Symbol.Music, playing = id == currentId,
+                        selected = if (selecting) id in selection.selection.ids else null, onSelect = { selection.begin(id) }, trailing = {
                         var open by remember { mutableStateOf(false) }
                         Box {
                             IconButton(onClick = { open = true }, modifier = Modifier.testTag("playlist-song-menu-$id")) { RadioIcon(Symbol.More, "Playlist song options") }
@@ -193,7 +205,7 @@ fun PlaylistBrowser(state: PlaylistsState, repository: PlaylistRepository, catal
                                 DropdownMenuItem(text = { Text("Remove from playlist") }, onClick = { open = false; scope.launch { report(repository.remove(selected.id, id)) } })
                             }
                         }
-                    }) { if (accessAllowed && song?.available == true) onPlay(song, songs, PlaySource(selected.name, PlaySource.PLAYLIST, selected.id)) }
+                    }) { if (selecting) selection.toggle(id) else if (accessAllowed && song?.available == true) onPlay(song, songs, PlaySource(selected.name, PlaySource.PLAYLIST, selected.id)) }
                     }
                 }
                 if (ids.isEmpty()) item { EmptyState(Symbol.Music, "This playlist is empty", "Add songs from any song menu, or swipe a song and choose a playlist.") }

@@ -114,6 +114,7 @@ class PlaylistRepository(private val db: LibraryDatabase, scope: CoroutineScope)
     } }
     suspend fun add(id: String, songIds: List<String>): Result<Unit> = edit(id) { (it + songIds).distinct() }
     suspend fun remove(id: String, songId: String): Result<Unit> = edit(id) { it.filterNot { song -> song == songId } }
+    suspend fun removeAll(id: String, songIds: Collection<String>): Result<Unit> { val gone = songIds.toSet(); return edit(id) { it.filterNot { song -> song in gone } } }
     suspend fun move(id: String, songId: String, target: Int): Result<Unit> = edit(id) { old ->
         old.toMutableList().apply { if (remove(songId)) add(target.coerceIn(0, size), songId) }
     }

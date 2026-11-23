@@ -53,7 +53,9 @@ fun LibraryContent(
     sortedSongs: List<LocalSong>? = null, currentId: String? = null,
     onPlayAll: (List<LocalSong>, PlaySource, Boolean) -> Unit = { _, _, _ -> },
     /** The artist open in the Artists tab, if any. */
-    artist: String? = null, onArtist: (String) -> Unit = {}
+    artist: String? = null, onArtist: (String) -> Unit = {},
+    /** Long-press song rows to select several; the app bars act on the selection. */
+    selection: SelectionController = remember { SelectionController() }
 ) {
     val ordered = sortedSongs ?: remember(state.songs, sort) { orderSongs(state.songs, sort) }
     val parent = folderId ?: state.root?.folderId
@@ -97,24 +99,30 @@ fun LibraryContent(
                 shape = androidx.compose.foundation.shape.RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)) {
             FadeInOnChange("$folderId/$category/$artist") {
             if (folderId == null && category == "Playlists") playlistContent()
-            else if (folderId == null && category == "Artists") LazyColumn(state = listState, modifier = Modifier.fillMaxSize().testTag("artist-list")) {
+            else if (folderId == null && category == "Artists") {
                 val open = artists.firstOrNull { it.name == artist }
+                val openSongs = open?.songs.orEmpty()
+                val openIds = remember(openSongs) { openSongs.map { it.id } }
+                BindSelection(selection, "artist:$artist", openIds, openSongs)
+                LazyColumn(state = listState, modifier = Modifier.fillMaxSize().sweepSelect(listState, selection, enabled = open != null) { key -> (key as? String)?.takeIf { it in selection.order } }.testTag("artist-list")) {
                 if (artist == null) items(artists, key = { "artist:${it.name}" }) { entry ->
                     val count = entry.songs.count { it.available }
                     LibraryRow(entry.name, "$count song${if (count == 1) "" else "s"}", Symbol.Person) { onArtist(entry.name) }
                 } else if (open != null) {
                     val playable = open.songs.count { it.available }
                     if (playable > 1) item(key = "play-all") { PlayAllRow(playable, { onPlayAll(open.songs, PlaySource(open.name, PlaySource.ARTIST, open.name), false) }, { onPlayAll(open.songs, PlaySource(open.name, PlaySource.ARTIST, open.name), true) }) }
-                    items(open.songs, key = { it.id }) { song -> SwipeSongRow(song, onSongAction) { val songMenu = remember { mutableStateOf(false) }; LibraryRow(song.title, songSubtitle(song, showArtist = false), Symbol.Music, playing = song.id == currentId,
-                        onLongClick = { songMenu.value = true }, trailing = { SongActions(song, onSongAction, songMenu) }) { onSong(song, open.songs, PlaySource(open.name, PlaySource.ARTIST, open.name)) } } }
+                    items(open.songs, key = { it.id }) { song -> SelectableSongRow(song, songSubtitle(song, showArtist = false), selection, onSongAction, playing = song.id == currentId) {
+                        onSong(song, open.songs, PlaySource(open.name, PlaySource.ARTIST, open.name)) } }
                 }
                 if (artists.isEmpty()) item { EmptyState(Symbol.Person, "No artists yet", "Artists come from file names like “Artist - Title.mp3”.") }
                 else if (artist == null && artists.size == 1 && artists[0].name == Artists.UNKNOWN) item {
                     Text("Artists come from file names like “Artist - Title.mp3”; none of yours follow that pattern.", Modifier.padding(20.dp), style = MaterialTheme.typography.bodySmall)
                 }
-            }
+            } }
             else {
-                LazyColumn(state = listState, modifier = Modifier.fillMaxSize().testTag("library-list")) {
+                val visibleIds = remember(visible) { visible.map { it.id } }
+                BindSelection(selection, "songs:$folderId/$category", visibleIds, visible)
+                LazyColumn(state = listState, modifier = Modifier.fillMaxSize().sweepSelect(listState, selection) { key -> (key as? String)?.takeIf { it in selection.order } }.testTag("library-list")) {
                     // The sort control scrolls away with the list; beside Play all / Shuffle when they show, alone otherwise.
                     val playable = visible.count { it.available }
                     if (showSort && playable <= 1) item(key = "sort-control") {
@@ -128,8 +136,8 @@ fun LibraryContent(
                     val source = if (!browsingFolders) PlaySource.AllSongs else PlaySource(state.folders.firstOrNull { it.id == parent }?.name ?: "Music", PlaySource.FOLDER, parent)
                     if (playable > 1) item(key = "play-all") { PlayAllRow(playable, { onPlayAll(visible, source, false) }, { onPlayAll(visible, source, true) }, trailing = if (showSort) ({ SortButton(sort, onSort) }) else null) }
                     // Inside a folder every row shares the folder, so rows show artist and length only.
-                    items(visible, key = { it.id }) { song -> SwipeSongRow(song, onSongAction) { val songMenu = remember { mutableStateOf(false) }; LibraryRow(song.title, songSubtitle(song, showFolder = !browsingFolders), Symbol.Music, playing = song.id == currentId,
-                        onLongClick = { songMenu.value = true }, trailing = { SongActions(song, onSongAction, songMenu) }) { onSong(song, visible, source) } } }
+                    items(visible, key = { it.id }) { song -> SelectableSongRow(song, songSubtitle(song, showFolder = !browsingFolders), selection, onSongAction, playing = song.id == currentId) {
+                        onSong(song, visible, source) } }
                     if (visible.isEmpty() && (!browsingFolders || childFolders.isEmpty())) item {
                         EmptyState(Symbol.Music, "No MP3s in this ${if (browsingFolders) "folder" else "library"}", "Try another folder, or rescan after adding files.")
                     }
