@@ -550,21 +550,21 @@ fun SongTitle(title: String, modifier: Modifier = Modifier) {
 /** Mini-player while on air: station surface, ON AIR dot, Pause and Skip. */
 @Composable
 fun StationMiniPlayer(song: LocalSong, status: String, playWhenReady: Boolean, canPlay: Boolean, canNext: Boolean, onOpen: () -> Unit, onToggle: () -> Unit, onNext: () -> Unit, mood: String = "neutral",
-    onPrevious: () -> Unit = {}, canPrevious: Boolean = false, positionMs: () -> Long = { 0L }, durationMs: Long? = null) =
-    StationMiniPlayer(song.title, status, playWhenReady, canPlay, canNext, onOpen, onToggle, onNext, mood, onPrevious = onPrevious, canPrevious = canPrevious, positionMs = positionMs, durationMs = durationMs)
+    positionMs: () -> Long = { 0L }, durationMs: Long? = null) =
+    StationMiniPlayer(song.title, status, playWhenReady, canPlay, canNext, onOpen, onToggle, onNext, mood, positionMs = positionMs, durationMs = durationMs)
 
 /** The on-air pill for any item: a song, or a talk clip ([symbol] Person, [nextLabel] "Skip talk"). */
 @Composable
 fun StationMiniPlayer(title: String, status: String, playWhenReady: Boolean, canPlay: Boolean, canNext: Boolean, onOpen: () -> Unit, onToggle: () -> Unit, onNext: () -> Unit,
     mood: String = "neutral", symbol: Symbol = Symbol.Music, nextLabel: String = "Next song",
-    onPrevious: () -> Unit = {}, canPrevious: Boolean = false, positionMs: () -> Long = { 0L }, durationMs: Long? = null) {
+    positionMs: () -> Long = { 0L }, durationMs: Long? = null) {
     val colors = LocalStationColors.current
     val drag = rememberDragOffset()
     val scope = rememberCoroutineScope()
     // The mood's dark tone fills the pill, so "on air" is recognisable from any tab.
     Surface(color = Color(dev.radio.mobile.ui.theme.MoodColors.of(mood).field), contentColor = Color.White, shape = RoundedCornerShape(18.dp),
         modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 4.dp)
-            .miniPlayerGestures(onOpen, onNext, onPrevious, canNext, canPrevious, drag, scope)
+            .miniPlayerGestures(onOpen, drag, scope)
             .progressLine(positionMs, durationMs, OnAirText, Color.White.copy(alpha = .18f)).testTag("mini-player")) {
         Row(Modifier.padding(start = 16.dp, end = 4.dp).heightIn(min = 68.dp), verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.size(44.dp).background(Color(colors.tile), RoundedCornerShape(8.dp)).clickable(role = Role.Button, onClickLabel = "Open player", onClick = onOpen), contentAlignment = Alignment.Center) {

@@ -448,14 +448,14 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
                   AnimatedContent(stationMode, transitionSpec = { fadeIn(Motion.standard()) togetherWith fadeOut(Motion.quick()) }, label = "mini-player") { onAir ->
                     if (onAir) StationMiniPlayer(song, if (tuningIn) "Tuning in…" else "${tag}On air · ${if (radio.vibeLocalId != null) "Vibe locked" else moodLabel(radio.mood)}", audio.playWhenReady,
                         canPlay = !library.accessLost && song.available, canNext = audio.canNext && !tuningIn, onOpen = { navigate("Now playing") }, onToggle = { playback.toggle() }, onNext = { playback.next() }, mood = radio.mood,
-                        onPrevious = { playback.previous() }, canPrevious = audio.canPrevious && !tuningIn, positionMs = { livePosition.value }, durationMs = audio.durationMs)
+                        positionMs = { livePosition.value }, durationMs = audio.durationMs)
                     // Normal playback: a tonal pill in the app's own palette. The mood-coloured pill above means "on air".
                     else {
                       val drag = rememberDragOffset()
                       val miniScope = rememberCoroutineScope()
                       Surface(color = MaterialTheme.colorScheme.primaryContainer, contentColor = MaterialTheme.colorScheme.onPrimaryContainer, shape = RoundedCornerShape(18.dp),
                         modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 4.dp)
-                            .miniPlayerGestures({ navigate("Now playing") }, { playback.next() }, { playback.previous() }, audio.canNext, audio.canPrevious, drag, miniScope)
+                            .miniPlayerGestures({ navigate("Now playing") }, drag, miniScope)
                             .progressLine({ livePosition.value }, audio.durationMs, MaterialTheme.colorScheme.primary, MaterialTheme.colorScheme.primary.copy(alpha = .18f))) {
                         Row(Modifier.padding(start = 12.dp, end = 6.dp).heightIn(min = 64.dp), verticalAlignment = Alignment.CenterVertically) {
                             Box(Modifier.sharedPlayer(shared, barScope, "art").clickable(role = Role.Button, onClickLabel = "Open player") { navigate("Now playing") }) { Artwork(40) }

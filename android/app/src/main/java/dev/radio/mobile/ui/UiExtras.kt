@@ -7,7 +7,7 @@ import android.provider.Settings
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.interaction.InteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
@@ -32,7 +32,6 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import kotlin.math.abs
 import kotlinx.coroutines.launch
 import androidx.compose.animation.core.AnimationVector2D
 import androidx.compose.animation.core.VectorConverter
@@ -116,21 +115,16 @@ fun EmptyState(symbol: Symbol, title: String, body: String, modifier: Modifier =
 }
 
 /**
- * Mini-player gestures: swipe up to open Now Playing, sideways for next/previous. The pill follows the finger a little
- * so the gesture reads as physical, then settles back.
+ * Mini-player gesture: swipe up to open Now Playing. The pill follows the finger a little so the gesture reads as
+ * physical, then settles back. Sideways drags are ignored (no swipe to skip).
  */
-fun Modifier.miniPlayerGestures(onOpen: () -> Unit, onNext: () -> Unit, onPrevious: () -> Unit, canNext: Boolean, canPrevious: Boolean,
-    offset: Animatable<Offset, *>, scope: kotlinx.coroutines.CoroutineScope): Modifier = pointerInput(canNext, canPrevious) {
+fun Modifier.miniPlayerGestures(onOpen: () -> Unit, offset: Animatable<Offset, *>, scope: kotlinx.coroutines.CoroutineScope): Modifier = pointerInput(Unit) {
     val threshold = 56.dp.toPx()
-    var total = Offset.Zero
-    detectDragGestures(
-        onDragStart = { total = Offset.Zero },
+    var total = 0f
+    detectVerticalDragGestures(
+        onDragStart = { total = 0f },
         onDragEnd = {
-            when {
-                -total.y > threshold && abs(total.y) > abs(total.x) -> onOpen()
-                total.x < -threshold && canNext -> onNext()
-                total.x > threshold && canPrevious -> onPrevious()
-            }
+            if (-total > threshold) onOpen()
             scope.launchSettle(offset)
         },
         onDragCancel = { scope.launchSettle(offset) },
@@ -138,7 +132,7 @@ fun Modifier.miniPlayerGestures(onOpen: () -> Unit, onNext: () -> Unit, onPrevio
         change.consume()
         total += amount
         // Dampened: the pill leans with the finger without sliding away.
-        scope.launchSnap(offset, Offset((total.x * .35f), (total.y * .25f).coerceAtMost(0f)))
+        scope.launchSnap(offset, Offset(0f, (total * .25f).coerceAtMost(0f)))
     }
 }.graphicsLayer { translationX = offset.value.x; translationY = offset.value.y }
 
