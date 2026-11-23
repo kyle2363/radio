@@ -25,7 +25,9 @@ import kotlinx.coroutines.launch
 
 @Composable
 fun IntegratedQueue(audio: PlaybackState, accessAllowed: Boolean, onSelect: (String) -> Unit, modifier: Modifier = Modifier,
-    playback: PlaybackController? = null, onAdd: () -> Unit = {}, onSave: (List<String>) -> Unit = {}, serverAiIds: Set<String> = emptySet()) {
+    playback: PlaybackController? = null, onAdd: () -> Unit = {}, onSave: (List<String>) -> Unit = {}, serverAiIds: Set<String> = emptySet(),
+    /** Removal and clearing go through the caller so it can offer Undo. */
+    onRemove: (String) -> Unit = { playback?.removeFromQueue(it) }, onClearUpcoming: () -> Unit = { playback?.clearUpcoming() }) {
     val origins = audio.origins
     val byId = remember(audio.queue) { audio.queue.associateBy { it.id } }
     val currentIndex = remember(audio.playOrder, audio.currentId) { audio.playOrder.indexOf(audio.currentId) }
@@ -53,12 +55,13 @@ fun IntegratedQueue(audio: PlaybackState, accessAllowed: Boolean, onSelect: (Str
                     DropdownMenu(menu, { menu = false }) {
                         DropdownMenuItem(text = { Text("Edit queue") }, onClick = { menu = false; editing = true })
                         DropdownMenuItem(text = { Text("Save queue to playlist") }, onClick = { menu = false; onSave(audio.playOrder) })
-                        DropdownMenuItem(text = { Text("Clear upcoming songs") }, enabled = audio.canNext, onClick = { menu = false; playback.clearUpcoming() })
+                        DropdownMenuItem(text = { Text("Clear upcoming songs") }, enabled = audio.canNext, onClick = { menu = false; onClearUpcoming() })
                     }
                 }
             }
         }
-        LazyColumn(state = list, modifier = Modifier.fillMaxWidth().weight(1f).testTag("playback-queue"), contentPadding = PaddingValues(bottom = 12.dp)) {
+        // The list fades into the transport below instead of ending in a half-cut row.
+        LazyColumn(state = list, modifier = Modifier.fillMaxWidth().weight(1f).fadeEdges(28.dp, horizontal = false, start = false).testTag("playback-queue"), contentPadding = PaddingValues(bottom = 24.dp)) {
             itemsIndexed(audio.playOrder, key = { _, id -> id }) { index, id ->
                 val song = byId[id] ?: return@itemsIndexed
                 val current = id == audio.currentId
@@ -78,7 +81,7 @@ fun IntegratedQueue(audio: PlaybackState, accessAllowed: Boolean, onSelect: (Str
                     }
                 }
                 val tint = if (current) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-                SwipeToRemove(enabled = playback != null && !editing && !current && reorder.draggingKey == null, onRemove = { playback?.removeFromQueue(id) },
+                SwipeToRemove(enabled = playback != null && !editing && !current && reorder.draggingKey == null, onRemove = { onRemove(id) },
                     modifier = (if (reorder.settlingKey == id || reorder.draggingKey == id) Modifier else springPlacement()).reorderable(reorder, id, enabled = playback != null && !editing, onStart = haptic)) {
                 // The current song sits on a rounded tonal block so it is easy to find in a long queue.
                 Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp).clip(RoundedCornerShape(20.dp))
@@ -96,7 +99,7 @@ fun IntegratedQueue(audio: PlaybackState, accessAllowed: Boolean, onSelect: (Str
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             val origin = origins[id]
                             val reason = origin?.takeIf { it != dev.radio.mobile.recommendation.StationOrigin.Desktop && it != dev.radio.mobile.recommendation.StationOrigin.User }?.label
-                            Text(if (current) audio.status else if (!song.available) "Unavailable" else songSubtitle(song) + (reason?.let { " · $it" } ?: ""), Modifier.weight(1f, fill = false), maxLines = 1, overflow = TextOverflow.Ellipsis,
+                            Text(if (current) nowPlayingLine(song, audio.status) else if (!song.available) "Unavailable" else songSubtitle(song) + (reason?.let { " · $it" } ?: ""), Modifier.weight(1f, fill = false), maxLines = 1, overflow = TextOverflow.Ellipsis,
                                 style = MaterialTheme.typography.bodySmall, color = tint)
                             if ((id in serverAiIds || origin == dev.radio.mobile.recommendation.StationOrigin.Desktop) && !current) ServerAiMarker(Modifier.padding(start = 8.dp).testTag("queue-server-ai-$id"))
                             else if (origin == dev.radio.mobile.recommendation.StationOrigin.User && !current) OriginTag("Added by you", Modifier.padding(start = 8.dp).testTag("queue-user-$id"))
@@ -106,7 +109,7 @@ fun IntegratedQueue(audio: PlaybackState, accessAllowed: Boolean, onSelect: (Str
                         if (editing) {
                             IconButton(onClick = { playback.moveInQueue(id, index - 1) }, enabled = index > 0) { RadioIcon(Symbol.Up, "Move ${song.title} up") }
                             IconButton(onClick = { playback.moveInQueue(id, index + 1) }, enabled = index < audio.playOrder.lastIndex) { RadioIcon(Symbol.Down, "Move ${song.title} down") }
-                            IconButton(onClick = { playback.removeFromQueue(id) }) { RadioIcon(Symbol.Remove, "Remove ${song.title} from queue") }
+                            IconButton(onClick = { onRemove(id) }) { RadioIcon(Symbol.Remove, "Remove ${song.title} from queue") }
                         } else {
                             var options by remember { mutableStateOf(false) }
                             Box {
@@ -116,7 +119,7 @@ fun IntegratedQueue(audio: PlaybackState, accessAllowed: Boolean, onSelect: (Str
                                     DropdownMenuItem(text = { Text("Move up") }, enabled = index > 0, onClick = { options = false; playback.moveInQueue(id, index - 1) })
                                     DropdownMenuItem(text = { Text("Move down") }, enabled = index < audio.playOrder.lastIndex, onClick = { options = false; playback.moveInQueue(id, index + 1) })
                                     DropdownMenuItem(text = { Text("Add to playlist") }, onClick = { options = false; onSave(listOf(id)) })
-                                    DropdownMenuItem(text = { Text("Remove from queue") }, onClick = { options = false; playback.removeFromQueue(id) })
+                                    DropdownMenuItem(text = { Text("Remove from queue") }, onClick = { options = false; onRemove(id) })
                                 }
                             }
                         }
@@ -140,11 +143,17 @@ fun PlayerTransport(
         PlaybackProgress(positionMs, audio.durationMs, audio.seekable, onScrub, onScrubFinished)
         Row(Modifier.fillMaxWidth().padding(vertical = if (compact) 4.dp else 12.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             if(audio.radioActive)Spacer(Modifier.size(48.dp)) else IconToggleButton(audio.shuffled, onCheckedChange = { playback.shuffle(it) }) { RadioIcon(Symbol.Shuffle, "Shuffle") }
-            FilledTonalIconButton(onClick = { playback.previous() }, enabled = audio.canPrevious, modifier = Modifier.size(52.dp)) { RadioIcon(Symbol.Previous, "Previous song") }
-            FilledIconButton(onClick = { playback.toggle() }, enabled = canRead, modifier = Modifier.size(width = if (compact) 76.dp else 92.dp, height = if (compact) 56.dp else 72.dp), shape = dev.radio.mobile.ui.theme.RadioShapes.Squircle) {
-                RadioIcon(if (audio.playWhenReady) Symbol.Pause else Symbol.Play, if (audio.playWhenReady) "Pause" else "Play", Modifier.size(32.dp))
+            val playPress = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+            val previousPress = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+            val nextPress = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+            // Paused, the main button rounds into a pill; playing, it firms into the squircle.
+            val corner by androidx.compose.animation.core.animateDpAsState(if (audio.playWhenReady) 30.dp else 40.dp, Motion.standard(), label = "play-shape")
+            FilledTonalIconButton(onClick = { playback.previous() }, enabled = audio.canPrevious, modifier = Modifier.size(52.dp).pressScale(previousPress, .9f), interactionSource = previousPress) { RadioIcon(Symbol.Previous, "Previous song") }
+            FilledIconButton(onClick = { playback.toggle() }, enabled = canRead, modifier = Modifier.size(width = if (compact) 76.dp else 92.dp, height = if (compact) 56.dp else 72.dp).pressScale(playPress),
+                shape = RoundedCornerShape(corner), interactionSource = playPress) {
+                PlayPauseIcon(audio.playWhenReady, Modifier.size(32.dp))
             }
-            FilledTonalIconButton(onClick = { playback.next() }, enabled = audio.canNext, modifier = Modifier.size(52.dp).testTag("player-next")) { RadioIcon(Symbol.Next, "Next song") }
+            FilledTonalIconButton(onClick = { playback.next() }, enabled = audio.canNext, modifier = Modifier.size(52.dp).pressScale(nextPress, .9f).testTag("player-next"), interactionSource = nextPress) { RadioIcon(Symbol.Next, "Next song") }
             IconToggleButton(queueVisible, onCheckedChange = { onQueueToggle() }) {
                 RadioIcon(if (queueVisible) Symbol.Music else Symbol.Queue, if (queueVisible) "Show artwork" else "Queue")
             }

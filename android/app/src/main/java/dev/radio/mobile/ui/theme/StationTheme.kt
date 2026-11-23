@@ -39,6 +39,8 @@ fun StationTheme(colors: StationColors, enabled: Boolean = true, content: @Compo
         secondary = Color(colors.muted), onSecondary = base,
         secondaryContainer = Color(colors.tile), onSecondaryContainer = Color.White,
         tertiary = Color(colors.onAirText), onTertiary = base,
+        tertiaryContainer = Color(0xFF5A3A1E), onTertiaryContainer = Color(0xFFFFDDB8),
+        inverseSurface = Color(0xFFE6EBEF), inverseOnSurface = base, inversePrimary = Color(colors.track),
         background = base, onBackground = Color.White,
         surface = base, onSurface = Color.White,
         surfaceVariant = Color(colors.tile), onSurfaceVariant = Color(colors.muted),

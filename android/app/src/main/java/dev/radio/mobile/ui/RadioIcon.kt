@@ -19,7 +19,10 @@ enum class Symbol(val path: String, val filled: Boolean = false) {
     Moon("M20 14.5 A8.5 8.5 0 1 1 9.5 4 A7 7 0 0 0 20 14.5 Z"),
     Repeat("M4 11 V9 A3 3 0 0 1 7 6 H19 M16 3 L19 6 L16 9 M20 13 V15 A3 3 0 0 1 17 18 H5 M8 21 L5 18 L8 15"),
     RepeatOne("M4 11 V9 A3 3 0 0 1 7 6 H19 M16 3 L19 6 L16 9 M20 13 V15 A3 3 0 0 1 17 18 H5 M8 21 L5 18 L8 15 M11 10 L12.5 9 V15"),
-    Lyrics("M4 5 H20 M4 10 H20 M4 15 H12 M4 20 H9 M17 13 V20 M17 13 L21 12"),
+    /** A speech bubble with lines: words, so it never reads as the queue's list icon. */
+    Lyrics("M4 4 H20 V16 H10 L6 20 V16 H4 Z M8 8 H16 M8 12 H13"),
+    /** A tuning knob, for station tuning; distinct from the Settings tab's sliders. */
+    Tune("M18 13 A6 6 0 1 1 6 13 A6 6 0 1 1 18 13 M12 13 L15 9.5 M12 3 V5 M3.5 9 L5.3 9.8 M20.5 9 L18.7 9.8"),
     Sparkle("M12 3 L13.8 10.2 L21 12 L13.8 13.8 L12 21 L10.2 13.8 L3 12 L10.2 10.2 Z"),
     Add("M12 4 V20 M4 12 H20"),
     Sort("M7 4 V20 M3 16 L7 20 L11 16 M17 20 V4 M13 8 L17 4 L21 8"),
@@ -55,6 +58,7 @@ enum class Symbol(val path: String, val filled: Boolean = false) {
     Person("M16 8 A4 4 0 1 1 8 8 A4 4 0 1 1 16 8 M4 21 C4 16 8 14 12 14 C16 14 20 16 20 21"),
     Sliders("M6 4 V20 M12 4 V20 M18 4 V20 M3 9 H9 M9 15 H15 M15 7 H21"),
     Forward("M9 5 L16 12 L9 19"),
+    Speaker("M4 9 H8 L13 5 V19 L8 15 H4 Z M16.5 9 A4 4 0 0 1 16.5 15 M19 6.5 A7.5 7.5 0 0 1 19 17.5"),
     Desktop("M3 4 H21 V16 H3 Z M8 20 H16 M12 16 V20"),
     Palette("M12 3 A9 9 0 1 0 12 21 C14 21 14 19 13 18 C12 17 13 15 15 15 H17 A4 4 0 0 0 21 11 C21 6.5 17 3 12 3 Z M7.5 11 V11.5 M10 7 V7.5 M15 7 V7.5")
 }

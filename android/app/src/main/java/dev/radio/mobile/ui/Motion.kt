@@ -27,6 +27,12 @@ internal object Motion {
     const val MEDIUM = 220
     fun <T> quick() = tween<T>(SHORT, easing = FastOutSlowInEasing)
     fun <T> standard() = tween<T>(MEDIUM, easing = FastOutSlowInEasing)
+    /** Things coming to rest after a gesture (a dropped row, a released pill): critically damped, no bounce. */
+    fun <T> settle() = androidx.compose.animation.core.spring<T>(dampingRatio = 1f, stiffness = androidx.compose.animation.core.Spring.StiffnessMediumLow)
+    /** Press-in and release of a control: quick and firm. */
+    fun <T> press() = androidx.compose.animation.core.spring<T>(dampingRatio = 1f, stiffness = androidx.compose.animation.core.Spring.StiffnessMedium)
+    /** Elements moving between screens (shared player art and title): a touch of softness, no visible overshoot. */
+    fun <T> spatial() = androidx.compose.animation.core.spring<T>(dampingRatio = .9f, stiffness = 380f)
 }
 
 /** Screen-level transition: Now playing rises from below, pushed screens slide in from the side, tabs crossfade. */
@@ -74,5 +80,5 @@ internal fun backPreview(progress: Float): Float = FastOutSlowInEasing.transform
 internal fun Modifier.sharedPlayer(shared: androidx.compose.animation.SharedTransitionScope, visibility: androidx.compose.animation.AnimatedVisibilityScope?, key: String): Modifier {
     if (visibility == null) return this
     return with(shared) { this@sharedPlayer.sharedElement(rememberSharedContentState("player-$key"), visibility,
-        boundsTransform = { _, _ -> androidx.compose.animation.core.spring(dampingRatio = 0.85f, stiffness = 380f) }) }
+        boundsTransform = { _, _ -> Motion.spatial() }) }
 }
