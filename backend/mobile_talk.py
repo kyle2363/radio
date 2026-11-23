@@ -434,7 +434,7 @@ class MobileTalk:
             raise Rejected(400, "Unknown song IDs")
         available, reason = self.availability()
         with self._lock:
-            self.recommendations_owned(device_id, context_id)
+            self.recommendations_owned(device_id, context_id, touch=True)
             self._sweep()
             show = self._show(device_id, context_id)
             if request.turn_id == show.last_turn:
@@ -473,12 +473,21 @@ class MobileTalk:
             show.last_reply = reply
             return dict(reply)
 
-    def recommendations_owned(self, device_id, context_id):
+    def recommendations_owned(self, device_id, context_id, *, touch=False):
+        """The owning context. A talk turn is activity on it (``touch``): with Desktop picks off the phone sends only
+        talk turns, and the context, with this phone's show, must not idle out between songs."""
         lock = getattr(self.recommendations, "_lock", None)
         if lock is None:
-            return self.recommendations._owned(device_id, context_id)
+            return self._owned_touch(device_id, context_id, touch)
         with lock:
-            return self.recommendations._owned(device_id, context_id)
+            return self._owned_touch(device_id, context_id, touch)
+
+    def _owned_touch(self, device_id, context_id, touch):
+        context = self.recommendations._owned(device_id, context_id)
+        toucher = getattr(self.recommendations, "_touch", None)
+        if touch and toucher is not None:
+            toucher(context)
+        return context
 
     def _show(self, device_id, context_id):
         show = self._shows.get(context_id)

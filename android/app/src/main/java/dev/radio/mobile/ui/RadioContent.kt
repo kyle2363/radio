@@ -35,6 +35,10 @@ import dev.radio.mobile.recommendation.*
 fun RadioContent(radio:RadioState,repository:RadioRepository,audio:PlaybackState,playback:PlaybackController,library:LibraryState,onLibrary:()->Unit,onPlayer:()->Unit,modifier:Modifier=Modifier,connected:ConnectedUi=ConnectedUi(),
     paired:Boolean=false,onChooseFolder:()->Unit={},onRescan:()->Unit={},onFullQueue:()->Unit={},onEnd:()->Unit={},openTune:Boolean=false,onTuneOpened:()->Unit={},onServer:()->Unit={},positionMs:()->Long={audio.positionMs}) {
     val feels by repository.feelChoices.collectAsState()
+    val talkSettingsNow by repository.talkSettings.collectAsState()
+    val talkOn=talkSettingsNow.enabled
+    val reachable by repository.connected.reachable.collectAsState()
+    val serverChip=dev.radio.mobile.recommendation.ServerChip.of(paired,connected.status.enabled,talkOn,reachable)
     var tuning by remember { mutableStateOf(false) }
     var confirm by remember { mutableStateOf(false) }
     var seedPicker by remember { mutableStateOf(false) }
@@ -62,7 +66,7 @@ fun RadioContent(radio:RadioState,repository:RadioRepository,audio:PlaybackState
             when(shown) {
                 "on" -> Box {
                     OnAirStationCard(audio,radio,onOpenPlayer=onPlayer,onVibe={if(radio.vibeLocalId!=null)repository.clearVibe() else repository.lockVibe()},
-                    onNewMix={retune++;playback.newMix()},onEnd=onEnd,positionMs=positionMs,feel=feels.firstOrNull{it.feelId==radio.feel})
+                    onNewMix={retune++;playback.newMix()},onEnd=onEnd,positionMs=positionMs,feel=feels.firstOrNull{it.feelId==radio.feel},server=serverChip)
                     // Checkpoint 10: New mix retunes the dial briefly over the card.
                     if(retuning) Surface(Modifier.matchParentSize(),shape=androidx.compose.foundation.shape.RoundedCornerShape(24.dp),color=MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha=.94f)){
                         TuningDial(radio.mood+":"+retune,Modifier.fillMaxSize().padding(24.dp))

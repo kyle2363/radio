@@ -64,6 +64,22 @@ fun OnAirPill(text: String, modifier: Modifier = Modifier) {
     }
 }
 
+/** Quiet indicator that the paired desktop is (or isn't) reachable for Desktop picks and talk. Never a call to action. */
+@Composable
+private fun ServerChipView(chip: dev.radio.mobile.recommendation.ServerChip, muted: Color) {
+    val dot = when (chip) {
+        dev.radio.mobile.recommendation.ServerChip.Connected -> Color(0xFF6FCF97)
+        dev.radio.mobile.recommendation.ServerChip.Offline -> muted.copy(alpha = .5f)
+        dev.radio.mobile.recommendation.ServerChip.Checking -> muted
+    }
+    Row(Modifier.padding(start = 8.dp).border(1.dp, muted.copy(alpha = .35f), RoundedCornerShape(10.dp)).padding(horizontal = 8.dp, vertical = 2.dp)
+        .semantics(mergeDescendants = true) {}.testTag("server-chip-${chip.name.lowercase()}"),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+        Box(Modifier.size(6.dp).background(dot, CircleShape))
+        Text(chip.label, color = muted, fontSize = 11.sp, maxLines = 1)
+    }
+}
+
 /** The dark station surface used for the Radio tab's card in every appearance. */
 @Composable
 private fun StationSurface(modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) {
@@ -150,7 +166,7 @@ fun BlockedStationCard(block: StationBlock, scanned: Int, total: Int, onChooseFo
 
 @Composable
 fun OnAirStationCard(audio: PlaybackState, radio: RadioState, onOpenPlayer: () -> Unit, onVibe: () -> Unit, onNewMix: () -> Unit, onEnd: () -> Unit, modifier: Modifier = Modifier,
-    positionMs: () -> Long = { audio.positionMs }, feel: dev.radio.mobile.data.LocalFeel? = null) {
+    positionMs: () -> Long = { audio.positionMs }, feel: dev.radio.mobile.data.LocalFeel? = null, server: dev.radio.mobile.recommendation.ServerChip? = null) {
     val colors = LocalStationColors.current
     val muted = Color(colors.muted)
     val song = audio.current
@@ -190,7 +206,11 @@ fun OnAirStationCard(audio: PlaybackState, radio: RadioState, onOpenPlayer: () -
         // The progress lambda is read while drawing, so position ticks redraw the bar without recomposing the card.
         LinearProgressIndicator(progress = { if (duration > 0) (positionMs().toFloat() / duration).coerceIn(0f, 1f) else 0f }, Modifier.fillMaxWidth(),
             color = Color(colors.progress), trackColor = Color(colors.track), drawStopIndicator = {})
-        Text(audio.stationSeedTitle?.let { "Station started from $it" } ?: "Station picked for you", color = muted, fontSize = 12.sp, modifier = Modifier.testTag("station-seed"))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(audio.stationSeedTitle?.let { "Station started from $it" } ?: "Station picked for you", color = muted, fontSize = 12.sp, maxLines = 1,
+                overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f).testTag("station-seed"))
+            if (server != null) ServerChipView(server, muted)
+        }
         if (locked) Row(Modifier.fillMaxWidth().background(Color(colors.panel), RoundedCornerShape(14.dp)).padding(horizontal = 12.dp, vertical = 10.dp).testTag("station-vibe"),
             verticalAlignment = Alignment.CenterVertically) {
             CompositionLocalProvider(LocalContentColor provides Color(colors.progress)) { RadioIcon(Symbol.Lock, modifier = Modifier.size(18.dp)) }

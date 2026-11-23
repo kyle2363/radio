@@ -197,4 +197,13 @@ class ConnectedTalkTest {
         assertEquals(0L, saved.positionMs)
         assertEquals("a", state.copy(currentId = "a", positionMs = 5, talk = state.talk!!.copy(current = false)).snapshot()!!.currentId)
     }
+
+    @Test fun serverChipShowsOnlyWhenSomethingUsesTheDesktop() {
+        assertNull(ServerChip.of(paired = false, desktopPicks = true, talk = true, reachable = true))
+        assertNull(ServerChip.of(paired = true, desktopPicks = false, talk = false, reachable = true))
+        assertEquals(ServerChip.Connected, ServerChip.of(paired = true, desktopPicks = false, talk = true, reachable = true))
+        assertEquals(ServerChip.Connected, ServerChip.of(paired = true, desktopPicks = true, talk = false, reachable = true))
+        assertEquals(ServerChip.Offline, ServerChip.of(paired = true, desktopPicks = false, talk = true, reachable = false))
+        assertEquals(ServerChip.Checking, ServerChip.of(paired = true, desktopPicks = false, talk = true, reachable = null))
+    }
 }

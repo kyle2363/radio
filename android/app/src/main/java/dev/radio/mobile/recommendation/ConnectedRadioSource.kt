@@ -161,6 +161,11 @@ class ConnectedRadioSource(
     private val contextState = MutableStateFlow<String?>(null)
     /** The server context this phone's connected Radio uses; connected talk turns are sent against it. */
     val context: StateFlow<String?> = contextState.asStateFlow()
+    private val reachableState = MutableStateFlow<Boolean?>(null)
+    /** Whether the paired desktop answered the last time it was asked; null until asked. Drives the subtle server chip. */
+    val reachable: StateFlow<Boolean?> = reachableState.asStateFlow()
+    /** Talk calls report what they saw so the chip follows them too. */
+    fun noteReachable(value: Boolean) { reachableState.value = value }
 
     fun setEnabled(value: Boolean) {
         if (enabled == value) return
@@ -168,7 +173,8 @@ class ConnectedRadioSource(
         generation++
         job?.cancel(); job = null
         currentSet.value = null
-        mutable.update { if (value) ConnectedStatus(enabled = true, lastMessage = "Waiting for the next song", tunable = access?.let { it.capable && it.tunable }) else ConnectedStatus() }
+        // What the desktop said about talk survives: talk runs with Desktop picks off too.
+        mutable.update { if (value) ConnectedStatus(enabled = true, lastMessage = "Waiting for the next song", tunable = access?.let { it.capable && it.tunable }, talk = it.talk) else ConnectedStatus(talk = it.talk) }
     }
 
     /** Marks the anchor pending right away so a refill that fires at song start waits for the answer. */
@@ -214,6 +220,31 @@ class ConnectedRadioSource(
     suspend fun talkAccess(): ConnectedAccess? = try { lock.withLock { probe() } }
         catch (cancelled: CancellationException) { throw cancelled } catch (_: Exception) { null }
 
+    /**
+     * The context talk turns are sent against. Desktop picks' own context when it has one; otherwise a minimal one
+     * (mood and exploration only, no availability upload) so talk works with Desktop picks off. Desktop picks later
+     * patches the same context, so the phone's show on the desktop carries on. Null when not permitted or unreachable.
+     */
+    suspend fun talkContext(mood: String, exploration: Double): String? = try {
+        lock.withLock {
+            val granted = probe()
+            if (!granted.capable || !granted.permitted) return@withLock null
+            contextState.value?.let { return@withLock it }
+            val body = ConnectedJson.write(linkedMapOf("protocol_version" to 1, "mood" to mood, "exploration" to exploration.coerceIn(0.0, 1.0), "recent" to emptyList<Any>()))
+            val response = link.post("/contexts", body)
+            if (response.status == 403) access = null
+            if (response.status != 200) return@withLock null
+            val reply = obj(response.body)
+            val id = reply?.get("context_id") as? String ?: return@withLock null
+            val epoch = reply["epoch"] as? Long ?: return@withLock null
+            // contextBody stays unknown so Desktop picks patches this context with its full body before recommending.
+            contextId = id; contextState.value = id; contextEpoch = epoch; contextBody = null; latestEpoch = epoch
+            id
+        }
+    } catch (cancelled: CancellationException) { throw cancelled }
+    catch (failure: ConnectionFailure) { reachableState.value = false; null }
+    catch (_: Exception) { null }
+
     /** Explicit permission check for Settings. Never touches playback or the held set. */
     suspend fun checkAccess() {
         if (!enabled) return
@@ -240,14 +271,15 @@ class ConnectedRadioSource(
     } catch (_: TimeoutCancellationException) {
         fail(ConnectedFailureKind.TIMEOUT, "${timeoutMs / 1000} s")
     } catch (cancelled: CancellationException) { throw cancelled }
-    catch (failure: ConnectionFailure) { fail(ConnectedFailureKind.UNREACHABLE, failure.safeMessage) }
+    catch (failure: ConnectionFailure) { reachableState.value = false; fail(ConnectedFailureKind.UNREACHABLE, failure.safeMessage) }
     catch (_: Exception) { fail(ConnectedFailureKind.UNREACHABLE) }
 
     private suspend fun probe(): ConnectedAccess {
         val cached = access
         val ttl = if (cached?.permitted == true && cached.capable) ACCESS_TTL_MS else DENIED_TTL_MS
         if (cached != null && now() - accessAt < ttl) return cached
-        val fresh = link.access()
+        val fresh = try { link.access() } catch (failure: ConnectionFailure) { reachableState.value = false; throw failure }
+        reachableState.value = true
         if (fresh.key != linkKey) { uploadedDigest = null; uploadedRevision = -1; contextId = null; contextState.value = null; contextBody = null; contextEpoch = 0; latestEpoch = 0; linkKey = fresh.key }
         access = fresh; accessAt = now()
         mutable.update { it.copy(tunable = fresh.capable && fresh.tunable, talk = if (fresh.capable && fresh.permitted) fresh.talk else null) }

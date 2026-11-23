@@ -25,7 +25,8 @@ import dev.radio.mobile.recommendation.TalkVolume
 @Composable
 fun TalkSection(connected: ConnectedUi, paired: Boolean, settings: TalkSettings, status: String, onChange: (TalkSettings) -> Unit, modifier: Modifier = Modifier) {
     val capability = connected.status.talk
-    val usable = paired && connected.status.enabled
+    // Talk needs the paired desktop for the voices, not Desktop picks: the phone's own Radio picks the songs.
+    val usable = paired
     Column(modifier.fillMaxWidth().padding(top = 16.dp).testTag("talk-section"), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).toggleable(settings.enabled, enabled = usable, role = Role.Switch,
             onValueChange = { onChange(settings.copy(enabled = it)) }).testTag("talk-toggle"), verticalAlignment = Alignment.CenterVertically) {
@@ -37,7 +38,7 @@ fun TalkSection(connected: ConnectedUi, paired: Boolean, settings: TalkSettings,
             Switch(settings.enabled, onCheckedChange = null, enabled = usable)
         }
         if (!usable) {
-            Text("Talk comes from your desktop's DJ and needs Desktop picks on.", style = MaterialTheme.typography.bodySmall)
+            Text("Talk comes from your desktop's DJ. Pair this phone to hear it.", style = MaterialTheme.typography.bodySmall)
             return@Column
         }
         // Controls show only when the desktop advertises talk.
@@ -69,7 +70,7 @@ fun TalkSection(connected: ConnectedUi, paired: Boolean, settings: TalkSettings,
                     shape = SegmentedButtonDefaults.itemShape(index, TalkVolume.entries.size), modifier = Modifier.testTag("talk-volume-${volume.name.lowercase()}"), icon = {}) { Text(volume.label) }
             }
         }
-        Text("Talk only plays in Radio with Desktop picks. Music never waits for it; a clip that isn't ready in time is skipped.",
+        Text("Talk plays in Radio and feel stations, with or without Desktop picks, while your desktop is reachable. Music never waits for it; a clip that isn't ready in time is skipped.",
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         OutlinedButton(onClick = { onChange(settings.desktopDefaults()) }, enabled = !settings.usesDesktopDefaults,
             modifier = Modifier.fillMaxWidth().testTag("talk-reset")) { Text("Use desktop defaults") }
