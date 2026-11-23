@@ -4,7 +4,6 @@ import { createCatalogPreparationState } from '../api/catalogPreparationState';
 
 
 
-const hintStyle = { fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.6 };
 
 const errors = {
 
@@ -52,21 +51,19 @@ export default function MobileCatalogSettings() {
 
     <div className="set-label">Phone catalog</div>
 
-    <p style={hintStyle}>Prepare hashes, existing library metadata and vectors, then tap Import catalog in Android Settings → Server. This explicitly reads source audio without modifying it. Unchanged hashes are reused; the first pass may take a while. Library processing must finish first.</p>
+    <p className="ui-hint">Prepare hashes, existing library metadata and vectors, then tap Import catalog in Android Settings → Server. This explicitly reads source audio without modifying it. Unchanged hashes are reused; the first pass may take a while. Library processing must finish first.</p>
 
-    <button type="button" disabled={checking || running} onClick={() => observer.current?.start()}
+    <button type="button" disabled={checking || running} onClick={() => observer.current?.start()} className="ui-btn primary sm">Prepare catalog</button>
 
-      style={{ border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg-surface)', color: 'var(--text-primary)', padding: '6px 10px', fontSize: 11, cursor: 'pointer' }}>Prepare catalog</button>
+    {running && <button type="button" className="ui-btn sm" disabled={checking} onClick={() => observer.current?.cancel()}>Cancel preparation</button>}
 
-    {running && <button type="button" disabled={checking} onClick={() => observer.current?.cancel()}>Cancel preparation</button>}
+    {status?.hash_progress && <p className="ui-hint">Content hashes: {status.hash_progress.completed.toLocaleString()} / {status.hash_progress.total.toLocaleString()} checked · {status.hash_progress.hashed.toLocaleString()} ready · {status.hash_progress.skipped.toLocaleString()} unavailable or changed</p>}
 
-    {status?.hash_progress && <p style={hintStyle}>Content hashes: {status.hash_progress.completed.toLocaleString()} / {status.hash_progress.total.toLocaleString()} checked · {status.hash_progress.hashed.toLocaleString()} ready · {status.hash_progress.skipped.toLocaleString()} unavailable or changed</p>}
+    <p role="status" className="ui-hint">{running ? 'Preparing catalog…' : checking ? 'Checking catalog…' : status?.state === 'ready' ? 'Catalog ready to import.' : status?.state === 'idle' ? 'No prepared catalog.' : ''}</p>
 
-    <p role="status" style={hintStyle}>{running ? 'Preparing catalog…' : checking ? 'Checking catalog…' : status?.state === 'ready' ? 'Catalog ready to import.' : status?.state === 'idle' ? 'No prepared catalog.' : ''}</p>
+    {status?.revision != null && <div className="ui-hint">Revision {status.revision} · {status.song_count.toLocaleString()} songs · {status.vector_count.toLocaleString()} vectors</div>}
 
-    {status?.revision != null && <div style={hintStyle}>Revision {status.revision} · {status.song_count.toLocaleString()} songs · {status.vector_count.toLocaleString()} vectors</div>}
-
-    {(error || status?.error) && <p role="alert" style={{ ...hintStyle, color: 'var(--danger, #f87171)' }}>{error || errors[status.error]}{status?.revision != null && ' The previous catalog is still available.'}</p>}
+    {(error || status?.error) && <p role="alert" className="ui-error">{error || errors[status.error]}{status?.revision != null && ' The previous catalog is still available.'}</p>}
 
   </div>;
 

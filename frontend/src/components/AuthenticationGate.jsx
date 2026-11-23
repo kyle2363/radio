@@ -48,8 +48,8 @@ export default function AuthenticationGate({ children }) {
             <input id="station-password" type="password" autoComplete="current-password" autoFocus required
               value={password} onChange={(event) => setPassword(event.target.value)} disabled={busy}
               className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-page)] px-3 py-2 mb-3" />
-            {error && <p role="alert" className="text-sm text-red-400 mb-3">{error}</p>}
-            <button type="submit" disabled={busy || !password} className="w-full rounded-md bg-teal-600 px-4 py-2 text-white disabled:opacity-50">
+            {error && <p role="alert" className="text-sm text-[var(--danger)] mb-3">{error}</p>}
+            <button type="submit" disabled={busy || !password} className="w-full rounded-md bg-[var(--accent)] px-4 py-2 text-[var(--text-inverse)] font-medium disabled:opacity-50">
               {busy ? 'Signing in…' : 'Sign in'}
             </button>
           </form>

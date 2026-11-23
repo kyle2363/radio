@@ -4,14 +4,15 @@ import usePlaybackSession from './hooks/usePlaybackSession.js';
 import PlaybackOutputSelector from './components/PlaybackOutputSelector.jsx';
 import BootScreen from './components/BootScreen';
 import * as api from "./api";
-import { Loader2, Mic, Sparkles, Sun, Moon, Library, HelpCircle, Settings } from "lucide-react";
+import { Loader2, Mic, Sparkles, Sun, Moon, Library, HelpCircle, Settings, PictureInPicture2, X } from "lucide-react";
+import RemoteHostingPill from "./components/RemoteHostingPill";
+import { moodColor } from "./ui/consistency.js";
 
 import AmbientGlow from "./components/AmbientGlow";
 import MiniPlayer from "./components/MiniPlayer";
 import NowPlaying from "./components/NowPlaying";
 import PlayerControls from "./components/PlayerControls";
 import MoodButtons from "./components/MoodButtons";
-import FeelStations from "./components/FeelStations";
 import CommandBar from "./components/CommandBar";
 import QueuePreview from "./components/QueuePreview";
 import VibeLockBadge from "./components/VibeLockBadge";
@@ -388,6 +389,7 @@ function AppInner({ outputPlayback }) {
 
   // Library tab
   const [libraryTab, setLibraryTab] = useState("library");
+  const [settingsFocus, setSettingsFocus] = useState(null);
   const [selectedCollection, setSelectedCollection] = useState(null);
   const libraryTrans = useTransition(showLibrary, 250);
   const [commandExpanded, setCommandExpanded] = useState(false);
@@ -660,7 +662,7 @@ function AppInner({ outputPlayback }) {
           <div className="flex items-center gap-2 flex-shrink-0">
             <BrandIcon style={iconStyle} size={26} />
             <span className="text-[11px] font-semibold px-3 py-1 rounded-full"
-              style={{ background: "rgba(72,187,120,0.12)", color: "#4ade80", border: "1px solid rgba(72,187,120,0.2)" }}>
+              style={{ background: "var(--accent-muted)", color: "var(--accent)", border: "1px solid color-mix(in srgb, var(--accent) 25%, transparent)" }}>
               {uiMode === "radio" ? "Radio" : "Normal"}
             </span>
             {uiMode === "normal" && (
@@ -683,26 +685,26 @@ function AppInner({ outputPlayback }) {
           {/* MIDDLE: Status pills (radio mode only) */}
           {uiMode === "radio" && (
             <>
-              <div style={{ width: "0.5px", height: 22, background: "rgba(255,255,255,0.12)", flexShrink: 0 }} />
+              <div style={{ width: "1px", height: 22, background: "var(--border)", flexShrink: 0 }} />
               <div className="flex items-center gap-[6px] flex-wrap overflow-hidden">
                 <ArchetypeBadge archetype={archetype} />
                 <VibeLockBadge vibeLock={vibeLock} currentSong={currentSong} />
                 <SkipStreakIndicator skipStreak={skipStreak} />
 
                 <HeaderStatusPill dotColor={
-                  talkSegmentActive ? "#60a5fa" : ttsReady ? "#4ade80" : "#5f6b7a"
+                  talkSegmentActive ? "var(--info)" : ttsReady ? "var(--accent)" : "var(--text-muted)"
                 }>
                   {talkSegmentActive ? "DJ speaking" : ttsReady == null ? "DJ" : ttsReady ? "DJ ready" : "DJ unavailable"}
                 </HeaderStatusPill>
 
                 {talkGenerating && (
-                  <HeaderStatusPill dotColor="#c084fc">
+                  <HeaderStatusPill dotColor="var(--brand-drift)">
                     <Loader2 size={11} className="animate-spin" />
                     Talk
                   </HeaderStatusPill>
                 )}
                 {talkSegmentActive && (
-                  <HeaderStatusPill dotColor="#60a5fa">
+                  <HeaderStatusPill dotColor="var(--info)">
                     <Mic size={11} />
                     {talkSegmentActive.segment_type === "caller" ? "Caller"
                       : talkSegmentActive.segment_type === "dj_monologue" ? "Monologue"
@@ -715,6 +717,7 @@ function AppInner({ outputPlayback }) {
 
           {/* Spacer */}
           <div className="flex-1" />
+          <RemoteHostingPill onOpenSettings={() => { setSettingsFocus({ section: "server" }); setShowLibrary(true); setLibraryTab("settings"); }} />
           <PlaybackOutputSelector playback={outputPlayback} />
 
           {/* RIGHT: Action buttons + session controls */}
@@ -733,7 +736,7 @@ function AppInner({ outputPlayback }) {
                   <span style={{
                     position: "absolute", top: 5, right: 5,
                     width: 6, height: 6, borderRadius: "50%",
-                    background: constellationData?.influencing ? "#4ade80" : "#4a5a78",
+                    background: constellationData?.influencing ? "var(--accent)" : "var(--text-muted)",
                     border: "1.5px solid var(--bg-page)",
                   }} />
                 )}
@@ -742,16 +745,16 @@ function AppInner({ outputPlayback }) {
             <HeaderButton onClick={() => setShowShortcuts(true)} title="Keyboard shortcuts · ?">
               <HelpCircle size={18} />
             </HeaderButton>
-            <HeaderButton onClick={() => { setShowLibrary(true); setLibraryTab("settings"); }} title="Settings">
+            <HeaderButton onClick={() => { setSettingsFocus(null); setShowLibrary(true); setLibraryTab("settings"); }} title="Settings">
               <Settings size={18} />
             </HeaderButton>
 
-            <div style={{ width: "0.5px", height: 22, background: "rgba(255,255,255,0.12)", flexShrink: 0, margin: "0 4px" }} />
+            <div style={{ width: "1px", height: 22, background: "var(--border)", flexShrink: 0, margin: "0 4px" }} />
 
             <SleepTimer timer={sleepTimer} onCancel={handleCancelSleepTimer} />
             {window.electron && miniPlayerEnabled && (
               <HeaderButton onClick={() => window.electron.toggleMiniPlayer()} title="Mini Player">
-                &#9632;
+                <PictureInPicture2 size={17} />
               </HeaderButton>
             )}
           </div>
@@ -770,15 +773,11 @@ function AppInner({ outputPlayback }) {
           </div>
           {uiMode === "radio" && (
             <div className={isElectron ? 'rcb-section' : 'website-rcb-section'} style={!isElectron ? { display: "flex", flexDirection: "column", gap: "var(--section-gap)", background: "var(--bg-sunken)" } : undefined}>
-              {!commandExpanded && <section><CommandBar onCommandSent={wrappedHandleCommandSent} compact onFocus={() => setCommandExpanded(true)} responseTimeout={commandResponseTimeout} inactiveTimeout={commandInactiveTimeout} onUserActivity={handleUserActivity} lastCommandRef={lastNlActionRef} onUndo={handleUndoNlCommand} nlResponse={nlResponse} nlResponseVisible={nlResponseVisible} nlResponseTimerRef={nlResponseTimerRef} nlPausedRef={nlPausedRef} clearNlResponseTimer={clearNlResponseTimer} startNlResponseTimer={startNlResponseTimer} setNlResponse={setNlResponse} setNlResponseVisible={setNlResponseVisible} /></section>}
-              {commandExpanded && (
-                <section><CommandBar onCommandSent={wrappedHandleCommandSent} onClose={() => setCommandExpanded(false)} responseTimeout={commandResponseTimeout} inactiveTimeout={commandInactiveTimeout} onUserActivity={handleUserActivity} lastCommandRef={lastNlActionRef} onUndo={handleUndoNlCommand} nlResponse={nlResponse} nlResponseVisible={nlResponseVisible} nlResponseTimerRef={nlResponseTimerRef} nlPausedRef={nlPausedRef} clearNlResponseTimer={clearNlResponseTimer} startNlResponseTimer={startNlResponseTimer} setNlResponse={setNlResponse} setNlResponseVisible={setNlResponseVisible} /></section>
-              )}
-              <section><MoodButtons activeMood={moodState} onMoodSet={handleMoodSet} /></section>
-              <section><FeelStations addToast={addToast} /></section>
-              <section className="flex items-center gap-4 px-6 py-4" style={{ background: "var(--bg-surface)" }}>
+              <section><CommandBar onCommandSent={wrappedHandleCommandSent} compact={!commandExpanded} onFocus={() => setCommandExpanded(true)} onClose={() => setCommandExpanded(false)} responseTimeout={commandResponseTimeout} inactiveTimeout={commandInactiveTimeout} onUserActivity={handleUserActivity} lastCommandRef={lastNlActionRef} onUndo={handleUndoNlCommand} nlResponse={nlResponse} nlResponseVisible={nlResponseVisible} nlResponseTimerRef={nlResponseTimerRef} nlPausedRef={nlPausedRef} clearNlResponseTimer={clearNlResponseTimer} startNlResponseTimer={startNlResponseTimer} setNlResponse={setNlResponse} setNlResponseVisible={setNlResponseVisible} /></section>
+              <section><MoodButtons activeMood={moodState} onMoodSet={handleMoodSet} addToast={addToast} /></section>
+              <section className="dial-strip">
                 <VolumeControl volume={volume} onChange={handleVolumeChange} />
-                <div style={{ width: "1px", height: "24px", background: "var(--border)", flexShrink: 0 }} />
+                <div className="dial-divider" />
                 <ExplorationSlider level={explorationLevel} onChange={handleExplorationChange} />
               </section>
             </div>
@@ -800,20 +799,22 @@ function AppInner({ outputPlayback }) {
                 <section className={isElectron ? 'prior-section' : 'website-prior-section'}><PriorSongs currentSongId={currentSong?.id} compact /></section>
               </div>
               <section className={isElectron ? 'context-section' : 'website-context-section'} style={{ background: "var(--bg-sunken)", borderTop: "1px solid var(--border)", padding: "8px 10px", borderRadius: 0 }}>
-                <div className="flex items-center justify-between gap-2 flex-wrap w-full">
-                  {moodState && <span className="badge b-teal">{moodState}</span>}
-                  {archetype && <span className="badge b-blue">{archetype}</span>}
-                  {currentSong?.cluster_id != null && (
-                    <span className="badge b-dim">C{currentSong.cluster_id}</span>
-                  )}
-                  {energyTrajectory && (
-                    <span className="badge b-dim">
-                      {energyTrajectory === "rising" ? "↑" : energyTrajectory === "falling" ? "↓" : "—"} energy
+                {/* Session context. Listener type and skip streak already show in the header. */}
+                <div className="flex items-center gap-2 flex-wrap w-full">
+                  {moodState && (
+                    <span className="badge b-dim" style={{ textTransform: "capitalize" }}>
+                      <span style={{ width: 6, height: 6, borderRadius: "50%", background: moodColor(moodState) }} />
+                      {moodState}
                     </span>
                   )}
-                  {skipStreak >= 2 && (
-                    <span className="badge" style={{ background: "rgba(240,120,136,0.15)", color: "#f07888", border: "1px solid rgba(240,120,136,0.25)" }}>
-                      skip×{skipStreak}
+                  {energyTrajectory && (
+                    <span className="badge b-dim" title="Energy trend over the last few songs">
+                      {energyTrajectory === "rising" ? "↑" : energyTrajectory === "falling" ? "↓" : "→"} energy
+                    </span>
+                  )}
+                  {currentSong?.cluster_id != null && (
+                    <span className="badge b-dim" title="Sound cluster of the current song" style={{ marginLeft: "auto" }}>
+                      Cluster {currentSong.cluster_id}
                     </span>
                   )}
                 </div>
@@ -850,13 +851,14 @@ function AppInner({ outputPlayback }) {
               { id: "stats", label: "Stats" },
               { id: "history", label: "History" },
             ].map((tab) => (
-              <div key={tab.id} className={`panel-tab ${libraryTab === tab.id ? "on" : ""}`}
-                onClick={() => setLibraryTab(tab.id)}>{tab.label}</div>
+              <button key={tab.id} type="button" className={`panel-tab ${libraryTab === tab.id ? "on" : ""}`}
+                style={{ background: "none", border: "none", borderBottom: "2px solid", borderBottomColor: libraryTab === tab.id ? "var(--accent)" : "transparent" }}
+                onClick={() => setLibraryTab(tab.id)}>{tab.label}</button>
             ))}
             <div style={{ flex: 1 }} />
-            <button onClick={() => setShowLibrary(false)} title="Close"
-              style={{ marginLeft: "8px", display: "flex", alignItems: "center", justifyContent: "center", width: "24px", height: "24px", borderRadius: "6px", background: "var(--bg-elevated)", border: "1px solid var(--border)", color: "var(--text-muted)", cursor: "pointer", fontSize: "14px", lineHeight: 1 }}>
-              ×
+            <button type="button" onClick={() => setShowLibrary(false)} title="Close (Esc)" aria-label="Close"
+              className="ui-btn sm" style={{ marginLeft: 8, padding: 5 }}>
+              <X size={14} />
             </button>
           </div>
           <div className="flex-1 overflow-y-auto">
@@ -867,13 +869,22 @@ function AppInner({ outputPlayback }) {
                 : <CollectionsList onSelect={(c) => setSelectedCollection(c)} />
             )}
 
-            {libraryTab === "settings" && <SettingsContent addToast={addToast} sectionSpacing={sectionSpacing} onSectionSpacingChange={setSectionSpacing} rightRailWidth={rightRailWidth} setRightRailWidth={setRightRailWidth} explorationLevel={explorationLevel} onExplorationChange={handleExplorationChange} />}
+            {libraryTab === "settings" && <SettingsContent addToast={addToast} sectionSpacing={sectionSpacing} onSectionSpacingChange={setSectionSpacing} rightRailWidth={rightRailWidth} setRightRailWidth={setRightRailWidth} explorationLevel={explorationLevel} onExplorationChange={handleExplorationChange} focusSection={settingsFocus?.section} />}
             {libraryTab === "wiki" && <WikiPage />}
-            {libraryTab === "stats" && <div className="px-1 sm:px-2"><StatsDashboard /></div>}
+            {libraryTab === "stats" && <StatsDashboard />}
             {libraryTab === "history" && (
-              <div className="space-y-6">
-                <MoodTimeline />
-                <SessionHistory />
+              <div className="page">
+                <div className="page-hero">
+                  <div>
+                    <div className="page-eyebrow">Your listening</div>
+                    <h3>History</h3>
+                    <p>Today's mood changes and every past listening session.</p>
+                  </div>
+                </div>
+                <div className="flex flex-col gap-6">
+                  <MoodTimeline />
+                  <div className="card" style={{ padding: 0, overflow: "hidden" }}><SessionHistory /></div>
+                </div>
               </div>
             )}
           </div>

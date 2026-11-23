@@ -104,7 +104,11 @@
 }
 
 /* ── Base ─────────────────────────────────────────────── */
-* { margin: 0; padding: 0; box-sizing: border-box; }
+/* In the base layer so Tailwind spacing utilities (p-4, mt-2, …) can override it.
+   Unlayered, this reset silently disabled every padding/margin utility. */
+@layer base {
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+}
 
 body {
   font-family: var(--font-sans);
@@ -690,34 +694,7 @@ body {
 .set-label { color: var(--text-secondary); font-size: 12px; }
 .set-val { color: var(--text-primary); font-size: 12px; font-weight: 500; }
 
-/* Wiki / How It Works page */
-.wiki-page {
-  max-width: 1080px;
-  margin: 0 auto;
-}
-
-.wiki-hero {
-  display: flex;
-  justify-content: space-between;
-  gap: 14px;
-  align-items: flex-start;
-  padding: 14px 0 16px;
-}
-
-.wiki-hero h3 {
-  color: var(--text-primary);
-  font-size: 22px;
-  font-weight: 700;
-  line-height: 1.1;
-  margin-bottom: 6px;
-}
-
-.wiki-hero p {
-  color: var(--text-secondary);
-  font-size: 12px;
-  line-height: 1.55;
-  max-width: 680px;
-}
+/* Wiki page (page frame comes from .page / .page-hero below) */
 
 .wiki-layout {
   display: grid;
@@ -837,7 +814,7 @@ body {
 }
 
 @media (max-width: 760px) {
-  .wiki-hero {
+  .page-hero {
     flex-direction: column;
   }
 
@@ -1486,3 +1463,103 @@ body {
 @keyframes feedbackIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
 @keyframes feedbackOut { to { opacity: 0; transform: translateY(3px); } }
 @media (prefers-reduced-motion: reduce) { .toast, .toast.toast-leaving, .skip-feedback { animation: none; } .toast.toast-leaving { opacity: 0; } .feedback-track > div, .skip-options button, .boot-overlay { transition: none; } }
+
+/* ══ Shared building blocks (desktop UI consistency pass) ══════════════
+   One look for buttons, inputs, sliders, cards and panel pages. Prefer these
+   over inline styles in new or touched components. */
+
+/* Buttons */
+.ui-btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  padding: 6px 12px; border-radius: 7px; font-size: 12px; font-weight: 500;
+  background: var(--bg-elevated); color: var(--text-secondary);
+  border: 1px solid var(--border); cursor: pointer; white-space: nowrap;
+  transition: background 150ms ease, color 150ms ease, border-color 150ms ease;
+}
+.ui-btn:hover:not(:disabled) { color: var(--text-primary); border-color: var(--border-strong); }
+.ui-btn:disabled { opacity: 0.5; cursor: default; }
+.ui-btn.primary { background: var(--accent-muted); color: var(--accent); border-color: color-mix(in srgb, var(--accent) 30%, transparent); }
+.ui-btn.primary:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--accent-hover); }
+.ui-btn.danger:hover:not(:disabled) { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 40%, transparent); }
+.ui-btn.sm { padding: 4px 9px; font-size: 11px; }
+.ui-btn:focus-visible, .ui-input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* Text inputs */
+.ui-input {
+  padding: 6px 9px; border-radius: 7px; font-size: 12px; min-width: 0;
+  background: var(--bg-sunken); color: var(--text-primary);
+  border: 1px solid var(--border); outline: none;
+  transition: border-color 150ms ease;
+}
+.ui-input::placeholder { color: var(--text-muted); }
+.ui-input:focus { border-color: color-mix(in srgb, var(--accent) 55%, transparent); }
+
+/* Hint and error text */
+.ui-hint { font-size: 11px; color: var(--text-muted); line-height: 1.6; }
+.ui-error { font-size: 11px; color: var(--danger); line-height: 1.6; }
+.ui-details > summary { font-size: 11px; color: var(--text-muted); cursor: pointer; padding: 6px 0; }
+.ui-details > summary:hover { color: var(--text-secondary); }
+
+/* Range slider with a visible handle. Set --fill (0–100%) inline. */
+.ui-slider {
+  -webkit-appearance: none; appearance: none; width: 100%; height: 18px;
+  background: transparent; cursor: pointer; margin: 0;
+}
+.ui-slider::-webkit-slider-runnable-track {
+  height: 4px; border-radius: 2px;
+  background: linear-gradient(to right, var(--accent) 0 var(--fill, 50%), var(--border-strong) var(--fill, 50%) 100%);
+}
+.ui-slider::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 12px; height: 12px; margin-top: -4px; border-radius: 50%;
+  background: var(--text-primary); border: 2px solid var(--accent);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+  transition: transform 120ms ease;
+}
+.ui-slider:hover::-webkit-slider-thumb, .ui-slider:focus-visible::-webkit-slider-thumb { transform: scale(1.2); }
+.ui-slider:focus-visible { outline: none; }
+.ui-slider::-moz-range-track { height: 4px; border-radius: 2px; background: var(--border-strong); }
+.ui-slider::-moz-range-progress { height: 4px; border-radius: 2px; background: var(--accent); }
+.ui-slider::-moz-range-thumb { width: 12px; height: 12px; border-radius: 50%; background: var(--text-primary); border: 2px solid var(--accent); }
+
+/* Labelled slider row used for volume and adventurousness */
+.dial-strip { display: flex; align-items: flex-start; gap: 20px; padding: 12px 18px; background: var(--bg-surface); }
+.dial { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.dial-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 11px; color: var(--text-muted); }
+.dial-name { display: inline-flex; align-items: center; gap: 6px; color: var(--text-secondary); font-weight: 500; }
+.dial-name button { display: flex; background: none; border: none; padding: 0; color: inherit; cursor: pointer; }
+.dial-name button:hover { color: var(--text-primary); }
+.dial-value { font-variant-numeric: tabular-nums; color: var(--text-secondary); }
+.dial-ends { display: flex; justify-content: space-between; font-size: 10px; color: var(--text-muted); }
+.dial-divider { width: 1px; align-self: stretch; background: var(--border); flex-shrink: 0; }
+
+/* Moods | Feels switch above the mood bar */
+.station-picker { display: flex; flex-direction: column; gap: 6px; }
+.station-picker-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 2px; }
+.station-picker-hint { font-size: 11px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mood-seg.scrolling { overflow-x: auto; }
+.mood-seg.scrolling .mood-opt { flex: 1 0 96px; }
+.mood-opt:hover:not(.active) { color: var(--text-secondary); background: var(--bg-muted); }
+.mood-opt .feel-swatch { width: 14px; height: 14px; border-radius: 50%; margin: 1px 0; }
+
+/* Panel pages (Library panel tabs) */
+.page { max-width: 1080px; margin: 0 auto; padding: 4px 20px 28px; }
+.page-hero { display: flex; justify-content: space-between; gap: 14px; align-items: flex-start; padding: 14px 0 16px; }
+.page-eyebrow { font-size: 10px; color: var(--text-muted); letter-spacing: 0.06em; text-transform: uppercase; margin-bottom: 5px; }
+.page-hero h3 { color: var(--text-primary); font-size: 22px; font-weight: 700; line-height: 1.1; margin-bottom: 6px; }
+.page-hero p { color: var(--text-secondary); font-size: 12px; line-height: 1.55; max-width: 680px; }
+.page-grid { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+.card { background: var(--bg-surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
+.card-title { font-size: 10px; color: var(--text-muted); letter-spacing: 0.06em; text-transform: uppercase; font-weight: 600; margin-bottom: 10px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.card-empty { font-size: 12px; color: var(--text-muted); padding: 12px 0; text-align: center; }
+.page .stat-cards { padding: 0; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); margin-bottom: 10px; }
+
+/* Simple bar charts */
+.hbar { display: flex; align-items: center; gap: 8px; font-size: 11px; }
+.hbar-label { width: 92px; flex-shrink: 0; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hbar-track { flex: 1; height: 8px; background: var(--bg-sunken); border-radius: 4px; overflow: hidden; }
+.hbar-fill { height: 100%; border-radius: 4px; background: var(--accent); transition: width 500ms ease; }
+.hbar-num { width: 36px; flex-shrink: 0; text-align: right; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+
+/* Theme-correct hover for the older muted buttons */
+[data-theme="light"] .btn-muted:hover, [data-theme="light"] .btn-icon:hover, [data-theme="light"] .ctrl-btn:hover, [data-theme="light"] .row-hover:hover { background: rgba(0,0,0,0.05); }
