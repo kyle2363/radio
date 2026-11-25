@@ -8,34 +8,48 @@ package dev.radio.mobile.music
 object SongSearch {
     const val RECENT_LIMIT = 8
 
-    fun <T> filter(items: List<T>, query: String, text: (T) -> List<String>): List<T> {
-        val words = tokens(query)
-        if (words.isEmpty()) return emptyList()
-        val exact = ArrayList<T>()
-        val fuzzy = ArrayList<T>()
-        for (item in items) {
-            val haystack = text(item).joinToString(" ").lowercase()
-            val candidates = tokens(haystack)
-            var allPlain = true
-            var all = true
-            for (word in words) {
-                if (haystack.contains(word)) continue
-                allPlain = false
-                val allowed = when { word.length >= 8 -> 2; word.length >= 4 -> 1; else -> 0 }
-                if (allowed == 0 || candidates.none { close(word, it, allowed) }) { all = false; break }
+    fun <T> filter(items: List<T>, query: String, text: (T) -> List<String>): List<T> = index(items, text).filter(query)
+
+    /**
+     * The library's searchable text, lowercased and split into words once. Build it when the library changes, then
+     * filter it per keystroke (off the main thread) instead of re-reading every song each time a letter is typed.
+     */
+    fun <T> index(items: List<T>, text: (T) -> List<String>): Index<T> = Index(items.map { item ->
+        val haystack = text(item).joinToString(" ").lowercase()
+        Entry(item, haystack, tokens(haystack))
+    })
+
+    class Entry<T> internal constructor(val item: T, val haystack: String, val words: List<String>)
+
+    class Index<T> internal constructor(private val entries: List<Entry<T>>) {
+        fun filter(query: String): List<T> {
+            val words = tokens(query)
+            if (words.isEmpty()) return emptyList()
+            val exact = ArrayList<T>()
+            val fuzzy = ArrayList<T>()
+            for (entry in entries) {
+                var allPlain = true
+                var all = true
+                for (word in words) {
+                    if (entry.haystack.contains(word)) continue
+                    allPlain = false
+                    val allowed = when { word.length >= 8 -> 2; word.length >= 4 -> 1; else -> 0 }
+                    if (allowed == 0 || entry.words.none { close(word, it, allowed) }) { all = false; break }
+                }
+                if (all) (if (allPlain) exact else fuzzy).add(entry.item)
             }
-            if (all) (if (allPlain) exact else fuzzy).add(item)
+            return exact + fuzzy
         }
-        return exact + fuzzy
     }
 
-    private fun close(word: String, candidate: String, allowed: Int): Boolean {
+    internal fun close(word: String, candidate: String, allowed: Int): Boolean {
         if (kotlin.math.abs(candidate.length - word.length) <= allowed && distance(word, candidate, allowed) <= allowed) return true
         // A typo in a word the user hasn't finished typing: compare against the candidate's same-length prefix.
         return candidate.length > word.length && distance(word, candidate.take(word.length), allowed) <= allowed
     }
 
-    private fun tokens(text: String) = text.lowercase().split(Regex("[^\\p{L}\\p{N}]+")).filter { it.isNotEmpty() }
+    private val wordBreak = Regex("[^\\p{L}\\p{N}]+")
+    internal fun tokens(text: String) = text.lowercase().split(wordBreak).filter { it.isNotEmpty() }
 
     /** Optimal-string-alignment distance, stopping early above [limit] (returns limit + 1). */
     fun distance(a: String, b: String, limit: Int): Int {

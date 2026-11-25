@@ -28,6 +28,11 @@ data class Wrapped(
     /** Songs first heard in the period, most played first. */
     val discoveries: List<String>,
     val clockLabel: String?, val topFeel: Ranked?, val measures: Measures,
+    /** Up to [FunStats.WRAPPED_TOP] most-played songs, for the top-song card's list. */
+    val topSongs: List<Ranked> = emptyList(),
+    /** Listening per local hour (0–23) in the period, for the listening-clock picture. */
+    val hours: LongArray = LongArray(24),
+    val currentStreak: Int = 0,
 ) { val empty get() = plays == 0 }
 
 enum class Milestone(val id: String, val title: String, val detail: String) {
@@ -43,6 +48,7 @@ data class MilestoneProgress(val milestone: Milestone, val achieved: Boolean, va
 
 object FunStats {
     const val COMEBACK_DAYS = 90L
+    const val WRAPPED_TOP = 5
     const val LOYALTY_TOP = 20
     const val MIN_FOLDER_SONGS = 3
     private const val DAY_MS = 86_400_000L
@@ -90,7 +96,7 @@ object FunStats {
     private fun fullRate(rows: List<StatsAttempt>): Double? = rows.filter { it.endKind != null }.takeIf { it.size >= 2 }?.let { f -> f.count { it.fullListen }.toDouble() / f.size }
 
     fun wrapped(all: List<StatsAttempt>, songs: Map<String, LocalSong>, period: StatsPeriod, now: Long, zone: ZoneId,
-        artistOf: (LocalSong) -> String = { it.artist }, feelOf: (String) -> String? = { null }): Wrapped {
+        artistOf: (LocalSong) -> String = { dev.radio.mobile.music.Artists.primary(it.artist) }, feelOf: (String) -> String? = { null }): Wrapped {
         val today = Instant.ofEpochMilli(now).atZone(zone).toLocalDate()
         val range = StatsCalculator.range(period, today, zone)
         val rows = rowsIn(all, range)
@@ -123,7 +129,10 @@ object FunStats {
             .maxWithOrNull(compareBy<Ranked> { it.listeningMs }.thenBy { it.plays }.thenByDescending { it.key })
         return Wrapped(period, o.listeningMs, o.plays, o.distinctSongs, summary.topSongs.firstOrNull(), summary.topArtists.firstOrNull(), longest,
             couldntSkip, grower, discoveries, summary.clockLabel, topFeel,
-            measures(all, period, now, zone, songs.values.filter { it.available }.mapTo(HashSet()) { it.id }) { id -> songs[id]?.let(artistOf) })
+            measures(all, period, now, zone, songs.values.filter { it.available }.mapTo(HashSet()) { it.id }) { id -> songs[id]?.let(artistOf) },
+            topSongs = summary.topSongs.take(WRAPPED_TOP),
+            hours = LongArray(24) { summary.weekdayHours[it] + summary.weekendHours[it] },
+            currentStreak = summary.currentStreak)
     }
 
     fun milestones(all: List<StatsAttempt>, library: List<LocalSong>, now: Long, zone: ZoneId): List<MilestoneProgress> {

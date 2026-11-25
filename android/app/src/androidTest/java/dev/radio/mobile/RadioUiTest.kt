@@ -85,7 +85,8 @@ class RadioUiTest {
                 assertEquals(baseline.currentId, playback.state.value.currentId)
                 compose.onNodeWithTag("player-repeat").assertDoesNotExist()
                 compose.onNodeWithContentDescription("Shuffle").assertDoesNotExist()
-                compose.onNodeWithTag("vibe-lock").assertExists().assertIsNotEnabled()
+                // No desktop catalog: Vibe lock can never work, so it is left out rather than shown greyed.
+                compose.onNodeWithTag("vibe-lock").assertDoesNotExist()
                 compose.onNodeWithTag("not-for-me").assertExists()
                 compose.onNodeWithTag("on-air", useUnmergedTree = true).assertExists()
                 capture("radio-now-playing-light.png")

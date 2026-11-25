@@ -25,13 +25,16 @@ internal const val MATCH_RELOAD_WAIT_MS = 5_000L
 data class RadioSuggestion(val song:LocalSong,val pick:RadioPick)
 data class RadioInputToken(val library:LibraryState,val mappings:JournalIdentityProvider.MappingSnapshot,val feedback:ListeningJournalState,val mood:String,val exploration:Double,val vibe:String?,val current:String?,val queueRevision:Long,val playOrder:List<String>,val policyRevision:Long,val bootstrap:Set<String>,val legacyVectorSnapshot:String?,val syncRevision:Long=0,val syncEpoch:Long=0,val feel:String?=null)
 data class RadioBatch(val suggestions:List<RadioSuggestion>,val token:RadioInputToken)
-data class RadioState(val loaded:Boolean=false,val busy:Boolean=false,val suggestions:List<RadioSuggestion> = emptyList(),val mood:String="neutral",val exploration:Double=.3,val matched:Int=0,val localOnly:Int=0,val status:String="Loading local Radio…",val error:String?=null,val vibeLocalId:String?=null,val vibeUntil:Long=0,val vibeSongsLeft:Int=0,val generation:Long=0,val vibeAvailable:Boolean=false,val vibeReason:String?=null,
+data class RadioState(val loaded:Boolean=false,val busy:Boolean=false,val suggestions:List<RadioSuggestion> = emptyList(),val mood:String="neutral",val exploration:Double=.3,val matched:Int=0,val localOnly:Int=0,val status:String="Loading local Radio…",val error:String?=null,val vibeLocalId:String?=null,val vibeUntil:Long=0,val vibeSongsLeft:Int=0,val generation:Long=0,val vibeAvailable:Boolean=false,val vibeReason:String?=null,/** False until a desktop catalog is imported; Vibe lock then stays out of sight instead of greyed out. */val catalogImported:Boolean=false,
     val diagnostics:RadioDiagnostics=RadioDiagnostics(),val bootstrapLocalIds:Set<String> = emptySet(),val bootstrapCandidates:Set<String> = emptySet(),val bootstrapDismissed:Boolean=false,
     val suggestionAnchorTitle:String?=null,val catalogSnapshot:String?=null,val legacyVectorTracks:Int=0,val legacyVectorsEnabled:Boolean=false,
     /** Feel station (checkpoint 9C): the selected feel id, or null for a mood station. */
     val feel:String?=null,
     /** "Start radio from this": the song or playlist steering the running station, or null. Ignored off air. */
-    val seed:SeedSpec?=null)
+    val seed:SeedSpec?=null) {
+    /** Vibe lock appears once it can work (a catalog is imported) or is already on; otherwise it stays out of sight. */
+    val showsVibeLock:Boolean get() = catalogImported || vibeAvailable || vibeLocalId != null
+}
 
 private const val PLAYED_WINDOW_MS = 3 * 86_400_000L
 
@@ -388,7 +391,7 @@ class RadioRepository internal constructor(context:Context,private val db:Librar
             publishFeelFeatures(loaded,accepted,mapping.generation)
             val tracks=available.map { song->
                 val sid=accepted[song.id] ?: "local:${song.id}";val meta=loaded.metadata(sid)
-                RadioTrack(sid,song.id,meta?.artist ?: song.artist.ifBlank{"Local MP3"},meta?.energy ?: .5,meta?.valence ?: .5,meta?.cluster,song.folderPath,meta?.genres.orEmpty(),meta?.collections.orEmpty())
+                RadioTrack(sid,song.id,meta?.artist ?: dev.radio.mobile.music.Artists.primary(song.artist).ifBlank{"Local MP3"},meta?.energy ?: .5,meta?.valence ?: .5,meta?.cluster,song.folderPath,meta?.genres.orEmpty(),meta?.collections.orEmpty())
             }
             val byLocal=tracks.associateBy{it.localId}
             val rows=(db.journal().radioTasteEvents()+db.journal().radioRecentEvents(System.currentTimeMillis()-86400000L)+db.journal().radioLastStarts()).distinctBy{it.eventId}.sortedBy{it.logicalClock}
@@ -451,7 +454,7 @@ class RadioRepository internal constructor(context:Context,private val db:Librar
             val currentSid=accepted[playback.currentId]
             val vibeAvailable=currentSid?.let{sid->vectors.any{it.songId==sid}}==true
             val vibeReason=when{vibeAvailable->null;playback.currentId==null->"Play a song to use Vibe lock.";record==null->"Vibe lock needs an imported desktop catalog.";damaged->"Vibe lock needs the catalog reimported.";accepted.isEmpty()->"No songs are matched to the current catalog. Run matching again.";currentSid==null->"This song isn't matched to the desktop catalog.";vectors.isEmpty()->"The catalog has no similarity data the phone can use.";else->"The desktop catalog has no similarity data for this song."}
-            mutable.update{it.copy(loaded=true,busy=false,suggestions=if(publishPreview)suggestions else it.suggestions,suggestionAnchorTitle=if(publishPreview)available.firstOrNull{song->song.id==anchorLocalId}?.title else it.suggestionAnchorTitle,mood=effectiveMood,matched=accepted.size,localOnly=available.size-accepted.size,status=status,error=if(publishPreview && suggestions.size<count && previewExclusions.isNotEmpty())"Not enough different eligible songs for a full preview." else null,generation=it.generation+1,vibeAvailable=vibeAvailable,vibeReason=vibeReason,
+            mutable.update{it.copy(loaded=true,busy=false,suggestions=if(publishPreview)suggestions else it.suggestions,suggestionAnchorTitle=if(publishPreview)available.firstOrNull{song->song.id==anchorLocalId}?.title else it.suggestionAnchorTitle,mood=effectiveMood,matched=accepted.size,localOnly=available.size-accepted.size,status=status,error=if(publishPreview && suggestions.size<count && previewExclusions.isNotEmpty())"Not enough different eligible songs for a full preview." else null,generation=it.generation+1,vibeAvailable=vibeAvailable,vibeReason=vibeReason,catalogImported=record!=null,
                 diagnostics=diagnostics,bootstrapCandidates=bootstrapCandidates,
                 bootstrapLocalIds=if(diagnostics.hasUsableTaste)emptySet() else it.bootstrapLocalIds.intersect(bootstrapCandidates),
                 catalogSnapshot=if(damaged)null else record?.manifestSha256,legacyVectorTracks=legacyVectorTracks,legacyVectorsEnabled=legacyEnabled)}

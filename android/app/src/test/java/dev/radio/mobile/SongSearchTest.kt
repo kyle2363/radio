@@ -49,4 +49,10 @@ class SongSearchTest {
         assertEquals(listOf("i", "h", "g", "f", "e", "d", "c", "A"), recent)
         assertEquals(recent, SongSearch.remember(recent, "  "))
     }
+
+    @Test fun aPrebuiltIndexGivesTheSameResults() {
+        val index = SongSearch.index(songs) { listOf(it.title, it.artist, it.file, it.folder) }
+        for (q in listOf("mid", "strobe", "sandstrom", "the weeknd", "midnight sandstorm", "", "  ", "starbo"))
+            assertEquals(q, search(songs, q), index.filter(q).map { it.title })
+    }
 }

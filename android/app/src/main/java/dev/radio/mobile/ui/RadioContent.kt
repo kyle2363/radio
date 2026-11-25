@@ -141,8 +141,8 @@ fun RadioContent(radio:RadioState,repository:RadioRepository,audio:PlaybackState
             TextButton(onClick={showDiagnostics=true},contentPadding=PaddingValues(horizontal=4.dp),modifier=Modifier.testTag("recommendation-details")){Text("Station details")}
         }
     }
-    val seedSongs=remember(library.songs,seedPicker){ if(seedPicker) library.songs.filter{it.available && !repository.isDisliked(it.id)}.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER){it:dev.radio.mobile.data.LocalSong->it.title}) else emptyList() }
-    if(seedPicker) StartFromSongSheet(seedSongs,audio.queue.size,audio.source,
+    val seedSongs=remember(library.songs,seedPicker){ if(seedPicker) library.songs.filter{it.available && !repository.isDisliked(it.id)}.sortedWith(compareBy(dev.radio.mobile.music.NaturalOrder){it:dev.radio.mobile.data.LocalSong->it.title}) else emptyList() }
+    if(seedPicker) StartFromSongSheet(seedSongs,audio.queue.size,audio.source,playing=audio.playWhenReady,
         onStart={id->seedPicker=false;start(id)},onDismiss={seedPicker=false})
     if(bootstrapPicker) BootstrapSongPicker(
         songs=library.songs.filter { it.available && it.id in radio.bootstrapCandidates },
@@ -165,7 +165,7 @@ fun RadioContent(radio:RadioState,repository:RadioRepository,audio:PlaybackState
             TextButton(onClick={showDiagnostics=false},modifier=Modifier.align(Alignment.End)){Text("Done")}
         }
     }
-    if(confirm)AlertDialog(onDismissRequest={confirm=false},title={Text("Start a new Radio queue?")},text={Text("This replaces your current queue (${audio.queue.size} ${if(audio.queue.size==1)"song" else "songs"}) and starts a station Radio picks for you. The song playing now stops.")},
+    if(confirm)AlertDialog(onDismissRequest={confirm=false},title={Text("Start a new Radio queue?")},text={Text("This replaces your current queue (${audio.queue.size} ${if(audio.queue.size==1)"song" else "songs"}) and starts a station Radio picks for you. ${if(audio.playWhenReady)"The song playing now stops." else "Your paused song is replaced."}")},
         confirmButton={TextButton(onClick={confirm=false;start(null)},modifier=Modifier.testTag("confirm-pick-for-me")){Text("Start Radio")}},dismissButton={TextButton(onClick={confirm=false}){Text("Cancel")}})
     if(tuning)ModalBottomSheet(onDismissRequest={tuning=false}) {
         Column(Modifier.verticalScroll(androidx.compose.foundation.rememberScrollState()).padding(horizontal=24.dp).padding(bottom=24.dp).testTag("radio-tuning")) {

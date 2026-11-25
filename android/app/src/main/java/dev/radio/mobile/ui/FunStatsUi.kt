@@ -47,6 +47,17 @@ import java.io.File
 import java.time.ZoneId
 import kotlin.math.ln
 import kotlin.math.roundToInt
+import kotlin.math.roundToLong
+import kotlin.math.PI
+import kotlin.math.cos
+import kotlin.math.sin
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.scale
+import androidx.compose.ui.graphics.graphicsLayer
 
 /*
  * Checkpoint 8C fun stats. Everything here is worked out on the phone from the local journal (and, for the taste map,
@@ -237,26 +248,47 @@ internal fun WrappedBanner(onOpen: () -> Unit) {
     }
 }
 
-private data class WrappedCard(val label: String, val value: String, val detail: String, val extra: List<String> = emptyList())
+/** The picture a Wrapped card carries besides its words; drawn into the shared image too. */
+private enum class CardArt { None, Clock, TopList, Flame }
+
+private data class WrappedCard(val label: String, val value: String, val detail: String, val extra: List<String> = emptyList(),
+    val art: CardArt = CardArt.None, val rows: List<Pair<String, Int>> = emptyList(), val hours: List<Long> = emptyList(), val streak: Int = 0,
+    /** The value is a number to count up (time, a count, a score); song and artist names never are. */
+    val counts: Boolean = false)
 
 private fun wrappedCards(w: Wrapped, songs: Map<String, LocalSong>, feels: FeelsState): List<WrappedCard> {
     val span = when (w.period) { StatsPeriod.Week -> "week"; StatsPeriod.Month -> "month"; StatsPeriod.Year -> "year"; StatsPeriod.All -> "time" }
     fun title(id: String) = songs[id]?.title ?: "A song no longer in your library"
-    val cards = mutableListOf(WrappedCard("Your ${span} in music", duration(w.listeningMs), "${w.plays} plays · ${w.distinctSongs} different songs"))
-    w.topSong?.let { cards += WrappedCard("Top song", title(it.key), "${it.plays} plays · ${duration(it.listeningMs)}") }
+    val cards = mutableListOf(WrappedCard("Your ${span} in music", duration(w.listeningMs), "${w.plays} plays · ${w.distinctSongs} different songs",
+        art = if (w.hours.any { it > 0 }) CardArt.Clock else CardArt.None, hours = w.hours.toList(), counts = true))
+    w.topSong?.let { cards += WrappedCard("Top song", title(it.key), "${it.plays} plays · ${duration(it.listeningMs)}",
+        art = if (w.topSongs.size > 1) CardArt.TopList else CardArt.None, rows = w.topSongs.map { r -> title(r.key) to r.plays }) }
     w.topArtist?.let { cards += WrappedCard("Top artist", it.key.ifBlank { "Unknown" }, "${it.plays} plays · ${duration(it.listeningMs)}") }
     w.couldntSkip?.let { cards += WrappedCard("The song you couldn't skip", title(it.key), "${it.plays} plays, not one skip") }
     w.biggestGrower?.let { (id, rise) -> cards += WrappedCard("Biggest grower", title(id), "You finish it ${(rise * 100).roundToInt()} points more often than last $span") }
     if (w.discoveries.isNotEmpty()) cards += WrappedCard("New discoveries", "${w.discoveries.size}", if (w.discoveries.size == 1) "song heard for the first time" else "songs heard for the first time",
-        w.discoveries.take(3).map(::title))
+        w.discoveries.take(3).map(::title), counts = true)
     if (w.longestStreak > 0 || w.clockLabel != null) cards += WrappedCard("Your rhythm", w.clockLabel ?: "Listener",
-        if (w.longestStreak > 0) "Longest streak: ${w.longestStreak} ${if (w.longestStreak == 1) "day" else "days"} in a row" else "")
+        if (w.longestStreak > 0) "Longest streak: ${w.longestStreak} ${if (w.longestStreak == 1) "day" else "days"} in a row" else "",
+        art = if (w.longestStreak > 0) CardArt.Flame else CardArt.None, streak = w.longestStreak)
     w.topFeel?.let { top -> feels.active.firstOrNull { it.feel.feelId == top.key }?.let { f -> cards += WrappedCard("Top feel", f.feel.name, "${duration(top.listeningMs)} of ${f.feel.name.lowercase()} music") } }
     val m = w.measures
     cards += WrappedCard("Your style", m.variety?.let { "Variety $it" } ?: "Variety –",
         "First listens ${pct(m.discoveryRate)} · Library heard ${pct(m.libraryCoverage)} · Top-20 loyalty ${pct(m.loyalty)}",
-        if (m.comebacks.isNotEmpty()) listOf("${m.comebacks.size} ${if (m.comebacks.size == 1) "comeback" else "comebacks"}: ${title(m.comebacks.first())}") else emptyList())
+        if (m.comebacks.isNotEmpty()) listOf("${m.comebacks.size} ${if (m.comebacks.size == 1) "comeback" else "comebacks"}: ${title(m.comebacks.first())}") else emptyList(), counts = true)
     return cards
+}
+
+/** How long each Wrapped card stays before moving on, like stories. Hold to pause; tap the sides to step. */
+internal const val WRAPPED_CARD_MS = 6_000L
+
+/** The first number in [value] counts up from zero as [reveal] goes 0 → 1, e.g. "2 h 13 m" or "Variety 85". */
+internal fun countUp(value: String, reveal: Float): String {
+    val match = Regex("\\d[\\d,]*").find(value) ?: return value
+    val target = match.value.replace(",", "").toLongOrNull() ?: return value
+    val shown = (target * reveal.coerceIn(0f, 1f).toDouble()).roundToLong()
+    val text = if (',' in match.value) "%,d".format(shown) else shown.toString()
+    return value.replaceRange(match.range, text)
 }
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -291,20 +323,53 @@ internal fun WrappedDialog(attempts: List<StatsAttempt>, songs: List<LocalSong>,
                     w.empty -> Box(Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
                         Text("Nothing played ${period.label.lowercase()} yet. Come back after some music.", color = Color.White, textAlign = TextAlign.Center, style = MaterialTheme.typography.titleMedium)
                     }
-                    else -> {
+                    else -> key(w) {
                         val cards = remember(w, byId, feels) { wrappedCards(w, byId, feels) }
                         val pager = rememberPagerState { cards.size }
                         val layers = remember(cards) { HashMap<Int, GraphicsLayer>() }
-                        HorizontalPager(pager, Modifier.weight(1f).fillMaxWidth(), contentPadding = PaddingValues(horizontal = 28.dp), pageSpacing = 12.dp) { index ->
+                        // Story timer in real time (not the animation scale), so cards still advance with animations off.
+                        var paused by remember { mutableStateOf(false) }
+                        var progress by remember { mutableFloatStateOf(0f) }
+                        var timedPage by remember { mutableIntStateOf(-1) }
+                        LaunchedEffect(pager.currentPage, paused) {
+                            if (timedPage != pager.currentPage) { timedPage = pager.currentPage; progress = 0f }
+                            if (paused) return@LaunchedEffect
+                            var last = withFrameNanos { it }
+                            while (progress < 1f) {
+                                val now = withFrameNanos { it }
+                                // A finger dragging between cards holds the clock.
+                                if (!pager.isScrollInProgress) progress = (progress + (now - last) / 1_000_000f / WRAPPED_CARD_MS).coerceAtMost(1f)
+                                last = now
+                            }
+                            // Turned in the dialog's scope, so this effect restarting on the new page can't cancel the turn.
+                            val next = pager.currentPage + 1
+                            if (next <= cards.lastIndex) scope.launch { pager.animateScrollToPage(next) }
+                        }
+                        // One segment per card: earlier cards full, the current one filling, later ones empty.
+                        Row(Modifier.fillMaxWidth().padding(horizontal = 28.dp, vertical = 10.dp).testTag("wrapped-progress"), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            repeat(cards.size) { i ->
+                                Box(Modifier.weight(1f).height(3.dp).background(Color.White.copy(alpha = .25f), CircleShape)) {
+                                    val fill = when { i < pager.currentPage -> 1f; i == pager.currentPage -> progress; else -> 0f }
+                                    Box(Modifier.fillMaxHeight().fillMaxWidth(fill).background(Color.White, CircleShape))
+                                }
+                            }
+                        }
+                        HorizontalPager(pager, Modifier.weight(1f).fillMaxWidth()
+                            .pointerInput(cards) {
+                                detectTapGestures(
+                                    onPress = { paused = true; tryAwaitRelease(); paused = false },
+                                    onTap = { at ->
+                                        val target = if (at.x < size.width / 3f) pager.currentPage - 1 else pager.currentPage + 1
+                                        if (target in cards.indices) scope.launch { pager.animateScrollToPage(target) }
+                                    })
+                            }, contentPadding = PaddingValues(horizontal = 28.dp), pageSpacing = 12.dp) { index ->
                             val layer = rememberGraphicsLayer()
                             DisposableEffect(layer) { layers[index] = layer; onDispose { if (layers[index] === layer) layers.remove(index) } }
-                            WrappedCardView(cards[index], index, cards.size, period, Modifier.fillMaxSize().padding(vertical = 16.dp)
+                            WrappedCardView(cards[index], index, cards.size, period, active = index == pager.currentPage, modifier = Modifier.fillMaxSize().padding(vertical = 8.dp)
                                 .drawWithContent { layer.record { this@drawWithContent.drawContent() }; drawLayer(layer) })
                         }
                         Row(Modifier.fillMaxWidth().padding(horizontal = 24.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                repeat(cards.size) { i -> Box(Modifier.size(if (i == pager.currentPage) 10.dp else 6.dp).background(Color.White.copy(alpha = if (i == pager.currentPage) 1f else .4f), CircleShape)) }
-                            }
+                            Text(if (paused) "Paused" else "Hold to pause · tap the sides to skip", Modifier.weight(1f), style = MaterialTheme.typography.labelSmall, color = Color.White.copy(alpha = .6f))
                             FilledTonalButton(onClick = {
                                 val layer = layers[pager.currentPage] ?: return@FilledTonalButton
                                 scope.launch { shareCard(context, layer) }
@@ -318,17 +383,106 @@ internal fun WrappedDialog(attempts: List<StatsAttempt>, songs: List<LocalSong>,
 }
 
 @Composable
-private fun WrappedCardView(card: WrappedCard, index: Int, total: Int, period: StatsPeriod, modifier: Modifier) {
+private fun WrappedCardView(card: WrappedCard, index: Int, total: Int, period: StatsPeriod, active: Boolean, modifier: Modifier) {
     val mood = MoodColors.all[index % MoodColors.all.size]
+    // Each card reveals once, the first time it comes up: label, then the big value (counting up), then the details.
+    val reveal = remember(card) { Animatable(0f) }
+    LaunchedEffect(card, active) { if (active && reveal.value < 1f) reveal.animateTo(1f, tween(1_100, easing = FastOutSlowInEasing)) }
+    fun stage(from: Float) = ((reveal.value - from) / .45f).coerceIn(0f, 1f)
     Box(modifier.background(Brush.verticalGradient(listOf(Color(mood.field), Color(0xFF0B1220))), RoundedCornerShape(28.dp)).padding(28.dp)) {
-        Column(Modifier.align(Alignment.CenterStart), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text(card.label.uppercase(), style = MaterialTheme.typography.labelLarge, color = Color(mood.accent), fontWeight = FontWeight.Bold)
-            Text(card.value, style = if (card.value.length > 18) MaterialTheme.typography.headlineMedium else MaterialTheme.typography.displaySmall,
+        Column(Modifier.align(Alignment.CenterStart).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text(card.label.uppercase(), Modifier.graphicsLayer { alpha = stage(0f) }, style = MaterialTheme.typography.labelLarge, color = Color(mood.accent), fontWeight = FontWeight.Bold)
+            Text(if (card.counts) countUp(card.value, stage(.15f)) else card.value, Modifier.graphicsLayer { alpha = stage(.15f); translationY = (1f - stage(.15f)) * 24.dp.toPx() }.testTag("wrapped-value"),
+                style = if (card.value.length > 18) MaterialTheme.typography.headlineMedium else MaterialTheme.typography.displaySmall,
                 color = Color.White, fontWeight = FontWeight.SemiBold, maxLines = 3, overflow = TextOverflow.Ellipsis)
-            if (card.detail.isNotBlank()) Text(card.detail, style = MaterialTheme.typography.titleMedium, color = Color.White.copy(alpha = .85f))
-            card.extra.forEach { Text("· $it", style = MaterialTheme.typography.bodyLarge, color = Color.White.copy(alpha = .8f), maxLines = 1, overflow = TextOverflow.Ellipsis) }
+            Column(Modifier.graphicsLayer { alpha = stage(.4f) }, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                if (card.detail.isNotBlank()) Text(card.detail, style = MaterialTheme.typography.titleMedium, color = Color.White.copy(alpha = .85f))
+                card.extra.forEach { Text("· $it", style = MaterialTheme.typography.bodyLarge, color = Color.White.copy(alpha = .8f), maxLines = 1, overflow = TextOverflow.Ellipsis) }
+            }
+            val artStage = stage(.55f)
+            when (card.art) {
+                CardArt.Clock -> WrappedClock(card.hours, Color(mood.accent), artStage, Modifier.padding(top = 8.dp).size(150.dp).align(Alignment.CenterHorizontally))
+                CardArt.TopList -> WrappedTopList(card.rows, Color(mood.accent), artStage)
+                CardArt.Flame -> WrappedFlame(card.streak, artStage, active, Modifier.padding(top = 8.dp).align(Alignment.CenterHorizontally))
+                CardArt.None -> Unit
+            }
         }
         Text("Radio · ${period.label} · ${index + 1}/$total", Modifier.align(Alignment.BottomStart), style = MaterialTheme.typography.labelSmall, color = Color.White.copy(alpha = .6f))
+    }
+}
+
+/** 24 bars around a dial (midnight at the top), growing in as the card reveals. */
+@Composable
+private fun WrappedClock(hours: List<Long>, accent: Color, grow: Float, modifier: Modifier) {
+    val peak = (hours.maxOrNull() ?: 0L).coerceAtLeast(1L)
+    Canvas(modifier.semantics { contentDescription = "Listening by hour of the day" }) {
+        val center = Offset(size.width / 2, size.height / 2)
+        val inner = size.minDimension * .18f
+        val outer = size.minDimension * .5f
+        for (h in 0 until 24) {
+            val angle = (h / 24f) * 2 * PI.toFloat() - PI.toFloat() / 2
+            val share = hours.getOrElse(h) { 0L }.toFloat() / peak
+            val length = (outer - inner) * (.08f + .92f * share * grow)
+            val dir = Offset(cos(angle), sin(angle))
+            drawLine(if (share > 0f) accent else Color.White.copy(alpha = .18f), center + dir * inner, center + dir * (inner + length), strokeWidth = 5.dp.toPx(), cap = StrokeCap.Round)
+        }
+    }
+}
+
+/** The top songs with bars for their plays. */
+@Composable
+private fun WrappedTopList(rows: List<Pair<String, Int>>, accent: Color, grow: Float) {
+    val most = (rows.maxOfOrNull { it.second } ?: 1).coerceAtLeast(1)
+    Column(Modifier.fillMaxWidth().padding(top = 8.dp).graphicsLayer { alpha = grow }, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        rows.forEachIndexed { i, (name, plays) ->
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("${i + 1}", Modifier.width(22.dp), color = accent, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleSmall)
+                Column(Modifier.weight(1f)) {
+                    Text(name, color = Color.White, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Box(Modifier.padding(top = 3.dp).fillMaxWidth((plays.toFloat() / most * grow).coerceIn(0.02f, 1f)).height(4.dp).background(accent, CircleShape))
+                }
+                Text("$plays", Modifier.padding(start = 10.dp), color = Color.White.copy(alpha = .8f), style = MaterialTheme.typography.labelLarge)
+            }
+        }
+    }
+}
+
+/** A streak flame that flickers gently while its card is showing (still when animations are off), with the day count. */
+@Composable
+private fun WrappedFlame(days: Int, grow: Float, active: Boolean, modifier: Modifier) {
+    val animations by rememberAnimationsEnabled()
+    val flicker = remember { Animatable(0f) }
+    LaunchedEffect(active, animations) {
+        if (!active || !animations) { flicker.snapTo(0f); return@LaunchedEffect }
+        while (true) { flicker.animateTo(1f, tween(380, easing = FastOutSlowInEasing)); flicker.animateTo(0f, tween(420, easing = FastOutSlowInEasing)) }
+    }
+    Box(modifier.size(140.dp).semantics { contentDescription = "$days day streak" }, contentAlignment = Alignment.Center) {
+        Canvas(Modifier.fillMaxSize()) {
+            val w = size.width; val h = size.height
+            val s = (.4f + .6f * grow) * (1f + .04f * flicker.value)
+            scale(s, s, pivot = Offset(w / 2, h)) {
+                val outer = Path().apply {
+                    moveTo(w * .5f, h * .02f)
+                    cubicTo(w * .62f, h * .25f, w * .92f, h * .40f, w * .86f, h * .68f)
+                    cubicTo(w * .80f, h * .92f, w * .62f, h * .99f, w * .5f, h * .99f)
+                    cubicTo(w * .38f, h * .99f, w * .20f, h * .92f, w * .14f, h * .68f)
+                    cubicTo(w * .10f, h * .48f, w * .30f, h * .40f, w * .34f, h * .22f)
+                    cubicTo(w * .42f, h * .32f, w * .44f, h * .14f, w * .5f, h * .02f)
+                    close()
+                }
+                drawPath(outer, Brush.verticalGradient(listOf(Color(0xFFFFE08A), Color(0xFFFB923C), Color(0xFFDC2626)), startY = 0f, endY = h))
+                val tip = h * (.40f - .04f * flicker.value)
+                val inner = Path().apply {
+                    moveTo(w * .5f, tip)
+                    cubicTo(w * .60f, h * .55f, w * .70f, h * .66f, w * .66f, h * .80f)
+                    cubicTo(w * .62f, h * .94f, w * .38f, h * .94f, w * .34f, h * .80f)
+                    cubicTo(w * .30f, h * .66f, w * .42f, h * .55f, w * .5f, tip)
+                    close()
+                }
+                drawPath(inner, Color(0xFFFFF3C4).copy(alpha = .9f))
+            }
+        }
+        Text("$days", Modifier.padding(top = 46.dp).graphicsLayer { alpha = grow }, color = Color(0xFF7C2D12), fontWeight = FontWeight.Black, style = MaterialTheme.typography.headlineMedium)
     }
 }
 

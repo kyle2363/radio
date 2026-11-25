@@ -151,6 +151,8 @@ class LocalPlaybackController(
     private var attemptSong: String? = null
     private var attemptId = ""
     private var started = false
+    /** Files that failed to play in a row; an audible start resets it (see [PlaybackErrorPolicy]). */
+    private var consecutiveErrors = 0
     private var listeningAttempt: ListeningAttempt? = null
     private var attemptDurationMs: Long? = null
     private var attemptTrigger: String? = null
@@ -226,6 +228,7 @@ class LocalPlaybackController(
                 if (player.isPlaying && player.playbackState == Player.STATE_READY && !started) {
                     queueById[id]?.let { song ->
                         started = true
+                        consecutiveErrors = 0
                         attemptDurationMs = player.duration.takeIf { it != C.TIME_UNSET && it > 0 } ?: song.durationMs
                         startContext = PlayContext(attemptSource.kind, attemptSource.id,
                             if (attemptSource.kind == PlaySource.RADIO) origins[song.id]?.name else null,
@@ -243,6 +246,14 @@ class LocalPlaybackController(
             override fun onPlayerError(exception: PlaybackException) {
                 cancelCrossfade()
                 finishAttempt("attempt_stopped", "decoder_error")
+                consecutiveErrors++
+                val failed = queueById[player.currentMediaItem?.mediaId]
+                val next = if (accessLost) C.INDEX_UNSET else adjacent(true)
+                if (PlaybackErrorPolicy.shouldSkip(consecutiveErrors, player.playWhenReady, next != C.INDEX_UNSET)) {
+                    notice = PlaybackNotice((notice?.id ?: 0) + 1, "Skipped “${failed?.title ?: "a song"}”. The file couldn't be played.")
+                    move(next, PlayTrigger.AUTO_ADVANCE)
+                    return
+                }
                 error = "Couldn't play this file. It may be missing, unreadable or unsupported. Try Next, or check the Music folder and rescan."
                 player.pause()
                 publish(checkpoint = true)

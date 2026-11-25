@@ -186,12 +186,15 @@ class LyricsRadioAppUiTest {
                 openAndCloseLyrics()
                 assertEquals(normal, playback.state.value)
 
+                // The queue view has no options menu or Lyrics button (since the November 23 polish pass); it returns to the
+                // artwork first, and Lyrics opens from there without touching playback.
                 compose.onNodeWithContentDescription("Queue").performClick()
                 compose.onNodeWithTag("queue-position").assertExists()
+                compose.onNodeWithTag("player-options").assertDoesNotExist()
+                compose.onNodeWithContentDescription("Show artwork").performClick()
                 openAndCloseLyrics()
                 assertEquals(normal, playback.state.value)
 
-                compose.onNodeWithContentDescription("Show artwork").performClick()
                 compose.onNodeWithContentDescription("Minimal mode").performClick()
                 openAndCloseLyrics()
                 assertEquals(normal, playback.state.value)
@@ -204,10 +207,10 @@ class LyricsRadioAppUiTest {
                 compose.onNodeWithTag("player-options").performClick()
                 compose.onNodeWithTag("show-queue").performClick()
                 compose.onNodeWithTag("queue-position").assertExists()
+                compose.onNodeWithTag("player-options").assertDoesNotExist()
+                compose.onNodeWithContentDescription("Show artwork").performClick()
                 openAndCloseLyrics()
                 assertEquals(radio, playback.state.value)
-                compose.onNodeWithTag("player-options").performClick()
-                compose.onNodeWithTag("show-queue").performClick()
                 compose.onNodeWithTag("player-options").performClick()
                 compose.onNodeWithText("Minimal view").performClick()
                 openAndCloseLyrics()

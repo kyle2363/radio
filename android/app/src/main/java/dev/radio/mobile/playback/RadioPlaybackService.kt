@@ -40,6 +40,9 @@ class RadioPlaybackService : MediaSessionService() {
     private val shuffleCommand = SessionCommand(ACTION_TOGGLE_SHUFFLE, Bundle.EMPTY)
     private val repeatCommand = SessionCommand(ACTION_CYCLE_REPEAT, Bundle.EMPTY)
     private val likeCommand = SessionCommand(ACTION_TOGGLE_LIKE, Bundle.EMPTY)
+    private val notForMeCommand = SessionCommand(ACTION_NOT_FOR_ME, Bundle.EMPTY)
+    /** A headset or Bluetooth Play that started the service before the session existed; it plays once restoration ends. */
+    private var pendingMediaPlay = false
     private lateinit var library: LibraryRepository
 
     // In-process binding avoids serializing the entire local catalog over controller IPC.
@@ -229,6 +232,7 @@ class RadioPlaybackService : MediaSessionService() {
             initialized = true
             createMediaSession()
             clientController.initialized()
+            if (pendingMediaPlay) playFromMediaButton()
             library.state.collect { state ->
                 if (!state.loading && !state.scanning) engine.reconcileLibrary(state.songs, state.accessLost)
             }
@@ -254,7 +258,7 @@ class RadioPlaybackService : MediaSessionService() {
                         .remove(Player.COMMAND_SET_REPEAT_MODE).remove(Player.COMMAND_SET_SPEED_AND_PITCH).build()
                     return MediaSession.ConnectionResult.AcceptedResultBuilder()
                         .setAvailableSessionCommands(MediaSession.ConnectionResult.DEFAULT_SESSION_COMMANDS
-                            .buildUpon().add(shuffleCommand).add(repeatCommand).add(likeCommand).build())
+                            .buildUpon().add(shuffleCommand).add(repeatCommand).add(likeCommand).add(notForMeCommand).build())
                         .setAvailablePlayerCommands(commands).build()
                 }
 
@@ -273,6 +277,16 @@ class RadioPlaybackService : MediaSessionService() {
                             val song = engine.state.value.current
                             val journal = library.journal.state.value
                             if (song != null && journal.feedbackLoaded) library.journal.setFavorite(song, journal.feedback[song.id]?.favorite != true)
+                        }
+                        // Lock screen / notification "Not for me" on air: the same as the app's button, dislike and skip.
+                        ACTION_NOT_FOR_ME -> {
+                            val state = clientController.state.value
+                            val song = state.current
+                            if (song != null && state.radioActive && state.talk?.current != true && state.canNext && library.journal.state.value.feedbackLoaded) {
+                                engine.commandOrigin = PlayTrigger.MEDIA_BUTTON
+                                library.journal.setDisliked(song, true)
+                                clientController.next()
+                            }
                         }
                         else -> return super.onCustomCommand(session, controller, customCommand, args)
                     }
@@ -314,8 +328,37 @@ class RadioPlaybackService : MediaSessionService() {
 
     // Stock Android shows two custom buttons beside the transport. On air, shuffle and repeat don't apply, so Like
     // takes the first slot; otherwise Like follows them and appears where the system shows more buttons.
+    // On air, Not for me sits beside Like, as in the app.
     private fun mediaButtons(shuffled: Boolean, repeat: RepeatMode, radio: Boolean, liked: Boolean) =
-        if (radio) listOf(likeButton(liked)) else listOf(shuffleButton(shuffled), repeatButton(repeat), likeButton(liked))
+        if (radio) listOf(likeButton(liked), notForMeButton()) else listOf(shuffleButton(shuffled), repeatButton(repeat), likeButton(liked))
+
+    private fun notForMeButton() = CommandButton.Builder(CommandButton.ICON_BLOCK)
+        .setDisplayName("Not for me")
+        .setSessionCommand(notForMeCommand)
+        .setSlots(CommandButton.SLOT_OVERFLOW)
+        .build()
+
+    /**
+     * A Play from headphones, a car or a Bluetooth remote while the app wasn't running. Media3's button receiver starts
+     * this service before restoration has made the session, and Media3 would otherwise stop the service again. Remember
+     * the press, then play once the session exists: the saved song resumes, or Radio starts (see onEmptyPlay). Opening
+     * the app never takes this path, so it never starts music by itself.
+     */
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (session == null && intent?.action == Intent.ACTION_MEDIA_BUTTON) {
+            pendingMediaPlay = true
+            return START_NOT_STICKY
+        }
+        return super.onStartCommand(intent, flags, startId)
+    }
+
+    private fun playFromMediaButton() {
+        pendingMediaPlay = false
+        engine.commandOrigin = PlayTrigger.MEDIA_BUTTON
+        clientController.play()
+        // If nothing could play (no library, no songs), don't leave a started service waiting to become foreground.
+        scope.launch { delay(8_000); if (!clientController.state.value.playWhenReady) stopSelf() }
+    }
 
     private fun likeButton(liked: Boolean) = CommandButton.Builder(if (liked) CommandButton.ICON_HEART_FILLED else CommandButton.ICON_HEART_UNFILLED)
         .setDisplayName(if (liked) "Unlike" else "Like")
@@ -374,6 +417,7 @@ class RadioPlaybackService : MediaSessionService() {
         const val ACTION_TOGGLE_SHUFFLE = "dev.radio.mobile.TOGGLE_SHUFFLE"
         const val ACTION_CYCLE_REPEAT = "dev.radio.mobile.CYCLE_REPEAT"
         const val ACTION_TOGGLE_LIKE = "dev.radio.mobile.TOGGLE_LIKE"
+        const val ACTION_NOT_FOR_ME = "dev.radio.mobile.NOT_FOR_ME"
         // Dependency seam lets service instrumentation use an in-memory catalog and journal.
         internal var repositoryFactory: (android.content.Context) -> LibraryRepository = LibraryRepository::get
         internal var beforeRadioStartCommit: suspend () -> Unit = {}

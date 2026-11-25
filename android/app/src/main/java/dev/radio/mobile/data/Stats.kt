@@ -121,7 +121,7 @@ object StatsCalculator {
             .sortedWith(compareByDescending<Ranked> { it.plays }.thenByDescending { it.listeningMs }.thenBy { it.key }).take(limit)
 
     fun summarize(all: List<StatsAttempt>, songs: Map<String, LocalSong>, period: StatsPeriod, now: Long, zone: ZoneId,
-        artistOf: (LocalSong) -> String = { it.artist }): StatsSummary {
+        artistOf: (LocalSong) -> String = { dev.radio.mobile.music.Artists.primary(it.artist) }): StatsSummary {
         val today = Instant.ofEpochMilli(now).atZone(zone).toLocalDate()
         val range = range(period, today, zone)
         val rows = if (range == null) all else all.filter { it.startedAt >= range.first && it.startedAt < range.second }

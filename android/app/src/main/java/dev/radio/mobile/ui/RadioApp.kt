@@ -9,7 +9,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
-import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.foundation.lazy.LazyListState
 import dev.radio.mobile.data.*
 import dev.radio.mobile.music.*
@@ -47,6 +47,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
@@ -86,14 +87,14 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
     val livePosition = playback.slice { it.positionMs }
     // The sleep countdown, to the second; like the position, only the labels that show it read it.
     val liveSleep = playback.slice { it.sleepTimer.copy(remainingMs = (it.sleepTimer.remainingMs + 999) / 1000 * 1000) }
-    val library by repository.state.collectAsState()
-    val playlists by repository.playlists.state.collectAsState()
-    val journal by repository.journal.state.collectAsState()
-    val radio by repository.radio.state.collectAsState()
+    val library by repository.state.collectAsStateWithLifecycle()
+    val playlists by repository.playlists.state.collectAsStateWithLifecycle()
+    val journal by repository.journal.state.collectAsStateWithLifecycle()
+    val radio by repository.radio.state.collectAsStateWithLifecycle()
     // Untracked listening: plays and skips aren't recorded while on.
-    val untracked by repository.untracked.state.collectAsState()
+    val untracked by repository.untracked.state.collectAsStateWithLifecycle()
     val tag = if (untracked != null) "Not tracking · " else ""
-    val connected by repository.radio.connectedState.collectAsState()
+    val connected by repository.radio.connectedState.collectAsStateWithLifecycle()
     val keyboard = LocalSoftwareKeyboardController.current
     val focus = LocalFocusManager.current
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri -> if (uri != null) repository.chooseFolder(uri) }
@@ -157,12 +158,12 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
     val selection = remember { SelectionController() }
     var deletingPlaylists by remember { mutableStateOf<List<String>?>(null) }
     // Checkpoint 9B feels.
-    val feelsState by repository.feels.state.collectAsState()
+    val feelsState by repository.feels.state.collectAsStateWithLifecycle()
     var feelsNav by remember { mutableStateOf(FeelsNav()) }
     var feelSheet by remember { mutableStateOf(false) }
     val preview = (playback as? dev.radio.mobile.playback.ServicePlaybackController)?.preview
     // Checkpoint 4.2 Radio surfaces.
-    val pairingState by pairing.state.collectAsState()
+    val pairingState by pairing.state.collectAsStateWithLifecycle()
     val paired = pairingState.paired && !pairingState.blocked && !pairingState.quarantined
     var endSheet by remember { mutableStateOf(false) }
     var whySheet by remember { mutableStateOf(false) }
@@ -312,6 +313,7 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
     }
     // Checkpoint 8C: milestone notices appear once, ever, as a short in-app message (never a system notification).
     val milestoneHead = journal.history.firstOrNull()?.eventId
+    var celebrate by remember { mutableIntStateOf(0) }
     LaunchedEffect(milestoneHead, library.loading) {
         if (library.loading || milestoneHead == null) return@LaunchedEffect
         kotlinx.coroutines.delay(1500)
@@ -320,6 +322,7 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
             val rows = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { repository.journal.statsAttempts() }
             unannouncedMilestones(appContext, FunStats.milestones(rows, songsNow, System.currentTimeMillis(), java.time.ZoneId.systemDefault()))
         }
+        if (reached.isNotEmpty()) celebrate++
         reached.forEach { message("Milestone reached · ${it.title}. ${it.detail}") }
     }
     LaunchedEffect(openPlayerRequest) { if (openPlayerRequest > 0) navigate("Now playing") }
@@ -538,7 +541,12 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
                         trailingIcon = { if (query.isNotEmpty()) IconButton(onClick = { query = ""; runCatching { searchFocus.requestFocus() } }, modifier = Modifier.testTag("search-clear")) { RadioIcon(Symbol.Close, "Clear search") } },
                         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp).focusRequester(searchFocus).testTag("search-input"))
                     // Checkpoint 11: typo-tolerant matching; recent searches show while the box is empty.
-                    val results = remember(songs, query) { dev.radio.mobile.music.SongSearch.filter(songs, query) { listOf(it.title, it.artist, it.fileName, it.folderPath) } }
+                    // The index is built once per library; each keystroke filters it off the main thread, so typing stays smooth.
+                    val searchIndex = remember(songs) { dev.radio.mobile.music.SongSearch.index(songs) { listOf(it.title, it.artist, it.fileName, it.folderPath) } }
+                    val searched by produceState("" to emptyList<LocalSong>(), searchIndex, query) {
+                        value = query to kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) { searchIndex.filter(query) }
+                    }
+                    val results = searched.second
                     fun rememberQuery() { recentSearches = dev.radio.mobile.music.SongSearch.remember(recentSearches, query); prefs.edit().putString("recentSearches", org.json.JSONArray(recentSearches).toString()).apply() }
                     if (query.isBlank() && recentSearches.isNotEmpty()) {
                         Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -557,10 +565,13 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
                             focus.clearFocus(); keyboard?.hide(); rememberQuery(); if (playSong(item, results, PlaySource.Search)) navigate("Now playing")
                         }
                     } }
-                    if (query.isNotBlank() && results.isEmpty()) EmptyState(Symbol.Search, "No matching songs", "Try part of the title, the artist or the file name.")
+                    // Only once the search for this exact text has finished, so "no matches" never flashes while typing.
+                    if (query.isNotBlank() && searched.first == query && results.isEmpty()) EmptyState(Symbol.Search, "No matching songs", "Try part of the title, the artist or the file name.")
                 }
                 "Now playing" -> if (song == null && talkNow == null && !tuningIn) NothingPlaying(repository, library, audio.error, onResume = { playback.play() },
-                    onRadio = { playback.startRadio(null) }, onBrowse = { navigate("Library") }, modifier = Modifier.padding(insets)) else BoxWithConstraints(Modifier.consumeWindowInsets(insets).fillMaxSize()) {
+                    onRadio = { playback.startRadio(null) }, onBrowse = { navigate("Library") }, modifier = Modifier.padding(insets)) else BoxWithConstraints(Modifier.consumeWindowInsets(insets).fillMaxSize()
+                    // Pull down from the top to close, like a sheet (or from the queue's top, which returns to the artwork first).
+                    .pullDownToClose(enabled = !showLyricsSheet, onClose = { back() }).testTag("now-playing-body")) {
                     // The backdrop fills the whole screen (behind the transparent top bar); only the content is inset.
                     val compact = maxHeight - insets.calculateTopPadding() - insets.calculateBottomPadding() < 520.dp
                     // On air the glow takes the station's mood colour; normal playback keeps the palette colour.
@@ -710,7 +721,7 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
                     SettingsCard {
                     SectionLabel("Color scheme")
                     RadioPalette.entries.forEach { option ->
-                        Row(Modifier.fillMaxWidth().selectable(selected = palette == option.name, role = Role.RadioButton, onClick = { palette = option.name; prefs.edit().putString("palette", palette).apply() }).heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Row(Modifier.fillMaxWidth().selectable(selected = palette == option.name, role = Role.RadioButton, onClick = { palette = option.name; prefs.edit().putString("palette", palette).commit(); dev.radio.mobile.playback.PlayerWidget.refresh(appContext) }).heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically) {
                             RadioButton(palette == option.name, onClick = null)
                             Box(Modifier.padding(start = 8.dp).size(24.dp).background(if (option == RadioPalette.Teal) TealAccent else OceanAccent, RadioShapes.Leaf))
                             Text(option.label, Modifier.padding(start = 12.dp))
@@ -718,7 +729,7 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
                     }
                     SectionLabel("Appearance")
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { Appearance.entries.forEach { option ->
-                        FilterChip(appearance == option.name, onClick = { appearance = option.name; prefs.edit().putString("appearance", appearance).apply() }, label = { Text(option.label) })
+                        FilterChip(appearance == option.name, onClick = { appearance = option.name; prefs.edit().putString("appearance", appearance).commit(); dev.radio.mobile.playback.PlayerWidget.refresh(appContext) }, label = { Text(option.label) })
                     } }
                     SectionLabel("Player background")
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { PlayerBackdrop.entries.forEach { option ->
@@ -790,7 +801,7 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
             // A finished clip closes its transcript, so the next clip never opens on its own.
             LaunchedEffect(talkNow?.mediaId) { if (talkNow == null) showTranscript = false }
             if (showLyricsSheet && page == "Now playing" && song != null) {
-                val lyrics by lyricsRepository.state.collectAsState()
+                val lyrics by lyricsRepository.state.collectAsStateWithLifecycle()
                 val matchesCurrentSong = lyrics.songId == song.id
                 val state = if (!matchesCurrentSong) LyricsSheetState(status = "LOADING", loading = true) else when (lyrics.status.name) {
                     "READY" -> LyricsSheetState(status = "READY", text = lyrics.text,
@@ -819,6 +830,7 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
                         onMatching = { showLyricsSheet = false; navigate("Matching") })
                 }
             }
+            ConfettiBurst(celebrate)
             if (addQueueSongs) SongPicker("Add to queue", songs, { addQueueSongs = false }) { chosen -> playback.addToQueue(chosen); addQueueSongs = false }
             if (feelSheet && song != null) FeelSheet(song, repository.feels, feelsState, onSetUp = { feelSheet = false; feelsNav = FeelsNav(); navigate("Feels") },
                 onMessage = ::message, onDismiss = { feelSheet = false })
@@ -924,7 +936,7 @@ private object AutoRescan {
 @Composable
 private fun <T> PlaybackController.slice(part: (PlaybackState) -> T): State<T> {
     val flow = remember(this) { state.map(part).distinctUntilChanged() }
-    return flow.collectAsState(currentPart(this, part))
+    return flow.collectAsStateWithLifecycle(currentPart(this, part))
 }
 
 /** Read outside composition: the starting value for [slice] before its flow first emits. */

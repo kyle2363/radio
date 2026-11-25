@@ -129,11 +129,22 @@ class MediaPlaybackTest {
             }
         }
     }
-    @Test fun decoderFailureDoesNotRecordAPlayAndNextCanRecover() {
+    @Test fun decoderFailureIsSkippedWithoutRecordingAPlay() {
+        // While playing, an unreadable file is skipped (PlaybackErrorPolicy) with a notice; it never counts as a play.
         main { controller.playFrom(listOf(song("broken"), song("long1")), "broken", "Folder") }
+        await("Unreadable file was not skipped") { controller.state.value.currentId == "long1" && starts.isNotEmpty() }
+        main {
+            assertEquals(listOf("long1"), starts.map { it.first })
+            assertNull(controller.state.value.error)
+            assertTrue(controller.state.value.notice?.message.orEmpty().contains("couldn't be played"))
+        }
+    }
+    @Test fun decoderFailureAtTheEndStopsWithAnErrorAndNextCanRecover() {
+        // Nothing after it: playback stops and explains, as before; picking another song recovers.
+        main { controller.playFrom(listOf(song("long1"), song("broken")), "broken", "Folder") }
         await("Invalid MP3 did not report an error") { controller.state.value.error != null }
-        main { assertFalse(controller.state.value.isPlaying); assertTrue(starts.isEmpty()); controller.next() }
-        await("Next failed to recover") { controller.state.value.currentId == "long1" && controller.state.value.isPlaying }
+        main { assertFalse(controller.state.value.isPlaying); assertTrue(starts.isEmpty()); controller.previous() }
+        await("Previous failed to recover") { controller.state.value.currentId == "long1" && controller.state.value.isPlaying }
         main { assertEquals(listOf("long1"), starts.map { it.first }); assertNull(controller.state.value.error) }
     }
     @Test fun repeatOneAndSingleItemRepeatAllCreateNewAttemptsAtNaturalBoundaries() {

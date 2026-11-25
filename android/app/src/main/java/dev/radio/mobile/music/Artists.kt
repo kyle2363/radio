@@ -19,7 +19,7 @@ object Artists {
         return groups.map { (key, members) ->
             // Show the spelling most of the songs use.
             val name = if (key.isEmpty()) UNKNOWN else members.groupingBy { primary(it.artist) }.eachCount().maxBy { it.value }.key
-            ArtistEntry(name, members.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.title }))
-        }.sortedWith(compareBy<ArtistEntry> { it.name == UNKNOWN }.thenBy { sortKey(it.name) })
+            ArtistEntry(name, members.sortedWith(compareBy(NaturalOrder) { it: LocalSong -> it.title }))
+        }.sortedWith(compareBy<ArtistEntry> { it.name == UNKNOWN }.thenComparing({ sortKey(it.name) }, NaturalOrder))
     }
 }

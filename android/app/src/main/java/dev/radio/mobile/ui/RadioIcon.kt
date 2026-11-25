@@ -69,7 +69,10 @@ private val vectors = Symbol.entries.associateWith { symbol ->
         pathFillType = PathFillType.NonZero,
         fill = if (symbol.filled) SolidColor(Color.Black) else null,
         stroke = if (symbol.filled) null else SolidColor(Color.Black),
-        strokeLineWidth = 1.8f
+        strokeLineWidth = 1.8f,
+        // Rounded ends and corners: square caps and mitred joins look sharp and unfinished at this weight.
+        strokeLineCap = androidx.compose.ui.graphics.StrokeCap.Round,
+        strokeLineJoin = androidx.compose.ui.graphics.StrokeJoin.Round
     ).build()
 }
 

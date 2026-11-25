@@ -94,6 +94,31 @@ class PlayerWidget : AppWidgetProvider() {
             PlaybackTile.refresh(context)
         }
 
+        /** Redraws placed widgets with the current song, e.g. after the palette or appearance changes in the app. */
+        fun refresh(context: Context) {
+            val manager = AppWidgetManager.getInstance(context) ?: return
+            val ids = manager.getAppWidgetIds(ComponentName(context, PlayerWidget::class.java))
+            if (ids.isNotEmpty()) manager.updateAppWidget(ids, views(context, last(context)))
+        }
+
+        /** Colours from the app's palette and appearance; with "Phone" both sets are given and the launcher picks. */
+        private fun RemoteViews.applyTheme(context: Context) {
+            val shell = context.getSharedPreferences("radio_shell", Context.MODE_PRIVATE)
+            val palette = shell.getString("palette", "Ocean")
+            val (dayDark, nightDark) = WidgetPalette.modes(shell.getString("appearance", "System"))
+            val day = WidgetPalette.colors(palette, dayDark)
+            val night = WidgetPalette.colors(palette, nightDark)
+            fun tint(view: Int, method: String, pick: (WidgetColors) -> Int) =
+                setColorStateList(view, method, android.content.res.ColorStateList.valueOf(pick(day)), android.content.res.ColorStateList.valueOf(pick(night)))
+            tint(R.id.widget_root, "setBackgroundTintList") { it.background }
+            tint(R.id.widget_toggle, "setBackgroundTintList") { it.accent }
+            tint(R.id.widget_toggle, "setImageTintList") { it.onAccent }
+            tint(R.id.widget_previous, "setImageTintList") { it.title }
+            tint(R.id.widget_next, "setImageTintList") { it.title }
+            setColorInt(R.id.widget_title, "setTextColor", day.title, night.title)
+            setColorInt(R.id.widget_subtitle, "setTextColor", day.subtitle, night.subtitle)
+        }
+
         private fun saved(context: Context): WidgetState {
             val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             // After a restart nothing is playing, whatever was saved.
@@ -101,6 +126,7 @@ class PlayerWidget : AppWidgetProvider() {
         }
 
         private fun views(context: Context, state: WidgetState) = RemoteViews(context.packageName, R.layout.widget_player).apply {
+            applyTheme(context)
             setTextViewText(R.id.widget_title, state.title ?: context.getString(R.string.widget_empty))
             setTextViewText(R.id.widget_subtitle, state.subtitle ?: context.getString(R.string.widget_empty_hint))
             setImageViewResource(R.id.widget_toggle, if (state.playing) R.drawable.ic_widget_pause else R.drawable.ic_widget_play)

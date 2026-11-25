@@ -17,6 +17,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 
 /**
  * App motion: short enough that nothing feels like it waits on an animation. Compose scales these with the phone's
@@ -81,4 +82,47 @@ internal fun Modifier.sharedPlayer(shared: androidx.compose.animation.SharedTran
     if (visibility == null) return this
     return with(shared) { this@sharedPlayer.sharedElement(rememberSharedContentState("player-$key"), visibility,
         boundsTransform = { _, _ -> Motion.spatial() }) }
+}
+
+/**
+ * Pull down to close (Now Playing): once the content is scrolled to its top, a further downward drag moves the screen
+ * with the finger; letting go far enough (or flinging down) calls [onClose], otherwise it springs back. Works through
+ * nested scrolling, so the screen's own scrolling, the queue list and sideways gestures such as the seek bar behave
+ * exactly as before.
+ */
+@Composable
+internal fun Modifier.pullDownToClose(enabled: Boolean, onClose: () -> Unit): Modifier {
+    var pull by remember { mutableFloatStateOf(0f) }
+    val threshold = with(androidx.compose.ui.platform.LocalDensity.current) { 120.dp.toPx() }
+    val close by rememberUpdatedState(onClose)
+    val connection = remember(enabled, threshold) {
+        object : androidx.compose.ui.input.nestedscroll.NestedScrollConnection {
+            override fun onPreScroll(available: androidx.compose.ui.geometry.Offset, source: androidx.compose.ui.input.nestedscroll.NestedScrollSource): androidx.compose.ui.geometry.Offset {
+                // While pulled down, dragging back up first undoes the pull.
+                if (pull > 0f && available.y < 0f) {
+                    val used = maxOf(available.y, -pull)
+                    pull += used
+                    return androidx.compose.ui.geometry.Offset(0f, used)
+                }
+                return androidx.compose.ui.geometry.Offset.Zero
+            }
+            override fun onPostScroll(consumed: androidx.compose.ui.geometry.Offset, available: androidx.compose.ui.geometry.Offset, source: androidx.compose.ui.input.nestedscroll.NestedScrollSource): androidx.compose.ui.geometry.Offset {
+                if (!enabled || source != androidx.compose.ui.input.nestedscroll.NestedScrollSource.UserInput || available.y <= 0f) return androidx.compose.ui.geometry.Offset.Zero
+                pull += available.y * .6f // a little resistance, so it reads as a deliberate pull
+                return androidx.compose.ui.geometry.Offset(0f, available.y)
+            }
+            override suspend fun onPreFling(available: androidx.compose.ui.unit.Velocity): androidx.compose.ui.unit.Velocity {
+                if (pull <= 0f) return androidx.compose.ui.unit.Velocity.Zero
+                if (pull > threshold || available.y > 2500f) { close(); pull = 0f }
+                else androidx.compose.animation.core.animate(pull, 0f, animationSpec = Motion.settle()) { value, _ -> pull = value }
+                return available
+            }
+        }
+    }
+    return nestedScroll(connection).graphicsLayer {
+        val p = (pull / (threshold * 3)).coerceIn(0f, 1f)
+        translationY = pull
+        scaleX = 1f - .06f * p; scaleY = 1f - .06f * p
+        shape = androidx.compose.foundation.shape.RoundedCornerShape(28.dp * p); clip = pull > 0f
+    }
 }

@@ -9,20 +9,22 @@ enum class LibrarySort(val label: String, val short: String) {
 }
 
 fun orderSongs(songs: List<LocalSong>, sort: LibrarySort): List<LocalSong> {
-    val name = compareBy<LocalSong> { it.fileName.lowercase(java.util.Locale.ROOT) }.thenBy { it.id }
+    val name = compareBy(NaturalOrder) { it: LocalSong -> it.fileName }.thenBy { it.id }
+    val title = compareBy(NaturalOrder) { it: LocalSong -> it.title }.then(name)
     val comparator = when (sort) {
         LibrarySort.ModifiedNewest -> compareBy<LocalSong> { it.modifiedAt == null }.thenByDescending { it.modifiedAt }.then(name)
         LibrarySort.ModifiedOldest -> compareBy<LocalSong> { it.modifiedAt == null }.thenBy { it.modifiedAt }.then(name)
         LibrarySort.AddedNewest -> compareByDescending<LocalSong> { it.firstSeenAt }.then(name)
         LibrarySort.Duration -> compareBy<LocalSong> { it.durationMs == null }.thenByDescending { it.durationMs }.then(name)
-        else -> name
+        LibrarySort.Title -> title
+        LibrarySort.Filename -> name
     }
     return songs.sortedWith(comparator)
 }
 
 fun orderFolders(folders: List<LocalFolder>, songs: List<LocalSong>, parentId: String?, sort: LibrarySort): List<LocalFolder> {
     val children = folders.filter { it.parentId == parentId }
-    val name = compareBy<LocalFolder> { it.name.lowercase(java.util.Locale.ROOT) }.thenBy { it.id }
+    val name = compareBy(NaturalOrder) { it: LocalFolder -> it.name }.thenBy { it.id }
     val comparator = when (sort) {
         LibrarySort.ModifiedNewest -> compareBy<LocalFolder> { it.modifiedAt == null }.thenByDescending { it.modifiedAt }.then(name)
         LibrarySort.ModifiedOldest -> compareBy<LocalFolder> { it.modifiedAt == null }.thenBy { it.modifiedAt }.then(name)

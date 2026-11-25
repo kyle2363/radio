@@ -62,6 +62,12 @@ class FunStatsTest {
         assertEquals(listOf("skippy", "loved"), w.discoveries)
         assertEquals(12, w.plays)
         assertEquals(2, w.longestStreak)
+        // Card visuals: the top songs list, the listening clock and the streak flame.
+        assertEquals(listOf("skippy", "loved", "grower"), w.topSongs.map { it.key })
+        assertTrue(w.topSongs.size <= FunStats.WRAPPED_TOP)
+        assertEquals(24, w.hours.size)
+        assertTrue("plays at 8:00 count in the 8 o'clock bar", w.hours[8] > 0)
+        assertEquals(0L, w.hours[3])
     }
 
     @Test fun wrappedTopFeelUsesListeningTime() {

@@ -350,6 +350,8 @@ class RadioShellTest {
         compose.onNodeWithTag("song-picker-row-sample2").performClick()
         compose.onNodeWithText("Add (1)").performClick()
         assertEquals("sample2", playback.state.value.playOrder.last())
+        // The options menu lives on the artwork view, not the queue view.
+        compose.onNodeWithContentDescription("Show artwork").performClick()
         compose.onNodeWithTag("player-options").performClick()
         compose.onNodeWithText("Sleep timer").performClick()
         compose.onNodeWithTag("sleep-minutes").performTextClearance()

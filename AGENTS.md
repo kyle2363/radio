@@ -115,10 +115,10 @@ Catalog/matching, local offline Radio, manual profile sync, connected recommenda
 | Desktop shell | Electron (tray, mini player, widget, media keys) |
 | Backend | FastAPI + uvicorn, loopback `127.0.0.1:8765` |
 | Desktop audio | python-vlc (media list, gapless chaining) + browser audio engine |
-| Android UI | Kotlin 2.2.10, Jetpack Compose (BOM 2026.02.01), Material 3 |
+| Android UI | Kotlin 2.4.21, Jetpack Compose (BOM 2026.09.00; 2026.11+ needs SDK platform 37.1), Material 3, lifecycle 2.11.1 |
 | Android audio | Media3 ExoPlayer/Session 1.11.1 |
-| Android storage | Room 2.8.5 (schema v11), SharedPreferences for shell prefs |
-| Android build | AGP 9.5.1, KSP 2.3.12, minSdk 35, compile/target 37, Java 11 |
+| Android storage | Room 2.8.5 (schema v13), SharedPreferences for shell prefs |
+| Android build | AGP 9.5.3, KSP 2.3.14, minSdk 35, compile/target 37, Java 11 |
 | Audio analysis | librosa + mutagen (library-wide normalization) |
 | LLM chat | Ollama or OpenAI-compatible, auto-fallback |
 | Embeddings | Ollama or OpenAI-compatible (`qwen3-embedding:0.6b`) |
@@ -137,7 +137,7 @@ radio/
 │   ├── app/src/main/java/dev/radio/mobile/
 │   │   ├── MainActivity.kt   # Entry activity, notification intent
 │   │   ├── connection/       # Pairing, discovery, API client, endpoint and signature policy
-│   │   ├── data/             # Room v11, repositories, journal/sync, lyrics cache, playlists, snapshots
+│   │   ├── data/             # Room v13, repositories, journal/sync, lyrics cache, playlists, snapshots
 │   │   ├── music/            # Scanner, ordering, BS.1770 loudness
 │   │   ├── playback/         # Media3 service, controller, normalization, sleep
 │   │   ├── portable/         # Catalog import/validation, matching, sync policy
@@ -145,7 +145,7 @@ radio/
 │   │   └── ui/               # Compose screens, queue, player, settings, theme
 │   ├── app/src/test/         # JVM unit tests
 │   ├── app/src/androidTest/  # Instrumented tests + fixture providers
-│   └── app/schemas/          # Exported Room schemas v1–v11
+│   └── app/schemas/          # Exported Room schemas v1–v13
 │
 ├── backend/
 │   ├── main.py               # FastAPI entry (~4,800 lines, ~156 routes + 1 WS)
@@ -300,7 +300,7 @@ The manifest includes `INTERNET`, foreground media playback, and wake lock permi
 | Package | Responsibility |
 |---|---|
 | `connection/` | `PairingRepository`, `DiscoveryRepository`, `RadioApiClient`, `PairedServerStore`, `ConnectionSecurity` (endpoint policy, signed descriptors) |
-| `data/` | Room v11, `LibraryRepository`, `ListeningJournalRepository`, `PortableSyncRepository`, `LyricsRepository`, `LoudnessRepository`, `PlaybackSnapshotStore`, `Playlists` |
+| `data/` | Room v13, `LibraryRepository`, `ListeningJournalRepository`, `PortableSyncRepository`, `LyricsRepository`, `LoudnessRepository`, `PlaybackSnapshotStore`, `Playlists` |
 | `portable/` | `CatalogRepository`, `CatalogValidator`, `MatchingRepository`, `ConservativeMatcher`, `PortableSyncPolicy` |
 | `recommendation/` | `OfflineRecommender`, `RadioRepository`, `ConnectedRadioSource`, `ConnectedPolicy`, `ConnectedTuning`, `StationPolicy`, `SharedRadioProfile` |
 | `music/` | `LocalMusicScanner`, `LibraryOrdering`, `LoudnessMeter`, `LocalLoudnessAnalyzer` |
@@ -320,7 +320,7 @@ Migration tests replay every exported schema and assert library, playlists, hist
 - Recursive, read-only scans; same-named recordings keep distinct identities
 - Filename-derived labels until server matching exists
 - Sort: modified (newest default), oldest, first seen, title, filename, duration; remembered per view
-- Explicit migrations `v1→…→v10→v11`; no destructive fallback
+- Explicit migrations `v1→…→v12→v13`; no destructive fallback
 
 ### Playback service
 
@@ -382,6 +382,7 @@ Checkpoint 5 adds plain lyrics from prepared desktop catalogs and a private offl
 | 8C | Fun stats (Wrapped cards, milestones, taste map, extra measures) | Implemented on `android-10-11`; awaiting phone test |
 | 13 | Connected talk (desktop announcements and talk show in connected Radio) | 13A server + 13B phone playback + 13C show shifts implemented on `connected-talk-13`; awaiting phone test. Rest of 13C planned (`docs/CONNECTED_TALK_PLAN.md`) |
 | 13D | Talk without Desktop picks (offline Radio and feel stations, desktop voices only; subtle desktop chip) | Implemented on `talk-offline-radio`; awaiting phone test |
+| Polish | Display-only title cleanup, natural sort, auto-skip of unreadable files, calendar, colour fades, pull-down to close, themed widget, lock-screen Not for me, headset start, story Wrapped, library updates (`docs/ANDROID_APP_PLAN.md`, November 25) | Implemented on `android-polish-fixes`; awaiting phone test |
 
 At each checkpoint: installable build, verification summary and limitations, and a short phone test list. A successful build is not approval to start the next increment.
 
@@ -415,7 +416,7 @@ Single-route groups: `/api/recommend`, `/api/archetype`, `/api/announcement`, `/
 
 `songs` carries filepath, path hash, tags, BPM, energy/valence, cluster, description, lyrics, tag sets, counters, `avg_completion`, `recovery_score`, `ingest_phase`, art, `gain_db`, and DJ-effect eligibility. `settings` seeds 72 keys.
 
-### Android Room (schema v11)
+### Android Room (schema v13)
 
 | Entity | Purpose |
 |---|---|

@@ -27,4 +27,16 @@ class LibraryOrderingTest {
         assertEquals(listOf("a", "b"), orderFolders(folders, tracks, "root", LibrarySort.Duration).map { it.id })
         assertEquals(listOf("b", "a"), orderFolders(folders, tracks, "root", LibrarySort.AddedNewest).map { it.id })
     }
+    @Test fun namesSortNaturallyAndTitleSortUsesTheTitle() {
+        fun named(id: String, file: String) = song(id, 1, 1, 1).copy(fileName = file)
+        val songs = listOf(named("b", "Zed - Alpha 10.mp3"), named("a", "Abe - Omega.mp3"), named("c", "Zed - Alpha 2.mp3"))
+        assertEquals(listOf("c", "b", "a"), orderSongs(songs, LibrarySort.Title).map { it.id })
+        assertEquals(listOf("a", "c", "b"), orderSongs(songs, LibrarySort.Filename).map { it.id })
+        val folders = listOf("song 10", "song 2", "Song 1", "song 1b").map { LocalFolder(it, "tree", "root", it, it, 1L) }
+        assertEquals(listOf("Song 1", "song 1b", "song 2", "song 10"), orderFolders(folders, emptyList(), "root", LibrarySort.Title).map { it.id })
+    }
+    @Test fun naturalOrderComparesDigitRunsAsNumbers() {
+        val sorted = listOf("track 100", "Track 9", "track 10", "track 010", "a", "track").sortedWith(NaturalOrder)
+        assertEquals(listOf("a", "track", "Track 9", "track 10", "track 010", "track 100"), sorted)
+    }
 }

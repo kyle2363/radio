@@ -3,6 +3,56 @@
 Status: checkpoints through 5 are merged into `main`. Checkpoint 4.2 Radio mode redesign was phone-accepted, fully verified and merged November 11, 2026 (`f676e83`). Checkpoint 5 plain lyrics was merged November 14, 2026. Checkpoint 6 visual redesign was phone-accepted November 17, 2026 (unmerged). Checkpoint 7 is planned in `docs/CHECKPOINT_7_PLAN.md`. Direct LAN hosting remains deferred.
 Integration: `android-app`, based on `stability-server-architecture`, reviewed for integration into `main` on November 3. Earlier pending-review notes below are historical checkpoint records, superseded by the November 3 acceptance.
 
+## Polish and fixes — November 25, 2026
+
+Branch `android-polish-fixes`. No schema or wire change; Room stays v13.
+
+- **Titles (display only).** `SongNames` hides label and upload tags (`[NCS Release]`, `[Monstercat Release]`, any
+  `[<label> Release]`, `[Copyright Free]`, `(LETRA)`, trailing `SUBTITULOS - ESPAÑOL`) and moves a bracketed guest to
+  the artist line ("Alex Skrindo feat. Axol"). About 23% of the 1,910 desktop titles carried such tags. Files are never
+  renamed; catalog matching reads the file name, not these labels. Stats and Radio group a song under
+  `Artists.primary`, so guests never split an artist.
+- **Sorting.** `NaturalOrder` sorts digit runs as numbers ("song 2" before "song 10") for songs, folders and artists.
+  "Title · A–Z" now sorts by title (it used the file name, so it sorted by artist).
+- **Now Playing.** The title decides whether to scroll from its current width instead of latching after one narrow
+  layout (short titles were left scrolling with a faded first letter). Pull down from the top closes Now Playing.
+  Without an imported catalog, Vibe lock and its explanation are hidden instead of greyed out on every song.
+- **Playback.** An unreadable file is skipped while music plays (`PlaybackErrorPolicy`: up to 3 in a row, never from
+  pause) with a short notice, instead of stopping Radio. A headset, car or Bluetooth Play while the app isn't running
+  starts the service (Media3 `MediaButtonReceiver`); the press is held until restoration makes the session, then the
+  bookmark resumes or Radio starts. Opening the app never starts music. On air, the notification and lock screen add
+  **Not for me** (dislike and skip) beside Like.
+- **Colour.** The Material scheme fades (palette, light/dark, going on air), as do the on-air mini-player and the
+  backdrop glow. `StationTheme` now has one call site for both looks, so going on air no longer rebuilds the screens
+  below it.
+- **Widget.** The 4×1 widget follows the app palette and appearance (`WidgetPalette`); Phone lets the launcher pick
+  light or dark.
+- **Stats.** The calendar uses 18 dp cells with month and weekday labels, scrolls sideways and opens on the latest
+  weeks; the selected day gets a ring that shows on light and dark cards.
+- **Wrapped.** Story progress bars, ~6 s per card (real time, so it still advances with animations off), hold to
+  pause, tap the sides to step. Numbers count up; each card reveals once. Pictures: a listening clock, the top five
+  songs with bars, and a flickering streak flame, all included in shared images. A milestone also plays a short
+  confetti burst (skipped with animations off).
+- **Search** builds its index once per library and filters off the main thread.
+- **Icons** use round caps and joins.
+- **Libraries.** Kotlin 2.4.21, AGP 9.5.3, KSP 2.3.14, Compose BOM 2026.09.00, core-ktx 1.19.1, lifecycle 2.11.1
+  (+ `lifecycle-runtime-compose`; the shell collects state with `collectAsStateWithLifecycle`), activity-compose 1.13.0,
+  benchmark 1.5.0, uiautomator 2.4.1. Room 2.8.5 and Media3 1.11.1 were already current. Compose BOM 2026.11.01
+  (Compose 1.13) needs SDK platform 37.1, which isn't installed.
+
+Known limits: a Bluetooth device or car that sends Play on connect will now start music when the app isn't running;
+headset start was checked on the emulator only.
+
+Phone checks:
+
+1. Library → Songs → sort Title; folders named "song 1…song 50" in number order.
+2. NCS/Monstercat titles show without the tag; "feat." guests appear after the artist.
+3. Open Now Playing from the mini-player; a short title doesn't scroll. Pull down from the artwork to close.
+4. Radio on air: lock screen shows Like and Not for me; Not for me skips and dislikes.
+5. Swipe the app away, wait, press Play on wired or Bluetooth headphones: the last song resumes (or Radio starts).
+6. Change palette and Light/Dark: the app fades and the home-screen widget follows.
+7. Stats → calendar scrolls, tap a day; Wrapped advances on its own, hold pauses, share a card with a picture.
+
 ## Visual redesign checkpoint 6 — November 16, 2026
 
 Phone-accepted November 17, 2026 on `android-6-visual-redesign`; not yet merged into `main`.

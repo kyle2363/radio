@@ -35,6 +35,7 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import androidx.compose.animation.core.AnimationVector2D
 import androidx.compose.animation.core.VectorConverter
+import androidx.compose.ui.graphics.drawscope.rotate
 
 /**
  * Fades content out over [length] at its edges instead of cutting it off: a scrolling title's sides, or the bottom of a
@@ -154,4 +155,40 @@ fun Modifier.progressLine(positionMs: () -> Long, durationMs: Long?, color: Colo
     val y = size.height - stroke / 2 - 1.dp.toPx()
     drawLine(track, Offset(inset, y), Offset(size.width - inset, y), stroke, StrokeCap.Round)
     if (fraction > 0f) drawLine(color, Offset(inset, y), Offset(inset + (size.width - 2 * inset) * fraction, y), stroke, StrokeCap.Round)
+}
+
+/**
+ * A short confetti burst from the top of the screen, played each time [trigger] goes up (a milestone is reached).
+ * Decorative only: it takes no touches, and nothing plays when the phone's animations are off.
+ */
+@Composable
+fun ConfettiBurst(trigger: Int, modifier: Modifier = Modifier) {
+    val animations by rememberAnimationsEnabled()
+    val time = remember { Animatable(1f) }
+    val pieces = remember(trigger) {
+        val random = kotlin.random.Random(trigger)
+        val palette = dev.radio.mobile.ui.theme.MoodColors.all.map { Color(it.accent) }
+        List(70) {
+            floatArrayOf(random.nextFloat(), -.05f - random.nextFloat() * .1f, (random.nextFloat() - .5f) * .5f, .25f + random.nextFloat() * .5f,
+                random.nextFloat() * 360f, (random.nextFloat() - .5f) * 720f, random.nextInt(palette.size).toFloat()) to palette
+        }
+    }
+    LaunchedEffect(trigger, animations) {
+        if (trigger == 0 || !animations) return@LaunchedEffect
+        time.snapTo(0f)
+        time.animateTo(1f, androidx.compose.animation.core.tween(1_800, easing = androidx.compose.animation.core.LinearEasing))
+    }
+    if (time.value >= 1f) return
+    androidx.compose.foundation.Canvas(modifier.fillMaxSize()) {
+        val t = time.value
+        pieces.forEach { (p, palette) ->
+            // x, y start; sideways drift; fall speed; spin start; spin rate; colour.
+            val x = (p[0] + p[2] * t) * size.width
+            val y = (p[1] + p[3] * t + .9f * t * t) * size.height
+            val piece = 8.dp.toPx()
+            rotate(p[4] + p[5] * t, pivot = Offset(x, y)) {
+                drawRect(palette[p[6].toInt()].copy(alpha = (1f - t * t)), Offset(x - piece / 2, y - piece / 4), androidx.compose.ui.geometry.Size(piece, piece / 2))
+            }
+        }
+    }
 }

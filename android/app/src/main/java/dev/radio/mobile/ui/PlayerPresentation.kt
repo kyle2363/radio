@@ -25,7 +25,7 @@ import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
-import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -75,6 +75,10 @@ fun PlayerBackground(mode: PlayerBackdrop, playing: Boolean, modifier: Modifier 
         coroutineContext[androidx.compose.ui.platform.InfiniteAnimationPolicy]?.onInfiniteOperation(drift) ?: drift()
     }
     val colors = MaterialTheme.colorScheme
+    // Mood changes and going on air fade the glow instead of switching it in one frame.
+    val glow = dev.radio.mobile.ui.theme.animatedColor(tint ?: colors.primary, "backdrop-glow")
+    val strength by androidx.compose.animation.core.animateFloatAsState(if (tint != null) 1f else 0f,
+        androidx.compose.animation.core.tween(dev.radio.mobile.ui.theme.COLOR_FADE_MS), label = "backdrop-strength")
     Box(modifier.testTag("player-background").semantics {
         stateDescription = when {
             mode == PlayerBackdrop.Off -> "Background off"
@@ -85,9 +89,8 @@ fun PlayerBackground(mode: PlayerBackdrop, playing: Boolean, modifier: Modifier 
     }.clipToBounds().drawWithCache {
         val radius = size.width * 1.15f
         // A mood tint is a dark tone, so it needs more strength than the palette colour to read as a glow.
-        val glow = tint ?: colors.primary
-        val first = Brush.radialGradient(listOf(glow.copy(alpha = if (tint != null) .85f else .22f), Color.Transparent), center = Offset.Zero, radius = radius)
-        val second = Brush.radialGradient(listOf(glow.copy(alpha = if (tint != null) .55f else .13f), Color.Transparent), center = Offset.Zero, radius = radius * .9f)
+        val first = Brush.radialGradient(listOf(glow.copy(alpha = .22f + (.85f - .22f) * strength), Color.Transparent), center = Offset.Zero, radius = radius)
+        val second = Brush.radialGradient(listOf(glow.copy(alpha = .13f + (.55f - .13f) * strength), Color.Transparent), center = Offset.Zero, radius = radius * .9f)
         onDrawBehind {
             drawRect(colors.background)
             if (mode != PlayerBackdrop.Off) {

@@ -8,6 +8,8 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.horizontalScroll
+import kotlinx.coroutines.flow.first
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -154,13 +156,36 @@ private fun pointChange(now: Double?, before: Double?): String? {
     }
 }
 
+/** Calendar grid geometry, kept pure so taps and labels can be tested. Columns are weeks, rows Monday–Sunday. */
+internal object HeatmapLayout {
+    /** Big enough to tap; the year scrolls sideways instead of shrinking to fit. */
+    const val CELL_DP = 18f
+    fun columns(offset: Int, days: Int) = (offset + days + 6) / 7
+    /** The day index under a point, or null outside the drawn days. */
+    fun dayAt(x: Float, y: Float, cell: Float, offset: Int, days: Int): Int? {
+        if (x < 0f || y < 0f) return null
+        val row = (y / cell).toInt()
+        if (row > 6) return null
+        return ((x / cell).toInt() * 7 + row - offset).takeIf { it in 0 until days }
+    }
+    /** (column, first day) for each month that starts in the grid; a partial first month is labelled only if it has room. */
+    fun monthStarts(dates: List<LocalDate>, offset: Int): List<Pair<Int, LocalDate>> {
+        val starts = dates.withIndex().filter { it.value.dayOfMonth == 1 }.map { (it.index + offset) / 7 to it.value }
+        val first = dates.firstOrNull() ?: return starts
+        return if (first.dayOfMonth != 1 && (starts.firstOrNull()?.first ?: Int.MAX_VALUE) >= 3) listOf(0 to first) + starts else starts
+    }
+}
+
 @Composable private fun CalendarHeatmap(days: List<Pair<LocalDate, Long>>, attempts: List<StatsAttempt>, songs: Map<String, LocalSong>, zone: ZoneId, onSong: (LocalSong) -> Unit) {
     val accent = MaterialTheme.colorScheme.primary
     val empty = MaterialTheme.colorScheme.surfaceVariant
+    val ring = MaterialTheme.colorScheme.onSurface
+    val muted = MaterialTheme.colorScheme.onSurfaceVariant
     var selected by remember { mutableStateOf<LocalDate?>(null) }
     val first = days.first().first
     val offset = first.dayOfWeek.value - 1 // Monday = row 0
-    val columns = (offset + days.size + 6) / 7
+    val columns = HeatmapLayout.columns(offset, days.size)
+    val months = remember(days) { HeatmapLayout.monthStarts(days.map { it.first }, offset) }
     val levels = remember(days) {
         val positive = days.map { it.second }.filter { it > 0 }.sorted()
         if (positive.isEmpty()) listOf(1L, 1L, 1L) else listOf(positive[positive.size / 4], positive[positive.size / 2], positive[positive.size * 3 / 4])
@@ -173,21 +198,41 @@ private fun pointChange(now: Double?, before: Double?): String? {
         else -> accent
     }
     val total = days.count { it.second > 0 }
-    Canvas(Modifier.fillMaxWidth().aspectRatio(columns / 7f).semantics { contentDescription = "Listening calendar: $total days with music in the past year. Tap a day for details." }
-        .pointerInput(days) {
-            detectTapGestures { pos ->
-                val cell = size.width / columns.toFloat()
-                val index = (pos.x / cell).toInt() * 7 + (pos.y / cell).toInt() - offset
-                selected = days.getOrNull(index)?.first?.takeIf { it != selected }
+    val cell = HeatmapLayout.CELL_DP.dp
+    // Opens on the latest weeks; scroll left for earlier months.
+    val scroll = androidx.compose.foundation.rememberScrollState()
+    LaunchedEffect(columns) { snapshotFlow { scroll.maxValue }.first { it > 0 && it != Int.MAX_VALUE }.let { scroll.scrollTo(it) } }
+    Row {
+        Column(Modifier.padding(top = 16.dp, end = 6.dp)) {
+            listOf("Mon", "", "Wed", "", "Fri", "", "").forEach { label ->
+                Box(Modifier.height(cell), contentAlignment = Alignment.CenterStart) { Text(label, style = MaterialTheme.typography.labelSmall, color = muted) }
             }
-        }) {
-        val cell = size.width / columns
-        val gap = cell * 0.15f
-        days.forEachIndexed { i, (date, minutes) ->
-            val slot = i + offset
-            val x = (slot / 7) * cell; val y = (slot % 7) * cell
-            drawRoundRect(if (date == selected) Color.White.copy(alpha = 0.9f) else shade(minutes), Offset(x + gap / 2, y + gap / 2), Size(cell - gap, cell - gap), CornerRadius(cell * 0.2f))
-            if (date == selected) drawRoundRect(shade(minutes), Offset(x + gap, y + gap), Size(cell - gap * 2, cell - gap * 2), CornerRadius(cell * 0.2f))
+        }
+        Column(Modifier.weight(1f).horizontalScroll(scroll)) {
+            Box(Modifier.width(cell * columns).height(16.dp)) {
+                months.forEach { (column, date) ->
+                    Text(date.month.getDisplayName(java.time.format.TextStyle.SHORT, androidx.compose.ui.platform.LocalLocale.current.platformLocale), Modifier.offset(x = cell * column),
+                        style = MaterialTheme.typography.labelSmall, color = muted, maxLines = 1)
+                }
+            }
+            Canvas(Modifier.size(cell * columns, cell * 7).semantics { contentDescription = "Listening calendar: $total days with music in the past year. Tap a day for details." }
+                .pointerInput(days) {
+                    detectTapGestures { pos ->
+                        val index = HeatmapLayout.dayAt(pos.x, pos.y, cell.toPx(), offset, days.size) ?: return@detectTapGestures
+                        selected = days[index].first.takeIf { it != selected }
+                    }
+                }) {
+                val size = cell.toPx()
+                val gap = size * 0.16f
+                days.forEachIndexed { i, (date, minutes) ->
+                    val slot = i + offset
+                    val x = (slot / 7) * size; val y = (slot % 7) * size
+                    drawRoundRect(shade(minutes), Offset(x + gap / 2, y + gap / 2), Size(size - gap, size - gap), CornerRadius(size * 0.22f))
+                    // The chosen day gets a ring in the text colour, visible on light and dark cards alike.
+                    if (date == selected) drawRoundRect(ring, Offset(x + gap / 2, y + gap / 2), Size(size - gap, size - gap), CornerRadius(size * 0.22f),
+                        style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.dp.toPx()))
+                }
+            }
         }
     }
     val day = selected

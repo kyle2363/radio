@@ -63,6 +63,8 @@ dependencies {
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
+    // collectAsStateWithLifecycle: the UI stops collecting app state while it is in the background.
+    implementation(libs.androidx.lifecycle.runtime.compose)
     // Installs the bundled baseline profile (src/main/baseline-prof.txt) on sideloaded builds too.
     implementation(libs.androidx.profileinstaller)
     // Benchmark builds only: names each composable in Perfetto traces (checkpoint 12.3).

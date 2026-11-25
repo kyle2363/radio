@@ -233,7 +233,7 @@ fun OnAirStationCard(audio: PlaybackState, radio: RadioState, onOpenPlayer: () -
             if (locked) Button(onVibe, Modifier.weight(1f).heightIn(min = 44.dp).testTag("station-vibe-lock"), contentPadding = PaddingValues(horizontal = 8.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = Color(colors.progress), contentColor = Color(colors.base))) {
                 RadioIcon(Symbol.Lock, modifier = Modifier.size(16.dp)); Spacer(Modifier.width(6.dp)); Text("Release")
-            } else StationOutlinedButton("Vibe lock", onVibe, Modifier.weight(1f).testTag("station-vibe-lock"), enabled = radio.vibeAvailable, symbol = Symbol.Lock)
+            } else if (radio.showsVibeLock) StationOutlinedButton("Vibe lock", onVibe, Modifier.weight(1f).testTag("station-vibe-lock"), enabled = radio.vibeAvailable, symbol = Symbol.Lock)
             StationOutlinedButton("New mix", onNewMix, Modifier.weight(1f).testTag("new-mix"), symbol = Symbol.Refresh)
             StationOutlinedButton("End", onEnd, Modifier.weight(1f).testTag("end-station-card"), symbol = Symbol.Stop)
         }
@@ -411,7 +411,7 @@ fun LeaveRadioDialog(title: String, source: String, onLeave: () -> Unit, onPlayN
 }
 
 @Composable
-fun StartFromSongSheet(songs: List<LocalSong>, queueSize: Int, queueSource: String, onStart: (String) -> Unit, onDismiss: () -> Unit) {
+fun StartFromSongSheet(songs: List<LocalSong>, queueSize: Int, queueSource: String, onStart: (String) -> Unit, onDismiss: () -> Unit, playing: Boolean = true) {
     var query by remember { mutableStateOf("") }
     var selected by remember { mutableStateOf<String?>(null) }
     val visible = remember(songs, query) {
@@ -452,7 +452,7 @@ fun StartFromSongSheet(songs: List<LocalSong>, queueSize: Int, queueSource: Stri
                 // A warm caution tone that suits both light and dark sheets.
                 val darkSheet = MaterialTheme.colorScheme.surface.luminance() < .5f
                 if (queueSize > 0) Row(Modifier.fillMaxWidth().background(if (darkSheet) Color(0xFF4A3310) else Color(0xFFFFF4E5), RoundedCornerShape(14.dp)).padding(12.dp).testTag("radio-seed-replace-warning")) {
-                    Text("This replaces your current queue ($queueSize ${if (queueSize == 1) "song" else "songs"}${queueSource.takeIf { it.isNotBlank() }?.let { " from “$it”" } ?: ""}). The song playing now stops.",
+                    Text("This replaces your current queue ($queueSize ${if (queueSize == 1) "song" else "songs"}${queueSource.takeIf { it.isNotBlank() }?.let { " from “$it”" } ?: ""}). ${if (playing) "The song playing now stops." else "Your paused song is replaced."}",
                         color = if (darkSheet) Color(0xFFFFD8A8) else Color(0xFF7A3E00), style = MaterialTheme.typography.bodySmall)
                 }
                 Button({ selected?.let(onStart) }, Modifier.fillMaxWidth().heightIn(min = 52.dp).testTag("confirm-start-radio"), enabled = selected != null,
@@ -539,12 +539,21 @@ internal fun originExplanation(origin: StationOrigin?) = when (origin) {
  */
 @Composable
 fun SongTitle(title: String, modifier: Modifier = Modifier) {
-    var scroll by remember(title) { mutableStateOf(false) }
-    // The scrolling title fades at its edges instead of cutting letters in half.
-    if (scroll) Text(title, modifier.fadeEdges(20.dp).basicMarquee(iterations = Int.MAX_VALUE, spacing = androidx.compose.foundation.MarqueeSpacing.fractionOfContainer(1f / 4f))
-        .testTag("song-title-scrolling"), style = MaterialTheme.typography.headlineSmall, maxLines = 1)
-    else Text(title, modifier.testTag("song-title"), style = MaterialTheme.typography.headlineSmall, maxLines = 2,
-        onTextLayout = { if (it.hasVisualOverflow) scroll = true })
+    val style = MaterialTheme.typography.headlineSmall
+    val measurer = androidx.compose.ui.text.rememberTextMeasurer()
+    BoxWithConstraints(modifier) {
+        // Decided from the width the title has now, never latched: a moment of narrow width (a screen transition)
+        // must not leave a short title scrolling with its first letter faded.
+        val width = constraints.maxWidth
+        val scroll = remember(title, style, width) {
+            width != androidx.compose.ui.unit.Constraints.Infinity && width > 0 &&
+                measurer.measure(title, style, maxLines = 2, constraints = androidx.compose.ui.unit.Constraints(maxWidth = width)).hasVisualOverflow
+        }
+        // The scrolling title fades at its edges instead of cutting letters in half.
+        if (scroll) Text(title, Modifier.fillMaxWidth().fadeEdges(20.dp).basicMarquee(iterations = Int.MAX_VALUE, spacing = androidx.compose.foundation.MarqueeSpacing.fractionOfContainer(1f / 4f))
+            .testTag("song-title-scrolling"), style = style, maxLines = 1)
+        else Text(title, Modifier.testTag("song-title"), style = style, maxLines = 2)
+    }
 }
 
 /** Mini-player while on air: station surface, ON AIR dot, Pause and Skip. */
@@ -562,7 +571,8 @@ fun StationMiniPlayer(title: String, status: String, playWhenReady: Boolean, can
     val drag = rememberDragOffset()
     val scope = rememberCoroutineScope()
     // The mood's dark tone fills the pill, so "on air" is recognisable from any tab.
-    Surface(color = Color(dev.radio.mobile.ui.theme.MoodColors.of(mood).field), contentColor = Color.White, shape = RoundedCornerShape(18.dp),
+    // A mood change fades the pill to its new colour.
+    Surface(color = dev.radio.mobile.ui.theme.animatedColor(Color(dev.radio.mobile.ui.theme.MoodColors.of(mood).field), "mini-mood"), contentColor = Color.White, shape = RoundedCornerShape(18.dp),
         modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 4.dp)
             .miniPlayerGestures(onOpen, drag, scope)
             .progressLine(positionMs, durationMs, OnAirText, Color.White.copy(alpha = .18f)).testTag("mini-player")) {
@@ -690,7 +700,8 @@ fun RadioNowPlaying(
                 leading = { RadioIcon(Symbol.Clock, modifier = Modifier.size(14.dp)) })
         }
         // The "why Vibe lock is off" note gets its own line so it never wraps beside a chip.
-        if (!minimal && !locked && !talking && !radio.vibeAvailable) Text(if (radio.legacyVectorTracks > 0 && !radio.legacyVectorsEnabled) "Vibe lock needs desktop similarity. Turn it on in Settings → Radio." else radio.vibeReason ?: "Vibe lock needs a matched song with recommendation data.",
+        // Without a desktop catalog Vibe lock can never work, so it stays out of sight rather than explaining itself on every song.
+        if (!minimal && !locked && !talking && !radio.vibeAvailable && radio.showsVibeLock) Text(if (radio.legacyVectorTracks > 0 && !radio.legacyVectorsEnabled) "Vibe lock needs desktop similarity. Turn it on in Settings → Radio." else radio.vibeReason ?: "Vibe lock needs a matched song with recommendation data.",
             Modifier.fillMaxWidth(), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         audio.error?.let { message ->
             Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.errorContainer, RoundedCornerShape(18.dp))
@@ -726,7 +737,7 @@ fun RadioNowPlaying(
             }
             FilledTonalIconButton(onNext, enabled = audio.canNext, modifier = Modifier.size(52.dp).pressScale(nextPress, .9f).testTag("player-next"), colors = tonal, interactionSource = nextPress) { RadioIcon(Symbol.Next, if (talking) "Skip talk" else "Next song") }
             val moodColors = MoodColors.of(radio.mood)
-            if (talking) Spacer(Modifier.size(48.dp)) else FilledTonalIconToggleButton(locked, { onVibe() }, enabled = locked || radio.vibeAvailable, modifier = Modifier.size(48.dp).testTag("vibe-lock"), shape = RadioShapes.Soft,
+            if (talking || !locked && !radio.showsVibeLock) Spacer(Modifier.size(48.dp)) else FilledTonalIconToggleButton(locked, { onVibe() }, enabled = locked || radio.vibeAvailable, modifier = Modifier.size(48.dp).testTag("vibe-lock"), shape = RadioShapes.Soft,
                 colors = IconButtonDefaults.filledTonalIconToggleButtonColors(containerColor = Color(colors.panel), contentColor = Color.White,
                     disabledContainerColor = disabledFill, disabledContentColor = disabledIcon,
                     checkedContainerColor = Color(moodColors.accent), checkedContentColor = Color(moodColors.onAccent))) {

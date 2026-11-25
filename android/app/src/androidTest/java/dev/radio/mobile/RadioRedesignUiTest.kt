@@ -8,6 +8,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.*
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.junit4.createEmptyComposeRule
@@ -122,6 +125,33 @@ class RadioRedesignUiTest {
         title = "A Very Long Live Session Recording Title That Keeps Going Well Past Two Lines On A Phone Screen (Extended Mix)"
         compose.onNodeWithTag("song-title-scrolling").assertTextEquals(title)
         compose.onNodeWithTag("song-title").assertDoesNotExist()
+    }
+
+    @Test fun shortTitleStopsScrollingOnceItHasRoomAgain() {
+        // A moment of narrow width (as during the mini-player → Now Playing transition) must not latch the marquee.
+        var width by mutableStateOf(24.dp)
+        compose.setContent { androidx.compose.foundation.layout.Box(androidx.compose.ui.Modifier.width(width)) { SongTitle("Paper Moons") } }
+        compose.onNodeWithTag("song-title-scrolling").assertExists()
+        width = 320.dp
+        compose.onNodeWithTag("song-title").assertTextEquals("Paper Moons")
+        compose.onNodeWithTag("song-title-scrolling").assertDoesNotExist()
+    }
+
+    @Test fun pullingDownFromTheTopClosesButAShortPullSpringsBack() {
+        var closed = 0
+        compose.setContent {
+            androidx.compose.foundation.layout.Box(androidx.compose.ui.Modifier.fillMaxSize().pullDownToClose(true) { closed++ }) {
+                androidx.compose.foundation.layout.Column(androidx.compose.ui.Modifier.fillMaxSize().verticalScroll(androidx.compose.foundation.rememberScrollState()).testTag("pull-body")) {
+                    androidx.compose.material3.Text("Now playing")
+                }
+            }
+        }
+        compose.onNodeWithTag("pull-body").performTouchInput { swipeDown(startY = top + 10f, endY = top + 60f, durationMillis = 400) }
+        compose.waitForIdle()
+        assertEquals("a short pull springs back", 0, closed)
+        compose.onNodeWithTag("pull-body").performTouchInput { swipeDown(startY = top + 10f, endY = bottom - 10f, durationMillis = 300) }
+        compose.waitForIdle()
+        assertEquals(1, closed)
     }
 
     @Test fun desktopPickTilesShowTheSongBeforeTheReason() {

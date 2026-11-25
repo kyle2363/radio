@@ -22,16 +22,7 @@ val LocalStationColors = staticCompositionLocalOf { StationColors.Ocean }
 @Composable
 fun StationTheme(colors: StationColors, enabled: Boolean = true, content: @Composable () -> Unit) {
     val view = LocalView.current
-    if (!enabled) {
-        // Leaving the station surface: give the system bars back to the app's own appearance.
-        val light = MaterialTheme.colorScheme.background.luminance() > .5f
-        SideEffect {
-            (view.context as? Activity)?.window?.let { window ->
-                WindowCompat.getInsetsController(window, view).apply { isAppearanceLightStatusBars = light; isAppearanceLightNavigationBars = light }
-            }
-        }
-        CompositionLocalProvider(LocalStationColors provides colors, content = content); return
-    }
+    val outer = MaterialTheme.colorScheme
     val base = Color(colors.base)
     val scheme = darkColorScheme(
         primary = Color(colors.progress), onPrimary = base,
@@ -51,12 +42,15 @@ fun StationTheme(colors: StationColors, enabled: Boolean = true, content: @Compo
         error = Color(0xFFFCA5A5), onError = Color(0xFF450A0A),
         errorContainer = Color(0xFF3A2A2A), onErrorContainer = Color(0xFFF3D0D0),
     )
+    // Off the station surface the system bars follow the app's own appearance; on it they are always light-on-dark.
+    val lightBars = !enabled && outer.background.luminance() > .5f
     SideEffect {
         (view.context as? Activity)?.window?.let { window ->
-            WindowCompat.getInsetsController(window, view).apply { isAppearanceLightStatusBars = false; isAppearanceLightNavigationBars = false }
+            WindowCompat.getInsetsController(window, view).apply { isAppearanceLightStatusBars = lightBars; isAppearanceLightNavigationBars = lightBars }
         }
     }
+    // One call site for both looks, so going on air and leaving fade between them (and the screens below keep their state).
     CompositionLocalProvider(LocalStationColors provides colors) {
-        MaterialTheme(colorScheme = scheme, typography = MaterialTheme.typography, shapes = MaterialTheme.shapes, content = content)
+        MaterialTheme(colorScheme = animateColorScheme(if (enabled) scheme else outer), typography = MaterialTheme.typography, shapes = MaterialTheme.shapes, content = content)
     }
 }

@@ -94,6 +94,7 @@ fun RadioTheme(
     }
 
     MaterialTheme(
+        // Fades (palette, light/dark, on air) happen once, in StationTheme, which wraps the whole app.
         colorScheme = colorScheme,
         typography = Typography,
         shapes = RadioMaterialShapes,
