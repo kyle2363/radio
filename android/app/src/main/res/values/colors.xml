@@ -7,6 +7,8 @@
     <color name="teal_700">#FF018786</color>
     <color name="black">#FF000000</color>
     <color name="white">#FFFFFFFF</color>
+    <!-- Launcher icon and splash screen. -->
+    <color name="launcher_background">#FF1E293B</color>
     <!-- Home-screen player widget, in the Ocean Blue palette. -->
     <color name="widget_background">#FFDBEAFE</color>
     <color name="widget_title">#FF0F172A</color>
