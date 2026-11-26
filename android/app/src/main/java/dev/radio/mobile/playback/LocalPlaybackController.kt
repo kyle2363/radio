@@ -493,7 +493,8 @@ class LocalPlaybackController(
         player.play(); publish(checkpoint = true)
     }
     private fun talkItem(clip: TalkClip) = MediaItem.Builder().setMediaId(clip.mediaId).setUri(Uri.fromFile(clip.file))
-        .setMediaMetadata(MediaMetadata.Builder().setTitle(clip.info.title).setArtist(clip.info.artist).setAlbumTitle("Talk").build()).build()
+        .setMediaMetadata(MediaMetadata.Builder().setTitle(clip.info.title).setArtist(clip.info.artist).setAlbumTitle("Talk")
+            .setExtras(android.os.Bundle().apply { putBoolean(PlaybackArtwork.TALK, true) }).build()).build()
     private fun metadata(song: LocalSong) = MediaMetadata.Builder().setTitle(song.title).setArtist(song.artist.ifBlank { null })
         .setAlbumTitle(song.folderPath.ifEmpty { source.label }).build()
     override fun pause() { if (!closed) { queueRevision++;player.pause(); publish(checkpoint = true) } }

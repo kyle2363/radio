@@ -30,12 +30,14 @@ class RadioShellTest {
     private lateinit var db: LibraryDatabase
     private lateinit var repository: LibraryRepository
     private val playback = FakePlaybackController()
+    private val openPlayerRequest = androidx.compose.runtime.mutableIntStateOf(0)
     private val context get() = InstrumentationRegistry.getInstrumentation().targetContext
 
     @Before fun launch() {
         // The seeded library is the fixture under test: keep "rescan on open" (checkpoint 11) from replacing it with
         // the provider's files on the first launch in this process.
         context.getSharedPreferences("radio_shell", Context.MODE_PRIVATE).edit().clear().putBoolean("rescan_on_open", false).commit()
+        context.getSharedPreferences("artist_credits", Context.MODE_PRIVATE).edit().clear().commit()
         context.contentResolver.call(android.net.Uri.parse("content://dev.radio.mobile.test.control"), "reset", null, null)
         context.contentResolver.call(android.net.Uri.parse("content://dev.radio.mobile.test.control"), "grant", null, null)
         context.contentResolver.takePersistableUriPermission(FixtureDocumentsProvider.tree(), android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
@@ -45,7 +47,7 @@ class RadioShellTest {
             db.library().saveRoot(LibraryRoot(uri = uri, folderId = "root", name = "Music", scannedAt = 1L))
             db.library().saveFolders(listOf(LocalFolder("root", uri, null, "Music", "", 1L)) +
                 listOf("October 2026", "September 2026", "August 2026", "July 2026", "June 2026", "May 2026", "April 2026", "March 2026").mapIndexed { index, name -> LocalFolder("folder$index", uri, "root", name, name, 9000L - index) })
-            db.library().saveSongs(listOf("After Hours", "Morning Light", "A Long Way Home (Live Session Recording)", "Slow Motion", "Open Water", "Night Drive", "Untitled_2026-10-18_final_mix", "Between Stations", "Blue Hour", "Home Again").mapIndexed { index, name ->
+            db.library().saveSongs(listOf("After Hours", "Morning Light", "A Long Way Home (Live Session Recording)", "Slow Motion", "Open Water", "Night Drive", "Untitled_2026-10-18_final_mix", "Between Stations", "Blue Hour", "Luna & Kai - Home Again (feat. Rue)").mapIndexed { index, name ->
                 LocalSong("sample$index", uri, "folder0", "$uri/document/sample$index", "$name.mp3", "October 2026", 9000L - index, 1L, 32L, if (index == 0) 222000L else 258000L)
             })
         }
@@ -59,7 +61,7 @@ class RadioShellTest {
         compose.onNodeWithContentDescription("Back").performClick()
         compose.onNodeWithText("Folders").performClick()
     }
-    private fun render() { scenario.onActivity { activity -> activity.setContent { RadioApp(repository, playback) } } }
+    private fun render() { scenario.onActivity { activity -> activity.setContent { RadioApp(repository, playback, openPlayerRequest = openPlayerRequest.intValue) } } }
     private fun recreate() { scenario.recreate(); render() }
     @After fun close() {
         scenario.close()
@@ -100,6 +102,44 @@ class RadioShellTest {
         compose.onNodeWithTag("nav-Radio").performClick()
         compose.onNodeWithTag("radio-screen").assertIsDisplayed()
         compose.onNodeWithTag("nav-Radio").assertIsSelected()
+    }
+
+    @Test fun reopeningNowPlayingFromExternalControlsPreservesTheFolderBehindIt() {
+        compose.onNodeWithText("October 2026").performClick()
+        compose.onNode(hasText("After Hours") and hasAnyAncestor(hasTestTag("library-list"))).performClick()
+        compose.onNodeWithTag("now-playing-body").assertIsDisplayed()
+
+        scenario.moveToState(Lifecycle.State.CREATED)
+        openPlayerRequest.intValue++
+        scenario.moveToState(Lifecycle.State.RESUMED)
+        compose.waitForIdle()
+        compose.onNodeWithContentDescription("Back").performClick()
+
+        compose.onNodeWithTag("now-playing-body").assertDoesNotExist()
+        compose.onNode(hasText("After Hours") and hasAnyAncestor(hasTestTag("library-list"))).assertIsDisplayed()
+        assertEquals("sample0", playback.state.value.currentId)
+    }
+
+    @Test fun artistSearchFindsGuestCreditsAndPlaybackCanOpenTheCorrectedCoArtist() {
+        compose.onNodeWithTag("library-category-Artists").performScrollTo().performClick()
+        compose.onNodeWithTag("artist-search").performTextInput("Rue")
+        compose.onNode(hasText("Rue") and hasAnyAncestor(hasTestTag("artist-list"))).performClick()
+        compose.onNodeWithText("Appears on").assertIsDisplayed()
+        compose.onNodeWithTag("song-menu-sample9").performClick()
+        compose.onNodeWithText("Edit artist credits").performClick()
+        compose.onNodeWithTag("credit-lead").performTextReplacement("Luna; Kai")
+        compose.onNodeWithText("Save").performClick()
+
+        val artistSong = compose.onNode(hasText("Home Again") and hasAnyAncestor(hasTestTag("artist-list")))
+        artistSong.performClick()
+        compose.onNodeWithTag("now-playing-artists").performClick()
+        compose.onNodeWithText("Kai").performClick()
+
+        compose.onNodeWithText("Kai").assertIsDisplayed()
+        artistSong.assertIsDisplayed()
+        compose.onNodeWithText("Appears on").assertDoesNotExist()
+        compose.onNodeWithTag("artist-radio").assertIsDisplayed()
+        assertEquals("sample9", playback.state.value.currentId)
     }
 
     @Test fun startingRadioShowsTuningInInsteadOfTheStandardPlayer() {

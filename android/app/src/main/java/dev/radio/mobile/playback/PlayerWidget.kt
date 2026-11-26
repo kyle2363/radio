@@ -10,15 +10,18 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import android.util.SizeF
+import android.view.View
 import android.widget.RemoteViews
 import androidx.core.content.ContextCompat
+import androidx.core.graphics.ColorUtils
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import dev.radio.mobile.MainActivity
 import dev.radio.mobile.R
 
 /** What the home-screen widget shows. */
-data class WidgetState(val title: String? = null, val subtitle: String? = null, val playing: Boolean = false)
+data class WidgetState(val title: String? = null, val subtitle: String? = null, val playing: Boolean = false, val talk: Boolean = false)
 
 /**
  * Home-screen player: the current song with Previous, Play/Pause and Next. Tapping the song opens the player.
@@ -81,13 +84,14 @@ class PlayerWidget : AppWidgetProvider() {
         /** The last song and play state, for the Quick Settings tile. */
         fun last(context: Context): WidgetState {
             val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            return WidgetState(prefs.getString("title", null), prefs.getString("subtitle", null), prefs.getBoolean("playing", false))
+            return WidgetState(prefs.getString("title", null), prefs.getString("subtitle", null), prefs.getBoolean("playing", false), prefs.getBoolean("talk", false))
         }
 
         /** Called by the playback service whenever the song or play state changes. Cheap when no widget is placed. */
         fun update(context: Context, state: WidgetState) {
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
-                .putString("title", state.title).putString("subtitle", state.subtitle).putBoolean("playing", state.playing).apply()
+                .putString("title", state.title).putString("subtitle", state.subtitle)
+                .putBoolean("playing", state.playing).putBoolean("talk", state.talk).apply()
             val manager = AppWidgetManager.getInstance(context) ?: return
             val ids = manager.getAppWidgetIds(ComponentName(context, PlayerWidget::class.java))
             if (ids.isNotEmpty()) manager.updateAppWidget(ids, views(context, state))
@@ -115,29 +119,41 @@ class PlayerWidget : AppWidgetProvider() {
             tint(R.id.widget_toggle, "setImageTintList") { it.onAccent }
             tint(R.id.widget_previous, "setImageTintList") { it.title }
             tint(R.id.widget_next, "setImageTintList") { it.title }
+            for (button in listOf(R.id.widget_previous, R.id.widget_next)) {
+                tint(button, "setBackgroundTintList") { ColorUtils.blendARGB(it.background, it.accent, .12f) }
+            }
             setColorInt(R.id.widget_title, "setTextColor", day.title, night.title)
             setColorInt(R.id.widget_subtitle, "setTextColor", day.subtitle, night.subtitle)
         }
 
-        private fun saved(context: Context): WidgetState {
-            val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            // After a restart nothing is playing, whatever was saved.
-            return WidgetState(prefs.getString("title", null), prefs.getString("subtitle", null), playing = false)
-        }
+        // After a restart nothing is playing, whatever was saved.
+        private fun saved(context: Context) = last(context).copy(playing = false)
 
-        private fun views(context: Context, state: WidgetState) = RemoteViews(context.packageName, R.layout.widget_player).apply {
+        internal fun views(context: Context, state: WidgetState) = RemoteViews(mapOf(
+            SizeF(180f, 50f) to views(context, state, showPrevious = false, showNext = false),
+            SizeF(225f, 50f) to views(context, state, showPrevious = false, showNext = true),
+            SizeF(280f, 50f) to views(context, state, showPrevious = true, showNext = true),
+        ))
+
+        private fun views(context: Context, state: WidgetState, showPrevious: Boolean, showNext: Boolean) = RemoteViews(context.packageName, R.layout.widget_player).apply {
             applyTheme(context)
-            setTextViewText(R.id.widget_title, state.title ?: context.getString(R.string.widget_empty))
+            val hasSong = state.title != null
+            setImageViewResource(R.id.widget_artwork, PlaybackArtwork.drawable(state.talk))
+            setTextViewText(R.id.widget_title, state.title ?: context.getString(R.string.widget_start_radio))
             setTextViewText(R.id.widget_subtitle, state.subtitle ?: context.getString(R.string.widget_empty_hint))
+            setViewVisibility(R.id.widget_previous, if (showPrevious && hasSong) View.VISIBLE else View.GONE)
+            setViewVisibility(R.id.widget_next, if (showNext && hasSong) View.VISIBLE else View.GONE)
             setImageViewResource(R.id.widget_toggle, if (state.playing) R.drawable.ic_widget_pause else R.drawable.ic_widget_play)
-            setContentDescription(R.id.widget_toggle, context.getString(if (state.playing) R.string.widget_pause else R.string.widget_play))
+            setContentDescription(R.id.widget_toggle, when {
+                state.playing -> context.getString(R.string.widget_pause)
+                state.title != null -> context.getString(R.string.widget_resume, state.title)
+                else -> context.getString(R.string.widget_start_radio)
+            })
             val open = PendingIntent.getActivity(context, 0, Intent(context, MainActivity::class.java).setAction(MainActivity.ACTION_NOW_PLAYING)
                 .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
             setOnClickPendingIntent(R.id.widget_open, open)
-            val hasSong = state.title != null
             listOf(R.id.widget_toggle to ACTION_TOGGLE, R.id.widget_next to ACTION_NEXT, R.id.widget_previous to ACTION_PREVIOUS).forEachIndexed { index, (view, action) ->
-                // With nothing queued Play still works (it resumes or starts Radio); Previous/Next open the app.
-                setOnClickPendingIntent(view, if (!hasSong && action != ACTION_TOGGLE) open else PendingIntent.getBroadcast(context, index + 1,
+                setOnClickPendingIntent(view, PendingIntent.getBroadcast(context, index + 1,
                     Intent(context, PlayerWidget::class.java).setAction(action), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT))
             }
         }

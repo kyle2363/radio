@@ -248,6 +248,7 @@ class RadioPlaybackService : MediaSessionService() {
                 .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         session = MediaSession.Builder(this, engine.sessionPlayer).setSessionActivity(activity)
+            .setBitmapLoader(PlaybackArtwork.loader(this))
             .setMediaButtonPreferences(mediaButtons(clientController.state.value.shuffled, clientController.state.value.repeat, clientController.state.value.radioActive, liked()))
             .setCallback(object : MediaSession.Callback {
                 override fun onConnect(session: MediaSession, controller: MediaSession.ControllerInfo): MediaSession.ConnectionResult {
@@ -309,7 +310,7 @@ class RadioPlaybackService : MediaSessionService() {
         scope.launch {
             clientController.state.map { state ->
                 // A talk clip shows wherever a song title would (widget and QS tile included).
-                state.talk?.takeIf { it.current }?.let { WidgetState(it.info.title, it.info.artist, state.playWhenReady && !state.ended) }
+                state.talk?.takeIf { it.current }?.let { WidgetState(it.info.title, it.info.artist, state.playWhenReady && !state.ended, talk = true) }
                     ?: state.current?.let { WidgetState(it.title, it.artist.ifBlank { state.source.ifBlank { "Local music" } }, state.playWhenReady && !state.ended) } ?: WidgetState()
             }.distinctUntilChanged().collect { widget = it; PlayerWidget.update(this@RadioPlaybackService, it) }
         }
