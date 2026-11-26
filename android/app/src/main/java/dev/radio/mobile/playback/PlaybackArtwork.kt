@@ -20,8 +20,11 @@ internal object PlaybackArtwork {
     fun drawable(talk: Boolean) = if (talk) R.drawable.player_talk_artwork else R.drawable.player_artwork
 
     fun loader(context: Context): BitmapLoader {
-        val embedded = CacheBitmapLoader(DataSourceBitmapLoader.Builder(context).setMaximumOutputDimension(512).build())
-        fun fallback(talk: Boolean) = checkNotNull(ContextCompat.getDrawable(context, drawable(talk))).toBitmap(320, 320)
+        // The lock screen shows artwork up to 320dp wide (about 850px on a phone), and the system scales anything
+        // larger down to that before it leaves the app. Drawing smaller makes it blurry there.
+        val size = (320 * context.resources.displayMetrics.density).toInt().coerceIn(512, 1024)
+        val embedded = CacheBitmapLoader(DataSourceBitmapLoader.Builder(context).setMaximumOutputDimension(size).build())
+        fun fallback(talk: Boolean) = checkNotNull(ContextCompat.getDrawable(context, drawable(talk))).toBitmap(size, size)
         val musicArtwork by lazy { fallback(false) }
         val talkArtwork by lazy { fallback(true) }
         return object : BitmapLoader by embedded {
