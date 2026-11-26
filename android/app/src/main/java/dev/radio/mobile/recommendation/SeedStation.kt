@@ -3,11 +3,11 @@ package dev.radio.mobile.recommendation
 import kotlin.math.sqrt
 
 /**
- * What a "Start radio from this" station was started from: one song or a playlist. Saved so the station keeps its
+ * What a "Start radio from this" station was started from. Saved so the station keeps its
  * direction after the app or service restarts. [localIds] are local song ids, in the source's order.
  */
 data class SeedSpec(val kind: Kind, val label: String, val localIds: List<String>) {
-    enum class Kind { Song, Playlist }
+    enum class Kind { Song, Playlist, Artist }
 
     /** Unit and record separators: song ids and playlist names never contain them. */
     fun encode(): String = kind.name + FIELD + label + FIELD + localIds.joinToString(RECORD)
@@ -27,7 +27,7 @@ data class SeedSpec(val kind: Kind, val label: String, val localIds: List<String
 
 /**
  * Song and playlist stations: a score added to the ordinary Radio ranking for songs that sound like the seed songs,
- * from the centroid of their vectors (similarity squared, so the station stays near its start). Positive similarity only, so unrelated songs are left to the mood ranking and
+     * from the centroid of their vectors (similarity squared, so the station stays near its start). Positive similarity only, so unrelated songs are left to the mood ranking and
  * opposite ones are never pushed. Recency, dislikes, Vibe lock and refill bounds stay in [OfflineRecommender].
  */
 object SeedStation {

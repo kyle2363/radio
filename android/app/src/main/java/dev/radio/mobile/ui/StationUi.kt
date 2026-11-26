@@ -320,9 +320,9 @@ fun ComingUp(audio: PlaybackState, onRemove: (String) -> Unit, onFullQueue: () -
 
 /** "Artist · reason", with Desktop and Added by you shown as small tags. */
 @Composable
-internal fun OriginLine(song: LocalSong, origin: StationOrigin?, color: Color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines: Int = 1) {
+internal fun OriginLine(song: LocalSong, origin: StationOrigin?, color: Color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines: Int = 1, showArtist: Boolean = true) {
     Row(verticalAlignment = Alignment.CenterVertically) {
-        Text(songSubtitle(song) + if (origin != null && origin != StationOrigin.Desktop && origin != StationOrigin.User) " · ${origin.label}" else "",
+        Text(songSubtitle(song, showArtist = showArtist) + if (origin != null && origin != StationOrigin.Desktop && origin != StationOrigin.User) " · ${origin.label}" else "",
             Modifier.weight(1f, fill = false), maxLines = maxLines, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall, color = color)
         if (origin == StationOrigin.Desktop || origin == StationOrigin.User) OriginTag(origin.label, Modifier.padding(start = 6.dp))
     }
@@ -657,6 +657,8 @@ fun RadioNowPlaying(
     onTranscript: (() -> Unit)? = null,
     /** The artwork size the screen has room for; falls back to the fixed sizes. */
     heroSize: androidx.compose.ui.unit.Dp? = null,
+    creditedArtists: List<String> = emptyList(),
+    onArtist: (String) -> Unit = {},
 ) {
     val locked = radio.vibeLocalId != null
     val talking = talk != null
@@ -682,7 +684,8 @@ fun RadioNowPlaying(
         } else if (song != null) Row(verticalAlignment = Alignment.Top) {
             Column(Modifier.weight(1f)) {
                 SongTitle(song.title, Modifier.fillMaxWidth())
-                OriginLine(song, audio.origins[song.id], maxLines = 2)
+                if (creditedArtists.isNotEmpty()) ArtistCreditLink(song, creditedArtists, onArtist)
+                OriginLine(song, audio.origins[song.id], maxLines = 2, showArtist = creditedArtists.isEmpty())
             }
             IconToggleButton(liked, { onLike() }, enabled = feedbackReady, modifier = Modifier.testTag("favorite-song")) {
                 CompositionLocalProvider(LocalContentColor provides if (liked) OnAirText else LocalContentColor.current) { HeartIcon(liked, if (liked) "Liked" else "Like") }

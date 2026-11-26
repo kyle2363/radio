@@ -19,7 +19,7 @@ import androidx.compose.ui.unit.dp
 import dev.radio.mobile.data.*
 import kotlinx.coroutines.launch
 
-enum class SongAction { PlayNext, AddToQueue, AddToPlaylist, Stats, Radio }
+enum class SongAction { PlayNext, AddToQueue, AddToPlaylist, Stats, Radio, ArtistCredits }
 
 @Composable
 fun SongActions(song: LocalSong, onAction: (SongAction, LocalSong) -> Unit, menu: MutableState<Boolean> = remember { mutableStateOf(false) }) {
@@ -34,6 +34,7 @@ fun SongActions(song: LocalSong, onAction: (SongAction, LocalSong) -> Unit, menu
             DropdownMenuItem(text = { Text("Start radio from this") }, enabled = song.available, onClick = { open = false; onAction(SongAction.Radio, song) },
                 leadingIcon = { RadioIcon(Symbol.Radio) }, modifier = Modifier.testTag("song-radio-${song.id}"))
             DropdownMenuItem(text = { Text("Song stats") }, onClick = { open = false; onAction(SongAction.Stats, song) }, modifier = Modifier.testTag("song-stats-${song.id}"))
+            DropdownMenuItem(text = { Text("Edit artist credits") }, onClick = { open = false; onAction(SongAction.ArtistCredits, song) })
         }
     }
 }

@@ -1,0 +1,5 @@
+<inset xmlns:android="http://schemas.android.com/apk/res/android" android:inset="6dp">
+    <shape android:shape="oval">
+        <solid android:color="@color/widget_background" />
+    </shape>
+</inset>

@@ -252,6 +252,9 @@ class BackgroundPlaybackTest {
         val notification = notifications.first { it.notification.extras.containsKey(Notification.EXTRA_MEDIA_SESSION) }.notification
         val token = notification.extras.getParcelable(Notification.EXTRA_MEDIA_SESSION, android.media.session.MediaSession.Token::class.java)!!
         val system = android.media.session.MediaController(context, token)
+        await("SystemUI cannot see fallback album artwork") {
+            system.metadata?.getBitmap(android.media.MediaMetadata.METADATA_KEY_ALBUM_ART) != null
+        }
         val expected = listOf(RadioPlaybackService.ACTION_TOGGLE_SHUFFLE, RadioPlaybackService.ACTION_CYCLE_REPEAT, RadioPlaybackService.ACTION_TOGGLE_LIKE)
         await("SystemUI cannot see shuffle and repeat custom actions") {
             system.playbackState?.customActions?.map { it.action } == expected

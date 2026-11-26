@@ -435,7 +435,7 @@ class RadioRepository internal constructor(context:Context,private val db:Librar
             }.orEmpty()
             // A song or playlist station steers only while on air (or while starting); off air it is a leftover.
             val seedScores=mutable.value.seed?.takeIf{!publishPreview || playback.radioActive}?.let{spec->
-                SeedStation.scores(spec.localIds.mapNotNull(accepted::get).toSet(),vectors,RadioSettings().audioBlend,includeSeeds=spec.kind==SeedSpec.Kind.Playlist)
+                SeedStation.scores(spec.localIds.mapNotNull(accepted::get).toSet(),vectors,RadioSettings().audioBlend,includeSeeds=spec.kind!=SeedSpec.Kind.Song)
             }.orEmpty()
             val settings=RadioSettings(mood=effectiveMood,exploration=mutable.value.exploration,vibeLock=vibe,feel=feelScores,seed=seedScores)
             val excluded=tracks.filter{it.localId in exclude || (publishPreview && it.localId in previewExclusions)}.map{it.songId}.toSet()

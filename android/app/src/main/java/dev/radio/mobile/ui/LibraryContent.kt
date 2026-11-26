@@ -11,6 +11,7 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -53,7 +54,8 @@ fun LibraryContent(
     sortedSongs: List<LocalSong>? = null, currentId: String? = null,
     onPlayAll: (List<LocalSong>, PlaySource, Boolean) -> Unit = { _, _, _ -> },
     /** The artist open in the Artists tab, if any. */
-    artist: String? = null, onArtist: (String) -> Unit = {},
+    artist: String? = null, onArtist: (String) -> Unit = {}, artistCatalog: ArtistCatalog? = null,
+    onArtistRadio: (String, List<LocalSong>) -> Unit = { _, _ -> },
     /** Long-press song rows to select several; the app bars act on the selection. */
     selection: SelectionController = remember { SelectionController() }
 ) {
@@ -65,7 +67,7 @@ fun LibraryContent(
     val browsingFolders = folderId != null || category == "Folders"
     val songCounts = remember(ordered) { ordered.groupingBy { it.folderId }.eachCount() }
     val visible = remember(ordered, browsingFolders, parent) { if (browsingFolders) ordered.filter { it.folderId == parent } else ordered }
-    val artists = remember(state.songs, category) { if (category == "Artists") Artists.index(state.songs) else emptyList() }
+    var artistQuery by rememberSaveable(state.root?.uri) { mutableStateOf("") }
     Column(modifier.fillMaxSize()) {
         LibraryStatus(state, choose, rescan, cancel, showScanSummary = false)
         if (state.root == null && !state.loading && !state.scanning) {
@@ -100,25 +102,10 @@ fun LibraryContent(
             FadeInOnChange("$folderId/$category/$artist") {
             if (folderId == null && category == "Playlists") playlistContent()
             else if (folderId == null && category == "Artists") {
-                val open = artists.firstOrNull { it.name == artist }
-                val openSongs = open?.songs.orEmpty()
-                val openIds = remember(openSongs) { openSongs.map { it.id } }
-                BindSelection(selection, "artist:$artist", openIds, openSongs)
-                LazyColumn(state = listState, modifier = Modifier.fillMaxSize().sweepSelect(listState, selection, enabled = open != null) { key -> (key as? String)?.takeIf { it in selection.order } }.testTag("artist-list")) {
-                if (artist == null) items(artists, key = { "artist:${it.name}" }) { entry ->
-                    val count = entry.songs.count { it.available }
-                    LibraryRow(entry.name, "$count song${if (count == 1) "" else "s"}", Symbol.Person) { onArtist(entry.name) }
-                } else if (open != null) {
-                    val playable = open.songs.count { it.available }
-                    if (playable > 1) item(key = "play-all") { PlayAllRow(playable, { onPlayAll(open.songs, PlaySource(open.name, PlaySource.ARTIST, open.name), false) }, { onPlayAll(open.songs, PlaySource(open.name, PlaySource.ARTIST, open.name), true) }) }
-                    items(open.songs, key = { it.id }) { song -> SelectableSongRow(song, songSubtitle(song, showArtist = false), selection, onSongAction, playing = song.id == currentId) {
-                        onSong(song, open.songs, PlaySource(open.name, PlaySource.ARTIST, open.name)) } }
-                }
-                if (artists.isEmpty()) item { EmptyState(Symbol.Person, "No artists yet", "Artists come from file names like “Artist - Title.mp3”.") }
-                else if (artist == null && artists.size == 1 && artists[0].name == Artists.UNKNOWN) item {
-                    Text("Artists come from file names like “Artist - Title.mp3”; none of yours follow that pattern.", Modifier.padding(20.dp), style = MaterialTheme.typography.bodySmall)
-                }
-            } }
+                val catalog = artistCatalog ?: remember(state.songs) { Artists.catalog(state.songs) }
+                ArtistBrowser(catalog, artist, onArtist, artistQuery, { artistQuery = it }, listState,
+                    selection, currentId, !state.accessLost, onSong, onSongAction, onPlayAll, onArtistRadio)
+            }
             else {
                 // Folder rows come first and stand for every song under them, so they can be selected alongside songs.
                 val shownFolders = if (browsingFolders) childFolders else emptyList()
