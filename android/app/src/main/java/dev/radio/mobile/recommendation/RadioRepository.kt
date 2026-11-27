@@ -262,7 +262,7 @@ class RadioRepository internal constructor(context:Context,private val db:Librar
         if(value && output.radioActive)output.current?.let{songStarted(it,output)}
     }
     private fun connectedFence():ConnectedFence? { val id=playback.currentId ?: return null;val st=mutable.value
-        return ConnectedFence(id,st.mood,st.exploration,st.vibeLocalId,JournalIdentityProvider.mappings.value.generation,PortableSyncChanges.revision,tuning=tuningState.value)
+        return ConnectedFence(id,st.mood,st.exploration,st.vibeLocalId,JournalIdentityProvider.mappings.value.generation,PortableSyncChanges.revision,tuning=tuningState.value,feel=st.feel)
     }
     /** Saves tuning and expires the held set; the new values apply from the next song's request. */
     fun setConnectedTuning(value:ConnectedTuning) {
@@ -291,7 +291,7 @@ class RadioRepository internal constructor(context:Context,private val db:Librar
         val st=mutable.value;val tuning=tuningState.value
         connected.begin(ConnectedRequest(song,st.mood,st.exploration,st.vibeLocalId,mapping,local.songs.filter{it.available}.associateBy{it.id},recent,
             output.playOrder.toSet()+recent.map{it.localId}+song.id,::isDisliked,
-            ConnectedFence(song.id,st.mood,st.exploration,st.vibeLocalId,mapping.generation,PortableSyncChanges.revision,tuning=tuning),tuning,connectedPlayed()))
+            ConnectedFence(song.id,st.mood,st.exploration,st.vibeLocalId,mapping.generation,PortableSyncChanges.revision,tuning=tuning,feel=st.feel),tuning,connectedPlayed(),st.feel))
     }
     private fun playable(id:String)=library.value.songs.any{it.id==id && it.available && it.uri.startsWith("content:")}
     /**
@@ -300,8 +300,8 @@ class RadioRepository internal constructor(context:Context,private val db:Librar
      */
     suspend fun refill(exclude:Set<String>,room:Int,tail:String?):RadioBatch? {
         val held=connected.set.value
-        // The desktop doesn't know phone feels yet (9D): a feel station refills from the phone only.
-        if(held==null || room<=0 || mutable.value.feel!=null)return recommendations(exclude,room,tail)
+        // A feel station uses Desktop picks only when the desktop ranked inside that feel (13C); otherwise the phone's own.
+        if(held==null || room<=0 || !ConnectedPolicy.servesFeel(held,mutable.value.feel))return recommendations(exclude,room,tail)
         connected.revalidate(connectedFence())
         if(connected.set.value!==held)return recommendations(exclude,room,tail)
         val chosen=ConnectedPolicy.refillPicks(held,exclude,mutable.value.vibeLocalId!=null || held.vibeLocked,room,::isDisliked,::playable)

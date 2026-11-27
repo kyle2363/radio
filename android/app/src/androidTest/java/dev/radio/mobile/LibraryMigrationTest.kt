@@ -25,6 +25,7 @@ class LibraryMigrationTest {
     @Test fun v10MigrationKeepsPlaylistsLocalAndUnsynced() = verifyMigration(10)
     @Test fun v11MigrationAddsEmptyLocalPlayContextAndStatsIndices() = verifyMigration(11)
     @Test fun v12MigrationAddsEmptyFeelStorage() = verifyMigration(12)
+    @Test fun v13MigrationAddsEmptyTalkStats() = verifyMigration(13)
     private fun verifyMigration(version: Int) = runBlocking {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val context = instrumentation.targetContext
@@ -58,7 +59,7 @@ class LibraryMigrationTest {
             }
             db.version = version
         }
-        val db = Room.databaseBuilder(context, LibraryDatabase::class.java, file.absolutePath).addMigrations(LIBRARY_MIGRATION_1_2, LIBRARY_MIGRATION_2_3, LIBRARY_MIGRATION_3_4, LIBRARY_MIGRATION_4_5, LIBRARY_MIGRATION_5_6, LIBRARY_MIGRATION_6_7, LIBRARY_MIGRATION_7_8, LIBRARY_MIGRATION_8_9, LIBRARY_MIGRATION_9_10, LIBRARY_MIGRATION_10_11, LIBRARY_MIGRATION_11_12, LIBRARY_MIGRATION_12_13).build()
+        val db = Room.databaseBuilder(context, LibraryDatabase::class.java, file.absolutePath).addMigrations(LIBRARY_MIGRATION_1_2, LIBRARY_MIGRATION_2_3, LIBRARY_MIGRATION_3_4, LIBRARY_MIGRATION_4_5, LIBRARY_MIGRATION_5_6, LIBRARY_MIGRATION_6_7, LIBRARY_MIGRATION_7_8, LIBRARY_MIGRATION_8_9, LIBRARY_MIGRATION_9_10, LIBRARY_MIGRATION_10_11, LIBRARY_MIGRATION_11_12, LIBRARY_MIGRATION_12_13, LIBRARY_MIGRATION_13_14).build()
         try {
             assertEquals("Music", db.library().root()!!.name)
             assertEquals("keep", db.library().allSongs().single().id)
@@ -78,6 +79,7 @@ class LibraryMigrationTest {
             if (version >= 5) assertEquals(-12.0, db.loudness().observe().first().single().integratedLufs!!, 0.0)
             assertNull(db.catalogs().latest())
             assertTrue(db.feels().feels().isEmpty())
+            assertTrue(db.talk().all().isEmpty())
             assertTrue(db.feels().evidence(FeelCatalog.ENERGY_FEEL_ID).isEmpty())
             if (version >= 8) assertEquals("pending-event", db.journal().events().single().eventId)
             else assertTrue(db.journal().events().isEmpty())

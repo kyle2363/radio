@@ -256,7 +256,7 @@ private data class WrappedCard(val label: String, val value: String, val detail:
     /** The value is a number to count up (time, a count, a score); song and artist names never are. */
     val counts: Boolean = false)
 
-private fun wrappedCards(w: Wrapped, songs: Map<String, LocalSong>, feels: FeelsState): List<WrappedCard> {
+private fun wrappedCards(w: Wrapped, songs: Map<String, LocalSong>, feels: FeelsState, talk: TalkSummary? = null): List<WrappedCard> {
     val span = when (w.period) { StatsPeriod.Week -> "week"; StatsPeriod.Month -> "month"; StatsPeriod.Year -> "year"; StatsPeriod.All -> "time" }
     fun title(id: String) = songs[id]?.title ?: "A song no longer in your library"
     val cards = mutableListOf(WrappedCard("Your ${span} in music", duration(w.listeningMs), "${w.plays} plays · ${w.distinctSongs} different songs",
@@ -272,6 +272,12 @@ private fun wrappedCards(w: Wrapped, songs: Map<String, LocalSong>, feels: Feels
         if (w.longestStreak > 0) "Longest streak: ${w.longestStreak} ${if (w.longestStreak == 1) "day" else "days"} in a row" else "",
         art = if (w.longestStreak > 0) CardArt.Flame else CardArt.None, streak = w.longestStreak)
     w.topFeel?.let { top -> feels.active.firstOrNull { it.feel.feelId == top.key }?.let { f -> cards += WrappedCard("Top feel", f.feel.name, "${duration(top.listeningMs)} of ${f.feel.name.lowercase()} music") } }
+    // 13C: "Your radio friends", only when talk was heard in this period.
+    talk?.takeIf { !it.empty && (it.topGuest != null || it.topCaller != null) }?.let { t ->
+        val friends = listOfNotNull(t.topGuest?.let { "${it.first} · guest DJ" to it.second }, t.topCaller?.let { "${it.first} · caller" to it.second })
+        cards += WrappedCard("Your radio friends", (t.topGuest ?: t.topCaller)!!.first, "${duration(t.heardMs)} of talk · ${t.clips} segments",
+            art = if (friends.size > 1) CardArt.TopList else CardArt.None, rows = friends)
+    }
     val m = w.measures
     cards += WrappedCard("Your style", m.variety?.let { "Variety $it" } ?: "Variety –",
         "First listens ${pct(m.discoveryRate)} · Library heard ${pct(m.libraryCoverage)} · Top-20 loyalty ${pct(m.loyalty)}",
@@ -293,7 +299,7 @@ internal fun countUp(value: String, reveal: Float): String {
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-internal fun WrappedDialog(attempts: List<StatsAttempt>, songs: List<LocalSong>, feels: FeelsState, onDismiss: () -> Unit) {
+internal fun WrappedDialog(attempts: List<StatsAttempt>, songs: List<LocalSong>, feels: FeelsState, talkEvents: List<LocalTalkEvent> = emptyList(), onDismiss: () -> Unit) {
     var period by rememberSaveable { mutableStateOf(StatsPeriod.Week) }
     val byId = remember(songs) { songs.associateBy { it.id } }
     val zone = remember { ZoneId.systemDefault() }
@@ -324,7 +330,7 @@ internal fun WrappedDialog(attempts: List<StatsAttempt>, songs: List<LocalSong>,
                         Text("Nothing played ${period.label.lowercase()} yet. Come back after some music.", color = Color.White, textAlign = TextAlign.Center, style = MaterialTheme.typography.titleMedium)
                     }
                     else -> key(w) {
-                        val cards = remember(w, byId, feels) { wrappedCards(w, byId, feels) }
+                        val cards = remember(w, byId, feels, talkEvents) { wrappedCards(w, byId, feels, TalkStats.summarize(talkEvents, period, System.currentTimeMillis(), zone)) }
                         val pager = rememberPagerState { cards.size }
                         val layers = remember(cards) { HashMap<Int, GraphicsLayer>() }
                         // Story timer in real time (not the animation scale), so cards still advance with animations off.

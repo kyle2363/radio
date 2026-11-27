@@ -11,6 +11,10 @@ data class ConnectedUi(
 /** Pure rules for what connected data may be shown or consumed. No Android, storage or network. */
 object ConnectedPolicy {
     const val SERVER_AI_PREFIX = "Server AI"
+
+    /** Whether [held] may refill a station playing [feel]: always for a mood station; for a feel station only a set the desktop ranked inside that same feel. */
+    fun servesFeel(held: ConnectedSet, feel: String?): Boolean =
+        feel == null || (held.fence.feel == feel && held.applied?.feel == "on")
     const val MAX_NORMAL_EXPLOIT = 4 // The server decides the mix (3 similar at default exploration); the phone only caps and bounds it.
     const val MAX_VIBE_EXPLOIT = 4
     const val REFILL_BOUND = 5

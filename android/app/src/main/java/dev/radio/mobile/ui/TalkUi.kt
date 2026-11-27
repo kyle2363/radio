@@ -63,6 +63,17 @@ fun TalkSection(connected: ConnectedUi, paired: Boolean, settings: TalkSettings,
             }
         }
 
+        Text("Guests change the feel", Modifier.padding(top = 8.dp), style = MaterialTheme.typography.bodyMedium)
+        Text("A guest may switch the mood, or another of your feels in a feel station, until their set ends.",
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            (listOf<String?>(null) + TalkSettings.GUEST_SHIFTS).forEach { value ->
+                FilterChip(settings.guestShift == value, onClick = { onChange(settings.copy(guestShift = value)) },
+                    label = { Text(value?.replaceFirstChar { it.uppercase() } ?: "Desktop") },
+                    modifier = Modifier.testTag("talk-guest-shift-${value ?: "default"}"))
+            }
+        }
+
         Text("Talk volume", Modifier.padding(top = 8.dp), style = MaterialTheme.typography.bodyMedium)
         SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
             TalkVolume.entries.forEachIndexed { index, volume ->

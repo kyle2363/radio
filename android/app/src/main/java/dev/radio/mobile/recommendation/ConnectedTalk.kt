@@ -28,8 +28,11 @@ data class TalkSettings(
     val guests: Boolean? = null,
     val guestSongs: Int? = null,
     val volume: TalkVolume = TalkVolume.NORMAL,
+    /** How often a guest changes the mood or feel: one of [GUEST_SHIFTS], or null for the desktop's (Normal unless changed). */
+    val guestShift: String? = null,
 ) {
-    fun normalized() = copy(frequency = frequency?.coerceIn(MIN_FREQUENCY, MAX_FREQUENCY), guestSongs = guestSongs?.coerceIn(MIN_GUEST_SONGS, MAX_GUEST_SONGS))
+    fun normalized() = copy(frequency = frequency?.coerceIn(MIN_FREQUENCY, MAX_FREQUENCY), guestSongs = guestSongs?.coerceIn(MIN_GUEST_SONGS, MAX_GUEST_SONGS),
+        guestShift = guestShift?.takeIf { it in GUEST_SHIFTS })
 
     /** "Use desktop defaults" clears every override except On/Off. */
     fun desktopDefaults() = TalkSettings(enabled = enabled)
@@ -44,6 +47,7 @@ data class TalkSettings(
         n.monologues?.let { out["monologues"] = it }
         n.guests?.let { out["guests"] = it }
         n.guestSongs?.let { out["guest_songs"] = it }
+        n.guestShift?.let { out["guest_shift"] = it }
         return out.takeIf { it.isNotEmpty() }
     }
 
@@ -52,12 +56,13 @@ data class TalkSettings(
     companion object {
         const val MIN_FREQUENCY = 2; const val MAX_FREQUENCY = 10
         const val MIN_GUEST_SONGS = 2; const val MAX_GUEST_SONGS = 8
+        val GUEST_SHIFTS = listOf("none", "rarely", "normal", "often")
         fun decode(text: String?): TalkSettings {
             val root = text?.let { runCatching { ConnectedJson.parse(it) as? Map<*, *> }.getOrNull() } ?: return TalkSettings()
             val talk = root["talk"] as? Map<*, *> ?: emptyMap<String, Any?>()
             return TalkSettings(root["enabled"] == true, (talk["frequency"] as? Long)?.toInt(), talk["callers"] as? Boolean,
                 talk["monologues"] as? Boolean, talk["guests"] as? Boolean, (talk["guest_songs"] as? Long)?.toInt(),
-                TalkVolume.entries.firstOrNull { it.name == root["volume"] } ?: TalkVolume.NORMAL).normalized()
+                TalkVolume.entries.firstOrNull { it.name == root["volume"] } ?: TalkVolume.NORMAL, talk["guest_shift"] as? String).normalized()
         }
     }
 }

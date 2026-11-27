@@ -43,6 +43,8 @@ internal class TalkCoordinator(
     private val journal: ListeningJournalRepository,
     private val prefs: SharedPreferences,
     private val scope: CoroutineScope,
+    /** Saves a finished clip for talk stats (13C); local only. */
+    private val recordTalk: suspend (dev.radio.mobile.data.LocalTalkEvent) -> Unit = {},
 ) {
     private val net = Mutex()
     private var turn: Job? = null
@@ -53,6 +55,9 @@ internal class TalkCoordinator(
     private var feedbackAtStart = emptyMap<String, dev.radio.mobile.data.LocalSongFeedback>()
     /** Clips that were inserted; their outcome comes from the engine. */
     private val inserted = HashSet<String>()
+    /** When each inserted clip started, and the station change it made, for talk stats. */
+    private val startedAt = HashMap<String, Long>()
+    private val shifts = HashMap<String, String>()
 
     init {
         radio.talkCache.clear()  // Clips never outlive the process that fetched them.
@@ -162,7 +167,8 @@ internal class TalkCoordinator(
         when (event) {
             is LocalPlaybackController.TalkEvent.Started -> {
                 radio.setTalkStatus("On air: ${event.clip.info.title}")
-                applyShift(event.clip.info)
+                startedAt[event.clip.info.jobId] = System.currentTimeMillis()
+                applyShift(event.clip.info)?.let { shifts[event.clip.info.jobId] = it }
             }
             is LocalPlaybackController.TalkEvent.Finished -> {
                 val clip = event.clip
@@ -175,6 +181,9 @@ internal class TalkCoordinator(
                 }
                 radio.setTalkStatus(when (outcome) { "played" -> "Last talk played"; "skipped" -> "Last talk skipped"; else -> "Talk removed" })
                 scope.launch { report(clip.info.jobId, outcome, if (outcome == "skipped") event.heardMs / 1000.0 else null) }
+                val row = dev.radio.mobile.data.TalkStats.event(clip.info, outcome, event.heardMs, startedAt.remove(clip.info.jobId),
+                    System.currentTimeMillis(), shifts.remove(clip.info.jobId))
+                scope.launch(Dispatchers.IO) { runCatching { recordTalk(row) } }
             }
         }
     }
@@ -183,12 +192,18 @@ internal class TalkCoordinator(
     private fun guestRestore() = GuestRestore.decode(prefs.getString(GUEST_RESTORE, null))
     private fun saveRestore(value: GuestRestore?) = prefs.edit { if (value == null) remove(GUEST_RESTORE) else putString(GUEST_RESTORE, value.encode()) }
 
-    /** A clip just started: its mood/feel shift (or a guest set's revert) replaces the upcoming Radio picks. */
-    private fun applyShift(info: TalkClipInfo) {
-        val feels = radio.feelChoices.value.filter { !it.archived }.map { it.feelId }.toSet()
-        val result = TalkShiftPolicy.onStart(info, station(), guestRestore(), OfflineRecommender.MOODS.keys, feels)
+    /**
+     * A clip just started: its mood/feel shift (or a guest set's revert) replaces the upcoming Radio picks. Returns the
+     * clip's own change for talk stats ("feel:<name>" or "mood:<mood>"), not a revert.
+     */
+    private fun applyShift(info: TalkClipInfo): String? {
+        val choices = radio.feelChoices.value.filter { !it.archived }
+        val result = TalkShiftPolicy.onStart(info, station(), guestRestore(), OfflineRecommender.MOODS.keys, choices.map { it.feelId }.toSet())
         saveRestore(result.pending)
-        result.apply?.let(::changeStation)
+        val applied = result.apply ?: return null
+        changeStation(applied)
+        if (info.shift == null) return null
+        return applied.feel?.let { id -> "feel:" + (choices.firstOrNull { it.feelId == id }?.name ?: id) } ?: "mood:${applied.mood}"
     }
 
     private fun changeStation(pick: StationPick) {

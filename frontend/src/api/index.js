@@ -188,6 +188,7 @@ export const fetchVoiceStatus = () => get("/api/talk/voice-status");
 export const downloadVoices = () => post("/api/talk/download-voices");
 export const dismissGuest = () => post("/api/talk/guest-dismiss");
 export const fetchPersonas = () => get("/api/talk/personas");
+export const fetchTalkMetadataGaps = () => get("/api/talk/metadata-gaps");
 
 // ── Skip Feedback ─────────────────────────────────────────
 export const submitSkipFeedback = (reason, duration = null) => post("/api/queue/skip-feedback", { reason, duration });

@@ -457,3 +457,40 @@ def test_requests_leave_history_and_the_desktop_queue_untouched(svc, manager):
     assert manager._recently_recommended_ids == {50}
     assert (manager._rebuild_gen, manager._current_song_id, manager._current_session_id) == (generation, 9, 7)
     assert events == []
+
+
+def test_feel_station_restricts_picks_and_reports_it(svc):
+    snapshot = availability(svc)
+    members = [int(i) for i in AVAILABLE[:6]]
+    svc.feel_ids = lambda feel_id: members if feel_id == "feel-a" else None
+    seen = []
+    real = svc.recommend_fn
+    svc.recommend_fn = lambda inputs: seen.append(inputs) or real(inputs)
+    reply = ask(svc, context(svc, feel_id="feel-a"), snapshot, request_id="a")
+    assert set(seen[-1].allowed_ids) == set(members)
+    assert reply["applied"]["feel"] == "on"
+    assert {int(p["song_id"]) for p in reply["picks"]} <= set(members)
+    # A feel the desktop doesn't know is reported so the phone can use its own picks.
+    reply = ask(svc, context(svc, feel_id="feel-unknown"), snapshot, request_id="b")
+    assert reply["applied"]["feel"] == "unavailable" and set(seen[-1].allowed_ids) == {int(i) for i in AVAILABLE}
+    reply = ask(svc, context(svc), snapshot, request_id="c")
+    assert reply["applied"]["feel"] == "off"
+
+
+def test_feel_id_is_validated(svc):
+    with pytest.raises(Rejected):
+        context(svc, feel_id="bad id with spaces")
+
+
+def test_active_guest_bias_reaches_slot_allocation(svc):
+    snapshot = availability(svc)
+    bias = {"energy_range": (0.6, 1.0)}
+    created = context(svc)
+    svc.guest_bias = lambda device_id, context_id: bias if context_id == created["context_id"] else None
+    seen = []
+    real = svc.recommend_fn
+    svc.recommend_fn = lambda inputs: seen.append(inputs) or real(inputs)
+    ask(svc, created, snapshot, request_id="a")
+    assert seen[-1].slot_bias == bias
+    ask(svc, context(svc), snapshot, request_id="b")
+    assert seen[-1].slot_bias is None

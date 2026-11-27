@@ -454,6 +454,8 @@ def create_mobile_gateway(store, identity, pairing, *, catalog=None, monotonic=t
     admission = app.state.admission = Admission(monotonic=monotonic)
     recommendations = app.state.recommendations = recommendations or MobileRecommendations(store)
     talk = app.state.talk = talk or MobileTalk(recommendations)
+    if getattr(recommendations, "guest_bias", "absent") is None:
+        recommendations.guest_bias = talk.guest_slot_bias
 
     @app.get(PREFIX + "/identity")
     def descriptor(request: Request):
@@ -479,7 +481,7 @@ def create_mobile_gateway(store, identity, pairing, *, catalog=None, monotonic=t
                 "catalog_revision": catalog.status()["revision"] if catalog else None,
                 **({"plain_lyrics": True, "plain_lyrics_version": 1,
                     "plain_lyrics_max_text_bytes": 65536} if catalog is not None else {}),
-                "profile_sync": True, "remote_hosting": True, "connected_recommendations": True, "connected_tuning": True,
+                "profile_sync": True, "remote_hosting": True, "connected_recommendations": True, "connected_tuning": True, "connected_feels": True,
                 "connected_talk": talk.capability(),
                 "offline_recommendations": False, "native_speech_generation": False,
                 "local_music_required": True}

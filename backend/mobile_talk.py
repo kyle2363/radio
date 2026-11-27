@@ -382,8 +382,11 @@ class _Worker:
 
 class MobileTalk:
     def __init__(self, recommendations, *, cache_dir=None, run=None, render=render_clip,
-                 clock=time.monotonic, wall=time.time, read_setting=None, available=None, gap_log=None):
+                 clock=time.monotonic, wall=time.time, read_setting=None, available=None, gap_log=None,
+                 feel_profile=None):
         self.recommendations = recommendations
+        # feel_id -> (energy, valence) of its desktop songs, or None; lets a guest pick the feel nearest their lean.
+        self.feel_profile = feel_profile or self._feel_profile
         self.cache_dir = cache_dir or os.path.join(config.DATA_DIR, "mobile_talk")
         self.run = run or _Worker()
         self.render = render
@@ -599,7 +602,7 @@ class MobileTalk:
         if job.state != "pending":
             return None
         if segment is not None:
-            wavs, metadata = segment.wav_paths, self._talk_metadata(segment, settings)
+            wavs, metadata = segment.wav_paths, self._talk_metadata(segment, settings, request)
         else:
             wav = announce.play_announcement(text, "", trigger_type=trigger.value,
                                              context={"mood_state": mood, "next_song": nxt, "hour": when.hour})
@@ -716,7 +719,54 @@ class MobileTalk:
         except OSError:
             logger.debug("Could not record talk metadata gap", exc_info=True)
 
-    def _talk_metadata(self, segment, settings):
+    def guest_slot_bias(self, device_id, context_id):
+        """The committed guest set's persona slot_bias for this phone context, or None (13C)."""
+        with self._lock:
+            show = self._shows.get(context_id)
+            if show is None or show.device_id != device_id:
+                return None
+            takeover = show.talk.get("_current_guest_takeover")
+            persona_id = takeover.get("persona_id") if takeover else None
+        if not persona_id:
+            return None
+        from announcer.personas import get_persona
+        persona = get_persona(persona_id)
+        return (persona.slot_bias or None) if persona else None
+
+    def _feel_profile(self, feel_id):
+        ids_for = getattr(self.recommendations, "feel_ids", None)
+        ids = ids_for(feel_id) if ids_for else None
+        if not ids:
+            return None
+        marks = ",".join("?" * len(ids))
+        with database.get_connection_cm() as conn:
+            row = conn.execute(f"SELECT AVG(energy), AVG(valence) FROM songs WHERE id IN ({marks})", list(ids)).fetchone()
+        return (row[0], row[1]) if row and row[0] is not None and row[1] is not None else None
+
+    def _guest_feel(self, request, slot_bias):
+        """In a feel station, a guest moves to another of the phone's feels, nearest their energy/valence lean."""
+        if request is None or request.feel is None:
+            return None
+        choices = [f.id for f in request.feels if f.id != request.feel.id]
+        if not choices:
+            return None
+        energy = (slot_bias or {}).get("energy_range")
+        valence = (slot_bias or {}).get("valence_range")
+        if not energy and not valence:
+            return _rng.choice(choices)
+        e = sum(energy) / 2 if energy else 0.5
+        v = sum(valence) / 2 if valence else 0.5
+        scored = []
+        for feel_id in choices:
+            try:
+                profile = self.feel_profile(feel_id)
+            except Exception:                              # noqa: BLE001 - a broken feel is just skipped
+                profile = None
+            if profile:
+                scored.append(((profile[0] - e) ** 2 + (profile[1] - v) ** 2, feel_id))
+        return min(scored)[1] if scored else _rng.choice(choices)
+
+    def _talk_metadata(self, segment, settings, request=None):
         from announcer.personas import get_persona
         kind = segment.type.value
         dj = get_persona(segment.persona_id or "dj")
@@ -749,9 +799,14 @@ class MobileTalk:
         if kind == "guest_takeover_intro" and settings.get("talk_caller_mode") != "narrative_only":
             # A guest may bring their own sound; the phone reverts it when the set ends.
             chance = GUEST_SHIFT_CHANCE.get(settings.get("talk_guest_shift", "normal"), 0.5)
-            mood = guest_mood(other.slot_bias if other else None)
-            if mood and _rng.random() < chance:
-                shift = {"mood": mood, "feel": None, "restore_at_end": True}
+            bias = other.slot_bias if other else None
+            if _rng.random() < chance:
+                feel = self._guest_feel(request, bias)
+                mood = guest_mood(bias)
+                if feel:
+                    shift = {"mood": None, "feel": feel, "restore_at_end": True}
+                elif mood:
+                    shift = {"mood": mood, "feel": None, "restore_at_end": True}
         if kind == "guest_takeover_intro":
             guest_set = {"persona": other_id, "name": other_name, "songs": settings["talk_guest_songs_per_set"]}
         elif kind == "guest_takeover_outro":
@@ -904,3 +959,47 @@ class MobileTalk:
 
 
 __all__ = ["MobileTalk", "resolve_settings", "render_clip", "TOKEN"]
+
+
+def metadata_gaps(path=None):
+    """Songs connected talk couldn't name (checkpoint 13C desktop view).
+
+    Catalog songs are listed only while a field is still empty, so fixed songs drop off; phone titles come from
+    unmatched file names and can only be fixed on the phone.
+    """
+    path = path or os.path.join(config.DATA_DIR, "logs", "talk_metadata_gaps.jsonl")
+    catalog, phone = {}, {}
+    try:
+        with open(path, encoding="utf-8") as handle:
+            lines = handle.readlines()
+    except OSError:
+        return {"catalog": [], "phone": []}
+    for line in lines:
+        try:
+            entry = json.loads(line)
+            key, missing, seen = entry["song"], entry["missing"], entry.get("first_seen") or ""
+        except (ValueError, KeyError, TypeError):
+            continue
+        if not isinstance(key, str) or missing not in ("artist", "title"):
+            continue
+        kind, _, rest = key.partition(":")
+        if kind == "catalog" and rest.isdecimal():
+            row = catalog.setdefault(int(rest), {"missing": [], "first_seen": seen})
+        elif kind == "filename":
+            row = phone.setdefault(rest, {"title": rest, "missing": [], "first_seen": seen})
+        else:
+            continue
+        if missing not in row["missing"]:
+            row["missing"].append(missing)
+        row["first_seen"] = min(row["first_seen"], seen) if row["first_seen"] else seen
+    open_songs = []
+    for song_id, row in sorted(catalog.items()):
+        song = database.get_song(song_id)
+        if not song:
+            continue
+        values = {"artist": (song.get("artist") or "").strip(), "title": (song.get("title") or "").strip()}
+        still = [m for m in row["missing"] if not values[m]]
+        if still:
+            open_songs.append({"song_id": song_id, "missing": still, **values,
+                               "filename": os.path.basename(song.get("filepath") or ""), "first_seen": row["first_seen"]})
+    return {"catalog": open_songs, "phone": list(phone.values())}

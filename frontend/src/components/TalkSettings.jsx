@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import * as api from "../api";
+import TalkMetadataGaps from "./TalkMetadataGaps";
 
 // Engine-neutral speech direction (backend/announcer/speech_direction.py).
 const SPEECH_FEATURES = [
@@ -616,6 +617,8 @@ function TalkSettings({ addToast, masterEnabled }) {
           Enable the talk show above to configure segments, callers, and voice settings.
         </div>
       )}
+
+      <TalkMetadataGaps addToast={addToast} />
     </div>
   );
 }

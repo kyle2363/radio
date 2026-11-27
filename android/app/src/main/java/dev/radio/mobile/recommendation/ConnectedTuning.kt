@@ -64,7 +64,9 @@ data class ConnectedTuning(
 data class ConnectedPlayed(val localId: String, val ageS: Long)
 
 /** What the desktop reports it actually used for a set (`applied` in the reply). */
-data class ConnectedApplied(val variety: Double?, val picks: Int, val similar: Int, val energy: String, val reranking: String, val pockets: String) {
+data class ConnectedApplied(val variety: Double?, val picks: Int, val similar: Int, val energy: String, val reranking: String, val pockets: String,
+    /** "on" when the desktop ranked inside the feel station, "unavailable" when it couldn't, null on older desktops. */
+    val feel: String? = null) {
     companion object {
         fun parse(raw: Any?): ConnectedApplied? {
             val m = raw as? Map<*, *> ?: return null
@@ -75,6 +77,7 @@ data class ConnectedApplied(val variety: Double?, val picks: Int, val similar: I
                 m["energy"] as? String ?: return null,
                 m["reranking"] as? String ?: return null,
                 m["pockets"] as? String ?: return null,
+                m["feel"] as? String,
             )
         }
     }

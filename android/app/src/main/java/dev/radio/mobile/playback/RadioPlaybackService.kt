@@ -81,7 +81,7 @@ class RadioPlaybackService : MediaSessionService() {
             // Connected talk asks for this gap's clip now, so the desktop has the whole song to make it.
             talk.songStarted(song)
         }
-        talk = TalkCoordinator(engine, library.radio, library.journal, getSharedPreferences("radio_talk", MODE_PRIVATE), scope)
+        talk = TalkCoordinator(engine, library.radio, library.journal, getSharedPreferences("radio_talk", MODE_PRIVATE), scope) { library.db.talk().save(it) }
         var radioRequest: Job? = null
         var radioStartToken = 0L
         fun beginStation(seedLocalId: String?, station: dev.radio.mobile.recommendation.SeedSpec?) {

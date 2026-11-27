@@ -196,7 +196,7 @@ def test_absent_tuning_is_checkpoint_4_and_reports_defaults(svc):
     assert seen[0].jitter_strength is None and seen[0].slot_counts is None and seen[0].energy_nudge is False
     assert seen[0].energy_direction == "stable" and seen[0].constellations_enabled is False
     assert reply["applied"] == {"variety": None, "picks": 5, "similar": counts_of(reply["picks"])["exploit"],
-                                "energy": "stable", "reranking": "off", "pockets": "off"}
+                                "energy": "stable", "reranking": "off", "pockets": "off", "feel": "off"}
 
 
 def test_pick_count_and_similar_reach_ranking_and_are_echoed(svc):

@@ -4175,6 +4175,13 @@ def talk_dismiss_guest():
     return {"status": "no_active_guest"}
 
 
+@app.get("/api/talk/metadata-gaps")
+def talk_metadata_gaps():
+    """Songs the phone's connected talk couldn't name; catalog songs drop off once fixed."""
+    from mobile_talk import metadata_gaps
+    return metadata_gaps()
+
+
 @app.get("/api/talk/personas")
 def talk_personas():
     """List all available personas."""

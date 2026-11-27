@@ -53,6 +53,9 @@ class ListeningJournalRepository(context: Context, private val db: LibraryDataba
     val smartListRows: Flow<List<SmartListRow>> = db.journal().observeSmartListRows()
     /** One row per actual start with outcome and context, for the Stats screen (checkpoint 8B). */
     suspend fun statsAttempts(): List<StatsAttempt> = db.journal().statsAttempts()
+    /** Connected-talk clips for the Stats Talk card (13C); separate from song history. */
+    suspend fun talkEvents(): List<LocalTalkEvent> = db.talk().all()
+    val talkEventCount: kotlinx.coroutines.flow.Flow<Int> get() = db.talk().observeCount()
     private fun submit(operation: suspend () -> Unit) {
         pending.incrementAndGet()
         mutable.update { it.copy(pendingWrites = pending.get()) }

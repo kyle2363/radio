@@ -568,3 +568,61 @@ def test_talk_turns_keep_a_talk_only_context_alive(tmp_path, engines):
     with pytest.raises(Rejected) as gone:
         service.start_turn(DEVICE, context, {**body, "turn_id": "t9", "turn_seq": 9})
     assert gone.value.status == 404
+
+
+FEELS = [{"id": "feel-calm", "name": "Calm"}, {"id": "feel-loud", "name": "Loud"}, {"id": "feel-now", "name": "Now"}]
+
+
+def test_guest_in_a_feel_station_switches_to_the_nearest_feel(talk, monkeypatch):
+    import mobile_talk
+    monkeypatch.setattr(mobile_talk._rng, "random", lambda: 0.0)
+    from announcer import personas
+    loud = {"energy_range": (0.7, 1.0), "valence_range": (0.5, 1.0)}
+    monkeypatch.setattr(personas, "get_persona", lambda pid, real=personas.get_persona:
+                        SimpleNamespace(**{**vars(real(pid)), "slot_bias": loud}) if real(pid) else None)
+    talk.feel_profile = lambda feel_id: {"feel-calm": (0.2, 0.4), "feel-loud": (0.9, 0.8), "feel-now": (0.5, 0.5)}.get(feel_id)
+    extra = {"feel": FEELS[2], "feels": FEELS}
+    turn(talk, 1, talk={**guests_only(), "guest_shift": "often"}, **extra)
+    intro = talk.job(DEVICE, turn(talk, 2, talk={**guests_only(), "guest_shift": "often"}, **extra)["job_id"])
+    assert intro["segment_type"] == "guest_takeover_intro"
+    assert intro["shift"] == {"mood": None, "feel": "feel-loud", "restore_at_end": True}
+
+
+def test_guest_in_plain_radio_still_changes_mood_only(talk, monkeypatch):
+    import mobile_talk
+    monkeypatch.setattr(mobile_talk._rng, "random", lambda: 0.0)
+    talk.feel_profile = lambda feel_id: (0.9, 0.9)
+    turn(talk, 1, talk={**guests_only(), "guest_shift": "often"}, feels=FEELS)
+    intro = talk.job(DEVICE, turn(talk, 2, talk={**guests_only(), "guest_shift": "often"}, feels=FEELS)["job_id"])
+    assert intro["shift"] is None or intro["shift"]["feel"] is None
+
+
+def test_guest_slot_bias_follows_the_committed_set(talk):
+    assert talk.guest_slot_bias(DEVICE, CONTEXT) is None
+    turn(talk, 1, talk=guests_only())
+    job = turn(talk, 2, talk=guests_only())["job_id"]
+    info = talk.job(DEVICE, job)
+    assert info["segment_type"] == "guest_takeover_intro"
+    outcome(talk, job, "played")
+    from announcer.personas import get_persona
+    assert talk.guest_slot_bias(DEVICE, CONTEXT) == (get_persona(info["guest_set"]["persona"]).slot_bias or None)
+    assert talk.guest_slot_bias("someone-else", CONTEXT) is None
+
+
+def test_metadata_gaps_list_open_catalog_songs_and_phone_titles(tmp_path):
+    log = tmp_path / "gaps.jsonl"
+    with database.get_connection_cm() as conn:
+        conn.execute("UPDATE songs SET artist=NULL, title='Known' WHERE id=3")
+        conn.execute("UPDATE songs SET artist='Fixed', title='Fixed' WHERE id=4")
+        conn.commit()
+    lines = [{"song": "catalog:3", "missing": "artist", "first_seen": "2026-11-20T10:00:00"},
+             {"song": "catalog:4", "missing": "title", "first_seen": "2026-11-20T10:00:00"},
+             {"song": "catalog:999", "missing": "title", "first_seen": "2026-11-20T10:00:00"},
+             {"song": "filename:", "missing": "title", "first_seen": "2026-11-21T10:00:00"},
+             "not json"]
+    log.write_text("\n".join(json.dumps(l) if isinstance(l, dict) else l for l in lines) + "\n", encoding="utf-8")
+    gaps = mobile_talk.metadata_gaps(str(log))
+    assert gaps["catalog"] == [{"song_id": 3, "missing": ["artist"], "artist": "", "title": "Known",
+                                "filename": "3.wav", "first_seen": "2026-11-20T10:00:00"}]
+    assert gaps["phone"] == [{"title": "", "missing": ["title"], "first_seen": "2026-11-21T10:00:00"}]
+    assert mobile_talk.metadata_gaps(str(tmp_path / "absent.jsonl")) == {"catalog": [], "phone": []}
