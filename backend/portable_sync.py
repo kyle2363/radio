@@ -28,6 +28,7 @@ KINDS = frozenset({"song_started", "song_completed", "song_skipped", "song_repla
 FEEL_KINDS = frozenset({"feel_defined", "feel_rated", "feel_compared"})
 PLAYLIST_KINDS = frozenset({"playlist_renamed", "playlist_deleted", "playlist_member_changed"})
 # Additive (checkpoint 7A); checked on every start so existing stores upgrade.
+# deleted: 0 linked, 1 deleted, 2 unshared on the desktop (identity kept for a later share).
 _PLAYLIST_SCHEMA = """
 CREATE TABLE IF NOT EXISTS portable_playlists(playlist_id TEXT PRIMARY KEY,collection_id INTEGER,
  deleted INTEGER NOT NULL DEFAULT 0);
@@ -483,7 +484,9 @@ class PortableProfileStore:
         if state["deleted"]:
             conn.execute("INSERT OR REPLACE INTO portable_playlists VALUES (?,NULL,1)", (pid,))
             return
-        link = conn.execute("SELECT collection_id FROM portable_playlists WHERE playlist_id=?", (pid,)).fetchone()
+        link = conn.execute("SELECT collection_id,deleted FROM portable_playlists WHERE playlist_id=?", (pid,)).fetchone()
+        if link and link[1] == 2:
+            return  # Unshared on the desktop: the phone's edits stay in the registers only.
         cid = link[0] if link else None
         if cid is not None and not conn.execute("SELECT 1 FROM collections WHERE id=?", (cid,)).fetchone():
             cid = None
@@ -531,13 +534,30 @@ class PortableProfileStore:
         with self.transaction() as conn:
             if not conn.execute("SELECT 1 FROM collections WHERE id=?", (collection_id,)).fetchone():
                 raise ValueError("Collection is missing")
-            row = conn.execute("SELECT playlist_id FROM portable_playlists WHERE collection_id=? AND deleted=0",
+            row = conn.execute("SELECT playlist_id,deleted FROM portable_playlists WHERE collection_id=? AND deleted!=1",
                                (collection_id,)).fetchone()
             if row:
+                if row[1] == 2:
+                    # Sharing again keeps the playlist id; the next capture exports the desktop's copy.
+                    conn.execute("UPDATE portable_playlists SET deleted=0 WHERE playlist_id=?", (row[0],))
                 return row[0]
             pid = str(uuid4())
             conn.execute("INSERT INTO portable_playlists VALUES (?,?,0)", (pid, collection_id))
             return pid
+
+    def unshare_collection(self, collection_id):
+        """Stop syncing a desktop collection here. Phones keep their copy; nothing is deleted."""
+        with self.transaction() as conn:
+            conn.execute("UPDATE portable_playlists SET deleted=2 WHERE collection_id=? AND deleted=0", (collection_id,))
+
+    @staticmethod
+    def shared_collection_ids():
+        """Desktop collections currently synced with phones. Reads only; never installs the schema."""
+        with database.get_connection_cm() as conn:
+            if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='portable_playlists'").fetchone():
+                return set()
+            return {row[0] for row in conn.execute(
+                "SELECT collection_id FROM portable_playlists WHERE deleted=0 AND collection_id IS NOT NULL")}
 
     def _capture_playlists(self, conn, clock):
         catalog_id = None

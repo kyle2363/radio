@@ -212,6 +212,7 @@ export const fetchCollectionSongs = (id) => get(`/api/collections/${id}/songs`);
 export const addToCollection = (id, song_id, position) => post(`/api/collections/${id}/songs`, { song_id, position });
 export const removeFromCollection = (id, song_id) => del(`/api/collections/${id}/songs/${song_id}`);
 export const reorderCollection = (id, song_ids) => put(`/api/collections/${id}/reorder`, { song_ids });
+export const setCollectionSync = (id, enabled) => put(`/api/collections/${id}/sync`, { enabled });
 
 // ── Taste Reseed ─────────────────────────────────────────
 export const reseedTaste = () => post("/api/taste/reseed");

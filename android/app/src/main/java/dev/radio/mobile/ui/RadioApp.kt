@@ -105,7 +105,7 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
     LaunchedEffect(pairing,discovery) { pairing.load(); discovery.load() }
     DisposableEffect(repository, lifecycle, discovery) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) { repository.checkAccess(); lifecycleScope.launch { pairing.load(); discovery.load(); discovery.readOnResume() } }
+            if (event == Lifecycle.Event.ON_RESUME) { repository.checkAccess(); lifecycleScope.launch { pairing.load(); discovery.load(); discovery.readOnResume(); syncOnOpen(appContext, pairing, discovery) } }
             if (event == Lifecycle.Event.ON_STOP && activity?.isChangingConfigurations != true) repository.loudness.pauseAnalysis()
         }
         lifecycle.lifecycle.addObserver(observer)

@@ -76,9 +76,9 @@ export default function CollectionsList({ onSelect }) {
           style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", marginBottom: 4, borderRadius: 6, cursor: "pointer", background: "var(--bg-surface)", border: "1px solid var(--border-subtle)" }}>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.name}</div>
-            {(c.description || c.song_count > 0) && (
+            {(c.description || c.song_count > 0 || c.synced) && (
               <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 1 }}>
-                {c.description ? `${c.description} · ` : ""}{c.song_count} song{c.song_count !== 1 ? "s" : ""}
+                {c.description ? `${c.description} · ` : ""}{c.song_count} song{c.song_count !== 1 ? "s" : ""}{c.synced ? " · on phone" : ""}
               </div>
             )}
           </div>

@@ -334,6 +334,10 @@ class CollectionReorderRequest(BaseModel):
     song_ids: list[int]
 
 
+class CollectionSyncRequest(BaseModel):
+    enabled: bool
+
+
 class TagsRequest(BaseModel):
     user_tags: list | None = None
     user_notes: str | None = None
@@ -1763,8 +1767,23 @@ def library_delete_all_orphaned(expected_count: int | None = Query(None)):
 
 @app.get("/api/collections")
 def list_collections():
-    """List all collections."""
-    return {"collections": database.get_collections()}
+    """List all collections, each marked when it syncs with phones."""
+    shared = PortableProfileStore.shared_collection_ids()
+    return {"collections": [{**c, "synced": c["id"] in shared} for c in database.get_collections()]}
+
+
+@app.put("/api/collections/{collection_id:int}/sync")
+def set_collection_sync(collection_id: int, req: CollectionSyncRequest):
+    """Share a collection with paired phones, or stop syncing it here (phones keep their copy)."""
+    store = PortableProfileStore()
+    if req.enabled:
+        try:
+            playlist_id = store.share_collection(collection_id)
+        except ValueError:
+            raise HTTPException(404, "Collection not found")
+        return {"synced": True, "playlist_id": playlist_id}
+    store.unshare_collection(collection_id)
+    return {"synced": False}
 
 
 @app.post("/api/collections")

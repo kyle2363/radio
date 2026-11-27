@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { ArrowLeft, Trash2, Search, Edit3, Check, X } from "lucide-react";
+import { ArrowLeft, Trash2, Search, Edit3, Check, X, Smartphone } from "lucide-react";
 import * as api from "../api";
 import { completionPercent, songSearchParams } from "./collectionDetailHelpers";
 
@@ -19,6 +19,8 @@ export default function CollectionDetail({ collection, onBack, addToast }) {
   const [editing, setEditing] = useState(false);
   const [editName, setEditName] = useState("");
   const [editDesc, setEditDesc] = useState("");
+  const [synced, setSynced] = useState(Boolean(collection.synced));
+  const [syncBusy, setSyncBusy] = useState(false);
 
   const loadSongs = useCallback(async () => {
     const requestId = ++songsRequestId.current;
@@ -109,6 +111,23 @@ export default function CollectionDetail({ collection, onBack, addToast }) {
     }
   };
 
+  const toggleSync = async () => {
+    const next = !synced;
+    setSyncBusy(true);
+    try {
+      await api.setCollectionSync(collection.id, next);
+      setSynced(next);
+      collection.synced = next;
+      addToast?.(next
+        ? "Shared with your phone. Sync now on the phone, then add it under From your desktop."
+        : "No longer synced. Your phone keeps its copy.", "success");
+    } catch (e) {
+      addToast?.(e.message || "Failed to change phone sync", "error");
+    } finally {
+      setSyncBusy(false);
+    }
+  };
+
   const cancelEdit = () => {
     setEditing(false);
   };
@@ -156,6 +175,13 @@ export default function CollectionDetail({ collection, onBack, addToast }) {
           </button>
         )}
         <div style={{ flex: 1 }} />
+        <button onClick={toggleSync} disabled={syncBusy} aria-pressed={synced}
+          title={synced ? "Stop syncing with your phone (it keeps its copy)" : "Sync this collection with your paired phone"}
+          style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 10, padding: "2px 8px", borderRadius: 4, cursor: "pointer",
+            background: synced ? "var(--accent-muted)" : "var(--bg-elevated)", border: "1px solid var(--border)",
+            color: synced ? "var(--accent)" : "var(--text-muted)", opacity: syncBusy ? 0.6 : 1 }}>
+          <Smartphone size={10} /> {synced ? "Synced to phone" : "Sync to phone"}
+        </button>
         <span style={{ fontSize: 10, color: "var(--text-muted)", padding: "2px 6px", borderRadius: 3, background: "var(--bg-elevated)" }}>{songs.length} song{songs.length !== 1 ? "s" : ""}</span>
       </div>
 
