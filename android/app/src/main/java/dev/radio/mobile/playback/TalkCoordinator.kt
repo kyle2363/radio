@@ -146,7 +146,9 @@ internal class TalkCoordinator(
             val info = withContext(Dispatchers.IO) { radio.talk.await(pending.jobId) { stillInGap(song.id, next) } }
                 ?: run { radio.setTalkStatus("No talk this time"); return }
             val clip = withContext(Dispatchers.IO) { radio.talk.download(info) } ?: run { radio.setTalkStatus("Talk clip didn't arrive in time"); return }
-            val ok = withContext(Dispatchers.Main.immediate) { stillInGap(song.id, next) && engine.insertTalk(clip, song.id, next) }
+            val ok = withContext(Dispatchers.Main.immediate) {
+                stillInGap(song.id, next) && slowed?.accepts(clip.info, song.id) != false && engine.insertTalk(clip, song.id, next)
+            }
             if (!ok) { radio.talkCache.delete(clip); radio.setTalkStatus("Missed the gap; music continues"); return }
             inserted += clip.info.jobId
             handedOff = true

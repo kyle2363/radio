@@ -141,6 +141,41 @@ class SlowedRadioTest {
         assertEquals("other:device", bank.state.value.serverKey)
     }
 
+    @Test fun lineRetiredWhilePlayingIsNeverChosenAgainAndItsFileGoesLater() = runBlocking {
+        val bank = radio.slowedBank
+        val playing = desktop.add("guest_undertow", SlowedKinds.OPENER_AUTO, "slowed")
+        val other = desktop.add("guest_undertow", SlowedKinds.OPENER_AUTO, "slowed")
+        assertTrue(bank.sync())
+        bank.inUse = { it.name == "$playing.m4a" }
+        desktop.retire(playing)
+        assertTrue(bank.sync())
+        assertEquals(listOf(other), bank.state.value.lines.map { it.id })
+        assertTrue("the playing file stays for now", File(bankDir, "$playing.m4a").exists())
+        repeat(20) { assertEquals(other, SlowedBankPolicy.choose(bank.state.value.lines, emptyMap(), SlowedGuest.UNDERTOW, SlowedMoment.OPENER, SlowedPreset.SLOWED, false)!!.id) }
+        bank.inUse = { false }
+        assertTrue(bank.sync())
+        assertFalse(File(bankDir, "$playing.m4a").exists())
+    }
+
+    @Test fun turningSlowedOffDropsAQueuedOpener() {
+        prepareSlowed()
+        radio.setSlowedSettings(SlowedSettings(enabled = true, frequency = SlowedFrequency.OFTEN, presets = setOf(SlowedPreset.SLOWED)))
+        val engine = startPlayer(Lucky)
+        main { engine.beginRadio(listOf(song("long1"), song("long2"), song("short1"))) }
+        await("Radio didn't start") { engine.state.value.isPlaying && engine.state.value.currentId == "long1" && engine.state.value.durationMs != null }
+        main { slowed!!.songStarted(song("long1")) }
+        await("Bank opener not queued") { engine.state.value.talk?.info?.slowed?.moment == "opener" }
+        radio.setSlowedSettings(SlowedSettings(enabled = false))
+        await("Queued opener still there") { engine.state.value.talk == null }
+        // A live opener the desktop finishes afterwards is refused.
+        val late = TalkClipInfo("job-aaaaaaaaaaaaaaaaaaaa", "talk", "slowed_opener", "x", emptyList(), emptyList(), 1000, null, null,
+            TalkResource("resource-aaaaaaaaaaaaaaaa", "0".repeat(64), 1, 0), TalkSlowed("opener", "slowed", "guest_undertow", bank = false))
+        var accepted = true
+        main { accepted = slowed!!.accepts(late, "long1") }
+        assertFalse(accepted)
+        assertFalse(slowed!!.state.value.running)
+    }
+
     private fun parameters(): PlaybackParameters {
         if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) return controller!!.sessionPlayer.playbackParameters
         var value = PlaybackParameters.DEFAULT; main { value = controller!!.sessionPlayer.playbackParameters }; return value

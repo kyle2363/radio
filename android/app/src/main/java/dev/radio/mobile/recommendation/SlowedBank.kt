@@ -75,6 +75,7 @@ class SlowedBank(val dir: File, private val link: ConnectedServerLink, private v
     private fun clearLocked(key: String?) {
         dir.listFiles()?.forEach { if (it.name != index.name) it.delete() }
         synchronized(plays) { plays.clear() }
+        deferred.clear()
         mutable.value = SlowedBankState(serverKey = key)
         save(mutable.value)
     }
@@ -90,6 +91,7 @@ class SlowedBank(val dir: File, private val link: ConnectedServerLink, private v
             if (access.talk?.slowed != true) { mutable.value = mutable.value.copy(syncing = false, error = "This desktop doesn't voice Slowed lines"); return@withLock false }
             if (mutable.value.serverKey != access.key) clearLocked(access.key)
             reportPlays()
+            deleteDeferred()
             val since = mutable.value.revision
             val response = link.post("/talk/slowed-lines", ConnectedJson.write(linkedMapOf("protocol_version" to 1, "since" to since)))
             if (response.status != 200) { mutable.value = mutable.value.copy(syncing = false, error = "HTTP ${response.status}"); return@withLock false }
@@ -97,9 +99,9 @@ class SlowedBank(val dir: File, private val link: ConnectedServerLink, private v
             var lines = mutable.value.lines.associateBy { it.id }.toMutableMap()
             val gone = if (manifest.full) lines.keys - manifest.lines.map { it.id }.toSet() else manifest.retired.toSet()
             for (id in gone) {
-                val line = lines[id] ?: continue
-                if (inUse(file(line))) continue
-                file(line).delete(); lines.remove(id)
+                val line = lines.remove(id) ?: continue
+                // Never selectable again; a file that is playing right now is deleted on a later sync.
+                if (inUse(file(line))) deferred += line.id else file(line).delete()
             }
             val budget = if (metered()) SlowedBankPolicy.METERED_BYTES_PER_SYNC else null
             val wanted = SlowedBankPolicy.toDownload(manifest.lines, lines, lines.values.sumOf { it.bytes.toLong() }, budget)
@@ -118,6 +120,18 @@ class SlowedBank(val dir: File, private val link: ConnectedServerLink, private v
         } catch (cancelled: CancellationException) { mutable.value = mutable.value.copy(syncing = false); throw cancelled }
         catch (failure: Exception) { mutable.value = mutable.value.copy(syncing = false, error = "Can't reach the desktop"); false }
     }
+
+    /** Files of retired lines that were playing when they were retired. */
+    private val deferred = HashSet<String>().apply { addAll(loadDeferred()) }
+
+    private fun deleteDeferred() {
+        val done = deferred.filter { id -> File(dir, "$id.m4a").let { f -> !inUse(f) && (!f.exists() || f.delete()) } }
+        deferred.removeAll(done.toSet())
+    }
+
+    private fun loadDeferred(): List<String> = runCatching {
+        JSONObject(index.readText()).optJSONArray("deferred")?.let { a -> (0 until a.length()).map(a::getString) }.orEmpty()
+    }.getOrDefault(emptyList())
 
     private suspend fun download(line: SlowedLine): Boolean {
         val response = link.download("/talk/slowed-lines/${line.id}", TalkClipInfo.MAX_BYTES)
@@ -177,6 +191,7 @@ class SlowedBank(val dir: File, private val link: ConnectedServerLink, private v
                 .put("lines", JSONArray(state.lines.map { l -> JSONObject().put("id", l.id).put("guest", l.guest).put("kind", l.kind).put("preset", l.preset ?: "")
                     .put("sha256", l.sha256).put("bytes", l.bytes).put("duration_ms", l.durationMs).put("created", l.created).put("last_played", l.lastPlayed).put("plays", l.plays) }))
                 .put("recent", JSONObject(state.recent.mapValues { JSONArray(it.value) }))
+                .put("deferred", JSONArray(synchronized(deferred) { deferred.toList() }))
             val temp = File(dir, "index.json.part")
             temp.writeText(root.toString())
             if (!temp.renameTo(index)) { index.delete(); temp.renameTo(index) }

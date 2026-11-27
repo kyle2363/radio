@@ -232,14 +232,28 @@ def _parse_lines(raw):
     return [clean(line) for line in lines if isinstance(line, str)] if isinstance(lines, list) else []
 
 
+CLONE_ENGINES = ("omnivoice", "zonos3")
+
+
+def clone_ready():
+    """The active engine clones voices and is loaded. Slowed lines are never voiced by the Piper fallback: it doesn't
+    know the guests' voices, and a stored line must sound like the guest."""
+    try:
+        from announcer import voice_manager
+        engine_id, engine = voice_manager.get_voice_manager().get_active_engine()
+        return engine_id in CLONE_ENGINES and bool(engine.is_ready())
+    except Exception:                                      # noqa: BLE001
+        return False
+
+
 def voice(text, guest_id, *, mood_state="chill"):
     """Speak [text] with the guest's own voice and speed (same path as guest intros). Returns a WAV path or None."""
     from announcer import speech_direction
     from announcer.personas import get_persona
-    from announcer.tts import tts_say
     guest = get_persona(guest_id)
-    if guest is None:
+    if guest is None or not clone_ready():
         return None
+    from announcer.tts import tts_say
     spoken = speech_direction.prepare_line(text, rng=random, mark_probability=0.2)
     direction = speech_direction.direction_for_line(None, mood_state=mood_state, persona_id=guest.id, context={})
     return tts_say(spoken, voice_id=guest.voice_id, speed=guest.speed_base, direction=direction)
@@ -535,6 +549,7 @@ class SlowedLineWorker:
         for _ in range(MAX_BATCHES_PER_GAP):
             if added >= missing or not self.idle():
                 break
+            before = added
             existing = self.bank.texts(guest_id, kind, preset)
             prompt = BANK_PROMPT.format(
                 guest_name=guest.name, guest_personality=guest.personality, count=min(MAX_BATCH, missing - added + 2),
@@ -563,7 +578,11 @@ class SlowedLineWorker:
                     continue
                 self.bank.add(guest_id, kind, preset, text, wav)
                 added += 1
-        return added > 0 or len(gaps) > 1
+            if added == before:
+                # An empty or useless batch, or nothing could be voiced: another try now would only compete with talk.
+                break
+        # Nothing voiced (engine not ready, every line rejected): wait for the next poll instead of retrying at once.
+        return added > 0
 
 
 class _Gate:
@@ -581,7 +600,9 @@ class _Gate:
 
 
 def default_idle():
-    """No connected-talk turn generating and no ingest running."""
+    """The voice-cloning engine is ready, no connected-talk turn is generating and no ingest is running."""
+    if not clone_ready():
+        return False
     try:
         import mobile_talk
         if mobile_talk.GENERATING.locked():

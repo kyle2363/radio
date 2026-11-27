@@ -289,3 +289,42 @@ def test_gateway_slowed_routes(tmp_path, engines):  # noqa: F811
     assert denied.status_code == 403
     anonymous = request(app, "GET", prefix + f"/talk/slowed-lines/{ids[1]}", {}, None)
     assert anonymous.status_code == 401
+
+
+def test_worker_backs_off_when_no_line_could_be_voiced(bank, tmp_path):
+    calls = []
+    worker = SlowedLineWorker(bank, idle=lambda: True, chat=lambda p: calls.append(p) or good_lines("opener_auto"),
+                              speak=lambda text, guest: None, names=set())
+    # Many gaps remain, but nothing was voiced: the worker must wait, not retry at once.
+    assert worker.fill_once() is False
+    assert bank.stats()["lines"] == 0 and len(calls) == 1
+
+
+def test_slowed_lines_are_never_voiced_by_the_piper_fallback(monkeypatch):
+    from announcer import voice_manager
+    spoken = []
+
+    class Engine:
+        def __init__(self, ready): self.ready = ready
+        def is_ready(self): return self.ready
+
+    class Manager:
+        def __init__(self, engine_id, ready): self.value = (engine_id, Engine(ready))
+        def get_active_engine(self): return self.value
+    import announcer.tts as tts
+    monkeypatch.setattr(tts, "tts_say", lambda *a, **k: spoken.append(a) or "x.wav")
+    for engine_id, ready in (("zonos3", False), ("piper", True)):
+        monkeypatch.setattr(voice_manager, "get_voice_manager", lambda e=engine_id, r=ready: Manager(e, r))
+        assert slowed.voice("Let it all slow down now", "guest_undertow") is None
+    monkeypatch.setattr(voice_manager, "get_voice_manager", lambda: Manager("omnivoice", True))
+    assert slowed.voice("Let it all slow down now", "guest_undertow") == "x.wav"
+    assert len(spoken) == 1
+
+
+def test_empty_model_reply_is_one_call_and_no_success(bank):
+    calls = []
+    worker = SlowedLineWorker(bank, idle=lambda: True, chat=lambda p: calls.append(p) or '{"lines": []}',
+                              speak=lambda text, guest: "never", names=set())
+    assert len(bank.gaps()) > 1
+    assert worker.fill_once() is False
+    assert len(calls) == 1

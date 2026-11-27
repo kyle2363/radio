@@ -150,6 +150,16 @@ internal class SlowedCoordinator(
         return request?.toWire() to (set?.committed == true)
     }
 
+    /**
+     * Whether a live clip may go into the gap after [afterId]. A Slowed line is accepted only while this gap still waits
+     * for exactly that line (Slowed may have been turned off, or the set ended, while the desktop was writing it).
+     */
+    fun accepts(info: TalkClipInfo, afterId: String): Boolean {
+        val line = info.slowed ?: return true
+        val request = pending?.takeIf { pendingAfter == afterId } ?: return false
+        return request.moment.wire == line.moment && radio.slowedSettings.value.enabled && radio.talkSettings.value.enabled
+    }
+
     /** A gap waiting for a Slowed line skips a normal turn when the desktop can't voice one, so the bank line fits. */
     fun reservesGap(songId: String) = pendingAfter == songId && pending != null
 
@@ -299,6 +309,9 @@ internal class SlowedCoordinator(
 
     /** Leaving Radio stops it immediately and silently. */
     fun stopSilently() {
+        // A queued Slowed line would announce a slowdown that no longer happens.
+        val queued = engine.state.value.talk
+        if (queued != null && !queued.current && queued.info.slowed != null) engine.removeTalk()
         if (set == null && pending == null && effected.isEmpty()) return
         fallback?.cancel(); fallback = null
         set = null; pending = null; pendingAfter = null
