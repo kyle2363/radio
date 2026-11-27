@@ -113,7 +113,7 @@ The older local handoff listed disconnect/reclaim/handoff/tab-identity review fi
 
 ### Deferred OmniVoice cold-start investigation
 
-Recorded October 31 as future work only: initial OmniVoice requests reportedly time out and fall back to Piper, while later requests work. Model loading consuming the synthesis timeout is an unconfirmed hypothesis. Investigate readiness/loading separately from inference timeout, or warm-up before the first announcement, then verify cold startup and subsequent requests with TTS enabled. This note does not authorize implementation.
+Recorded October 31: initial OmniVoice requests timed out and fell back to Piper, while later requests worked. Fixed November 27, 2026 (`finish-open-items`): `OmniVoiceTTSEngine.prepare()` loads the model under its own limit (`LOAD_TIMEOUT`, 300 s) before `VoiceManager` starts the speech timeout, a failed load falls back to Piper explicitly, and startup warms OmniVoice in the background when it is the active engine (`omnivoice_warm_up` seed row, default `true`). Regressions: `tests/test_omnivoice_timeout.py`. Still to verify by hand: a cold start with TTS on, then the first announcement in OmniVoice's voice.
 
 ### Ingest recovery checks (November 1)
 

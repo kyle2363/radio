@@ -6,7 +6,7 @@ An AI-driven radio station for a personal MP3 library. Three surfaces share this
 - **Desktop** — React/Vite UI in an Electron shell, with selectable server-side VLC or browser-owned audio.
 - **Android** — a native Kotlin/Compose app that plays the phone's local music independently of the server and is the active development focus.
 
-Android playback remains local and independent. Checkpoints 1A–1C implement USB pairing, secure credential handling, catalog import/content matching, and separate Server/Matching screens. Accepted checkpoint 2A adds the local journal, feedback and Replay. Checkpoint 2B adds offline Radio, bounded service refill, local learning and Vibe lock; accepted November 3, 2026. Checkpoints 2C manual profile sync and 3A secure remote hosting are implemented, verified and phone-accepted. Checkpoint 3B automatic discovery is phone-accepted. Checkpoints 2C–3B are merged into `main` (November 7, 2026). Checkpoint 4 connected recommendations (`docs/CONNECTED_RECOMMENDATIONS_PLAN.md`) and checkpoint 4.1 phone-only connected tuning (`docs/CONNECTED_TUNING_PLAN.md`) are merged into `main`; 4.1 was phone-accepted November 7, 2026. Checkpoint 4.2 Radio mode redesign was phone-accepted, fully verified and merged into `main` November 11, 2026 (`f676e83`; `docs/RADIO_REDESIGN_PLAN.md`). Checkpoint 5 plain lyrics is merged into `main` (November 14, 2026, `5a35dad`; `docs/ANDROID_LYRICS_PLAN.md`). Checkpoint 6 visual redesign was phone-accepted November 17, 2026 and is merged. Checkpoints 9A–9C (shared feel rules, personal feels, feel sprint, this-or-that rankings, feel stations) were phone-accepted and merged into `main` November 18, 2026. 9D–9E (desktop Feels panel, feel stations, suggestions, review, feel history) are implemented on `desktop-9d-9e`. Checkpoint 7 (playlist sync, sync on open) is planned in `docs/CHECKPOINT_7_PLAN.md`; checkpoints 8–11 (listening context and stats, personal feel, polish, daily use; performance checkpoint 12 dropped) in `docs/CHECKPOINT_8_PLAN.md`. Checkpoint 13 connected talk (desktop DJ and talk show in the phone's connected Radio): 13A–13B are implemented on `connected-talk-13` (`docs/CONNECTED_TALK_PLAN.md`); 13C is planned; 13D (talk in offline Radio and feel stations without Desktop picks, subtle desktop chip) is implemented on `talk-offline-radio`. See `docs/ANDROID_APP_PLAN.md`, `docs/MOBILE_SYNC.md` and `docs/MOBILE_CONNECTION_PLAN.md`.
+Android playback remains local and independent. Checkpoints 1A–1C implement USB pairing, secure credential handling, catalog import/content matching, and separate Server/Matching screens. Accepted checkpoint 2A adds the local journal, feedback and Replay. Checkpoint 2B adds offline Radio, bounded service refill, local learning and Vibe lock; accepted November 3, 2026. Checkpoints 2C manual profile sync and 3A secure remote hosting are implemented, verified and phone-accepted. Checkpoint 3B automatic discovery is phone-accepted. Checkpoints 2C–3B are merged into `main` (November 7, 2026). Checkpoint 4 connected recommendations (`docs/CONNECTED_RECOMMENDATIONS_PLAN.md`) and checkpoint 4.1 phone-only connected tuning (`docs/CONNECTED_TUNING_PLAN.md`) are merged into `main`; 4.1 was phone-accepted November 7, 2026. Checkpoint 4.2 Radio mode redesign was phone-accepted, fully verified and merged into `main` November 11, 2026 (`f676e83`; `docs/RADIO_REDESIGN_PLAN.md`). Checkpoint 5 plain lyrics is merged into `main` (November 14, 2026, `5a35dad`; `docs/ANDROID_LYRICS_PLAN.md`). Checkpoint 6 visual redesign was phone-accepted November 17, 2026 and is merged. Checkpoints 9A–9C (shared feel rules, personal feels, feel sprint, this-or-that rankings, feel stations) were phone-accepted and merged into `main` November 18, 2026. All feature branches through `talk-offline-radio` and `android-player-surfaces` are merged into `main` (November 27, 2026): 7A playlist sync, 8C–11, 9D–9E, 13A–13D and the November 25 polish. Branch `finish-open-items` (November 27, 2026) finishes checkpoint 7 (desktop Sync to phone, sync on open) and 13C (feel-aware Desktop picks, guest feel changes and slot bias, talk stats in Room v14, desktop metadata-gaps view) and fixes the OmniVoice cold start; awaiting phone test. Plans: `docs/CHECKPOINT_7_PLAN.md`, `docs/CHECKPOINT_8_PLAN.md` (8–11; performance checkpoint 12 dropped), `docs/CONNECTED_TALK_PLAN.md`. See `docs/ANDROID_APP_PLAN.md`, `docs/MOBILE_SYNC.md` and `docs/MOBILE_CONNECTION_PLAN.md`.
 
 ## Quick Start
 
@@ -50,7 +50,7 @@ Neither llama.cpp nor acestep is bundled. If you already run Ollama, select the 
 
 ## Repository Workflow
 
-- Integration target: `main`; Android checkpoints through 5 are merged (November 14, 2026). Use separate branches for subsequent work.
+- Integration target: `main`; all checkpoint branches through the November 25 polish are merged (November 27, 2026). Use separate branches for subsequent work.
 - Do not commit, rebase, or discard user changes without asking
 - `docs/ANDROID_APP_PLAN.md` is the Android checkpoint log; this file is the stable map
 - Generated media, caches, and test output stay in `.test-runtime/`
@@ -117,7 +117,7 @@ Catalog/matching, local offline Radio, manual profile sync, connected recommenda
 | Desktop audio | python-vlc (media list, gapless chaining) + browser audio engine |
 | Android UI | Kotlin 2.4.21, Jetpack Compose (BOM 2026.09.00; 2026.11+ needs SDK platform 37.1), Material 3, lifecycle 2.11.1 |
 | Android audio | Media3 ExoPlayer/Session 1.11.1 |
-| Android storage | Room 2.8.5 (schema v13), SharedPreferences for shell prefs |
+| Android storage | Room 2.8.5 (schema v14), SharedPreferences for shell prefs |
 | Android build | AGP 9.5.3, KSP 2.3.14, minSdk 35, compile/target 37, Java 11 |
 | Audio analysis | librosa + mutagen (library-wide normalization) |
 | LLM chat | Ollama or OpenAI-compatible, auto-fallback |
@@ -137,7 +137,7 @@ radio/
 │   ├── app/src/main/java/dev/radio/mobile/
 │   │   ├── MainActivity.kt   # Entry activity, notification intent
 │   │   ├── connection/       # Pairing, discovery, API client, endpoint and signature policy
-│   │   ├── data/             # Room v13, repositories, journal/sync, lyrics cache, playlists, snapshots
+│   │   ├── data/             # Room v14, repositories, journal/sync, lyrics cache, playlists, snapshots, talk stats
 │   │   ├── music/            # Scanner, ordering, BS.1770 loudness
 │   │   ├── playback/         # Media3 service, controller, normalization, sleep
 │   │   ├── portable/         # Catalog import/validation, matching, sync policy
@@ -145,7 +145,7 @@ radio/
 │   │   └── ui/               # Compose screens, queue, player, settings, theme
 │   ├── app/src/test/         # JVM unit tests
 │   ├── app/src/androidTest/  # Instrumented tests + fixture providers
-│   └── app/schemas/          # Exported Room schemas v1–v13
+│   └── app/schemas/          # Exported Room schemas v1–v14
 │
 ├── backend/
 │   ├── main.py               # FastAPI entry (~4,800 lines, ~156 routes + 1 WS)
@@ -300,7 +300,7 @@ The manifest includes `INTERNET`, foreground media playback, and wake lock permi
 | Package | Responsibility |
 |---|---|
 | `connection/` | `PairingRepository`, `DiscoveryRepository`, `RadioApiClient`, `PairedServerStore`, `ConnectionSecurity` (endpoint policy, signed descriptors) |
-| `data/` | Room v13, `LibraryRepository`, `ListeningJournalRepository`, `PortableSyncRepository`, `LyricsRepository`, `LoudnessRepository`, `PlaybackSnapshotStore`, `Playlists` |
+| `data/` | Room v14, `LibraryRepository`, `ListeningJournalRepository`, `PortableSyncRepository`, `LyricsRepository`, `LoudnessRepository`, `PlaybackSnapshotStore`, `Playlists` |
 | `portable/` | `CatalogRepository`, `CatalogValidator`, `MatchingRepository`, `ConservativeMatcher`, `PortableSyncPolicy` |
 | `recommendation/` | `OfflineRecommender`, `RadioRepository`, `ConnectedRadioSource`, `ConnectedPolicy`, `ConnectedTuning`, `StationPolicy`, `SharedRadioProfile` |
 | `music/` | `LocalMusicScanner`, `LibraryOrdering`, `LoudnessMeter`, `LocalLoudnessAnalyzer` |
@@ -320,7 +320,7 @@ Migration tests replay every exported schema and assert library, playlists, hist
 - Recursive, read-only scans; same-named recordings keep distinct identities
 - Filename-derived labels until server matching exists
 - Sort: modified (newest default), oldest, first seen, title, filename, duration; remembered per view
-- Explicit migrations `v1→…→v12→v13`; no destructive fallback
+- Explicit migrations `v1→…→v13→v14`; no destructive fallback
 
 ### Playback service
 
@@ -360,7 +360,7 @@ Implemented: local scan/playback, background/lock-screen control, paused restora
 
 Checkpoint 4 connected recommendations and 4.1 connected tuning are merged into `main`; checkpoint 4.2 desktop-first refill and Radio mode redesign are phone-accepted and merged November 11, 2026.
 
-Checkpoint 5 adds plain lyrics from prepared desktop catalogs and a private offline cache; merged into `main` November 14, 2026. Checkpoint 6 visual redesign is phone-accepted. Not implemented: automatic sync, synchronized lyrics, statistics, speech, crossfade, and downloads.
+Checkpoint 5 adds plain lyrics from prepared desktop catalogs and a private offline cache; merged into `main` November 14, 2026. Checkpoint 6 visual redesign is phone-accepted. Stats (8A–8C), crossfade and connected talk (desktop voices) are implemented. Deliberately deferred: background sync (sync on open is foreground only), synchronized lyrics on the phone, on-phone speech, downloads, DJ effects on the phone and direct LAN hosting.
 
 | Increment | Deliverable | State |
 |---|---|---|
@@ -375,14 +375,14 @@ Checkpoint 5 adds plain lyrics from prepared desktop catalogs and a private offl
 | 4.2 | Radio mode redesign (station surface, End/New mix/Not for me, missing states) | Phone-accepted, fully verified and merged November 11, 2026 |
 | 5 | Plain lyrics with a private offline cache | Merged into main November 14, 2026 |
 | 6 | Visual redesign (mood colours, shapes, tab pager) | Phone-accepted November 17, 2026; merged |
-| 7 | Playlist sync, sync on open | Planned (`docs/CHECKPOINT_7_PLAN.md`) |
+| 7 | Playlist sync (7A, merged), desktop Sync to phone and sync on open | Finished on `finish-open-items`; awaiting phone test (`docs/CHECKPOINT_7_PLAN.md`) |
 | 9A–9C | Shared feel rules, personal feels, sprint, this-or-that, feel stations | Phone-accepted and merged November 18, 2026 |
-| 9D–9E | Desktop Feels panel, feel stations, suggestions, review, feel history | Implemented on `desktop-9d-9e` |
-| 10–11 | Animation polish (shared-element player, audio-reactive backdrop, predictive back, springs, tuning dial); daily use (empty-queue Play, swipe rows, QS tile, shortcuts, typo search, Recently heard, finish-queue sleep) | Implemented on `android-10-11`; awaiting phone test |
-| 8C | Fun stats (Wrapped cards, milestones, taste map, extra measures) | Implemented on `android-10-11`; awaiting phone test |
-| 13 | Connected talk (desktop announcements and talk show in connected Radio) | 13A server + 13B phone playback + 13C show shifts implemented on `connected-talk-13`; awaiting phone test. Rest of 13C planned (`docs/CONNECTED_TALK_PLAN.md`) |
-| 13D | Talk without Desktop picks (offline Radio and feel stations, desktop voices only; subtle desktop chip) | Implemented on `talk-offline-radio`; awaiting phone test |
-| Polish | Display-only title cleanup, natural sort, auto-skip of unreadable files, calendar, colour fades, pull-down to close, themed widget, lock-screen Not for me, headset start, story Wrapped, library updates (`docs/ANDROID_APP_PLAN.md`, November 25) | Implemented on `android-polish-fixes`; awaiting phone test |
+| 9D–9E | Desktop Feels panel, feel stations, suggestions, review, feel history | Merged into main; awaiting desktop check |
+| 10–11 | Animation polish (shared-element player, audio-reactive backdrop, predictive back, springs, tuning dial); daily use (empty-queue Play, swipe rows, QS tile, shortcuts, typo search, Recently heard, finish-queue sleep) | Merged into main; awaiting phone test |
+| 8C | Fun stats (Wrapped cards, milestones, taste map, extra measures) | Merged into main; awaiting phone test |
+| 13 | Connected talk (desktop announcements and talk show in connected Radio) | 13A–13B and 13C show shifts merged; rest of 13C (feel-aware Desktop picks, guest feel changes and slot bias, talk stats, metadata-gaps view) on `finish-open-items`; awaiting phone test (`docs/CONNECTED_TALK_PLAN.md`) |
+| 13D | Talk without Desktop picks (offline Radio and feel stations, desktop voices only; subtle desktop chip) | Merged into main; awaiting phone test |
+| Polish | Display-only title cleanup, natural sort, auto-skip of unreadable files, calendar, colour fades, pull-down to close, themed widget, lock-screen Not for me, headset start, story Wrapped, library updates (`docs/ANDROID_APP_PLAN.md`, November 25) | Merged into main; awaiting phone test |
 
 At each checkpoint: installable build, verification summary and limitations, and a short phone test list. A successful build is not approval to start the next increment.
 
@@ -416,7 +416,7 @@ Single-route groups: `/api/recommend`, `/api/archetype`, `/api/announcement`, `/
 
 `songs` carries filepath, path hash, tags, BPM, energy/valence, cluster, description, lyrics, tag sets, counters, `avg_completion`, `recovery_score`, `ingest_phase`, art, `gain_db`, and DJ-effect eligibility. `settings` seeds 72 keys.
 
-### Android Room (schema v13)
+### Android Room (schema v14)
 
 | Entity | Purpose |
 |---|---|
@@ -431,6 +431,8 @@ Single-route groups: `/api/recommend`, `/api/archetype`, `/api/announcement`, `/
 | `PortableCatalogRevision`, `PortableCatalogSong`, `PortableCatalogVector`, `PortableCatalogActive` | Imported server catalog metadata, vectors, and active revision |
 | `LocalContentHash`, `PortableMatchDecision` | Local content identity and saved matching decisions |
 | `LocalLyricsCache` | Bounded private plain lyrics keyed to matched local content, pairing ownership and immutable catalog revision |
+| `LocalPlayContext`, `LocalFeel`, `LocalFeelEvidence`, `LocalSongFeelState` | Play sources for stats (v12) and personal feels (v13) |
+| `LocalTalkEvent` | Connected-talk clips that reached the player, for the Stats Talk card (v14); local only, never song history |
 
 ## Config (`backend/config.py`)
 

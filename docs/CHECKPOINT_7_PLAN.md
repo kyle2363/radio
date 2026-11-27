@@ -1,7 +1,8 @@
 # Checkpoint 7 — playlist sync, listening stats, sync on open
 
-Status: planned November 17, 2026. Not started. Branch: `android-7-playlist-sync`
-from `main` after checkpoint 6 merges.
+Status: 7A merged into `main` from `android-7-playlist-sync`; 7B moved to checkpoint 8 (done); the desktop
+"Sync to phone" toggle and 7C sync on open were finished November 27, 2026 on `finish-open-items`. Awaiting phone test
+(including `connectedDebugAndroidTest` for 7A on a device).
 
 Scope is deliberately three increments. Each lands with its own tests and phone
 check list; a passing build is not approval for the next one.
@@ -42,7 +43,10 @@ Two-way sync between Android `LocalPlaylist`/`LocalPlaylistSong` and desktop
   `PortableProfileStore.share_collection` (UI pending); linked collections are
   rebuilt from registers after import and diffed at capture, so imports never
   echo. A remote delete unlinks and keeps the desktop collection.
-  Remaining: desktop "Sync to phone" toggle.
+  Desktop toggle (November 27, 2026): Library → Collections → a collection → **Sync to phone**
+  (`PUT /api/collections/{id}/sync`); synced collections show "on phone" in the list. **Stop syncing** on the desktop
+  marks the link unshared (`portable_playlists.deleted = 2`): phone edits stop reaching the collection and desktop edits
+  stop being exported, nothing is deleted, and sharing again keeps the playlist id (the desktop's copy wins).
 - **Android (implemented November 17, 2026; not phone-tested).** Room v11 adds
   `synced`/`remoteDeleted` to playlists and `positionKey` to entries
   (`LIBRARY_MIGRATION_10_11`). `PlaylistSyncRules` mirrors the server rules and
@@ -83,6 +87,13 @@ impact. Failures are silent apart from the existing status row.
 Phone checks: enable, open the app with the server up and down, confirm play is
 never delayed.
 
+As built (November 27, 2026): Settings → Server → Sync → **Sync when the app opens** (default off, `sync_on_open` in
+`radio_shell`). `data/SyncOnOpen.kt` decides on resume after pairing and discovery refresh: paired, loaded, not
+pending/quarantined/blocked/busy, no sync running, and at least 15 minutes since the last attempt (a clock moved
+backwards counts as due). It runs the same `syncNow()`; errors show only in the sync status row and trigger a discovery
+re-read. Unit-tested in `SyncOnOpenTest`.
+
 ## Deferred
 
-Synchronized lyrics, speech, crossfade, downloads and background sync.
+Synchronized lyrics, on-phone speech, downloads and background sync. (Crossfade shipped later in `playback/Crossfade.kt`;
+connected talk uses desktop voices, checkpoint 13.)
