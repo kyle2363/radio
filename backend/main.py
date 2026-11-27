@@ -207,6 +207,14 @@ async def lifespan(app):
             status = vm.get_status()
             print(f"TTS: Active engine = {status['active_engine']}, voice = {status['active_voice'] or '(none)'}")
 
+            # Warm OmniVoice in the background so the first announcement isn't the cold one that falls back to Piper.
+            if (omnivoice_ok and status.get("active_engine") == "omnivoice" and not startup_stop.is_set()
+                    and (database.get_setting("tts_enabled") or "true").lower() != "false"
+                    and (database.get_setting("omnivoice_warm_up") or "true").lower() != "false"):
+                started = time.time()
+                warm = vm.get_engine("omnivoice").warm_up()
+                print(f"TTS: OmniVoice warm-up {'done' if warm else 'failed'} in {time.time() - started:.0f}s")
+
         except Exception as e:
             print(f"TTS startup check: {e}")
 

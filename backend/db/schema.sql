@@ -148,6 +148,7 @@ INSERT OR IGNORE INTO settings (key, value) VALUES
     ('tts_voice', ''),
     ('tts_voice_mode', 'user_select'),
     ('omnivoice_downloaded', 'false'),
+    ('omnivoice_warm_up', 'true'),
     ('music_dir', ''),
     ('genre_filter', ''),
     ('artist_filter', ''),

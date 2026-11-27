@@ -120,6 +120,8 @@ class OmniVoiceTTSEngine:
 
     ENGINE_ID = "omnivoice"
     MODEL_ID = "k2-fsa/OmniVoice"
+    # Loading weights is separate from speaking: a cold load used to eat the synthesis timeout and fall back to Piper.
+    LOAD_TIMEOUT = 300
 
     def __init__(self):
         self._model = None
@@ -185,6 +187,38 @@ class OmniVoiceTTSEngine:
                 logger.error(f"OmniVoice: model load failed: {e}")
                 return False
 
+    def prepare(self, timeout: float | None = None) -> bool:
+        """Load the model under its own time limit, before any synthesis timeout starts."""
+        if self._model is not None:
+            return True
+        ok, loaded = run_with_timeout(self._load_model, timeout=timeout or self.LOAD_TIMEOUT)
+        if not ok:
+            logger.error("OmniVoice: model load did not finish: %s", loaded)
+        return bool(ok and loaded and self._model is not None)
+
+    def warm_up(self, output_dir: str | None = None) -> bool:
+        """Load the model and speak one short line so the first listener-facing clip isn't the cold one. Never raises."""
+        try:
+            if not self.prepare():
+                return False
+            voices = self.get_available_voices()
+            if not voices:
+                return False
+            import tempfile
+            folder = output_dir or getattr(config, "TTS_CACHE_DIR", None) or tempfile.gettempdir()
+            os.makedirs(folder, exist_ok=True)
+            path = os.path.join(folder, f"omnivoice-warmup-{os.getpid()}.wav")
+            try:
+                return self.synthesize("Hello.", voices[0], path) is not None
+            finally:
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+        except Exception:                                  # noqa: BLE001 - warm-up is best effort
+            logger.warning("OmniVoice: warm-up failed", exc_info=True)
+            return False
+
     def is_ready(self) -> bool:
         """True if GPU is available and model can be loaded."""
         return self._detect_gpu()
@@ -242,8 +276,8 @@ class OmniVoiceTTSEngine:
             timeout = self.synthesis_timeout
             self._generation_started = True
 
-        # Load model if not already loaded
-        if not self._load_model():
+        # Load model if not already loaded (VoiceManager normally did this already via prepare()).
+        if not self.prepare():
             logger.warning("OmniVoice: model not available, cannot synthesize")
             return None
 
