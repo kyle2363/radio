@@ -707,6 +707,11 @@ class VoiceManager:
                             except OSError:
                                 pass
 
+                # Model loading has its own limit; the speech timeout below covers speaking only.
+                prepare = getattr(eng, "prepare", None)
+                if engine_id != "piper" and callable(prepare) and not prepare():
+                    logger.warning("VoiceManager: %s model didn't load; attempting Piper fallback", engine_id)
+                    return self._fallback_synthesize(plain_text, voice_id, output_dir, song_id)
                 timeout = eng.synthesis_timeout if engine_id in ("omnivoice", "zonos3") else 30
                 ok, result_or_err = run_with_timeout(_do_synthesize, timeout=timeout * len(rendered))
                 if not ok:

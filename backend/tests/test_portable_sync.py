@@ -200,3 +200,23 @@ def test_removed_catalog_song_does_not_block_unrelated_or_unique_offline_events(
     store.import_events("phone", [event(), event(2, song_id="2", attempt_id="another")])
     assert len(store.events()["events"]) == 2
     assert database.get_song(2)["play_count"] == 1
+
+
+def test_slowed_skips_never_reach_the_taste_model_but_starts_and_completions_do():
+    store = PortableProfileStore()
+    store.import_events("phone", [event(1, effect="slowed"),
+                                  event(2, kind="song_skipped", effect="slowed", reason="just_skip"),
+                                  event(3, kind="song_started", attempt_id="attempt-b", effect="lofi"),
+                                  event(4, kind="song_completed", attempt_id="attempt-b", effect="lofi", completion=1)])
+    with database.get_connection_cm() as conn:
+        signals = [row[0] for row in conn.execute("SELECT signal FROM play_events WHERE song_id=1 ORDER BY id")]
+        assert signals == ["playing", "playing", "completed"]
+        assert conn.execute("SELECT COUNT(*) FROM skip_feedback").fetchone()[0] == 0
+    # The attempt is still recorded, so a resend is a duplicate, not a new skip.
+    assert store.import_events("phone", [event(2, kind="song_skipped", effect="slowed", reason="just_skip")])["duplicates"] == ["e2"]
+
+
+@pytest.mark.parametrize("changes", [{"effect": "chipmunk"}, {"kind": "favorite_changed", "value": True, "effect": "slowed"}])
+def test_effect_field_is_validated(changes):
+    with pytest.raises(ValueError):
+        PortableProfileStore().import_events("phone", [event(**changes)])

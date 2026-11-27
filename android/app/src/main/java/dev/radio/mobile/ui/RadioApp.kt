@@ -104,13 +104,16 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
     var appInForeground by remember(lifecycle) { mutableStateOf(lifecycle.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) }
     LaunchedEffect(pairing,discovery) { pairing.load(); discovery.load() }
     DisposableEffect(repository, lifecycle, discovery) {
+        // Sync on open is foreground only: the run is cancelled on ON_STOP and re-checks before uploading.
+        val openRun = SyncOnOpenRunner(lifecycleScope)
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) { repository.checkAccess(); lifecycleScope.launch { pairing.load(); discovery.load(); discovery.readOnResume() } }
+            if (event == Lifecycle.Event.ON_RESUME) { repository.checkAccess(); openRun.start { foreground -> pairing.load(); discovery.load(); discovery.readOnResume(); syncOnOpen(appContext, pairing, discovery, foreground) } }
+            if (event == Lifecycle.Event.ON_STOP) openRun.stop()
             if (event == Lifecycle.Event.ON_STOP && activity?.isChangingConfigurations != true) repository.loudness.pauseAnalysis()
         }
         lifecycle.lifecycle.addObserver(observer)
         repository.checkAccess()
-        onDispose { lifecycle.lifecycle.removeObserver(observer) }
+        onDispose { lifecycle.lifecycle.removeObserver(observer); openRun.stop() }
     }
     // Shell preferences live here; library, playlists and playback bookmarks live in Room.
     val prefs = LocalContext.current.getSharedPreferences("radio_shell", Context.MODE_PRIVATE)
@@ -164,6 +167,7 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
     var deletingPlaylists by remember { mutableStateOf<List<String>?>(null) }
     // Checkpoint 9B feels.
     val feelsState by repository.feels.state.collectAsStateWithLifecycle()
+    val slowedFeels by repository.radio.slowedFeels.collectAsStateWithLifecycle()
     var feelsNav by remember { mutableStateOf(FeelsNav()) }
     var feelSheet by remember { mutableStateOf(false) }
     val preview = (playback as? dev.radio.mobile.playback.ServicePlaybackController)?.preview
@@ -682,7 +686,8 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
                 }
                 "Feels" -> FeelsScreen(repository.feels, feelsState, library.songs, feelsNav, { feelsNav = it }, preview,
                     sessions = { dev.radio.mobile.recommendation.FeelSprint.sessions(journal.history.filter { it.kind == "song_started" }.map { it.localId to it.occurredAt }) },
-                    onMessage = ::message, onRadio = ::startFeelStation, modifier = Modifier.padding(insets).consumeWindowInsets(insets))
+                    onMessage = ::message, onRadio = ::startFeelStation, modifier = Modifier.padding(insets).consumeWindowInsets(insets),
+                    slowedFeels = slowedFeels, onSlowedAllowed = repository.radio::setSlowedAllowed)
                 "Stats" -> StatsScreen(repository.journal, library.songs, onSong = { statsSong = it }, modifier = Modifier.padding(insets).consumeWindowInsets(insets),
                     radio = repository.radio, feels = feelsState,
                     onPlay = { item -> if (playSong(item, listOf(item), PlaySource("Taste map", PlaySource.ALL_SONGS))) navigate("Now playing") },

@@ -64,9 +64,9 @@ class ConnectedRadioSourceTest {
 
     private fun request(map: MappingSnapshot = mappings(*full), anchor: String = "l1", exclude: Set<String> = setOf("l1"), disliked: Set<String> = emptySet(),
         available: Map<String, LocalSong> = songs, vibe: String? = null, recent: List<ConnectedRecent> = emptyList(),
-        tuning: ConnectedTuning = ConnectedTuning(), played: List<ConnectedPlayed> = emptyList()) =
+        tuning: ConnectedTuning = ConnectedTuning(), played: List<ConnectedPlayed> = emptyList(), feel: String? = null) =
         ConnectedRequest(songs.getValue(anchor), "neutral", .3, vibe, map, available, recent, exclude, { it in disliked},
-            ConnectedFence(anchor, "neutral", .3, vibe, map.generation, 0, tuning = tuning), tuning, played)
+            ConnectedFence(anchor, "neutral", .3, vibe, map.generation, 0, tuning = tuning, feel = feel), tuning, played, feel)
 
     private fun source(server: FakeServer, timeout: Long = 5_000, link: ConnectedServerLink = TransportLink(server)) =
         ConnectedRadioSource(link, scope, timeout, newId = { "req-${java.util.UUID.randomUUID()}" }).also { it.setEnabled(true) }
@@ -376,6 +376,49 @@ class ConnectedRadioSourceTest {
         val body = contextBody(server)
         assertEquals(mapOf("variety" to .4, "picks" to 8L, "similar" to 2L, "energy" to "rising", "reranking" to "off", "pockets" to true), body["tuning"])
         assertEquals(listOf(mapOf("song_id" to "s3", "age_s" to 120L), mapOf("song_id" to "s4", "age_s" to 7200L)), body["played"])
+    }
+
+    // --- checkpoint 13C feel stations ----------------------------------------------------------
+
+    private val feelful = """{"protocol_version":1,"connected_recommendations":true,"connected_tuning":true,"connected_feels":true,"scopes":["catalog:read","recommend:read"]}"""
+
+    @Test fun feelIsSentOnlyToAServerThatAdvertisesFeels() {
+        val old = FakeServer().apply { capabilities = tunable; picks = listOf(Triple("s2", "exploit", "")) }
+        run(source(old), request(feel = "feel-a"))
+        assertFalse(contextBody(old).containsKey("feel_id"))
+        val server = FakeServer().apply { capabilities = feelful; picks = listOf(Triple("s2", "exploit", "")) }
+        val source = source(server)
+        run(source, request(feel = "feel-a"))
+        assertEquals("feel-a", contextBody(server)["feel_id"])
+        run(source, request())
+        assertFalse(contextBody(server).containsKey("feel_id"))
+    }
+
+    @Test fun appliedFeelIsParsedAndOlderRepliesLeaveItNull() {
+        val base = mapOf("variety" to null, "picks" to 5L, "similar" to 4L, "energy" to "stable", "reranking" to "off", "pockets" to "off")
+        assertEquals("on", ConnectedApplied.parse(base + ("feel" to "on"))!!.feel)
+        assertNull(ConnectedApplied.parse(base)!!.feel)
+    }
+
+    @Test fun aSetForAnotherFeelIsStale() {
+        val server = FakeServer().apply { capabilities = feelful; picks = listOf(Triple("s2", "exploit", "")) }
+        val source = source(server)
+        val req = request(feel = "feel-a")
+        run(source, req)
+        assertNotNull(source.set.value)
+        source.revalidate(req.fence.copy(feel = "feel-b"))
+        assertNull(source.set.value)
+    }
+
+    @Test fun feelStationUsesDesktopPicksOnlyWhenTheDesktopServedThatFeel() {
+        fun held(feel: String?, applied: String?) = ConnectedSet("l1", "r", "r", "llm", false,
+            ConnectedFence("l1", "neutral", .3, null, 1, 0, feel = feel), emptyList(), emptyList(), 0, 0,
+            ConnectedApplied(null, 5, 4, "stable", "off", "off", applied))
+        assertTrue(ConnectedPolicy.servesFeel(held(null, null), null))
+        assertTrue(ConnectedPolicy.servesFeel(held("feel-a", "on"), "feel-a"))
+        assertFalse(ConnectedPolicy.servesFeel(held("feel-a", "unavailable"), "feel-a"))
+        assertFalse(ConnectedPolicy.servesFeel(held("feel-a", null), "feel-a"))
+        assertFalse(ConnectedPolicy.servesFeel(held("feel-b", "on"), "feel-a"))
     }
 
     @Test fun defaultTuningSendsNoTuningObject() {

@@ -104,6 +104,8 @@ class ContextRequest(BaseModel):
     recent: Annotated[list[RecentEntry], Field(max_length=MAX_RECENT)]
     tuning: Optional[Tuning] = None
     played: Annotated[list[PlayedEntry], Field(max_length=MAX_PLAYED)] = []
+    # Checkpoint 13C: the phone's active feel station; only sent when the server advertises connected_feels.
+    feel_id: Optional[Annotated[StrictStr, Field(pattern=r"^[A-Za-z0-9_.:-]{1,64}$")]] = None
 
 
 class RecommendationRequest(BaseModel):
@@ -166,6 +168,7 @@ class Context:
     order: int
     tuning: dict = field(default_factory=dict)
     played: list = field(default_factory=list)     # [(song_id, age_s)] unsynced phone plays
+    feel_id: Optional[str] = None
 
 
 @dataclass
@@ -184,8 +187,12 @@ class _DeviceWork:
 
 class MobileRecommendations:
     def __init__(self, store, *, clock=time.monotonic, deadline_seconds=DEADLINE_SECONDS,
-                 idle_seconds=CONTEXT_IDLE_SECONDS, gate=None, recommend_fn=None, memory=None):
+                 idle_seconds=CONTEXT_IDLE_SECONDS, gate=None, recommend_fn=None, memory=None,
+                 feel_ids=None, guest_bias=None):
         self.store, self.clock = store, clock
+        # feel_id -> ranked desktop song ids (None when unknown); (device_id, context_id) -> active guest slot_bias.
+        self.feel_ids = feel_ids or self._feel_station_ids
+        self.guest_bias = guest_bias
         self.deadline_seconds, self.idle_seconds = float(deadline_seconds), float(idle_seconds)
         self.gate = gate if gate is not None else service.DEFAULT_LLM_GATE
         self.recommend_fn = recommend_fn or (lambda inputs: service.recommend(inputs))
@@ -248,10 +255,10 @@ class MobileRecommendations:
         if ids - _existing_ids(ids):
             raise Rejected(400, "Unknown song IDs")
         tuning = request.tuning.model_dump(exclude_none=True) if request.tuning else {}
-        return request.mood, float(request.exploration), vibe, recent, tuning, played
+        return request.mood, float(request.exploration), vibe, recent, tuning, played, request.feel_id
 
     def create_context(self, device_id, body):
-        mood, exploration, vibe, recent, tuning, played = self._fields(body)
+        mood, exploration, vibe, recent, tuning, played, feel_id = self._fields(body)
         with self._lock:
             self._sweep()
             mine = sorted((c for c in self._contexts.values() if c.device_id == device_id), key=lambda c: c.order)
@@ -262,18 +269,18 @@ class MobileRecommendations:
                 del self._contexts[oldest.context_id]
             self._counter += 1
             context = Context(secrets.token_urlsafe(24), device_id, 1, mood, exploration, vibe, recent,
-                              self.clock(), self._counter, tuning, played)
+                              self.clock(), self._counter, tuning, played, feel_id)
             self._contexts[context.context_id] = context
             return self._context_reply(context)
 
     def update_context(self, device_id, context_id, body):
         with self._lock:
             self._owned(device_id, context_id)
-        mood, exploration, vibe, recent, tuning, played = self._fields(body)
+        mood, exploration, vibe, recent, tuning, played, feel_id = self._fields(body)
         with self._lock:
             context = self._owned(device_id, context_id)
             context.mood, context.exploration, context.vibe_lock_song_id, context.recent = mood, exploration, vibe, recent
-            context.tuning, context.played = tuning, played
+            context.tuning, context.played, context.feel_id = tuning, played, feel_id
             context.epoch += 1
             self._touch(context)
             return self._context_reply(context)
@@ -397,7 +404,16 @@ class MobileRecommendations:
         with self._lock:
             mood_name, exploration = context.mood, context.exploration
             vibe_song, recent = context.vibe_lock_song_id, list(context.recent)
-            tuning, played = dict(context.tuning), list(context.played)
+            tuning, played, feel_id = dict(context.tuning), list(context.played), context.feel_id
+            device_id, context_id = context.device_id, context.context_id
+        # Outside the lock: both hooks may take other services' locks.
+        allowed, feel_state = self._feel_allowed(feel_id, snapshot.ids)
+        slot_bias = None
+        if self.guest_bias is not None:
+            try:
+                slot_bias = self.guest_bias(device_id, context_id) or None
+            except Exception:                              # noqa: BLE001 - talk is optional
+                logger.warning("Guest slot bias unavailable", exc_info=True)
         completed = [sid for sid, outcome in reversed(recent) if outcome == "completed"]
         skip_streak = 0
         for _, outcome in reversed(recent):
@@ -454,7 +470,7 @@ class MobileRecommendations:
             energy_direction=direction, energy_nudge=nudge, slot_counts=counts,
             jitter_strength=variety, recent_hours=recent_hours or None, reasons_for_all=True,
             constellations=pockets, constellations_enabled=pockets is not None,
-            allowed_ids=snapshot.ids, filler_current_song_id=anchor, strict_exclusions=True,
+            allowed_ids=allowed, slot_bias=slot_bias, filler_current_song_id=anchor, strict_exclusions=True,
             llm_budget_seconds=lambda: max(0.0, deadline_at - self.clock()),
             llm_gate=self.gate, gate_priority=service.LlmPriorityGate.MOBILE,
         )
@@ -463,13 +479,37 @@ class MobileRecommendations:
         except Exception:
             logger.exception("Connected recommendation failed")
             raise Rejected(503, "Recommendation unavailable") from None
-        picks = [p for p in result.picks if p["song_id"] in snapshot.ids and p["song_id"] not in exclude]
+        picks = [p for p in result.picks if p["song_id"] in allowed and p["song_id"] not in exclude]
         if picks != result.picks:
             result.picks = picks
             result.status = "ok" if picks else "insufficient"
         applied = {"variety": variety, "picks": total, "energy": direction, "reranking": "on" if reranking else "off",
-                   "pockets": "off" if pockets is None else "on" if getattr(pockets, "is_active", False) else "inactive"}
+                   "pockets": "off" if pockets is None else "on" if getattr(pockets, "is_active", False) else "inactive",
+                   "feel": feel_state}
         return result, bool(vibe), applied
+
+    def _feel_allowed(self, feel_id, available):
+        """Availability narrowed to the feel station; "unavailable" tells the phone to use its own picks."""
+        if not feel_id:
+            return available, "off"
+        try:
+            ids = self.feel_ids(feel_id)
+        except Exception:                                  # noqa: BLE001 - an unknown or broken feel is not fatal
+            logger.warning("Feel station %s unavailable for a phone request", feel_id, exc_info=True)
+            ids = None
+        narrowed = frozenset(available) & frozenset(ids or ())
+        if not narrowed:
+            return available, "unavailable"
+        return narrowed, "on"
+
+    def _feel_station_ids(self, feel_id):
+        from feel_service import FeelService
+        service_ = FeelService(self.store)
+        try:
+            service_._require_feel(feel_id)
+        except KeyError:
+            return None
+        return service_.station_ids(feel_id)
 
     def _pockets(self):
         if self.constellations is None:

@@ -64,6 +64,10 @@ fun StatsScreen(journal: ListeningJournalRepository, songs: List<LocalSong>, onS
             FunStats.measures(rows, period, System.currentTimeMillis(), zone, byId.values.filter { it.available }.mapTo(HashSet()) { it.id }) { id -> byId[id]?.let { Artists.primary(it.artist) } }
         }
     }
+    // Checkpoint 13C: connected talk heard in this period.
+    val talkCount by journal.talkEventCount.collectAsState(0)
+    val talkEvents by produceState<List<LocalTalkEvent>>(emptyList(), talkCount) { value = withContext(Dispatchers.IO) { journal.talkEvents() } }
+    val talk = remember(talkEvents, period) { TalkStats.summarize(talkEvents, period, System.currentTimeMillis(), zone) }
     val milestones by produceState<List<MilestoneProgress>?>(null, attempts, songs) {
         val rows = attempts ?: return@produceState
         value = withContext(Dispatchers.Default) { FunStats.milestones(rows, songs, System.currentTimeMillis(), zone) }
@@ -102,11 +106,12 @@ fun StatsScreen(journal: ListeningJournalRepository, songs: List<LocalSong>, onS
         }
         SourcesCard(s)
         if (s.radio.isNotEmpty()) RadioReportCard(s)
+        if (!talk.empty) TalkCard(talk)
         milestones?.let { MilestonesCard(it) }
         TasteMapCard(radio, songs, attempts.orEmpty(), feels, onPlay, onRadio)
         Spacer(Modifier.height(24.dp))
     }
-    if (showWrapped) attempts?.let { WrappedDialog(it, songs, feels) { showWrapped = false } }
+    if (showWrapped) attempts?.let { WrappedDialog(it, songs, feels, talkEvents) { showWrapped = false } }
 }
 
 @Composable internal fun StatsCard(content: @Composable ColumnScope.() -> Unit) =
@@ -342,6 +347,22 @@ private val MoodPalette = dev.radio.mobile.ui.theme.MoodColors.all.map { Color(i
             }
         }
     }
+}
+
+/** Checkpoint 13C: the desktop DJ's talk heard on this phone. Never counted as song plays. */
+@Composable private fun TalkCard(t: TalkSummary) = StatsCard {
+    CardTitle("Talk", "Your desktop DJ, callers and guests")
+    Row(Modifier.fillMaxWidth().testTag("stats-talk")) {
+        BigNumber(duration(t.heardMs), "of talk", Modifier.weight(1f))
+        BigNumber("${t.clips}", if (t.clips == 1) "segment" else "segments", Modifier.weight(1f))
+        BigNumber(percent(t.skipRate), "skipped", Modifier.weight(1f))
+    }
+    if (t.byType.isNotEmpty()) Text(t.byType.entries.joinToString(" · ") { "${it.key} ${it.value}" }, Modifier.padding(top = 6.dp),
+        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    t.topCaller?.let { (name, n) -> Text("Most-heard caller: $name ($n)", style = MaterialTheme.typography.bodyMedium) }
+    t.topGuest?.let { (name, n) -> Text("Most-heard guest: $name (${if (n == 1) "1 set" else "$n sets"})", style = MaterialTheme.typography.bodyMedium) }
+    if (t.guestChanges.isNotEmpty()) Text("Guests changed the station ${t.guestChanges.size} ${if (t.guestChanges.size == 1) "time" else "times"}: " +
+        t.guestChanges.distinct().take(3).joinToString(", "), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
 }
 
 /** Song detail (8B): opened from any song's menu and from Now Playing. */

@@ -28,8 +28,11 @@ data class TalkSettings(
     val guests: Boolean? = null,
     val guestSongs: Int? = null,
     val volume: TalkVolume = TalkVolume.NORMAL,
+    /** How often a guest changes the mood or feel: one of [GUEST_SHIFTS], or null for the desktop's (Normal unless changed). */
+    val guestShift: String? = null,
 ) {
-    fun normalized() = copy(frequency = frequency?.coerceIn(MIN_FREQUENCY, MAX_FREQUENCY), guestSongs = guestSongs?.coerceIn(MIN_GUEST_SONGS, MAX_GUEST_SONGS))
+    fun normalized() = copy(frequency = frequency?.coerceIn(MIN_FREQUENCY, MAX_FREQUENCY), guestSongs = guestSongs?.coerceIn(MIN_GUEST_SONGS, MAX_GUEST_SONGS),
+        guestShift = guestShift?.takeIf { it in GUEST_SHIFTS })
 
     /** "Use desktop defaults" clears every override except On/Off. */
     fun desktopDefaults() = TalkSettings(enabled = enabled)
@@ -44,6 +47,7 @@ data class TalkSettings(
         n.monologues?.let { out["monologues"] = it }
         n.guests?.let { out["guests"] = it }
         n.guestSongs?.let { out["guest_songs"] = it }
+        n.guestShift?.let { out["guest_shift"] = it }
         return out.takeIf { it.isNotEmpty() }
     }
 
@@ -52,18 +56,21 @@ data class TalkSettings(
     companion object {
         const val MIN_FREQUENCY = 2; const val MAX_FREQUENCY = 10
         const val MIN_GUEST_SONGS = 2; const val MAX_GUEST_SONGS = 8
+        val GUEST_SHIFTS = listOf("none", "rarely", "normal", "often")
         fun decode(text: String?): TalkSettings {
             val root = text?.let { runCatching { ConnectedJson.parse(it) as? Map<*, *> }.getOrNull() } ?: return TalkSettings()
             val talk = root["talk"] as? Map<*, *> ?: emptyMap<String, Any?>()
             return TalkSettings(root["enabled"] == true, (talk["frequency"] as? Long)?.toInt(), talk["callers"] as? Boolean,
                 talk["monologues"] as? Boolean, talk["guests"] as? Boolean, (talk["guest_songs"] as? Long)?.toInt(),
-                TalkVolume.entries.firstOrNull { it.name == root["volume"] } ?: TalkVolume.NORMAL).normalized()
+                TalkVolume.entries.firstOrNull { it.name == root["volume"] } ?: TalkVolume.NORMAL, talk["guest_shift"] as? String).normalized()
         }
     }
 }
 
 /** What the paired desktop advertises under `connected_talk`. */
-data class TalkCapability(val available: Boolean, val reason: String?, val maxClipSeconds: Int = 180) {
+data class TalkCapability(val available: Boolean, val reason: String?, val maxClipSeconds: Int = 180,
+    /** The desktop voices Slowed Radio lines (checkpoint 14): live lines on turns and the line bank. */
+    val slowed: Boolean = false) {
     val message: String get() = when {
         available -> "Available"
         reason == "tts_disabled" -> "Speech is turned off on the desktop"
@@ -74,7 +81,8 @@ data class TalkCapability(val available: Boolean, val reason: String?, val maxCl
     companion object {
         fun parse(value: Any?): TalkCapability? {
             val map = value as? Map<*, *> ?: return null
-            return TalkCapability(map["available"] == true, map["reason"] as? String, ((map["max_clip_seconds"] as? Long) ?: 180L).toInt().coerceIn(1, 600))
+            val slowed = (map["slowed"] as? Map<*, *>)?.let { it["protocol_version"] == 1L } == true
+            return TalkCapability(map["available"] == true, map["reason"] as? String, ((map["max_clip_seconds"] as? Long) ?: 180L).toInt().coerceIn(1, 600), slowed)
         }
     }
 }
@@ -84,19 +92,24 @@ data class TalkLine(val speaker: String, val text: String)
 data class TalkShift(val mood: String?, val feel: String?, val restoreAtEnd: Boolean)
 data class TalkGuestSet(val persona: String?, val name: String?, val songs: Int?, val ends: Boolean)
 data class TalkResource(val id: String, val sha256: String, val byteLength: Int, val expiresAt: Long)
+data class TalkSlowed(val moment: String, val preset: String, val guest: String, val bank: Boolean)
 
 /** A ready job's metadata (plan section 4.2). Unknown fields are ignored so later servers can add some. */
 data class TalkClipInfo(
     val jobId: String, val kind: String, val segmentType: String, val title: String,
     val speakers: List<TalkSpeaker>, val transcript: List<TalkLine>, val durationMs: Long,
     val shift: TalkShift?, val guestSet: TalkGuestSet?, val resource: TalkResource,
+    /** Slowed Radio line (checkpoint 14): live from a turn's `effects`, or from the phone's bank ([fromBank]). */
+    val slowed: TalkSlowed? = null,
 ) {
+    /** A bank line is not a desktop job: it is never reported and its file stays in the bank. */
+    val fromBank: Boolean get() = slowed?.bank == true
     val artist: String get() = "DJ · Talk"
     fun speakerName(id: String) = speakers.firstOrNull { it.id == id }?.name ?: id
     /** Short label for the queue row. */
     val typeLabel: String get() = when (segmentType) {
         "caller" -> "Caller"; "dj_monologue" -> "DJ"; "guest_takeover_intro" -> "Guest DJ"; "guest_takeover_outro" -> "Guest DJ"
-        "announcement" -> "DJ"; else -> "Talk"
+        "announcement" -> "DJ"; "slowed_opener", "slowed_mid", "slowed_closer" -> "Guest DJ"; else -> "Talk"
     }
 
     companion object {
@@ -121,9 +134,13 @@ data class TalkClipInfo(
             val shift = (map["shift"] as? Map<*, *>)?.let { TalkShift(it["mood"] as? String, it["feel"] as? String, it["restore_at_end"] == true) }
             val guest = (map["guest_set"] as? Map<*, *>)?.let { TalkGuestSet(it["persona"] as? String, it["name"] as? String, (it["songs"] as? Long)?.toInt(), it["ends"] == true) }
             val title = (map["title"] as? String)?.takeIf { it.isNotBlank() }?.take(120) ?: "Talk"
+            val slowed = (map["slowed"] as? Map<*, *>)?.let { s ->
+                val moment = s["moment"] as? String; val preset = s["preset"] as? String; val guestId = s["guest"] as? String
+                if (moment in setOf("opener", "mid", "closer") && preset != null && guestId != null) TalkSlowed(moment!!, preset, guestId, bank = false) else null
+            }
             return TalkClipInfo(jobId, map["kind"] as? String ?: "talk", map["segment_type"] as? String ?: "talk", title, speakers, transcript,
                 ((map["duration_ms"] as? Long) ?: 0L).coerceIn(0L, 600_000L), shift, guest,
-                TalkResource(rid, sha, length.toInt(), (resource["expires_at"] as? Long) ?: 0L))
+                TalkResource(rid, sha, length.toInt(), (resource["expires_at"] as? Long) ?: 0L), slowed)
         }
     }
 }
@@ -183,6 +200,8 @@ object TalkWire {
         val skipStreak: Int = 0, val feedback: List<Feedback> = emptyList(), val milestones: List<Pair<String, String>> = emptyList(),
         val history: History? = null, val localIso: String? = null, val weekday: String? = null,
         val sessionMinutes: Int = 0, val sessionSongs: Int = 0, val talk: Map<String, Any?>? = null,
+        /** Slowed Radio: this gap's clip is the effects guest's line; and whether a set is playing (no other guest). */
+        val effects: Map<String, Any?>? = null, val slowedActive: Boolean = false,
     )
 
     fun turn(t: Turn): String {
@@ -199,6 +218,8 @@ object TalkWire {
         body["session_minutes"] = t.sessionMinutes.coerceIn(0, 100_000)
         body["session_songs"] = t.sessionSongs.coerceIn(0, 100_000)
         t.talk?.let { body["talk"] = it }
+        t.effects?.let { body["effects"] = it }
+        if (t.slowedActive) body["slowed_active"] = true
         return ConnectedJson.write(body)
     }
 

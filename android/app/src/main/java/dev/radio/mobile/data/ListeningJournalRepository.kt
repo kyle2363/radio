@@ -53,6 +53,9 @@ class ListeningJournalRepository(context: Context, private val db: LibraryDataba
     val smartListRows: Flow<List<SmartListRow>> = db.journal().observeSmartListRows()
     /** One row per actual start with outcome and context, for the Stats screen (checkpoint 8B). */
     suspend fun statsAttempts(): List<StatsAttempt> = db.journal().statsAttempts()
+    /** Connected-talk clips for the Stats Talk card (13C); separate from song history. */
+    suspend fun talkEvents(): List<LocalTalkEvent> = db.talk().all()
+    val talkEventCount: kotlinx.coroutines.flow.Flow<Int> get() = db.talk().observeCount()
     private fun submit(operation: suspend () -> Unit) {
         pending.incrementAndGet()
         mutable.update { it.copy(pendingWrites = pending.get()) }
@@ -69,7 +72,7 @@ class ListeningJournalRepository(context: Context, private val db: LibraryDataba
         if (value != null) put("value", value)
     }.toString()
     private suspend fun append(identity: JournalIdentity, eventId: String, attempt: String?, kind: String, at: Long,
-        listened: Long = 0, completion: Double? = null, reason: String? = null, value: Any? = null, preferenceKey:String?=null) {
+        listened: Long = 0, completion: Double? = null, reason: String? = null, value: Any? = null, preferenceKey:String?=null, effect: String? = null) {
         val dao = db.journal(); val previousClock = dao.clock() ?: 0
         check(previousClock < 9007199254740991L) { "Journal clock exhausted" }
         val clock = previousClock + 1
@@ -77,6 +80,8 @@ class ListeningJournalRepository(context: Context, private val db: LibraryDataba
         val payload = JSONObject(envelope(identity, eventId, attempt, kind, at, clock, wireCompletion, value)).apply {
             if (kind == "song_skipped" && reason in setOf("too_intense", "too_slow", "too_samey", "wrong_mood", "just_skip")) put("reason", reason)
             if(kind=="preference_changed")put("key",preferenceKey)
+            // Slowed Radio (checkpoint 14): the effect the song played with. Its skips never teach taste.
+            if(effect!=null && kind.startsWith("song_"))put("effect",effect)
         }.toString()
         dao.clock(LocalJournalClock(value = clock))
         dao.insert(LocalListeningEvent(eventId, identity.localId, attempt, kind, at, clock, payload, listened, completion, reason, identity.provenance))
@@ -84,12 +89,12 @@ class ListeningJournalRepository(context: Context, private val db: LibraryDataba
         if (kind != "attempt_stopped") dao.enqueue(LocalEventOutbox(eventId, identity.serverId, identity.deviceId, payload))
     }
     fun started(song: LocalSong, attempt: String, positionMs: Long, identity: JournalIdentity = identity(song),
-        context: dev.radio.mobile.playback.PlayContext? = null) {
+        context: dev.radio.mobile.playback.PlayContext? = null, effect: String? = null) {
         if (untracked()) return
         val eventId = UUID.randomUUID().toString(); val at = System.currentTimeMillis()
         submit { db.withTransaction {
             if (db.journal().start(attempt) == null && db.library().playbackStart(attempt) == null) {
-                beforeCommit(); append(identity, eventId, attempt, "song_started", at)
+                beforeCommit(); append(identity, eventId, attempt, "song_started", at, effect = effect)
                 db.library().savePlaybackStart(LocalPlaybackStart(attempt, song.id, at, positionMs))
                 // Same transaction as the start: a context row never exists without its start, nor the reverse.
                 if (context != null) db.journal().playContext(LocalPlayContext(attempt, song.id, context.sourceKind, context.sourceId,
@@ -97,13 +102,13 @@ class ListeningJournalRepository(context: Context, private val db: LibraryDataba
             }
         } }
     }
-    fun finished(identity: JournalIdentity, attempt: String, kind: String, listenedMs: Long, durationMs: Long?, reason: String?) {
+    fun finished(identity: JournalIdentity, attempt: String, kind: String, listenedMs: Long, durationMs: Long?, reason: String?, effect: String? = null) {
         if (untracked()) return
         val eventId = UUID.randomUUID().toString(); val at = System.currentTimeMillis()
         val completion = durationMs?.takeIf { it > 0 }?.let { (listenedMs.toDouble() / it).coerceIn(0.0, 1.0) }
         submit { db.withTransaction {
             if (db.journal().start(attempt) != null && db.journal().terminal(attempt) == null) {
-                beforeCommit(); append(identity, eventId, attempt, kind, at, listenedMs, completion, reason)
+                beforeCommit(); append(identity, eventId, attempt, kind, at, listenedMs, completion, reason, effect = effect)
             }
         } }
     }

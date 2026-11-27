@@ -73,6 +73,28 @@ class RadioRepository internal constructor(context:Context,private val db:Librar
     val talkSettings:StateFlow<TalkSettings> = talkSettingsState.asStateFlow()
     fun setTalkSettings(value:TalkSettings){val n=value.normalized();if(n==talkSettingsState.value)return;prefs.edit{putString("connected_talk",n.encode())};talkSettingsState.value=n}
     val talkCache=TalkCache(java.io.File(context.applicationContext.noBackupFilesDir,"talk_clips"))
+    // Slowed Radio (checkpoint 14): phone settings, the per-feel gate (radio_shell) and the desktop-voiced line bank.
+    private val slowedState=MutableStateFlow(SlowedSettings.decode(prefs.getString("slowed",null)))
+    val slowedSettings:StateFlow<SlowedSettings> = slowedState.asStateFlow()
+    fun setSlowedSettings(value:SlowedSettings){val n=value.normalized();if(n==slowedState.value)return;prefs.edit{putString("slowed",n.encode())};slowedState.value=n}
+    private val shellPrefs=context.applicationContext.getSharedPreferences("radio_shell",Context.MODE_PRIVATE)
+    private val slowedFeelState=MutableStateFlow(shellPrefs.getStringSet("slowed_feels",emptySet()).orEmpty().toSet())
+    /** Feels whose stations may play Slowed sets (default none). Plain Radio is always allowed. */
+    val slowedFeels:StateFlow<Set<String>> = slowedFeelState.asStateFlow()
+    fun setSlowedAllowed(feelId:String,allowed:Boolean){val next=if(allowed)slowedFeelState.value+feelId else slowedFeelState.value-feelId;shellPrefs.edit{putStringSet("slowed_feels",next)};slowedFeelState.value=next}
+    val slowedBank by lazy { SlowedBank(java.io.File(appContext.noBackupFilesDir,"slowed_lines"),connectedLinkProxy,metered={
+        runCatching{(appContext.getSystemService(Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager).isActiveNetworkMetered}.getOrDefault(true)}) }
+    /** The station card's Slowed state, published by the playback service. */
+    private val slowedUiState=MutableStateFlow(dev.radio.mobile.playback.SlowedUi())
+    val slowedUi:StateFlow<dev.radio.mobile.playback.SlowedUi> = slowedUiState.asStateFlow()
+    internal fun publishSlowedUi(value:dev.radio.mobile.playback.SlowedUi){slowedUiState.value=value}
+    /** Station card actions; the service's coordinator handles them (no-ops until it exists). */
+    @Volatile internal var onSlowedStart:(dev.radio.mobile.playback.SlowedPreset?)->Unit={}
+    @Volatile internal var onSlowedStop:()->Unit={}
+    fun slowItDown(preset:dev.radio.mobile.playback.SlowedPreset?)=onSlowedStart(preset)
+    fun backToNormal()=onSlowedStop()
+    /** Members of a feel (local song ids), for a Slowed set's pool in plain Radio. */
+    suspend fun feelMembers(feelId:String):Set<String> = db.feels().states(feelId).filter{it.member}.map{it.songId}.toSet()
     val talk=ConnectedTalkSource(connectedLinkProxy,talkCache)
     private val talkStatusState=MutableStateFlow("Off")
     /** One line for the Talk section: what talk is doing, or why it can't. Music always continues. */
@@ -262,7 +284,7 @@ class RadioRepository internal constructor(context:Context,private val db:Librar
         if(value && output.radioActive)output.current?.let{songStarted(it,output)}
     }
     private fun connectedFence():ConnectedFence? { val id=playback.currentId ?: return null;val st=mutable.value
-        return ConnectedFence(id,st.mood,st.exploration,st.vibeLocalId,JournalIdentityProvider.mappings.value.generation,PortableSyncChanges.revision,tuning=tuningState.value)
+        return ConnectedFence(id,st.mood,st.exploration,st.vibeLocalId,JournalIdentityProvider.mappings.value.generation,PortableSyncChanges.revision,tuning=tuningState.value,feel=st.feel)
     }
     /** Saves tuning and expires the held set; the new values apply from the next song's request. */
     fun setConnectedTuning(value:ConnectedTuning) {
@@ -286,22 +308,30 @@ class RadioRepository internal constructor(context:Context,private val db:Librar
         updatePlayback(output)
         val local=library.value;val mapping=JournalIdentityProvider.mappings.value
         if(local.accessLost || local.scanning || local.loading)return
-        val recent=journal.state.value.history.filter{it.kind=="song_completed" || it.kind=="song_skipped"}.sortedBy{it.logicalClock}.takeLast(20)
+        val recent=journal.state.value.history.filter{(it.kind=="song_completed" || it.kind=="song_skipped") && !dev.radio.mobile.data.SlowedEvents.isEffectSkip(it.kind,it.payload)}.sortedBy{it.logicalClock}.takeLast(20)
             .map{ConnectedRecent(it.localId,if(it.kind=="song_completed")"completed" else "skipped")}
         val st=mutable.value;val tuning=tuningState.value
         connected.begin(ConnectedRequest(song,st.mood,st.exploration,st.vibeLocalId,mapping,local.songs.filter{it.available}.associateBy{it.id},recent,
             output.playOrder.toSet()+recent.map{it.localId}+song.id,::isDisliked,
-            ConnectedFence(song.id,st.mood,st.exploration,st.vibeLocalId,mapping.generation,PortableSyncChanges.revision,tuning=tuning),tuning,connectedPlayed()))
+            ConnectedFence(song.id,st.mood,st.exploration,st.vibeLocalId,mapping.generation,PortableSyncChanges.revision,tuning=tuning,feel=st.feel),tuning,connectedPlayed(),st.feel))
     }
     private fun playable(id:String)=library.value.songs.any{it.id==id && it.available && it.uri.startsWith("content:")}
     /**
      * Refill batch for a running Radio queue: valid connected "similar" picks first (never more than the bound), then
      * the unchanged offline recommender for the remaining room. With no usable connected set this is exactly [recommendations].
      */
+    /**
+     * Slowed Radio (checkpoint 14): while a set runs in plain Radio, picks come only from feels that allow Slowed. Null
+     * outside a set (and in a feel station, which already picks from its feel).
+     */
+    @Volatile var slowedPool:Set<String>?=null
+    private fun outsidePool(exclude:Set<String>):Set<String> = slowedPool?.let{pool->exclude+library.value.songs.map{it.id}.filter{it !in pool}} ?: exclude
     suspend fun refill(exclude:Set<String>,room:Int,tail:String?):RadioBatch? {
+        // During a Slowed set the phone's recommender picks from the set's pool, as feel stations do with Desktop picks.
+        if(slowedPool!=null)return recommendations(outsidePool(exclude),room,tail)
         val held=connected.set.value
-        // The desktop doesn't know phone feels yet (9D): a feel station refills from the phone only.
-        if(held==null || room<=0 || mutable.value.feel!=null)return recommendations(exclude,room,tail)
+        // A feel station uses Desktop picks only when the desktop ranked inside that feel (13C); otherwise the phone's own.
+        if(held==null || room<=0 || !ConnectedPolicy.servesFeel(held,mutable.value.feel))return recommendations(exclude,room,tail)
         connected.revalidate(connectedFence())
         if(connected.set.value!==held)return recommendations(exclude,room,tail)
         val chosen=ConnectedPolicy.refillPicks(held,exclude,mutable.value.vibeLocalId!=null || held.vibeLocked,room,::isDisliked,::playable)
@@ -397,6 +427,7 @@ class RadioRepository internal constructor(context:Context,private val db:Librar
             val rows=(db.journal().radioTasteEvents()+db.journal().radioRecentEvents(System.currentTimeMillis()-86400000L)+db.journal().radioLastStarts()).distinctBy{it.eventId}.sortedBy{it.logicalClock}
             val origins=rows.chunked(500).flatMap{db.journal().radioOrigins(it.map{row->row.eventId})}.associate{it.eventId to it.serverId}
             val localEvents=rows.mapNotNull { row->
+                if(dev.radio.mobile.data.SlowedEvents.isEffectSkip(row.kind,row.payload))return@mapNotNull null
                 val payload=JSONObject(row.payload)
                 // A local-only observation stays local-only after later matching.
                 val sid=if(origins[row.eventId]==record?.serverId && payload.optString("catalog_id")==record?.catalogId && payload.optString("song_id").let{it.isNotBlank() && it!="null"})payload.getString("song_id") else "local:${row.localId}"
@@ -407,6 +438,7 @@ class RadioRepository internal constructor(context:Context,private val db:Librar
             val localIdentities=rows.map{row->val payload=JSONObject(row.payload);payload.optString("device_id") to row.eventId}.toSet()
             val remoteEvents=record?.let{saved->db.journal().remoteRadioEvents(saved.serverId).mapNotNull { row->
                 if((row.deviceId to row.eventId) in localIdentities)return@mapNotNull null
+                if(dev.radio.mobile.data.SlowedEvents.isEffectSkip(row.kind,row.payload))return@mapNotNull null
                 val payload=JSONObject(row.payload)
                 val sid=payload.opt("song_id") as? String ?: return@mapNotNull null
                 if(payload.optString("catalog_id")!=saved.catalogId)return@mapNotNull null

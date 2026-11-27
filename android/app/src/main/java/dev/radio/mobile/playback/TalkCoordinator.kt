@@ -43,7 +43,11 @@ internal class TalkCoordinator(
     private val journal: ListeningJournalRepository,
     private val prefs: SharedPreferences,
     private val scope: CoroutineScope,
+    /** Saves a finished clip for talk stats (13C); local only. */
+    private val recordTalk: suspend (dev.radio.mobile.data.LocalTalkEvent) -> Unit = {},
 ) {
+    /** Slowed Radio (checkpoint 14): adds `effects` to a turn and hears about Slowed lines. */
+    internal var slowed: SlowedCoordinator? = null
     private val net = Mutex()
     private var turn: Job? = null
     private var lastSeq = 0L
@@ -53,10 +57,13 @@ internal class TalkCoordinator(
     private var feedbackAtStart = emptyMap<String, dev.radio.mobile.data.LocalSongFeedback>()
     /** Clips that were inserted; their outcome comes from the engine. */
     private val inserted = HashSet<String>()
+    /** When each inserted clip started, and the station change it made, for talk stats. */
+    private val startedAt = HashMap<String, Long>()
+    private val shifts = HashMap<String, String>()
 
     init {
         radio.talkCache.clear()  // Clips never outlive the process that fetched them.
-        engine.talkFileAllowed = { radio.talkCache.owns(it) }
+        engine.talkFileAllowed = { radio.talkCache.owns(it) || slowed?.ownsFile(it) == true }
         engine.onTalk = ::onTalkEvent
         prefs.getString(OPEN_JOB, null)?.let { stale -> scope.launch { report(stale, "missed", null) } }
         scope.launch { radio.talkSettings.collect { engine.setTalkGain(it.volume.linear); if (!it.enabled) stop("Off") } }
@@ -108,6 +115,10 @@ internal class TalkCoordinator(
             if (capability == null) { radio.setTalkStatus("This desktop doesn't offer talk"); return }
             if (!access.permitted) { radio.setTalkStatus("Not allowed on the desktop; music continues"); return }
             if (!capability.available) { radio.setTalkStatus(capability.message); return }
+            slowed?.desktopSlowed = capability.slowed
+            // A gap held for a Slowed line the desktop can't voice is left to the phone's bank.
+            if (!capability.slowed && slowed?.reservesGap(song.id) == true) return
+            slowed?.awaitMix()
             // Desktop picks makes its own context at song start; give it a moment, then use (or make) a talk-only one.
             val contextId = radio.connected.context.value
                 ?: (if (radio.connected.enabled) withTimeoutOrNull(CONTEXT_WAIT_MS) { radio.connected.context.first { it != null } } else null)
@@ -135,7 +146,9 @@ internal class TalkCoordinator(
             val info = withContext(Dispatchers.IO) { radio.talk.await(pending.jobId) { stillInGap(song.id, next) } }
                 ?: run { radio.setTalkStatus("No talk this time"); return }
             val clip = withContext(Dispatchers.IO) { radio.talk.download(info) } ?: run { radio.setTalkStatus("Talk clip didn't arrive in time"); return }
-            val ok = withContext(Dispatchers.Main.immediate) { stillInGap(song.id, next) && engine.insertTalk(clip, song.id, next) }
+            val ok = withContext(Dispatchers.Main.immediate) {
+                stillInGap(song.id, next) && slowed?.accepts(clip.info, song.id) != false && engine.insertTalk(clip, song.id, next)
+            }
             if (!ok) { radio.talkCache.delete(clip); radio.setTalkStatus("Missed the gap; music continues"); return }
             inserted += clip.info.jobId
             handedOff = true
@@ -159,10 +172,21 @@ internal class TalkCoordinator(
         state.playOrder.indexOf(id).takeIf { it >= 0 }?.let { state.playOrder.getOrNull(it + 1) }
 
     private fun onTalkEvent(event: LocalPlaybackController.TalkEvent) {
+        slowed?.onTalk(event)
+        // A line from the phone's Slowed bank is not a desktop job: no report, no shift, and its file stays in the bank.
+        if (event.clip.info.fromBank) {
+            if (event is LocalPlaybackController.TalkEvent.Started) radio.setTalkStatus("On air: ${event.clip.info.title}")
+            if (event is LocalPlaybackController.TalkEvent.Finished) {
+                val row = dev.radio.mobile.data.TalkStats.event(event.clip.info, event.outcome, event.heardMs, null, System.currentTimeMillis(), null)
+                scope.launch(Dispatchers.IO) { runCatching { recordTalk(row) } }
+            }
+            return
+        }
         when (event) {
             is LocalPlaybackController.TalkEvent.Started -> {
                 radio.setTalkStatus("On air: ${event.clip.info.title}")
-                applyShift(event.clip.info)
+                startedAt[event.clip.info.jobId] = System.currentTimeMillis()
+                applyShift(event.clip.info)?.let { shifts[event.clip.info.jobId] = it }
             }
             is LocalPlaybackController.TalkEvent.Finished -> {
                 val clip = event.clip
@@ -175,6 +199,9 @@ internal class TalkCoordinator(
                 }
                 radio.setTalkStatus(when (outcome) { "played" -> "Last talk played"; "skipped" -> "Last talk skipped"; else -> "Talk removed" })
                 scope.launch { report(clip.info.jobId, outcome, if (outcome == "skipped") event.heardMs / 1000.0 else null) }
+                val row = dev.radio.mobile.data.TalkStats.event(clip.info, outcome, event.heardMs, startedAt.remove(clip.info.jobId),
+                    System.currentTimeMillis(), shifts.remove(clip.info.jobId))
+                scope.launch(Dispatchers.IO) { runCatching { recordTalk(row) } }
             }
         }
     }
@@ -183,17 +210,23 @@ internal class TalkCoordinator(
     private fun guestRestore() = GuestRestore.decode(prefs.getString(GUEST_RESTORE, null))
     private fun saveRestore(value: GuestRestore?) = prefs.edit { if (value == null) remove(GUEST_RESTORE) else putString(GUEST_RESTORE, value.encode()) }
 
-    /** A clip just started: its mood/feel shift (or a guest set's revert) replaces the upcoming Radio picks. */
-    private fun applyShift(info: TalkClipInfo) {
-        val feels = radio.feelChoices.value.filter { !it.archived }.map { it.feelId }.toSet()
-        val result = TalkShiftPolicy.onStart(info, station(), guestRestore(), OfflineRecommender.MOODS.keys, feels)
+    /**
+     * A clip just started: its mood/feel shift (or a guest set's revert) replaces the upcoming Radio picks. Returns the
+     * clip's own change for talk stats ("feel:<name>" or "mood:<mood>"), not a revert.
+     */
+    private fun applyShift(info: TalkClipInfo): String? {
+        val choices = radio.feelChoices.value.filter { !it.archived }
+        val result = TalkShiftPolicy.onStart(info, station(), guestRestore(), OfflineRecommender.MOODS.keys, choices.map { it.feelId }.toSet())
         saveRestore(result.pending)
-        result.apply?.let(::changeStation)
+        val applied = result.apply ?: return null
+        changeStation(applied)
+        if (info.shift == null) return null
+        return applied.feel?.let { id -> "feel:" + (choices.firstOrNull { it.feelId == id }?.name ?: id) } ?: "mood:${applied.mood}"
     }
 
     private fun changeStation(pick: StationPick) {
         radio.applyStation(pick)
-        engine.newMix()
+        engine.stationMix()
     }
 
     private suspend fun report(jobId: String, outcome: String, heardS: Double?) {
@@ -221,13 +254,14 @@ internal class TalkCoordinator(
         val activeFeel = radioState.feel?.let { id -> radio.feelChoices.value.firstOrNull { it.feelId == id } }?.let { TalkWire.Feel(it.feelId, it.name) }
         val now = LocalDateTime.now().truncatedTo(ChronoUnit.SECONDS)
         val slot = engine.state.value.origins[next.id]?.name?.lowercase(Locale.ROOT)
+        val (effects, slowedActive) = slowed?.turnExtras(after.id) ?: (null to false)
         return TalkWire.turn(TalkWire.Turn(
             turnId = UUID.randomUUID().toString(), seq = seq, after = ref(after), next = ref(next, slot), mood = radioState.mood,
             recent = sessionRecent.take(5).map { ref(it) }, feel = activeFeel, feels = feels, skipStreak = streak, feedback = feedback,
             history = TalkWire.History(nextPlays.count { it.kind == "song_completed" }, days),
             localIso = now.toString().let { if (it.length == 16) "$it:00" else it }, weekday = now.dayOfWeek.name.lowercase(Locale.ROOT),
             sessionMinutes = ((System.currentTimeMillis() - sessionStart) / 60_000L).toInt().coerceAtLeast(0), sessionSongs = sessionSongs,
-            talk = settings.toWire(),
+            talk = settings.toWire(), effects = effects, slowedActive = slowedActive,
         ))
     }
 

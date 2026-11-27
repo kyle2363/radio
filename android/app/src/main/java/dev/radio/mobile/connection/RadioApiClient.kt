@@ -37,11 +37,13 @@ class RadioApiClient(private val policy: EndpointPolicy, private val deadlineMs:
         internal enum class ConnectedRoute(val maxRequestBytes: Int, val maxResponseBytes: Int) {
             AVAILABILITY(256 * 1024, 32768), CONTEXT(8 * 1024, 32768), RECOMMEND(16 * 1024, 128 * 1024),
             /** Connected talk (checkpoint 13): start a turn, report an outcome, poll a job (GET, no body). */
-            TALK_TURN(16 * 1024, 32768), TALK_OUTCOME(1024, 32768), TALK_JOB(0, 128 * 1024)
+            TALK_TURN(16 * 1024, 32768), TALK_OUTCOME(1024, 32768), TALK_JOB(0, 128 * 1024),
+            /** Slowed Radio line bank (checkpoint 14): list changes since a revision, report plays. */
+            SLOWED_LIST(1024, 256 * 1024), SLOWED_PLAYS(32 * 1024, 8192)
         }
         internal const val TALK_CLIP_MAX_BYTES = 2 * 1024 * 1024
         private val talkToken = "[A-Za-z0-9_-]{16,64}"
-        internal fun isTalkResource(path: String) = path.matches(Regex("/talk/resources/$talkToken"))
+        internal fun isTalkResource(path: String) = path.matches(Regex("/talk/resources/$talkToken")) || path.matches(Regex("/talk/slowed-lines/$talkToken"))
         internal const val LYRICS_MAX_RESPONSE_BYTES = 512 * 1024
         private val lyricsPath = Regex("/lyrics\\?revision=[1-9][0-9]{0,18}&manifest_sha256=[0-9a-f]{64}&song_id=[A-Za-z0-9_-]{1,128}")
         private val contextId = "[A-Za-z0-9_-]{16,64}"
@@ -52,6 +54,8 @@ class RadioApiClient(private val policy: EndpointPolicy, private val deadlineMs:
             path.matches(Regex("/contexts/$contextId/talk")) -> ConnectedRoute.TALK_TURN
             path.matches(Regex("/talk/jobs/$talkToken/outcome")) -> ConnectedRoute.TALK_OUTCOME
             path.matches(Regex("/talk/jobs/$talkToken")) -> ConnectedRoute.TALK_JOB
+            path == "/talk/slowed-lines" -> ConnectedRoute.SLOWED_LIST
+            path == "/talk/slowed-lines/plays" -> ConnectedRoute.SLOWED_PLAYS
             else -> null
         }
         internal fun isLyricsPath(path: String): Boolean = path.length <= 1024 && lyricsPath.matches(path)

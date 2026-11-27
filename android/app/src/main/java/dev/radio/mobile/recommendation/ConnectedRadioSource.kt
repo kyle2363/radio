@@ -17,14 +17,18 @@ import kotlinx.coroutines.sync.withLock
 /** What the desktop currently allows this phone to do. */
 data class ConnectedAccess(val key: String, val capable: Boolean, val permitted: Boolean, val tunable: Boolean = false,
     /** Connected talk (checkpoint 13); null on desktops that don't offer it. */
-    val talk: TalkCapability? = null) {
+    val talk: TalkCapability? = null,
+    /** Whether the desktop ranks inside a phone feel station (checkpoint 13C). */
+    val feels: Boolean = false,
+    /** Song events may carry `effect` (Slowed Radio, checkpoint 14); older desktops reject the field. */
+    val eventEffects: Boolean = false) {
     companion object {
         /** Parses GET /capabilities. [key] identifies the paired server and device. */
         fun parse(key: String, body: String): ConnectedAccess {
             val root = runCatching { ConnectedJson.parse(body) as? Map<*, *> }.getOrNull() ?: throw ConnectionFailure("Invalid server response.")
             val scopes = (root["scopes"] as? List<*>)?.filterIsInstance<String>().orEmpty()
             return ConnectedAccess(key, root["connected_recommendations"] == true, "recommend:read" in scopes, root["connected_tuning"] == true,
-                TalkCapability.parse(root["connected_talk"]))
+                TalkCapability.parse(root["connected_talk"]), root["connected_feels"] == true, root["event_effects"] == true)
         }
     }
 }
@@ -64,7 +68,7 @@ data class ConnectedPick(val song: LocalSong, val slot: String, val reason: Stri
 /** Everything that must still hold for a set to be usable (see [ConnectedRadioSource.revalidate]). */
 data class ConnectedFence(val anchorLocalId: String, val mood: String, val exploration: Double, val vibe: String?,
     val mappingGeneration: Long, val syncEpoch: Long, val connectedEpoch: Long = 0, val availabilityDigest: String = "",
-    val tuning: ConnectedTuning = ConnectedTuning())
+    val tuning: ConnectedTuning = ConnectedTuning(), val feel: String? = null)
 
 data class ConnectedSet(val anchorLocalId: String, val requestId: String, val resultId: String, val rankedBy: String, val vibeLocked: Boolean,
     val fence: ConnectedFence, val continuation: List<ConnectedPick>, val options: List<ConnectedPick>, val dropped: Int, val receivedAt: Long,
@@ -78,6 +82,8 @@ data class ConnectedRequest(
     val mappings: MappingSnapshot, val available: Map<String, LocalSong>, val recent: List<ConnectedRecent>,
     val excludeLocalIds: Set<String>, val isDisliked: (String) -> Boolean, val fence: ConnectedFence,
     val tuning: ConnectedTuning = ConnectedTuning(), val played: List<ConnectedPlayed> = emptyList(),
+    /** Active feel station id; sent only to desktops that advertise `connected_feels`. */
+    val feel: String? = null,
 )
 
 data class ConnectedStatus(
@@ -206,7 +212,7 @@ class ConnectedRadioSource(
         val f = held.fence
         val ok = current != null && f.anchorLocalId == current.anchorLocalId && f.mood == current.mood && f.exploration == current.exploration &&
             f.vibe == current.vibe && f.mappingGeneration == current.mappingGeneration && f.syncEpoch == current.syncEpoch && f.connectedEpoch == latestEpoch &&
-            f.tuning.normalized() == current.tuning.normalized()
+            f.tuning.normalized() == current.tuning.normalized() && f.feel == current.feel
         if (!ok) currentSet.compareAndSet(held, null)
     }
 
@@ -319,7 +325,7 @@ class ConnectedRadioSource(
                 if (obj(response.body)?.get("digest") != snapshot.digest) return fail(ConnectedFailureKind.INVALID_REPLY, "availability digest")
                 uploadedDigest = snapshot.digest; uploadedRevision = snapshot.revision; forceUpload = false
             }
-            val ctx = contextBody(request, snapshot, granted.tunable)
+            val ctx = contextBody(request, snapshot, granted.tunable, granted.feels)
             if (contextId == null || forceContext || ctx != contextBody) {
                 val create = contextId == null
                 val response = link.post(if (create) "/contexts" else "/contexts/$contextId", ctx)
@@ -357,7 +363,7 @@ class ConnectedRadioSource(
         }
     }
 
-    private fun contextBody(request: ConnectedRequest, snapshot: AvailabilitySnapshot, tunable: Boolean): String {
+    private fun contextBody(request: ConnectedRequest, snapshot: AvailabilitySnapshot, tunable: Boolean, feels: Boolean = false): String {
         val recent = request.recent.mapNotNull { r -> snapshot.serverIdByLocal[r.localId]?.let { linkedMapOf("song_id" to it, "outcome" to r.outcome) } }.takeLast(20)
         val body = linkedMapOf<String, Any?>("protocol_version" to 1, "mood" to request.mood, "exploration" to request.exploration.coerceIn(0.0, 1.0),
             "vibe_lock_song_id" to request.vibeLocalId?.let { snapshot.serverIdByLocal[it] }, "recent" to recent)
@@ -368,6 +374,7 @@ class ConnectedRadioSource(
                 .distinctBy { it.first }.take(MAX_PLAYED).map { linkedMapOf("song_id" to it.first, "age_s" to it.second) }
             if (played.isNotEmpty()) body["played"] = played
         }
+        if (feels) request.feel?.let { body["feel_id"] = it.take(64) }
         return ConnectedJson.write(body)
     }
 

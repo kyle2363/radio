@@ -24,7 +24,7 @@ internal object PlaybackArtwork {
         // larger down to that before it leaves the app. Drawing smaller makes it blurry there.
         val size = (320 * context.resources.displayMetrics.density).toInt().coerceIn(512, 1024)
         val embedded = CacheBitmapLoader(DataSourceBitmapLoader.Builder(context).setMaximumOutputDimension(size).build())
-        // Music falls back to the plain gradient; the widget and app keep the note (see drawable()).
+        // Music falls back to a smaller version of the widget's note (see player_session_artwork).
         fun fallback(talk: Boolean) = checkNotNull(
             ContextCompat.getDrawable(context, if (talk) R.drawable.player_talk_artwork else R.drawable.player_session_artwork),
         ).toBitmap(size, size)

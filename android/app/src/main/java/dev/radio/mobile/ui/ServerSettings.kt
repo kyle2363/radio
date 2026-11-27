@@ -65,6 +65,8 @@ fun ServerSettings(repository: PairingRepository? = null, matchingScreen: Boolea
     }
     val synchronizer = remember(context, connection) { PortableSyncRepository.get(context, connection) }
     val sync by synchronizer.state.collectAsState()
+    val shellPrefs = remember(context) { context.getSharedPreferences("radio_shell", android.content.Context.MODE_PRIVATE) }
+    var syncOnOpen by remember(shellPrefs) { mutableStateOf(shellPrefs.getBoolean(dev.radio.mobile.data.SyncOnOpen.PREF_ENABLED, false)) }
     LaunchedEffect(synchronizer, state.serverId, state.paired) { synchronizer.load() }
     Column(Modifier.fillMaxWidth().padding(top = 20.dp).testTag("server-settings")) {
         Text("Server", style = MaterialTheme.typography.titleSmall)
@@ -115,7 +117,8 @@ fun ServerSettings(repository: PairingRepository? = null, matchingScreen: Boolea
         if (state.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
         ProfileSyncSection(sync.busy, sync.pendingEvents, sync.lastSuccessAt, sync.message, sync.error,
             enabled = state.loaded && state.paired && !state.pending && !state.quarantined && !state.blocked && !state.busy && !imported.busy && !matches.busy,
-            onSync = { scope.launch { discovery.readDuringSession(); synchronizer.syncNow(); if(sync.error != null) discovery.readAfterConnectionError() } })
+            onSync = { scope.launch { discovery.readDuringSession(); synchronizer.syncNow(); if(sync.error != null) discovery.readAfterConnectionError() } },
+            syncOnOpen = syncOnOpen, onSyncOnOpenChange = { on -> syncOnOpen = on; shellPrefs.edit().putBoolean(dev.radio.mobile.data.SyncOnOpen.PREF_ENABLED, on).apply() })
         if (radioRepository != null) {
             val connectedUi by radioRepository.connectedState.collectAsState()
             ConnectedRadioSection(connectedUi.status, paired = state.paired && !state.blocked && !state.quarantined,

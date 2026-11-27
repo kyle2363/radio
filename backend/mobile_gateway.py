@@ -35,6 +35,13 @@ CONTEXT_PATH = re.compile(re.escape(PREFIX) + r"/contexts/(" + CONTEXT_ID + r")(
 TALK_JOB_PATH = re.compile(re.escape(PREFIX) + r"/talk/jobs/(" + TALK_TOKEN + r")(/outcome)?")
 TALK_RESOURCE_PATH = re.compile(re.escape(PREFIX) + r"/talk/resources/(" + TALK_TOKEN + r")")
 MAX_TALK_TURN_BODY = 16 * 1024
+# Slowed Radio line bank (checkpoint 14B). The list is a POST because the phone's transport sends no query strings
+# on connected routes.
+SLOWED_LIST_PATH = PREFIX + "/talk/slowed-lines"
+SLOWED_PLAYS_PATH = PREFIX + "/talk/slowed-lines/plays"
+SLOWED_LINE_PATH = re.compile(re.escape(PREFIX) + r"/talk/slowed-lines/([A-Za-z0-9_-]{16,64})")
+MAX_SLOWED_PLAYS_BODY = 32 * 1024
+MAX_SLOWED_LIST_RESPONSE = 256 * 1024
 
 
 class EventsRequest(BaseModel):
@@ -250,7 +257,11 @@ class GatewayBoundary:
         is_talk_job = bool(job_match) and not job_match[2] and scope["method"] == "GET"
         is_talk_outcome = bool(job_match) and bool(job_match[2]) and scope["method"] == "POST"
         is_talk_resource = bool(TALK_RESOURCE_PATH.fullmatch(path)) and scope["method"] in ("GET", "HEAD")
-        is_talk = self.talk is not None and (is_talk_turn or is_talk_job or is_talk_outcome or is_talk_resource)
+        is_slowed_list = path == SLOWED_LIST_PATH and scope["method"] == "POST"
+        is_slowed_plays = path == SLOWED_PLAYS_PATH and scope["method"] == "POST"
+        is_slowed_line = bool(SLOWED_LINE_PATH.fullmatch(path)) and scope["method"] in ("GET", "HEAD")
+        is_talk = self.talk is not None and (is_talk_turn or is_talk_job or is_talk_outcome or is_talk_resource
+                                             or is_slowed_list or is_slowed_plays or is_slowed_line)
         is_connected = self.recommendations is not None and (
             is_availability or is_context_create or is_context_update or is_recommendation or is_talk)
         # The factory supplies this flag explicitly; middleware's inner app is
@@ -386,7 +397,8 @@ class GatewayBoundary:
             body_limit = (MAX_SYNC_BODY if is_sync_events and scope["method"] == "POST" else
                           MAX_AVAILABILITY_BODY if is_availability else
                           MAX_RECOMMENDATION_BODY if is_recommendation else
-                          MAX_TALK_TURN_BODY if is_talk_turn else 8192)
+                          MAX_TALK_TURN_BODY if is_talk_turn else
+                          MAX_SLOWED_PLAYS_BODY if is_slowed_plays else 8192)
             if is_context_create or is_context_update:
                 body_limit = MAX_CONTEXT_BODY
             if int(length) > body_limit:
@@ -427,7 +439,8 @@ class GatewayBoundary:
 
         response_limit = (16 * 1024 * 1024 if is_catalog else MOBILE_LYRICS_MAX_RESPONSE_BYTES if is_lyrics else 8_000_000 if is_batch else
                           MAX_SYNC_BODY if is_sync_events else 262_144 if is_vector else
-                          MAX_TALK_RESOURCE + 1024 if is_talk_resource else
+                          MAX_TALK_RESOURCE + 1024 if is_talk_resource or is_slowed_line else
+                          MAX_SLOWED_LIST_RESPONSE if is_slowed_list else
                           MAX_RECOMMENDATION_RESPONSE if is_connected else 8192)
         messages, response_size = [], 0
         async def capture(message):
@@ -454,6 +467,8 @@ def create_mobile_gateway(store, identity, pairing, *, catalog=None, monotonic=t
     admission = app.state.admission = Admission(monotonic=monotonic)
     recommendations = app.state.recommendations = recommendations or MobileRecommendations(store)
     talk = app.state.talk = talk or MobileTalk(recommendations)
+    if getattr(recommendations, "guest_bias", "absent") is None:
+        recommendations.guest_bias = talk.guest_slot_bias
 
     @app.get(PREFIX + "/identity")
     def descriptor(request: Request):
@@ -479,8 +494,10 @@ def create_mobile_gateway(store, identity, pairing, *, catalog=None, monotonic=t
                 "catalog_revision": catalog.status()["revision"] if catalog else None,
                 **({"plain_lyrics": True, "plain_lyrics_version": 1,
                     "plain_lyrics_max_text_bytes": 65536} if catalog is not None else {}),
-                "profile_sync": True, "remote_hosting": True, "connected_recommendations": True, "connected_tuning": True,
+                "profile_sync": True, "remote_hosting": True, "connected_recommendations": True, "connected_tuning": True, "connected_feels": True,
                 "connected_talk": talk.capability(),
+                # Song events may carry "effect" (Slowed Radio); older desktops reject the field, so phones check this.
+                "event_effects": True,
                 "offline_recommendations": False, "native_speech_generation": False,
                 "local_music_required": True}
 
@@ -565,6 +582,24 @@ def create_mobile_gateway(store, identity, pairing, *, catalog=None, monotonic=t
     def talk_resource(rid: str, request: Request):
         try:
             data = talk.resource(request.scope["portable_identity"]["device_id"], rid)
+        except Rejected as exc:
+            raise HTTPException(exc.status, exc.detail) from None
+        return Response(data if request.method == "GET" else b"", media_type="audio/mp4",
+                        headers={"Content-Length": str(len(data)),
+                                 "ETag": '"' + hashlib.sha256(data).hexdigest() + '"'})
+
+    @app.post(SLOWED_LIST_PATH)
+    async def slowed_lines(request: Request):
+        return await connected(request, talk.slowed_manifest)
+
+    @app.post(SLOWED_PLAYS_PATH)
+    async def slowed_plays(request: Request):
+        return await connected(request, talk.slowed_plays)
+
+    @app.api_route(PREFIX + "/talk/slowed-lines/{line_id}", methods=["GET", "HEAD"])
+    def slowed_line(line_id: str, request: Request):
+        try:
+            data = talk.slowed_line(request.scope["portable_identity"]["device_id"], line_id)
         except Rejected as exc:
             raise HTTPException(exc.status, exc.detail) from None
         return Response(data if request.method == "GET" else b"", media_type="audio/mp4",

@@ -68,13 +68,19 @@ class LocalPlaybackController(
      */
     internal fun radioAnchorId(): String? = if (talkCurrent()) talkNext ?: state.value.currentId else state.value.currentId
     internal val normalizationProcessor = NormalizationAudioProcessor(meter = true)
+    // Slowed Radio (checkpoint 14): reverb and limiter after normalization; tape speed/pitch through PlaybackParameters.
+    private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val slowedProcessor: SlowedAudioProcessor = SlowedAudioProcessor { id -> mainHandler.post { onStream(player, id) } }
+    private val tailSlowed: SlowedAudioProcessor = SlowedAudioProcessor { id -> mainHandler.post { tail?.let { onStream(it, id) } } }
+    private var slowedPlan = SlowedPlan.OFF
+    private var userSpeed = 1f
     private val renderers = object : DefaultRenderersFactory(context.applicationContext) {
         override fun buildAudioSink(context: Context, enableFloatOutput: Boolean, enableAudioOutputPlaybackParams: Boolean): AudioSink =
-            DefaultAudioSink.Builder(context).setEnableFloatOutput(false).setAudioProcessors(arrayOf(normalizationProcessor)).build()
+            DefaultAudioSink.Builder(context).setEnableFloatOutput(false).setAudioProcessors(arrayOf(normalizationProcessor, slowedProcessor)).build()
     }
     private val appContext = context.applicationContext
     private val musicAttributes = AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MUSIC).build()
-    private val player = ExoPlayer.Builder(context.applicationContext, renderers).build().apply {
+    private val player: ExoPlayer = ExoPlayer.Builder(context.applicationContext, renderers).build().apply {
         setAudioAttributes(musicAttributes, true)
         setHandleAudioBecomingNoisy(true)
         setWakeMode(C.WAKE_MODE_LOCAL)
@@ -89,7 +95,7 @@ class LocalPlaybackController(
     private val tailNormalization = NormalizationAudioProcessor()
     private val tailRenderers = object : DefaultRenderersFactory(context.applicationContext) {
         override fun buildAudioSink(context: Context, enableFloatOutput: Boolean, enableAudioOutputPlaybackParams: Boolean): AudioSink =
-            DefaultAudioSink.Builder(context).setEnableFloatOutput(false).setAudioProcessors(arrayOf(tailNormalization)).build()
+            DefaultAudioSink.Builder(context).setEnableFloatOutput(false).setAudioProcessors(arrayOf(tailNormalization, tailSlowed)).build()
     }
     private var tail: ExoPlayer? = null
     private var crossfadeMs = 0L
@@ -125,7 +131,11 @@ class LocalPlaybackController(
     private fun clearStation() { origins = emptyMap(); seedLocalId = null; seedTitle = null }
     override fun startRadio(seedLocalId: String?) = onRadioStart(seedLocalId)
     override fun startStation(station: dev.radio.mobile.recommendation.SeedSpec) = onStationStart(station)
-    override fun newMix() { if (radioActive) onNewMix() }
+    /** The listener's New mix (station card); Slowed ends its set on it. */
+    internal var onUserNewMix: () -> Unit = {}
+    override fun newMix() { if (radioActive) { onUserNewMix(); onNewMix() } }
+    /** A station change made by the show itself (talk shifts, a Slowed set's pool): same refill, not the listener's. */
+    internal fun stationMix() { if (radioActive) onNewMix() }
     override fun stopRadio() { if(talk!=null && !talkCurrent())dropTalk(skipToNext=false);radioActive=false;radioStarting=false;clearStation();queueRevision++;publish(checkpoint=true) }
     override fun endRadio(stopNow: Boolean) {
         if (stopNow) { queueRevision++; player.pause(); if (queue.isNotEmpty()) source = PlaySource.CustomQueue }
@@ -230,6 +240,7 @@ class LocalPlaybackController(
                         started = true
                         consecutiveErrors = 0
                         attemptDurationMs = player.duration.takeIf { it != C.TIME_UNSET && it > 0 } ?: song.durationMs
+                        slowedPlan.presetFor(song.id)?.let { attemptEffects[attemptId] = it.id; while (attemptEffects.size > 32) attemptEffects.remove(attemptEffects.keys.first()) }
                         startContext = PlayContext(attemptSource.kind, attemptSource.id,
                             if (attemptSource.kind == PlaySource.RADIO) origins[song.id]?.name else null,
                             PlayTrigger.resolve(attemptTrigger, attemptExternal, latestCommand))
@@ -315,7 +326,7 @@ class LocalPlaybackController(
         val playingTalk = talkCurrent()
         val duration = player.duration.takeIf { it != C.TIME_UNSET && it > 0 } ?: current?.durationMs ?: talk?.takeIf { playingTalk }?.info?.durationMs?.takeIf { it > 0 }
         val talkNow = talk?.let { TalkNow(it.info, it.mediaId, playingTalk, talkAfter, talkNext) }
-        mutable.value = PlaybackState(talk = talkNow,
+        mutable.value = PlaybackState(talk = talkNow, slowed = slowedPlan.presetFor(id),
             queue = queue, playOrder = cachedOrder, source = source.label, currentId = id, radioActive = radioActive, queueRevision = queueRevision,
             origins = if (radioActive) origins else emptyMap(), stationSeedTitle = if (radioActive) seedTitle else null, radioStarting = radioStarting && !radioActive, notice = notice,
             positionMs = player.currentPosition.coerceAtLeast(0),
@@ -362,8 +373,9 @@ class LocalPlaybackController(
 
     /** Speed, skip silence, crossfade length and the equaliser. Takes effect immediately, mid-song. */
     internal fun applyAudio(settings: AudioSettings) {
-        val parameters = PlaybackParameters(settings.speed)
-        player.playbackParameters = parameters; tail?.playbackParameters = parameters
+        userSpeed = settings.speed
+        applyParameters(player, slowedProcessor.streamMediaId.ifEmpty { player.currentMediaItem?.mediaId })
+        tail?.let { applyParameters(it, tailSlowed.streamMediaId.ifEmpty { it.currentMediaItem?.mediaId }) }
         player.skipSilenceEnabled = settings.skipSilence
         crossfadeMs = settings.crossfadeSeconds * 1000L
         if (crossfadeMs == 0L) cancelCrossfade()
@@ -372,6 +384,62 @@ class LocalPlaybackController(
     /** What the phone's equaliser offers, or null when it has none. */
     internal fun describeEffects(): EqualizerInfo? = effects.describe()
 
+    /**
+     * Slowed Radio: which songs play with which preset. Reverb follows the plan sample-exactly in the processors; the
+     * tape speed/pitch is set for the item whose audio is entering the sink (it may already be the next, prebuffered one).
+     */
+    internal fun setSlowed(plan: SlowedPlan) {
+        if (plan == slowedPlan) return
+        slowedPlan = plan; slowedProcessor.plan = plan; tailSlowed.plan = plan
+        applyParameters(player, slowedProcessor.streamMediaId.ifEmpty { player.currentMediaItem?.mediaId })
+        tail?.let { applyParameters(it, tailSlowed.streamMediaId.ifEmpty { it.currentMediaItem?.mediaId }) }
+        publish()
+    }
+    internal val slowed: SlowedPlan get() = slowedPlan
+    /** The Slowed preset an attempt started with, for its journal events; null when it played normally. */
+    private val attemptEffects = LinkedHashMap<String, String>()
+    internal fun effectOf(attempt: String): String? = attemptEffects[attempt]
+
+    /**
+     * Manual Slowed run (14D): the current song fades out over [durationMs] and the next timeline item (the opener just
+     * inserted) plays at once. The interrupted song ends as stopped with [reason], never as a skip.
+     */
+    internal fun fadeIntoNext(durationMs: Long, reason: String) {
+        if (closed || player.mediaItemCount == 0) return
+        cancelCrossfade()
+        manualFade?.cancel()
+        val from = player.currentMediaItem?.mediaId
+        manualFade = scope.launch {
+            val begun = android.os.SystemClock.elapsedRealtime()
+            if (player.isPlaying) while (true) {
+                val progress = (android.os.SystemClock.elapsedRealtime() - begun).toFloat() / durationMs.coerceAtLeast(1)
+                fadeGain = (1f - progress).coerceIn(0f, 1f); applyVolume()
+                if (progress >= 1f || player.currentMediaItem?.mediaId != from) break
+                delay(40)
+            }
+            if (player.currentMediaItem?.mediaId == from) {
+                val index = player.currentMediaItemIndex + 1
+                val target = if (index < player.mediaItemCount && isTalkId(player.getMediaItemAt(index).mediaId)) index else adjacent(true)
+                if (target != C.INDEX_UNSET) {
+                    queueRevision++
+                    finishAttempt("attempt_stopped", reason)
+                    beginAttempt(player.getMediaItemAt(target).mediaId, PlayTrigger.AUTO_ADVANCE)
+                    player.seekTo(target, 0)
+                    if (player.playbackState == Player.STATE_IDLE) player.prepare()
+                }
+            }
+            fadeGain = 1f; applyVolume()
+            publish(checkpoint = true)
+        }
+    }
+    private var manualFade: Job? = null
+    private fun onStream(target: ExoPlayer, mediaId: String) { if (!closed) applyParameters(target, mediaId) }
+    private fun applyParameters(target: ExoPlayer, mediaId: String?) {
+        val values = SlowedPreset.parameters(userSpeed, slowedPlan.presetFor(mediaId))
+        val parameters = PlaybackParameters(values.speed, values.pitch)
+        if (target.playbackParameters != parameters) target.playbackParameters = parameters
+    }
+
     private fun tailPlayer(): ExoPlayer = tail ?: ExoPlayer.Builder(appContext, tailRenderers)
         // Index seeking makes the tail start at exactly the outgoing song's position, even for variable-bitrate MP3s.
         .setMediaSourceFactory(DefaultMediaSourceFactory(appContext, DefaultExtractorsFactory().setMp3ExtractorFlags(Mp3Extractor.FLAG_ENABLE_INDEX_SEEKING)))
@@ -379,7 +447,6 @@ class LocalPlaybackController(
             // No audio focus of its own: the real player holds it, and pausing that ends the tail.
             setAudioAttributes(musicAttributes, false)
             setAudioSessionId(player.audioSessionId)
-            playbackParameters = player.playbackParameters
         }.also { tail = it }
 
     private fun maybeCrossfade() {
@@ -399,6 +466,8 @@ class LocalPlaybackController(
         val handover = player.currentPosition + CROSSFADE_LEAD_MS
         val tail = tailPlayer()
         tail.volume = 0f
+        // The tail is the end of the outgoing song, so it keeps that song's speed, pitch and reverb.
+        applyParameters(tail, outgoing.mediaId)
         tail.setMediaItem(outgoing, handover)
         tail.prepare()
         // Lazy, so fadeJob is set before the job can run (and finish) on the immediate dispatcher.
@@ -425,7 +494,7 @@ class LocalPlaybackController(
                 beginAttempt(player.getMediaItemAt(nextIndex).mediaId, PlayTrigger.CROSSFADE)
                 player.seekTo(nextIndex, 0)
                 publish(checkpoint = true)
-                val overlapMs = ((duration - start) / player.playbackParameters.speed).toLong().coerceAtLeast(1)
+                val overlapMs = ((duration - start) / tail.playbackParameters.speed).toLong().coerceAtLeast(1)
                 val begun = android.os.SystemClock.elapsedRealtime()
                 while (true) {
                     val progress = (android.os.SystemClock.elapsedRealtime() - begun).toFloat() / overlapMs
@@ -913,7 +982,7 @@ class LocalPlaybackController(
     fun close() {
         if (closed) return
         publish(checkpoint = true)
-        closed = true; scope.cancel(); tail?.release(); tail = null; effects.release(); player.release()
+        closed = true; mainHandler.removeCallbacksAndMessages(null); scope.cancel(); tail?.release(); tail = null; effects.release(); player.release()
     }
 }
 

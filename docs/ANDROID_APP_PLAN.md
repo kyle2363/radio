@@ -1,6 +1,6 @@
 # Android app plan
 
-Status: checkpoints through 5 are merged into `main`. Checkpoint 4.2 Radio mode redesign was phone-accepted, fully verified and merged November 11, 2026 (`f676e83`). Checkpoint 5 plain lyrics was merged November 14, 2026. Checkpoint 6 visual redesign was phone-accepted November 17, 2026 (unmerged). Checkpoint 7 is planned in `docs/CHECKPOINT_7_PLAN.md`. Direct LAN hosting remains deferred.
+Status (November 27, 2026): every feature branch through the November 25 polish is merged into `main`, including checkpoint 6, 7A, 8–11, 9D–9E and 13A–13D. Branch `finish-open-items` finishes checkpoint 7 (desktop Sync to phone, sync on open) and 13C (Room v14 talk stats); awaiting phone test. Direct LAN hosting remains deferred.
 Integration: `android-app`, based on `stability-server-architecture`, reviewed for integration into `main` on November 3. Earlier pending-review notes below are historical checkpoint records, superseded by the November 3 acceptance.
 
 ## Polish and fixes — November 25, 2026

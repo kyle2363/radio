@@ -25,9 +25,11 @@ KINDS = frozenset({"song_started", "song_completed", "song_skipped", "song_repla
                    "energy_changed", "preference_changed",
                    "playlist_renamed", "playlist_deleted", "playlist_member_changed",
                    "feel_defined", "feel_rated", "feel_compared"})
+EFFECTS = frozenset({"really_slow", "slowed", "lofi"})
 FEEL_KINDS = frozenset({"feel_defined", "feel_rated", "feel_compared"})
 PLAYLIST_KINDS = frozenset({"playlist_renamed", "playlist_deleted", "playlist_member_changed"})
 # Additive (checkpoint 7A); checked on every start so existing stores upgrade.
+# deleted: 0 linked, 1 deleted, 2 unshared on the desktop (identity kept for a later share).
 _PLAYLIST_SCHEMA = """
 CREATE TABLE IF NOT EXISTS portable_playlists(playlist_id TEXT PRIMARY KEY,collection_id INTEGER,
  deleted INTEGER NOT NULL DEFAULT 0);
@@ -204,7 +206,7 @@ class PortableProfileStore:
             raise ValueError("Unsupported event protocol")
         allowed = {"protocol_version", "event_id", "device_id", "logical_clock", "kind", "song_id",
                    "attempt_id", "occurred_at", "value", "key", "local_id", "reason", "completion", "catalog_id",
-                   "playlist_id", "position", "feel_id", "other_song_id", "other_local_id", "weight"}
+                   "playlist_id", "position", "feel_id", "other_song_id", "other_local_id", "weight", "effect"}
         if set(event) - allowed:
             raise ValueError("Unknown event fields")
         _text(event.get("event_id"), "event id")
@@ -251,6 +253,9 @@ class PortableProfileStore:
             _text(event.get("local_id"), "local-only song id")
         if kind.startswith("song_"):
             _text(event.get("attempt_id"), "attempt id")
+        # Slowed Radio (checkpoint 14): the phone's effect preset while the song played.
+        if "effect" in event and (not kind.startswith("song_") or event["effect"] not in EFFECTS):
+            raise ValueError("Invalid playback effect")
         if kind in ("favorite_changed", "blacklist_changed", "dislike_changed") and type(event.get("value")) is not bool:
             raise ValueError("Boolean preference required")
         if kind == "energy_changed":
@@ -388,6 +393,9 @@ class PortableProfileStore:
                 raise SyncConflict("Attempt reused for another song")
             conn.execute("INSERT INTO portable_attempts VALUES (?,?,?,?,?)", (*identity, song_key, kind))
             signal = {"song_started": "playing", "song_completed": "completed", "song_skipped": "skip_early", "song_replayed": "replayed"}[kind]
+            if kind == "song_skipped" and event.get("effect"):
+                # A skip during a Slowed set is about the effect, not the song: the taste model never sees it.
+                return
             self._play(conn, event, signal)
             if sid and kind == "song_skipped" and event.get("reason"):
                 conn.execute("INSERT INTO skip_feedback(session_id,skip_streak,reason,duration) VALUES (NULL,0,?,NULL)", (event["reason"],))
@@ -455,6 +463,10 @@ class PortableProfileStore:
         if old and tuple(old) >= order:
             return
         conn.execute("INSERT OR REPLACE INTO portable_registers VALUES (?,?,?,?,?)", (key, *order, canonical(value)))
+        # The baseline is the last projected value even when the collection is
+        # unshared and not rewritten, so a re-share exports the desktop's copy
+        # wherever it differs. A linked collection overwrites this below.
+        conn.execute("INSERT OR REPLACE INTO portable_desktop_snapshot VALUES (?,?)", (key, canonical(value)))
         self._materialize(conn, pid)
 
     def _playlist_state(self, conn, pid):
@@ -483,7 +495,9 @@ class PortableProfileStore:
         if state["deleted"]:
             conn.execute("INSERT OR REPLACE INTO portable_playlists VALUES (?,NULL,1)", (pid,))
             return
-        link = conn.execute("SELECT collection_id FROM portable_playlists WHERE playlist_id=?", (pid,)).fetchone()
+        link = conn.execute("SELECT collection_id,deleted FROM portable_playlists WHERE playlist_id=?", (pid,)).fetchone()
+        if link and link[1] == 2:
+            return  # Unshared on the desktop: the phone's edits stay in the registers only.
         cid = link[0] if link else None
         if cid is not None and not conn.execute("SELECT 1 FROM collections WHERE id=?", (cid,)).fetchone():
             cid = None
@@ -531,13 +545,30 @@ class PortableProfileStore:
         with self.transaction() as conn:
             if not conn.execute("SELECT 1 FROM collections WHERE id=?", (collection_id,)).fetchone():
                 raise ValueError("Collection is missing")
-            row = conn.execute("SELECT playlist_id FROM portable_playlists WHERE collection_id=? AND deleted=0",
+            row = conn.execute("SELECT playlist_id,deleted FROM portable_playlists WHERE collection_id=? AND deleted!=1",
                                (collection_id,)).fetchone()
             if row:
+                if row[1] == 2:
+                    # Sharing again keeps the playlist id; the next capture exports the desktop's copy.
+                    conn.execute("UPDATE portable_playlists SET deleted=0 WHERE playlist_id=?", (row[0],))
                 return row[0]
             pid = str(uuid4())
             conn.execute("INSERT INTO portable_playlists VALUES (?,?,0)", (pid, collection_id))
             return pid
+
+    def unshare_collection(self, collection_id):
+        """Stop syncing a desktop collection here. Phones keep their copy; nothing is deleted."""
+        with self.transaction() as conn:
+            conn.execute("UPDATE portable_playlists SET deleted=2 WHERE collection_id=? AND deleted=0", (collection_id,))
+
+    @staticmethod
+    def shared_collection_ids():
+        """Desktop collections currently synced with phones. Reads only; never installs the schema."""
+        with database.get_connection_cm() as conn:
+            if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='portable_playlists'").fetchone():
+                return set()
+            return {row[0] for row in conn.execute(
+                "SELECT collection_id FROM portable_playlists WHERE deleted=0 AND collection_id IS NOT NULL")}
 
     def _capture_playlists(self, conn, clock):
         catalog_id = None

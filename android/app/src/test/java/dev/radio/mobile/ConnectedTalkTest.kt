@@ -57,6 +57,16 @@ class ConnectedTalkTest {
         assertEquals(TalkSettings(), TalkSettings.decode("not json"))
     }
 
+    @Test fun guestShiftIsAnOverrideOnlyWhenChosen() {
+        assertNull(TalkSettings(enabled = true).guestShift)
+        val often = TalkSettings(enabled = true, guestShift = "often")
+        assertEquals(mapOf("guest_shift" to "often"), often.toWire())
+        assertEquals(often, TalkSettings.decode(often.encode()))
+        assertNull(TalkSettings(enabled = true, guestShift = "sometimes").normalized().guestShift)
+        assertEquals(TalkSettings(enabled = true), often.desktopDefaults())
+        assertEquals(listOf("none", "rarely", "normal", "often"), TalkSettings.GUEST_SHIFTS)
+    }
+
     @Test fun capabilityParsesAndExplains() {
         val cap = TalkCapability.parse(ConnectedJson.parse("""{"available":false,"reason":"tts_disabled","max_clip_seconds":180}"""))!!
         assertFalse(cap.available)

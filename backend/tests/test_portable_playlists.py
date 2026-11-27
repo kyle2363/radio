@@ -135,3 +135,63 @@ def test_imported_changes_are_not_echoed_back_as_desktop_events():
 def test_invalid_playlist_events_are_rejected(bad):
     with pytest.raises(ValueError):
         PortableProfileStore().import_events("phone", [ev(1, **bad)])
+
+
+def test_unshared_collection_stops_following_and_reshare_keeps_identity():
+    store = PortableProfileStore()
+    cid = database.create_collection("Desk")
+    database.add_to_collection(cid, 1)
+    pid = store.share_collection(cid)
+    store.capture_desktop()
+    assert store.shared_collection_ids() == {cid}
+    store.unshare_collection(cid)
+    assert store.shared_collection_ids() == set()
+    # Phone edits no longer touch the desktop collection, and desktop edits are not exported.
+    store.import_events("phone", [{**ev(50, "playlist_member_changed", song_id="2", value=True, position="z"),
+                                   "playlist_id": pid}])
+    assert songs_of(cid) == [1]
+    database.add_to_collection(cid, 3)
+    before = store.events()["cursor"]
+    store.capture_desktop()
+    assert store.events(before)["events"] == []
+    # Sharing again reuses the same playlist id; the desktop's copy wins.
+    assert store.share_collection(cid) == pid
+    store.capture_desktop()
+    assert [m["key"] for m in store.profile()["playlists"][pid]["members"]] == ["1", "3"]
+
+
+def test_reshare_reconciles_a_phone_rename_made_while_unshared():
+    store = PortableProfileStore()
+    cid = database.create_collection("Desk")
+    database.add_to_collection(cid, 1)
+    pid = store.share_collection(cid)
+    store.capture_desktop()
+    store.unshare_collection(cid)
+    store.import_events("phone", [{**ev(50, "playlist_renamed", value="Phone name"), "playlist_id": pid}])
+    assert [c["name"] for c in database.get_collections() if c["id"] == cid] == ["Desk"]
+    assert store.share_collection(cid) == pid
+    store.capture_desktop()
+    # The desktop's copy wins on re-share, so the profile matches the desktop again.
+    assert store.profile()["playlists"][pid]["name"] == "Desk"
+    assert [m["key"] for m in store.profile()["playlists"][pid]["members"]] == ["1"]
+
+
+def test_unshare_unknown_collection_is_a_no_op_and_ids_need_no_schema():
+    assert PortableProfileStore(initialize=False).shared_collection_ids() == set()
+    PortableProfileStore().unshare_collection(12345)
+
+
+def test_collection_sync_routes_toggle_and_list_state():
+    from types import SimpleNamespace
+    from fastapi import HTTPException
+    from tests.test_library_safety import load
+    routes = load("list_collections", "set_collection_sync", PortableProfileStore=PortableProfileStore,
+                  CollectionSyncRequest=SimpleNamespace)
+    cid = database.create_collection("Desk")
+    assert [c["synced"] for c in routes["list_collections"]()["collections"]] == [False]
+    on = routes["set_collection_sync"](cid, SimpleNamespace(enabled=True))
+    assert on["synced"] is True and routes["list_collections"]()["collections"][0]["synced"] is True
+    assert routes["set_collection_sync"](cid, SimpleNamespace(enabled=False)) == {"synced": False}
+    assert routes["list_collections"]()["collections"][0]["synced"] is False
+    with pytest.raises(HTTPException):
+        routes["set_collection_sync"](999, SimpleNamespace(enabled=True))

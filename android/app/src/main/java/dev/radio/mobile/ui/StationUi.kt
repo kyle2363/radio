@@ -176,7 +176,9 @@ fun BlockedStationCard(block: StationBlock, scanned: Int, total: Int, onChooseFo
 
 @Composable
 fun OnAirStationCard(audio: PlaybackState, radio: RadioState, onOpenPlayer: () -> Unit, onVibe: () -> Unit, onNewMix: () -> Unit, onEnd: () -> Unit, modifier: Modifier = Modifier,
-    positionMs: () -> Long = { audio.positionMs }, feel: dev.radio.mobile.data.LocalFeel? = null, server: dev.radio.mobile.recommendation.ServerChip? = null) {
+    positionMs: () -> Long = { audio.positionMs }, feel: dev.radio.mobile.data.LocalFeel? = null, server: dev.radio.mobile.recommendation.ServerChip? = null,
+    /** Slowed Radio (checkpoint 14D): "Slow it down" and "Back to normal". Null hides both. */
+    slowed: dev.radio.mobile.playback.SlowedUi? = null, onSlowDown: (dev.radio.mobile.playback.SlowedPreset?) -> Unit = {}, onBackToNormal: () -> Unit = {}) {
     val colors = LocalStationColors.current
     val muted = Color(colors.muted)
     val song = audio.current
@@ -237,6 +239,37 @@ fun OnAirStationCard(audio: PlaybackState, radio: RadioState, onOpenPlayer: () -
             StationOutlinedButton("New mix", onNewMix, Modifier.weight(1f).testTag("new-mix"), symbol = Symbol.Refresh)
             StationOutlinedButton("End", onEnd, Modifier.weight(1f).testTag("end-station-card"), symbol = Symbol.Stop)
         }
+        if (slowed != null && (slowed.offered || slowed.running)) SlowedControls(slowed, muted, onSlowDown, onBackToNormal)
+    }
+}
+
+/** The station card's Slowed row: a running set with "Back to normal", or "Slow it down" with a choice of sound. */
+@Composable
+private fun SlowedControls(slowed: dev.radio.mobile.playback.SlowedUi, muted: Color, onSlowDown: (dev.radio.mobile.playback.SlowedPreset?) -> Unit, onBackToNormal: () -> Unit) {
+    val colors = LocalStationColors.current
+    if (slowed.running) {
+        Row(Modifier.fillMaxWidth().background(Color(colors.panel), RoundedCornerShape(14.dp)).padding(start = 12.dp, end = 6.dp, top = 6.dp, bottom = 6.dp).testTag("station-slowed"),
+            verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("${slowed.preset?.label ?: "Slowed"} set", style = MaterialTheme.typography.labelLarge)
+                Text(if (slowed.songsLeft == 1) "Last slowed song" else "${slowed.songsLeft} slowed songs left", color = muted, fontSize = 12.sp)
+            }
+            StationOutlinedButton("Back to normal", onBackToNormal, Modifier.testTag("slowed-back-to-normal"))
+        }
+        return
+    }
+    var menu by remember { mutableStateOf(false) }
+    Column {
+        Box {
+            StationOutlinedButton("Slow it down", { menu = true }, Modifier.fillMaxWidth().testTag("slow-it-down"), enabled = slowed.canStart)
+            DropdownMenu(menu, onDismissRequest = { menu = false }) {
+                dev.radio.mobile.playback.SlowedPreset.entries.forEach { preset ->
+                    DropdownMenuItem(text = { Text(preset.label) }, onClick = { menu = false; onSlowDown(preset) }, modifier = Modifier.testTag("slow-${preset.id}"))
+                }
+                DropdownMenuItem(text = { Text("Surprise me") }, onClick = { menu = false; onSlowDown(null) }, modifier = Modifier.testTag("slow-surprise"))
+            }
+        }
+        slowed.reason?.let { Text(it, color = muted, fontSize = 12.sp, modifier = Modifier.padding(top = 4.dp).testTag("slowed-reason")) }
     }
 }
 
@@ -693,9 +726,12 @@ fun RadioNowPlaying(
         }
         // Left-aligned under the title, like the standard player's Like/Feel row.
         val showFeel = !talking && feelChip != null
-        if (showFeel || locked || audio.sleepTimer.active) FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp),
+        val slowed = audio.slowed.takeIf { !talking }
+        if (showFeel || locked || audio.sleepTimer.active || slowed != null) FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp), itemVerticalAlignment = Alignment.CenterVertically) {
             if (showFeel) feelChip?.invoke()
+            // Slowed Radio (checkpoint 14): shown in the app only, never on the mini player, lock screen or widget.
+            if (slowed != null) PlayerPill("Slowed", Modifier.testTag("slowed-chip"))
             // Information, not a control: a plain pill rather than a disabled (greyed) chip.
             if (locked) PlayerPill("Vibe · ${radio.vibeSongsLeft} songs · ${vibeMinutes(radio)} min", Modifier.testTag("vibe-chip"),
                 leading = { RadioIcon(Symbol.Lock, modifier = Modifier.size(14.dp)) })

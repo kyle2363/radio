@@ -31,6 +31,7 @@ class RadioPlaybackService : MediaSessionService() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private lateinit var engine: LocalPlaybackController
     private lateinit var talk: TalkCoordinator
+    private lateinit var slowed: SlowedCoordinator
     private lateinit var clientController: InitializingPlaybackController
     private var initialized = false
     private var session: MediaSession? = null
@@ -65,7 +66,7 @@ class RadioPlaybackService : MediaSessionService() {
         engine = LocalPlaybackController(this, onCheckpoint = { if (initialized) { library.playbackSnapshots.save(it); stations.save(engine.station()) } },
             onQueueCleared = { if (initialized) { library.playbackSnapshots.clear(); stations.clear() } },
             onAttemptFinished = { _, attempt, kind, listened, duration, reason ->
-                attemptIdentities.remove(attempt)?.let { library.journal.finished(it, attempt, kind, listened, duration, reason) }
+                attemptIdentities.remove(attempt)?.let { library.journal.finished(it, attempt, kind, listened, duration, reason, engine.effectOf(attempt)) }
             }, onExplicitReplay = { song, attempt ->
                 val identity = library.journal.identity(song)
                 attemptIdentities.clear()
@@ -74,14 +75,20 @@ class RadioPlaybackService : MediaSessionService() {
             }) { song, attempt, position ->
             attemptIdentities.keys.retainAll(setOf(attempt))
             val identity = attemptIdentities.getOrPut(attempt) { library.journal.identity(song) }
-            library.journal.started(song, attempt, position, identity, engine.startContext)
+            library.journal.started(song, attempt, position, identity, engine.startContext, engine.effectOf(attempt))
             library.radio.actualStart(attempt)
             // Prefetch one connected option set for this song. Playback never waits on it.
             library.radio.songStarted(song, engine.state.value)
+            // Slowed Radio decides first, so this song's talk turn can carry the guest's line.
+            slowed.songStarted(song)
             // Connected talk asks for this gap's clip now, so the desktop has the whole song to make it.
             talk.songStarted(song)
         }
-        talk = TalkCoordinator(engine, library.radio, library.journal, getSharedPreferences("radio_talk", MODE_PRIVATE), scope)
+        talk = TalkCoordinator(engine, library.radio, library.journal, getSharedPreferences("radio_talk", MODE_PRIVATE), scope) { library.db.talk().save(it) }
+        slowed = SlowedCoordinator(engine, library.radio, scope)
+        talk.slowed = slowed
+        library.radio.slowedBank.inUse = { file -> engine.state.value.talk?.let { it.mediaId.removePrefix(dev.radio.mobile.recommendation.TalkPolicy.MEDIA_PREFIX) == "slowed-" + file.nameWithoutExtension } == true }
+        engine.onUserNewMix = { slowed.userNewMix() }
         var radioRequest: Job? = null
         var radioStartToken = 0L
         fun beginStation(seedLocalId: String?, station: dev.radio.mobile.recommendation.SeedSpec?) {

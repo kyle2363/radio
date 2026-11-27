@@ -207,6 +207,14 @@ async def lifespan(app):
             status = vm.get_status()
             print(f"TTS: Active engine = {status['active_engine']}, voice = {status['active_voice'] or '(none)'}")
 
+            # Warm OmniVoice in the background so the first announcement isn't the cold one that falls back to Piper.
+            if (omnivoice_ok and status.get("active_engine") == "omnivoice" and not startup_stop.is_set()
+                    and (database.get_setting("tts_enabled") or "true").lower() != "false"
+                    and (database.get_setting("omnivoice_warm_up") or "true").lower() != "false"):
+                started = time.time()
+                warm = vm.get_engine("omnivoice").warm_up()
+                print(f"TTS: OmniVoice warm-up {'done' if warm else 'failed'} in {time.time() - started:.0f}s")
+
         except Exception as e:
             print(f"TTS startup check: {e}")
 
@@ -332,6 +340,10 @@ class CollectionAddSongRequest(BaseModel):
 
 class CollectionReorderRequest(BaseModel):
     song_ids: list[int]
+
+
+class CollectionSyncRequest(BaseModel):
+    enabled: bool
 
 
 class TagsRequest(BaseModel):
@@ -1763,8 +1775,23 @@ def library_delete_all_orphaned(expected_count: int | None = Query(None)):
 
 @app.get("/api/collections")
 def list_collections():
-    """List all collections."""
-    return {"collections": database.get_collections()}
+    """List all collections, each marked when it syncs with phones."""
+    shared = PortableProfileStore.shared_collection_ids()
+    return {"collections": [{**c, "synced": c["id"] in shared} for c in database.get_collections()]}
+
+
+@app.put("/api/collections/{collection_id:int}/sync")
+def set_collection_sync(collection_id: int, req: CollectionSyncRequest):
+    """Share a collection with paired phones, or stop syncing it here (phones keep their copy)."""
+    store = PortableProfileStore()
+    if req.enabled:
+        try:
+            playlist_id = store.share_collection(collection_id)
+        except ValueError:
+            raise HTTPException(404, "Collection not found")
+        return {"synced": True, "playlist_id": playlist_id}
+    store.unshare_collection(collection_id)
+    return {"synced": False}
 
 
 @app.post("/api/collections")
@@ -4154,6 +4181,13 @@ def talk_dismiss_guest():
         broadcast("queue_updated", {"queue": qm._get_display_queue()})
         return {"status": "dismissed", "outro": True}
     return {"status": "no_active_guest"}
+
+
+@app.get("/api/talk/metadata-gaps")
+def talk_metadata_gaps():
+    """Songs the phone's connected talk couldn't name; catalog songs drop off once fixed."""
+    from mobile_talk import metadata_gaps
+    return metadata_gaps()
 
 
 @app.get("/api/talk/personas")
