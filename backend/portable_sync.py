@@ -463,6 +463,10 @@ class PortableProfileStore:
         if old and tuple(old) >= order:
             return
         conn.execute("INSERT OR REPLACE INTO portable_registers VALUES (?,?,?,?,?)", (key, *order, canonical(value)))
+        # The baseline is the last projected value even when the collection is
+        # unshared and not rewritten, so a re-share exports the desktop's copy
+        # wherever it differs. A linked collection overwrites this below.
+        conn.execute("INSERT OR REPLACE INTO portable_desktop_snapshot VALUES (?,?)", (key, canonical(value)))
         self._materialize(conn, pid)
 
     def _playlist_state(self, conn, pid):
