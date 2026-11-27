@@ -18,9 +18,9 @@ fun ProfileSyncSection(
     message: String?,
     error: String?,
     enabled: Boolean,
-    onSync: () -> Unit,
     syncOnOpen: Boolean = false,
     onSyncOnOpenChange: ((Boolean) -> Unit)? = null,
+    onSync: () -> Unit,
 ) {
     Column(Modifier.fillMaxWidth().padding(top = 16.dp).testTag("profile-sync")) {
         Text("Sync", style = MaterialTheme.typography.titleSmall)
