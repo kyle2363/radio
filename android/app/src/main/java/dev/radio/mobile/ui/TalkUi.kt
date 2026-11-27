@@ -183,7 +183,7 @@ fun SlowedSection(talkOn: Boolean, settings: dev.radio.mobile.recommendation.Slo
                     enabled = !(on && settings.presets.size == 1), label = { Text(p.label) }, modifier = Modifier.testTag("slowed-preset-${p.id}"))
             }
         }
-        Text(if (allowedFeels == 0) "In plain Radio, a set plays songs from feels that allow Slowed. Turn it on for a feel in Library → Feels."
+        Text(if (allowedFeels == 0) "In plain Radio, a set plays songs from feels that allow Slowed. Turn it on for a feel in Settings → Your feels."
             else "Plays in plain Radio and in the $allowedFeels feel station${if (allowedFeels == 1) "" else "s"} that allow it.",
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.testTag("slowed-feels-note"))
     }
