@@ -56,6 +56,9 @@ GUEST_SHIFT = ("none", "rarely", "normal", "often")
 GUEST_SHIFT_CHANCE = {"none": 0.0, "rarely": 0.2, "normal": 0.5, "often": 0.85}
 LEAD_IN_MS = (300, 900)  # Silence before a clip, so the DJ doesn't jump in on the song's last note.
 _rng = random.Random()
+# Held while a turn is generated; the Slowed bank worker (slowed.py) only speaks while it is free.
+GENERATING = threading.Lock()
+MAX_SLOWED_PLAYS = 300
 
 
 def guest_mood(slot_bias):
@@ -147,6 +150,17 @@ class TalkOverrides(BaseModel):
     guest_shift: Optional[Annotated[StrictStr, Field(pattern=r"^(" + "|".join(GUEST_SHIFT) + r")$")]] = None
 
 
+class EffectsRequest(BaseModel):
+    """Slowed Radio (checkpoint 14): this turn's clip is the effects guest's opener, mid-set line or closer."""
+    model_config = ConfigDict(extra="forbid")
+    moment: Annotated[StrictStr, Field(pattern=r"^(opener|mid|closer)$")]
+    preset: Annotated[StrictStr, Field(pattern=r"^(really_slow|slowed|lofi)$")]
+    guest: Annotated[StrictStr, Field(pattern=r"^(guest_chill|guest_undertow)$")]
+    songs: Annotated[StrictInt, Field(ge=1, le=10)] = 4
+    songs_left: Annotated[StrictInt, Field(ge=0, le=10)] = 0
+    trigger: Annotated[StrictStr, Field(pattern=r"^(auto|manual)$")] = "auto"
+
+
 class TurnRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     protocol_version: StrictInt
@@ -166,6 +180,21 @@ class TurnRequest(BaseModel):
     session_minutes: Annotated[StrictInt, Field(ge=0, le=100_000)] = 0
     session_songs: Annotated[StrictInt, Field(ge=0, le=100_000)] = 0
     talk: Optional[TalkOverrides] = None
+    effects: Optional[EffectsRequest] = None
+    # A Slowed set or run is playing on the phone: no other guest takes over until it ends.
+    slowed_active: StrictBool = False
+
+
+class SlowedManifestRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    protocol_version: StrictInt
+    since: Annotated[StrictInt, Field(ge=0, le=2**53 - 1)] = 0
+
+
+class SlowedPlaysRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    protocol_version: StrictInt
+    plays: dict[Annotated[StrictStr, Field(pattern=r"^[A-Za-z0-9_-]{16,64}$")], Annotated[StrictInt, Field(ge=1, le=10_000)]]
 
 
 class OutcomeRequest(BaseModel):
@@ -383,7 +412,7 @@ class _Worker:
 class MobileTalk:
     def __init__(self, recommendations, *, cache_dir=None, run=None, render=render_clip,
                  clock=time.monotonic, wall=time.time, read_setting=None, available=None, gap_log=None,
-                 feel_profile=None):
+                 feel_profile=None, bank=None, live_line=None, speak=None):
         self.recommendations = recommendations
         # feel_id -> (energy, valence) of its desktop songs, or None; lets a guest pick the feel nearest their lean.
         self.feel_profile = feel_profile or self._feel_profile
@@ -393,13 +422,16 @@ class MobileTalk:
         self.clock, self.wall = clock, wall
         self.read_setting = read_setting or database.get_setting
         self._available = available
+        self._live_line, self._speak = live_line, speak
         self.gap_log = gap_log or os.path.join(config.DATA_DIR, "logs", "talk_metadata_gaps.jsonl")
         self._gaps = None
         self._lock = threading.RLock()
         self._shows = OrderedDict()        # context_id -> Show
         self._jobs = {}                    # job_id -> Job
         self._resources = {}               # rid -> Resource
-        self._generate_lock = threading.Lock()
+        self._generate_lock = GENERATING
+        self._bank, self._bank_worker = None, None
+        self._bank_factory = bank
 
     # -- capability ---------------------------------------------------------
 
@@ -421,8 +453,53 @@ class MobileTalk:
 
     def capability(self):
         available, reason = self.availability()
+        import slowed
         return {"available": bool(available), "reason": reason, "segment_types": list(SEGMENT_TYPES),
-                "announcements": True, "max_clip_seconds": MAX_CLIP_SECONDS}
+                "announcements": True, "max_clip_seconds": MAX_CLIP_SECONDS,
+                "slowed": {"protocol_version": slowed.PROTOCOL_VERSION, "available": bool(available),
+                           "guests": list(slowed.GUESTS), "presets": slowed.PRESETS}}
+
+    # -- Slowed line bank (checkpoint 14B) ----------------------------------
+
+    def bank(self):
+        with self._lock:
+            if self._bank is None:
+                import slowed
+                self._bank = self._bank_factory() if self._bank_factory else slowed.SlowedBank()
+            return self._bank
+
+    def _wake_bank(self):
+        available, _ = self.availability()
+        if not available:
+            return
+        with self._lock:
+            if self._bank_worker is None:
+                import slowed
+                self._bank_worker = slowed.SlowedLineWorker(self.bank(), gate=self._generate_lock)
+            worker = self._bank_worker
+        worker.wake()
+
+    def slowed_manifest(self, device_id, body):
+        request = _parse(SlowedManifestRequest, body)
+        manifest = self.bank().manifest(request.since)
+        # A phone that asks for the bank uses Slowed: keep it filled from now on.
+        self._wake_bank()
+        return manifest
+
+    def slowed_line(self, device_id, line_id):
+        data = self.bank().read(line_id)
+        if data is None:
+            raise Rejected(404, "slowed_line_not_found")
+        return data
+
+    def slowed_plays(self, device_id, body):
+        request = _parse(SlowedPlaysRequest, body)
+        if len(request.plays) > MAX_SLOWED_PLAYS:
+            raise Rejected(422, "Invalid request")
+        retired = self.bank().record_plays(request.plays)
+        if retired:
+            self._wake_bank()
+        return {"recorded": len(request.plays), "retired": len(retired)}
 
     # -- turns --------------------------------------------------------------
 
@@ -559,6 +636,8 @@ class MobileTalk:
     def _decide_and_render(self, job, request, talk_state, announce_state, mood_changed):
         settings = resolve_settings(request.talk.model_dump(exclude_none=True) if request.talk else {},
                                     self.read_setting)
+        if request.slowed_active or request.effects is not None:
+            settings["talk_guest_takeover_enabled"] = "false"
         talk, announce = new_talk_context(), new_announcement_context()
         _load(talk, talk_state)
         _load(announce, announce_state)
@@ -575,6 +654,8 @@ class MobileTalk:
                                              "song_count": request.session_songs,
                                              "top_artists": list(dict.fromkeys(artists))[:3]}
         mood = request.mood
+        if request.effects is not None:
+            return self._slowed_clip(job, request, talk, announce, after, nxt, recent, when)
         segment, kind = None, "talk"
         takeover = talk._current_guest_takeover
         if takeover and takeover["songs_remaining"] <= 0:
@@ -618,6 +699,51 @@ class MobileTalk:
         metadata["resource"] = {"id": resource.rid, "sha256": resource.sha256, "byte_length": resource.length,
                                 "mime": "audio/mp4", "expires_at": int(resource.expires_at)}
         metadata["kind"] = kind
+        return {"metadata": metadata, "resource": resource, "talk": after_talk, "announce": after_announce}
+
+    def _slowed_clip(self, job, request, talk, announce, after, nxt, recent, when):
+        """A live line from the effects guest for the phone's Slowed set (plan 13.4-13.6). None falls back to the bank."""
+        import slowed
+        from announcer.personas import get_persona
+        effects = request.effects
+        guest = get_persona(effects.guest)
+        if guest is None:
+            return None
+        recent_openings = list(talk._recent_guest_openings)
+        make = self._live_line or slowed.live_line
+        text = make(effects.moment, effects.guest, effects.preset, songs=effects.songs, trigger=effects.trigger,
+                    last_song=after, next_song=nxt, songs_left=effects.songs_left,
+                    played_songs=recent if effects.moment == "closer" else (), hour=when.hour,
+                    recent_openings=recent_openings)
+        if job.state != "pending":
+            return None
+        if not text:
+            # No live line: the phone uses its bank. Nothing in the show changes.
+            return {"none": True, "talk": _snapshot(talk, TALK_STATE), "announce": _snapshot(announce, ANNOUNCE_STATE)}
+        wav = (self._speak or slowed.voice)(text, effects.guest)
+        if not wav:
+            return None
+        if effects.moment == "opener":
+            # A Slowed set counts as that guest's takeover for persona cooldowns.
+            talk._recent_guests.append(effects.guest)
+            del talk._recent_guests[:-10]
+            talk._recent_guest_openings.append(" ".join(text.split()[:8]))
+        after_talk, after_announce = _snapshot(talk, TALK_STATE), _snapshot(announce, ANNOUNCE_STATE)
+        joined = _join_wavs([wav])
+        if not joined:
+            return None
+        resource = self._encode(job, joined)
+        titles = {"opener": f"{guest.name} slows it down", "mid": f"{guest.name}: still slowed",
+                  "closer": f"{guest.name}: back to normal"}
+        metadata = {"segment_type": "slowed_" + effects.moment, "title": titles[effects.moment],
+                    "speakers": [{"id": guest.id, "name": guest.name}],
+                    "transcript": [{"speaker": guest.id, "text": text}], "shift": None, "guest_set": None,
+                    "slowed": {"moment": effects.moment, "preset": effects.preset, "guest": guest.id,
+                               "songs": effects.songs, "trigger": effects.trigger}}
+        metadata["duration_ms"] = min(_wav_duration_ms(joined) or 0, MAX_CLIP_SECONDS * 1000)
+        metadata["resource"] = {"id": resource.rid, "sha256": resource.sha256, "byte_length": resource.length,
+                                "mime": "audio/mp4", "expires_at": int(resource.expires_at)}
+        metadata["kind"] = "talk"
         return {"metadata": metadata, "resource": resource, "talk": after_talk, "announce": after_announce}
 
     def _announcement(self, announce, request, after, nxt, when, mood, mood_changed):

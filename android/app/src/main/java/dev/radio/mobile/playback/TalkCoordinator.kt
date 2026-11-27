@@ -46,6 +46,8 @@ internal class TalkCoordinator(
     /** Saves a finished clip for talk stats (13C); local only. */
     private val recordTalk: suspend (dev.radio.mobile.data.LocalTalkEvent) -> Unit = {},
 ) {
+    /** Slowed Radio (checkpoint 14): adds `effects` to a turn and hears about Slowed lines. */
+    internal var slowed: SlowedCoordinator? = null
     private val net = Mutex()
     private var turn: Job? = null
     private var lastSeq = 0L
@@ -61,7 +63,7 @@ internal class TalkCoordinator(
 
     init {
         radio.talkCache.clear()  // Clips never outlive the process that fetched them.
-        engine.talkFileAllowed = { radio.talkCache.owns(it) }
+        engine.talkFileAllowed = { radio.talkCache.owns(it) || slowed?.ownsFile(it) == true }
         engine.onTalk = ::onTalkEvent
         prefs.getString(OPEN_JOB, null)?.let { stale -> scope.launch { report(stale, "missed", null) } }
         scope.launch { radio.talkSettings.collect { engine.setTalkGain(it.volume.linear); if (!it.enabled) stop("Off") } }
@@ -113,6 +115,10 @@ internal class TalkCoordinator(
             if (capability == null) { radio.setTalkStatus("This desktop doesn't offer talk"); return }
             if (!access.permitted) { radio.setTalkStatus("Not allowed on the desktop; music continues"); return }
             if (!capability.available) { radio.setTalkStatus(capability.message); return }
+            slowed?.desktopSlowed = capability.slowed
+            // A gap held for a Slowed line the desktop can't voice is left to the phone's bank.
+            if (!capability.slowed && slowed?.reservesGap(song.id) == true) return
+            slowed?.awaitMix()
             // Desktop picks makes its own context at song start; give it a moment, then use (or make) a talk-only one.
             val contextId = radio.connected.context.value
                 ?: (if (radio.connected.enabled) withTimeoutOrNull(CONTEXT_WAIT_MS) { radio.connected.context.first { it != null } } else null)
@@ -164,6 +170,16 @@ internal class TalkCoordinator(
         state.playOrder.indexOf(id).takeIf { it >= 0 }?.let { state.playOrder.getOrNull(it + 1) }
 
     private fun onTalkEvent(event: LocalPlaybackController.TalkEvent) {
+        slowed?.onTalk(event)
+        // A line from the phone's Slowed bank is not a desktop job: no report, no shift, and its file stays in the bank.
+        if (event.clip.info.fromBank) {
+            if (event is LocalPlaybackController.TalkEvent.Started) radio.setTalkStatus("On air: ${event.clip.info.title}")
+            if (event is LocalPlaybackController.TalkEvent.Finished) {
+                val row = dev.radio.mobile.data.TalkStats.event(event.clip.info, event.outcome, event.heardMs, null, System.currentTimeMillis(), null)
+                scope.launch(Dispatchers.IO) { runCatching { recordTalk(row) } }
+            }
+            return
+        }
         when (event) {
             is LocalPlaybackController.TalkEvent.Started -> {
                 radio.setTalkStatus("On air: ${event.clip.info.title}")
@@ -208,7 +224,7 @@ internal class TalkCoordinator(
 
     private fun changeStation(pick: StationPick) {
         radio.applyStation(pick)
-        engine.newMix()
+        engine.stationMix()
     }
 
     private suspend fun report(jobId: String, outcome: String, heardS: Double?) {
@@ -236,13 +252,14 @@ internal class TalkCoordinator(
         val activeFeel = radioState.feel?.let { id -> radio.feelChoices.value.firstOrNull { it.feelId == id } }?.let { TalkWire.Feel(it.feelId, it.name) }
         val now = LocalDateTime.now().truncatedTo(ChronoUnit.SECONDS)
         val slot = engine.state.value.origins[next.id]?.name?.lowercase(Locale.ROOT)
+        val (effects, slowedActive) = slowed?.turnExtras(after.id) ?: (null to false)
         return TalkWire.turn(TalkWire.Turn(
             turnId = UUID.randomUUID().toString(), seq = seq, after = ref(after), next = ref(next, slot), mood = radioState.mood,
             recent = sessionRecent.take(5).map { ref(it) }, feel = activeFeel, feels = feels, skipStreak = streak, feedback = feedback,
             history = TalkWire.History(nextPlays.count { it.kind == "song_completed" }, days),
             localIso = now.toString().let { if (it.length == 16) "$it:00" else it }, weekday = now.dayOfWeek.name.lowercase(Locale.ROOT),
             sessionMinutes = ((System.currentTimeMillis() - sessionStart) / 60_000L).toInt().coerceAtLeast(0), sessionSongs = sessionSongs,
-            talk = settings.toWire(),
+            talk = settings.toWire(), effects = effects, slowedActive = slowedActive,
         ))
     }
 

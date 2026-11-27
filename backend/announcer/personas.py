@@ -20,6 +20,7 @@ class Persona:
     slot_bias: dict | None = None
     disabled_by_default: bool = False  # If True, caller is off unless explicitly enabled
     speed_base: float = 0.90  # OmniVoice speech speed baseline (0.75-1.05), ±0.1 randomized at synth
+    slowed_only: bool = False  # Slowed Radio effects guest that never does a normal takeover (checkpoint 14)
 
     @property
     def voice_id(self) -> str:
@@ -180,7 +181,7 @@ PERSONAS: dict[str, Persona] = {
     "guest_chill": Persona(
         id="guest_chill",
         name="DJ Moonlight",
-        voice_id_omnivoice="The Moonlit Whisper",
+        voice_id_omnivoice="The Midnight Confidant",
         voice_id_piper="amy",
         personality="You are a laid-back guest DJ who curates smooth, atmospheric, and chill vibes. You speak slowly and calmly. Your set is about winding down, creating space, and letting the music breathe. You appreciate the quiet moments between tracks.",
         slot_bias={"energy_range": (0.0, 0.45), "valence_range": (0.3, 0.7)},
@@ -231,6 +232,17 @@ PERSONAS: dict[str, Persona] = {
         slot_bias={"energy_range": (0.3, 0.7), "valence_range": (0.4, 0.8)},
         speed_base=1.03,
     ),
+    # --- Slowed Radio effects guest (checkpoint 14): phone Slowed sets only, never a normal takeover ---
+    "guest_undertow": Persona(
+        id="guest_undertow",
+        name="The Undertow",
+        voice_id_omnivoice="deep radio voice",
+        voice_id_piper="ryan",
+        personality="You are The Undertow, a guest DJ with a deep, hypnotic voice who slows the station down. You speak slowly, in short sentences, with room between them. You describe slowing music as sinking, drifting, going under, letting the current take you. You are calm and a little mysterious, never creepy or menacing. You use few words; every line feels like a late-night murmur close to the mic.",
+        slot_bias={"energy_range": (0.0, 0.5)},
+        speed_base=0.82,
+        slowed_only=True,
+    ),
     # --- DJ Effects Guest (only persona with dj_effect) ---
     "guest_late_night": Persona(
         id="guest_late_night",
@@ -250,8 +262,8 @@ def get_persona(persona_id: str) -> Persona | None:
 
 
 def get_guest_personas() -> list[Persona]:
-    """Return all guest DJ personas (those with slot_bias)."""
-    return [p for p in PERSONAS.values() if p.slot_bias is not None]
+    """Return guest DJ personas for normal takeovers (those with slot_bias, minus Slowed-only guests)."""
+    return [p for p in PERSONAS.values() if p.slot_bias is not None and not p.slowed_only]
 
 
 def get_caller_personas() -> list[Persona]:

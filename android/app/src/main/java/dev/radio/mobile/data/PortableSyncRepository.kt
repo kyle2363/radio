@@ -161,7 +161,8 @@ class PortableSyncRepository internal constructor(
         for (batch in PortableSyncBatcher.batches(eligible) { it.payload.toByteArray(Charsets.UTF_8).size }) {
             if (batch.isEmpty()) continue
             ensureTime(startedAt)
-            val body = "{\"protocol_version\":1,\"events\":[${batch.joinToString(",") { it.payload }}]}"
+            // Slowed Radio's `effect` goes only to desktops that accept it; an older one would reject the whole batch.
+            val body = "{\"protocol_version\":1,\"events\":[${batch.joinToString(",") { if (session.eventEffects) it.payload else SlowedEvents.withoutEffect(it.payload) }}]}"
             val response = pairing.profileRequest(session, "/events", body)
             requireOk(response, "upload")
             val acknowledged = validateAcknowledgements(response.body, batch.map { it.eventId }.toSet())

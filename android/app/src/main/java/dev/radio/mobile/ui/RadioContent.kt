@@ -12,6 +12,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
@@ -63,12 +64,14 @@ fun RadioContent(radio:RadioState,repository:RadioRepository,audio:PlaybackState
     LazyColumn(modifier.fillMaxSize().testTag("radio-screen"),contentPadding=PaddingValues(start=16.dp,end=16.dp,bottom=16.dp),verticalArrangement=Arrangement.spacedBy(16.dp)) {
         item(key="station") {
             // Off air ↔ on air crossfades, and the card eases to its new height.
+            val slowedUi by repository.slowedUi.collectAsState()
             val card=when{onAir->"on";block!=null->"blocked";else->"off"}
             AnimatedContent(card,transitionSpec={(fadeIn(Motion.standard()) togetherWith fadeOut(Motion.quick())).using(SizeTransform(clip=false))},label="station-card"){shown->
             when(shown) {
                 "on" -> Box {
                     OnAirStationCard(audio,radio,onOpenPlayer=onPlayer,onVibe={if(radio.vibeLocalId!=null)repository.clearVibe() else repository.lockVibe()},
-                    onNewMix={retune++;playback.newMix()},onEnd=onEnd,positionMs=positionMs,feel=feels.firstOrNull{it.feelId==radio.feel},server=serverChip)
+                    onNewMix={retune++;playback.newMix()},onEnd=onEnd,positionMs=positionMs,feel=feels.firstOrNull{it.feelId==radio.feel},server=serverChip,
+                    slowed=slowedUi,onSlowDown=repository::slowItDown,onBackToNormal=repository::backToNormal)
                     // Checkpoint 10: New mix retunes the dial briefly over the card.
                     if(retuning) Surface(Modifier.matchParentSize(),shape=androidx.compose.foundation.shape.RoundedCornerShape(24.dp),color=MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha=.94f)){
                         TuningDial(radio.mood+":"+retune,Modifier.fillMaxSize().padding(24.dp))
@@ -196,6 +199,12 @@ fun RadioContent(radio:RadioState,repository:RadioRepository,audio:PlaybackState
             val talkSettings by repository.talkSettings.collectAsState()
             val talkStatus by repository.talkStatus.collectAsState()
             TalkSection(connected,paired,talkSettings,talkStatus,onChange=repository::setTalkSettings)
+            val slowedSettings by repository.slowedSettings.collectAsState()
+            val slowedBank by repository.slowedBank.state.collectAsState()
+            val slowedFeels by repository.slowedFeels.collectAsState()
+            val slowedScope=rememberCoroutineScope()
+            SlowedSection(paired && talkSettings.enabled,slowedSettings,slowedBank,slowedFeels.size,onChange=repository::setSlowedSettings,
+                onRefresh={slowedScope.launch{repository.slowedBank.sync()}})
             Text("Changes apply from the next song. Your current song and queue stay put. Only this phone's picks change; your desktop's own Radio is untouched.",
                 Modifier.padding(top=16.dp),style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
         }

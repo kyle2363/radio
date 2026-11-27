@@ -1,5 +1,7 @@
 package dev.radio.mobile.ui
 
+import androidx.compose.ui.semantics.Role
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -74,7 +76,9 @@ private fun Swatch(hex: String, size: Int = 18, selected: Boolean = false, onCli
 fun FeelsScreen(feels: FeelRepository, state: FeelsState, songs: List<LocalSong>, nav: FeelsNav, onNav: (FeelsNav) -> Unit,
     preview: PreviewController?, sessions: () -> List<List<String>>, onMessage: (String) -> Unit, modifier: Modifier = Modifier,
     /** "Start radio from this" for a feel with songs in it; Energy is not a station. */
-    onRadio: ((LocalFeel) -> Unit)? = null) {
+    onRadio: ((LocalFeel) -> Unit)? = null,
+    /** Slowed Radio (checkpoint 14): feels whose stations may play Slowed sets, and the per-feel toggle. */
+    slowedFeels: Set<String> = emptySet(), onSlowedAllowed: ((String, Boolean) -> Unit)? = null) {
     val scope = rememberCoroutineScope()
     fun write(block: suspend () -> Result<*>) { scope.launch { block().exceptionOrNull()?.let { onMessage(it.message ?: "Couldn't save that.") } } }
     val open = nav.feelId?.let { id -> state.feels.firstOrNull { it.feel.feelId == id } }
@@ -88,7 +92,8 @@ fun FeelsScreen(feels: FeelRepository, state: FeelsState, songs: List<LocalSong>
             onPairs = { onNav(FeelsNav(open.feel.feelId, sprint = true, pairs = true)) },
             onEdit = { name, color, archived -> write { feels.edit(open.feel.feelId, name, color, archived) } },
             onRemove = { song -> write { feels.tag(open.feel.feelId, song, false) } }, modifier = modifier,
-            onRadio = onRadio?.takeIf { canStartRadio(open) }?.let { start -> { start(open.feel) } })
+            onRadio = onRadio?.takeIf { canStartRadio(open) }?.let { start -> { start(open.feel) } },
+            slowedAllowed = open.feel.feelId in slowedFeels, onSlowedAllowed = onSlowedAllowed?.let { set -> { on: Boolean -> set(open.feel.feelId, on) } })
         else -> FeelList(state, onOpen = { onNav(FeelsNav(it)) }, onCreate = { name, color -> write { feels.create(name, color) } },
             onRestore = { write { feels.edit(it, archived = false) } }, modifier = modifier, onRadio = onRadio)
     }
@@ -214,7 +219,8 @@ private fun FeelEditDialog(feel: LocalFeel?, onDismiss: () -> Unit, onSave: (nam
 
 @Composable
 private fun FeelDetail(summary: FeelSummary, state: FeelsState, songs: List<LocalSong>, onSprint: () -> Unit, onPairs: () -> Unit,
-    onEdit: (String?, String?, Boolean?) -> Unit, onRemove: (LocalSong) -> Unit, modifier: Modifier, onRadio: (() -> Unit)? = null) {
+    onEdit: (String?, String?, Boolean?) -> Unit, onRemove: (LocalSong) -> Unit, modifier: Modifier, onRadio: (() -> Unit)? = null,
+    slowedAllowed: Boolean = false, onSlowedAllowed: ((Boolean) -> Unit)? = null) {
     val feel = summary.feel
     var editing by remember { mutableStateOf(false) }
     val energy = isEnergy(feel.feelId)
@@ -246,6 +252,15 @@ private fun FeelDetail(summary: FeelSummary, state: FeelsState, songs: List<Loca
             Text(if (pairable >= 2) "Rounds of 10 pairs: pick which song is more ${feel.name}. Pairs come where the ranking is least sure."
                 else if (energy) "Rate at least 2 songs to compare them." else "Add at least 2 songs to ${feel.name} to compare them.",
                 Modifier.padding(horizontal = 20.dp).testTag("pairs-hint"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (!energy && onSlowedAllowed != null) Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp).heightIn(min = 48.dp)
+                .toggleable(slowedAllowed, role = Role.Switch, onValueChange = onSlowedAllowed).testTag("feel-allow-slowed"), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Allow Slowed", style = MaterialTheme.typography.bodyLarge)
+                    Text("A guest may slow this feel's station down, and plain Radio's Slowed sets may play its songs.",
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                Switch(slowedAllowed, onCheckedChange = null)
+            }
             Text("Ranking · ${summary.settled.toInt()}% settled", Modifier.padding(start = 20.dp, top = 20.dp, bottom = 4.dp).testTag("ranking-header"),
                 style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
             if (rows.isEmpty()) Text("Nothing yet. Start a sprint, or tag songs from Now Playing.", Modifier.padding(horizontal = 20.dp, vertical = 8.dp),

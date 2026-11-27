@@ -159,6 +159,7 @@ def test_desktop_talk_switch_does_not_gate_the_phone(talk):
 def test_capability_shape_and_unavailable_reason(tmp_path):
     service = MobileTalk(FakeRecommendations(), cache_dir=str(tmp_path), available=lambda: (False, "tts_disabled"))
     cap = service.capability()
+    assert cap.pop("slowed")["guests"] == ["guest_chill", "guest_undertow"]
     assert cap == {"available": False, "reason": "tts_disabled",
                    "segment_types": ["caller", "dj_monologue", "guest_takeover"],
                    "announcements": True, "max_clip_seconds": 180}

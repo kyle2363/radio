@@ -106,7 +106,9 @@ class PairingRepository(
     }
     internal class ProfileSyncSession internal constructor(val serverId: String, internal val anchor: String,
         internal val installationMarker: String, internal val deviceId: String, internal val bearer: String,
-        internal val endpoint: String, internal var identityExpiresAt:Long, internal var identityGeneration:Long, internal var identityRevision:Long)
+        internal val endpoint: String, internal var identityExpiresAt:Long, internal var identityGeneration:Long, internal var identityRevision:Long,
+        /** The desktop accepts `effect` on song events (Slowed Radio); older desktops reject unknown fields. */
+        internal val eventEffects: Boolean = false)
     internal data class LocalProfileOwner(val serverId:String?,val deviceId:String?,val installationMarker:String?,val quarantined:Boolean,val blocked:Boolean)
     /** Read-only local identity metadata for sync status; never returns the bearer token. */
     internal suspend fun localProfileOwnerSnapshot():LocalProfileOwner = withContext(Dispatchers.IO) { mutex.withLock {
@@ -132,7 +134,7 @@ class PairingRepository(
         if (!capabilities.optBoolean("profile_sync", false) || !hasScopes)
             throw ConnectionFailure("Profile sync is not enabled for this device. Allow profile sync for this device in desktop Server Settings, then retry.")
         ProfileSyncSession(record.bundle.serverId, record.identityAnchor, record.installationMarker, device, record.bearer, record.bundle.endpoint,
-            verified.identityExpiresAt, verified.record.generation, verified.record.revision)
+            verified.identityExpiresAt, verified.record.generation, verified.record.revision, capabilities.optBoolean("event_effects", false))
     } }
     internal suspend fun profileRequest(session: ProfileSyncSession, path: String, body: String? = null): RadioResponse = withContext(Dispatchers.IO) { mutex.withLock {
         val initial = usable().record ?: throw ConnectionFailure("Pairing changed. Sync stopped safely.")

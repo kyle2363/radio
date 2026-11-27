@@ -25,6 +25,7 @@ KINDS = frozenset({"song_started", "song_completed", "song_skipped", "song_repla
                    "energy_changed", "preference_changed",
                    "playlist_renamed", "playlist_deleted", "playlist_member_changed",
                    "feel_defined", "feel_rated", "feel_compared"})
+EFFECTS = frozenset({"really_slow", "slowed", "lofi"})
 FEEL_KINDS = frozenset({"feel_defined", "feel_rated", "feel_compared"})
 PLAYLIST_KINDS = frozenset({"playlist_renamed", "playlist_deleted", "playlist_member_changed"})
 # Additive (checkpoint 7A); checked on every start so existing stores upgrade.
@@ -205,7 +206,7 @@ class PortableProfileStore:
             raise ValueError("Unsupported event protocol")
         allowed = {"protocol_version", "event_id", "device_id", "logical_clock", "kind", "song_id",
                    "attempt_id", "occurred_at", "value", "key", "local_id", "reason", "completion", "catalog_id",
-                   "playlist_id", "position", "feel_id", "other_song_id", "other_local_id", "weight"}
+                   "playlist_id", "position", "feel_id", "other_song_id", "other_local_id", "weight", "effect"}
         if set(event) - allowed:
             raise ValueError("Unknown event fields")
         _text(event.get("event_id"), "event id")
@@ -252,6 +253,9 @@ class PortableProfileStore:
             _text(event.get("local_id"), "local-only song id")
         if kind.startswith("song_"):
             _text(event.get("attempt_id"), "attempt id")
+        # Slowed Radio (checkpoint 14): the phone's effect preset while the song played.
+        if "effect" in event and (not kind.startswith("song_") or event["effect"] not in EFFECTS):
+            raise ValueError("Invalid playback effect")
         if kind in ("favorite_changed", "blacklist_changed", "dislike_changed") and type(event.get("value")) is not bool:
             raise ValueError("Boolean preference required")
         if kind == "energy_changed":
@@ -389,6 +393,9 @@ class PortableProfileStore:
                 raise SyncConflict("Attempt reused for another song")
             conn.execute("INSERT INTO portable_attempts VALUES (?,?,?,?,?)", (*identity, song_key, kind))
             signal = {"song_started": "playing", "song_completed": "completed", "song_skipped": "skip_early", "song_replayed": "replayed"}[kind]
+            if kind == "song_skipped" and event.get("effect"):
+                # A skip during a Slowed set is about the effect, not the song: the taste model never sees it.
+                return
             self._play(conn, event, signal)
             if sid and kind == "song_skipped" and event.get("reason"):
                 conn.execute("INSERT INTO skip_feedback(session_id,skip_streak,reason,duration) VALUES (NULL,0,?,NULL)", (event["reason"],))

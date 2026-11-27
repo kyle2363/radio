@@ -19,14 +19,16 @@ data class ConnectedAccess(val key: String, val capable: Boolean, val permitted:
     /** Connected talk (checkpoint 13); null on desktops that don't offer it. */
     val talk: TalkCapability? = null,
     /** Whether the desktop ranks inside a phone feel station (checkpoint 13C). */
-    val feels: Boolean = false) {
+    val feels: Boolean = false,
+    /** Song events may carry `effect` (Slowed Radio, checkpoint 14); older desktops reject the field. */
+    val eventEffects: Boolean = false) {
     companion object {
         /** Parses GET /capabilities. [key] identifies the paired server and device. */
         fun parse(key: String, body: String): ConnectedAccess {
             val root = runCatching { ConnectedJson.parse(body) as? Map<*, *> }.getOrNull() ?: throw ConnectionFailure("Invalid server response.")
             val scopes = (root["scopes"] as? List<*>)?.filterIsInstance<String>().orEmpty()
             return ConnectedAccess(key, root["connected_recommendations"] == true, "recommend:read" in scopes, root["connected_tuning"] == true,
-                TalkCapability.parse(root["connected_talk"]), root["connected_feels"] == true)
+                TalkCapability.parse(root["connected_talk"]), root["connected_feels"] == true, root["event_effects"] == true)
         }
     }
 }

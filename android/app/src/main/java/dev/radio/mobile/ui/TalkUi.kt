@@ -139,3 +139,60 @@ fun TalkTranscriptSheet(info: TalkClipInfo, onDismiss: () -> Unit) {
 /** "Caller · Nova, Sam": the segment and who is on, shown wherever the Radio surfaces name the current item. */
 fun talkSpeakerLine(info: TalkClipInfo): String =
     if (info.speakers.isEmpty()) "${info.typeLabel} · Talk" else "${info.typeLabel} · ${info.speakers.joinToString(", ") { it.name }}"
+
+/**
+ * Radio -> Tune, Slowed (checkpoint 14). Needs Talk on: the guest always says so before the music slows ("no voice,
+ * no effect"). The phone plays its own files slowed; the desktop only voices the lines.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+fun SlowedSection(talkOn: Boolean, settings: dev.radio.mobile.recommendation.SlowedSettings, bank: dev.radio.mobile.recommendation.SlowedBankState,
+    allowedFeels: Int, onChange: (dev.radio.mobile.recommendation.SlowedSettings) -> Unit, onRefresh: () -> Unit, modifier: Modifier = Modifier) {
+    LaunchedEffect(talkOn && settings.enabled) { if (talkOn && settings.enabled) onRefresh() }
+    Column(modifier.fillMaxWidth().padding(top = 16.dp).testTag("slowed-section"), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).toggleable(settings.enabled, enabled = talkOn, role = Role.Switch,
+            onValueChange = { onChange(settings.copy(enabled = it)) }).testTag("slowed-toggle"), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("SLOWED", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(when { !talkOn -> "Needs Talk on"; !settings.enabled -> "Off · a guest DJ slows Radio down for a set"; else -> slowedBankLine(bank) },
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.testTag("slowed-state"))
+            }
+            Switch(settings.enabled && talkOn, onCheckedChange = null, enabled = talkOn)
+        }
+        if (!talkOn || !settings.enabled) return@Column
+        Text("How often", Modifier.padding(top = 8.dp), style = MaterialTheme.typography.bodyMedium)
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            dev.radio.mobile.recommendation.SlowedFrequency.entries.forEach { f ->
+                FilterChip(settings.frequency == f, onClick = { onChange(settings.copy(frequency = f)) }, label = { Text(f.label) },
+                    modifier = Modifier.testTag("slowed-frequency-${f.name.lowercase()}"))
+            }
+        }
+        Text("Slowed length", Modifier.padding(top = 8.dp), style = MaterialTheme.typography.bodyMedium)
+        Text("Sets run 4 to ${settings.maxSongs} songs; ones you start sit at the top.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            (dev.radio.mobile.recommendation.SlowedSettings.MIN_SONGS..dev.radio.mobile.recommendation.SlowedSettings.MAX_SONGS).forEach { n ->
+                FilterChip(settings.maxSongs == n, onClick = { onChange(settings.copy(maxSongs = n)) }, label = { Text("Up to $n") },
+                    modifier = Modifier.testTag("slowed-max-$n"))
+            }
+        }
+        Text("Sounds", Modifier.padding(top = 8.dp), style = MaterialTheme.typography.bodyMedium)
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            dev.radio.mobile.playback.SlowedPreset.entries.forEach { p ->
+                val on = p in settings.presets
+                FilterChip(on, onClick = { onChange(settings.copy(presets = if (on) settings.presets - p else settings.presets + p)) },
+                    enabled = !(on && settings.presets.size == 1), label = { Text(p.label) }, modifier = Modifier.testTag("slowed-preset-${p.id}"))
+            }
+        }
+        Text(if (allowedFeels == 0) "In plain Radio, a set plays songs from feels that allow Slowed. Turn it on for a feel in Library → Feels."
+            else "Plays in plain Radio and in the $allowedFeels feel station${if (allowedFeels == 1) "" else "s"} that allow it.",
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.testTag("slowed-feels-note"))
+    }
+}
+
+private fun slowedBankLine(bank: dev.radio.mobile.recommendation.SlowedBankState): String {
+    if (bank.syncing && bank.count == 0) return "Fetching the guests' lines…"
+    if (bank.count == 0) return bank.error?.let { "No lines stored yet · $it" } ?: "No lines stored yet · they arrive while the desktop is reachable"
+    val days = (System.currentTimeMillis() - bank.updatedAt) / 86_400_000L
+    val updated = when { bank.updatedAt == 0L -> ""; days <= 0 -> " · updated today"; days == 1L -> " · updated yesterday"; else -> " · updated $days days ago" }
+    return "${bank.count} lines stored$updated"
+}

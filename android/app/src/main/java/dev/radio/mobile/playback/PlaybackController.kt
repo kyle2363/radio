@@ -44,6 +44,8 @@ data class PlaybackState(
     val notice: PlaybackNotice? = null,
     /** The talk clip queued after the current song, or playing now. */
     val talk: TalkNow? = null,
+    /** Slowed Radio (checkpoint 14): the effect on the item playing now; null for speech items and normal songs. */
+    val slowed: SlowedPreset? = null,
 ) {
     /** The song to treat as current for bookmarks and stations: during talk, the song the clip introduces. */
     val songCurrentId: String? get() = if (talk?.current == true) talk.nextId else currentId
