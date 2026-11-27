@@ -104,13 +104,16 @@ fun RadioApp(repository: LibraryRepository = LibraryRepository.get(LocalContext.
     var appInForeground by remember(lifecycle) { mutableStateOf(lifecycle.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) }
     LaunchedEffect(pairing,discovery) { pairing.load(); discovery.load() }
     DisposableEffect(repository, lifecycle, discovery) {
+        // Sync on open is foreground only: the run is cancelled on ON_STOP and re-checks before uploading.
+        val openRun = SyncOnOpenRunner(lifecycleScope)
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) { repository.checkAccess(); lifecycleScope.launch { pairing.load(); discovery.load(); discovery.readOnResume(); syncOnOpen(appContext, pairing, discovery) } }
+            if (event == Lifecycle.Event.ON_RESUME) { repository.checkAccess(); openRun.start { foreground -> pairing.load(); discovery.load(); discovery.readOnResume(); syncOnOpen(appContext, pairing, discovery, foreground) } }
+            if (event == Lifecycle.Event.ON_STOP) openRun.stop()
             if (event == Lifecycle.Event.ON_STOP && activity?.isChangingConfigurations != true) repository.loudness.pauseAnalysis()
         }
         lifecycle.lifecycle.addObserver(observer)
         repository.checkAccess()
-        onDispose { lifecycle.lifecycle.removeObserver(observer) }
+        onDispose { lifecycle.lifecycle.removeObserver(observer); openRun.stop() }
     }
     // Shell preferences live here; library, playlists and playback bookmarks live in Room.
     val prefs = LocalContext.current.getSharedPreferences("radio_shell", Context.MODE_PRIVATE)
